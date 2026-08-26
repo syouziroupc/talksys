@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'none'; img-src 'self' data:">
+  <title>TalkSys Desktop</title>
+  <style>
+    *{box-sizing:border-box}html,body{height:100%}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f4f5;color:#18181b}.app{height:100%;display:flex;flex-direction:column;background:#fff}.head{padding:14px 16px;border-bottom:1px solid #e4e4e7;display:flex;align-items:center;justify-content:space-between;gap:10px}.title{font-size:17px;font-weight:800}.actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.btn{border:1px solid #d4d4d8;border-radius:10px;background:#fff;padding:8px 10px;min-height:40px;font:inherit;font-weight:700;cursor:pointer}.btn.primary{background:#18181b;color:#fff;border-color:#18181b}.btn.active{background:#18181b;color:#fff;border-color:#18181b}.btn:disabled{opacity:.45;cursor:default}.settings{padding:8px 14px;border-bottom:1px solid #e4e4e7;background:#fafafa}.settings summary{cursor:pointer;font-size:12px;font-weight:700;color:#52525b}.settings label{display:block;margin-top:8px;font-size:12px;color:#52525b}.settings input{width:100%;margin-top:5px;padding:9px 10px;border:1px solid #d4d4d8;border-radius:8px;font:inherit}.chat{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px}.msg{max-width:88%;padding:10px 12px;border-radius:13px;white-space:pre-wrap;line-height:1.5;overflow-wrap:anywhere}.user{align-self:flex-end;background:#18181b;color:#fff}.assistant{align-self:flex-start;background:#f1f1f3}.status{min-height:26px;padding:4px 14px;font-size:12px;color:#71717a}.composer{padding:10px 12px 12px;border-top:1px solid #e4e4e7;display:flex;gap:8px}.composer textarea{flex:1;min-width:0;resize:none;min-height:48px;max-height:130px;padding:11px;border:1px solid #d4d4d8;border-radius:10px;font:inherit}.composer button{border:0;border-radius:10px;background:#18181b;color:#fff;padding:0 16px;font-weight:700;cursor:pointer}.composer button:disabled{opacity:.45}.note{padding:0 14px 8px;font-size:11px;color:#71717a}@media(max-width:430px){.head{align-items:flex-start}.actions{max-width:230px}.btn{font-size:12px;padding:7px 8px}.chat{padding:12px}.composer{padding:8px}}
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="head">
+      <div class="title">TalkSys Desktop</div>
+      <div class="actions">
+        <button id="voice" class="btn" type="button">🎙 音声</button>
+        <button id="capture" class="btn" type="button">▣ PNG保存</button>
+        <button id="clear" class="btn" type="button">矢印を消す</button>
+      </div>
+    </header>
+    <details class="settings">
+      <summary>接続設定</summary>
+      <label>Cloudflare API URL<input id="apiBase" type="url" spellcheck="false" placeholder="https://...workers.dev"></label>
+    </details>
+    <section id="chat" class="chat" aria-live="polite">
+      <div class="msg assistant">話しかけてください。「Googleを開きたい」のような操作案内では、現在のデスクトップを確認して実画面上に矢印を表示します。</div>
+    </section>
+    <div id="status" class="status"></div>
+    <div class="note">矢印ウィンドウはクリックを奪わないため、そのまま下のアプリを操作できます。</div>
+    <form id="form" class="composer">
+      <textarea id="input" rows="1" aria-label="メッセージ" placeholder="メッセージを入力"></textarea>
+      <button id="send" type="submit">送信</button>
+    </form>
+  </main>
+  <script src="renderer.js"></script>
+</body>
+</html>
