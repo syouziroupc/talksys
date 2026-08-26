@@ -32,6 +32,8 @@ jobs:
           fs.writeFileSync('/tmp/talksys-browser.js', browserScript[1]);
           NODE
           node --check /tmp/talksys-browser.js
+      - name: Run Worker API tests
+        run: npm test
       - name: Install screenshot fonts
         run: |
           sudo apt-get update -qq
