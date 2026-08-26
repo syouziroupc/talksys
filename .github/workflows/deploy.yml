@@ -16,6 +16,10 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: Check JavaScript syntax
         run: node --check src/index.js
+      - name: Install screenshot fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-noto-cjk fonts-noto-color-emoji
       - name: Render UI screenshots
         run: |
           node <<'NODE'
@@ -33,7 +37,7 @@ jobs:
           path: |
             desktop.png
             mobile.png
-      - uses: cloudflare/wrangler-action@v3
+      - uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
