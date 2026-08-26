@@ -15,19 +15,37 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - name: Check JavaScript syntax
-        run: node --check src/index.js
+        run: |
+          node --check src/index.js
+          node <<'NODE'
+          const fs = require('fs');
+          const source = fs.readFileSync('src/index.js', 'utf8');
+          const match = source.match(/const HTML = `([\s\S]*?)`;\n\nfunction json/);
+          if (!match) throw new Error('HTML template not found');
+          const browserScript = match[1].match(/<script>([\s\S]*?)<\/script>/);
+          if (!browserScript) throw new Error('Browser script not found');
+          fs.writeFileSync('/tmp/talksys-browser.js', browserScript[1]);
+          NODE
+          node --check /tmp/talksys-browser.js
       - name: Install screenshot fonts
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq fonts-noto-cjk fonts-noto-color-emoji
-      - name: Render UI screenshots
+      - name: Render expanded UI screenshots
         run: |
           node <<'NODE'
           const fs = require('fs');
           const source = fs.readFileSync('src/index.js', 'utf8');
           const match = source.match(/const HTML = `([\s\S]*?)`;\n\nfunction json/);
           if (!match) throw new Error('HTML template not found');
-          fs.writeFileSync('/tmp/talksys.html', match[1]);
+          let html = match[1];
+          html = html
+            .replace('id="screenPanel" class="screen" hidden', 'id="screenPanel" class="screen"')
+            .replace('<video id="screenVideo" autoplay playsinline muted></video>', '<div style="aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;background:#e4e4e7;color:#52525b;font-size:22px;line-height:1.4">デスクトップ共有プレビュー</div>')
+            .replace('<svg id="overlay" class="overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"></svg>', '<svg class="overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="debugArrow" markerWidth="16" markerHeight="16" refX="12" refY="6" orient="auto"><path d="M0,0 L0,12 L14,6 z" fill="#ff3b30"/></marker></defs><line x1="720" y1="430" x2="555" y2="535" stroke="#ff3b30" stroke-width="16" stroke-linecap="round" marker-end="url(#debugArrow)"/><circle cx="555" cy="535" r="34" fill="none" stroke="#ff3b30" stroke-width="13"/></svg>')
+            .replace('画面共有を開始してください。', '共有中。対象を矢印で案内します。')
+            .replace('<div id="targetNote" class="target-note"></div>', '<div class="target-note">→ Google Chrome アイコン（表示例）</div>');
+          fs.writeFileSync('/tmp/talksys.html', html);
           NODE
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1280,900 --screenshot=desktop.png file:///tmp/talksys.html
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot=mobile.png file:///tmp/talksys.html
