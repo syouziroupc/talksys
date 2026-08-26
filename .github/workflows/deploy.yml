@@ -17,6 +17,11 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           node --check src/index.js
+          node --check desktop/main.cjs
+          node --check desktop/preload.cjs
+          node --check desktop/overlay-preload.cjs
+          node --check desktop/renderer.js
+          node --check desktop/overlay.js
           node <<'NODE'
           const fs = require('fs');
           const source = fs.readFileSync('src/index.js', 'utf8');
@@ -31,7 +36,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq fonts-noto-cjk fonts-noto-color-emoji
-      - name: Render expanded UI screenshots
+      - name: Render Web UI screenshots
         run: |
           node <<'NODE'
           const fs = require('fs');
@@ -47,14 +52,25 @@ jobs:
             .replace('<div id="targetNote" class="target-note"></div>', '<div class="target-note">→ Google Chrome アイコン（表示例）</div>');
           fs.writeFileSync('/tmp/talksys.html', html);
           NODE
-          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1280,900 --screenshot=desktop.png file:///tmp/talksys.html
-          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot=mobile.png file:///tmp/talksys.html
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1280,900 --screenshot=web-desktop.png file:///tmp/talksys.html
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot=web-mobile.png file:///tmp/talksys.html
+      - name: Render Desktop Companion screenshots
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const html = fs.readFileSync('desktop/index.html', 'utf8').replace('<script src="renderer.js"></script>', '');
+          fs.writeFileSync('/tmp/talksys-desktop.html', html);
+          NODE
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=520,760 --screenshot=desktop-control.png file:///tmp/talksys-desktop.html
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1280,720 --screenshot=desktop-overlay.png "file://${GITHUB_WORKSPACE}/desktop/overlay.html?debug=1"
       - uses: actions/upload-artifact@v4
         with:
           name: ui-screenshots
           path: |
-            desktop.png
-            mobile.png
+            web-desktop.png
+            web-mobile.png
+            desktop-control.png
+            desktop-overlay.png
       - uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
