@@ -5,6 +5,8 @@ const { writeFile } = require('node:fs/promises');
 const DEFAULT_API_BASE = process.env.TALKSYS_API_BASE || 'http://127.0.0.1:8787';
 let mainWindow = null;
 let overlayWindow = null;
+let overlayReady = false;
+let pendingArrow = null;
 
 function normalizeApiBase(value) {
   const url = new URL(String(value || DEFAULT_API_BASE).trim());
@@ -50,10 +52,24 @@ function createMainWindow() {
   });
   mainWindow.removeMenu();
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy();
+    overlayWindow = null;
+    overlayReady = false;
+    pendingArrow = null;
+    if (process.platform !== 'darwin') app.quit();
+  });
+}
+
+function sendPendingArrow() {
+  if (!overlayReady || !pendingArrow || !overlayWindow || overlayWindow.isDestroyed()) return;
+  overlayWindow.webContents.send('overlay:show', pendingArrow);
 }
 
 function createOverlayWindow() {
   const display = screen.getPrimaryDisplay();
+  overlayReady = false;
   overlayWindow = new BrowserWindow({
     x: display.bounds.x,
     y: display.bounds.y,
@@ -79,6 +95,14 @@ function createOverlayWindow() {
   });
   overlayWindow.setIgnoreMouseEvents(true, { forward: true });
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+  overlayWindow.webContents.once('did-finish-load', () => {
+    overlayReady = true;
+    sendPendingArrow();
+  });
+  overlayWindow.on('closed', () => {
+    overlayWindow = null;
+    overlayReady = false;
+  });
   overlayWindow.loadFile(path.join(__dirname, 'overlay.html'));
 }
 
@@ -110,9 +134,10 @@ async function capturePrimary(maxWidth = 1024, maxHeight = 720) {
     });
     const source = sources.find((item) => item.display_id === String(display.id)) || sources[0];
     if (!source || source.thumbnail.isEmpty()) throw new Error('デスクトップ画像を取得できませんでした');
+    const jpeg = source.thumbnail.toJPEG(76);
     return {
       display,
-      dataUrl: source.thumbnail.toDataURL(),
+      dataUrl: `data:image/jpeg;base64,${jpeg.toString('base64')}`,
       png: source.thumbnail.toPNG(),
     };
   } finally {
@@ -125,17 +150,19 @@ function showArrow(target, display) {
   const bounds = (display || screen.getPrimaryDisplay()).bounds;
   overlayWindow.setBounds(bounds, false);
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
-  overlayWindow.webContents.send('overlay:show', {
+  pendingArrow = {
     x: Math.max(0, Math.min(1000, Number(target.x) || 0)),
     y: Math.max(0, Math.min(1000, Number(target.y) || 0)),
     label: String(target.label || 'ここです').slice(0, 120),
-  });
+  };
+  sendPendingArrow();
   overlayWindow.showInactive();
 }
 
 function clearArrow() {
+  pendingArrow = null;
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  overlayWindow.webContents.send('overlay:clear');
+  if (overlayReady) overlayWindow.webContents.send('overlay:clear');
   overlayWindow.hide();
 }
 
@@ -163,11 +190,7 @@ ipcMain.handle('overlay:clear', () => {
 
 ipcMain.handle('capture:save', async () => {
   const display = screen.getPrimaryDisplay();
-  const scaleFactor = Math.max(1, Number(display.scaleFactor) || 1);
-  const frame = await capturePrimary(
-    Math.round(display.bounds.width * scaleFactor),
-    Math.round(display.bounds.height * scaleFactor),
-  );
+  const frame = await capturePrimary(display.bounds.width, display.bounds.height);
   const result = await dialog.showSaveDialog(mainWindow, {
     title: 'デスクトップキャプチャーを保存',
     defaultPath: `talksys-screen-${new Date().toISOString().replace(/[:.]/g, '-')}.png`,
@@ -184,15 +207,12 @@ app.whenReady().then(() => {
 
   screen.on('display-metrics-changed', () => {
     if (!overlayWindow || overlayWindow.isDestroyed()) return;
-    const bounds = screen.getPrimaryDisplay().bounds;
-    overlayWindow.setBounds(bounds, false);
+    overlayWindow.setBounds(screen.getPrimaryDisplay().bounds, false);
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow();
-      createOverlayWindow();
-    }
+    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+    if (!overlayWindow || overlayWindow.isDestroyed()) createOverlayWindow();
   });
 });
 
