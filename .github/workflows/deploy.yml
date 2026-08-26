@@ -14,6 +14,25 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
+      - name: Check JavaScript syntax
+        run: node --check src/index.js
+      - name: Render UI screenshots
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const source = fs.readFileSync('src/index.js', 'utf8');
+          const match = source.match(/const HTML = `([\s\S]*?)`;\n\nfunction json/);
+          if (!match) throw new Error('HTML template not found');
+          fs.writeFileSync('/tmp/talksys.html', match[1]);
+          NODE
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1280,900 --screenshot=desktop.png file:///tmp/talksys.html
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot=mobile.png file:///tmp/talksys.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: |
+            desktop.png
+            mobile.png
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
