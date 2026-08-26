@@ -1,0 +1,13 @@
+{
+  "name": "talksys-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.cjs && node --check preload.cjs && node --check overlay-preload.cjs && node --check renderer.js && node --check overlay.js"
+  },
+  "devDependencies": {
+    "electron": "44.0.0"
+  }
+}
