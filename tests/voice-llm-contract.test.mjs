@@ -22,9 +22,15 @@ test('ordinary conversation skips the screen-decision model call', () => {
   assert.match(source, /if\s*\(mightNeedScreen\(transcript\)\)/);
 });
 
-test('voice health exposes direct-binding no-thinking transport', () => {
+test('voice mirrors finalized assistant text in complete transcript format', () => {
+  assert.match(source, /type:\s*'transcript'/);
+  assert.match(source, /role:\s*'assistant'/);
+  assert.match(source, /text:\s*reply/);
+  assert.match(source, /assistantTranscriptCompat:\s*true/);
+});
+
+test('voice health exposes direct-binding v5 transport', () => {
   assert.match(source, /llmTransport:\s*'env\.AI\.run'/);
-  assert.match(source, /llmStreaming:\s*false/);
   assert.match(source, /llmThinking:\s*false/);
-  assert.match(source, /VOICE_REVISION\s*=\s*'direct-binding-v4'/);
+  assert.match(source, /VOICE_REVISION\s*=\s*'direct-binding-v5'/);
 });
