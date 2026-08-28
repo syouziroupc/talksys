@@ -3,6 +3,13 @@ const COMMIT_MARKER = new Uint8Array([0x54,0x53,0x59,0x53,0x01,0x45,0x4e,0x44]);
 
 export const TURN_START_MARKER = START_MARKER;
 export const TURN_COMMIT_MARKER = COMMIT_MARKER;
+export const FINAL_STT_MODEL = '@cf/openai/whisper-large-v3-turbo';
+
+const DEFAULT_INITIAL_PROMPT = [
+  '自然な日本語の日常会話を正確に文字起こしする。',
+  '固有名詞や技術用語を勝手に一般語へ置き換えない。',
+  'TalkSys, Cloudflare, Workers, GitHub, OpenAI, Gemini, Windows, Android, iPhone, Linux, CPU, GPU, Wi-Fi, HIFU, EMS, API, WebSocket, STT, TTS',
+].join(' ');
 
 function matchesMarker(buffer, marker) {
   if (!(buffer instanceof ArrayBuffer) || buffer.byteLength !== marker.byteLength) return false;
@@ -51,12 +58,22 @@ function makeWav(frames, sampleRate) {
   return wav;
 }
 
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(bytes.length, i + chunk)));
+  }
+  return btoa(binary);
+}
+
 function extractBatchTranscript(result) {
   return String(
+    result?.text ||
+    result?.transcription_info?.text ||
     result?.results?.channels?.[0]?.alternatives?.[0]?.transcript ||
     result?.channel?.alternatives?.[0]?.transcript ||
     result?.transcript ||
-    result?.text ||
     '',
   ).trim();
 }
@@ -67,21 +84,21 @@ export class FinalizableNova3STT {
     this.options = {
       language: options.language || 'ja',
       sampleRate: options.sampleRate ?? 16000,
-      smartFormat: options.smartFormat ?? true,
-      punctuate: options.punctuate ?? true,
       serverSilenceFallbackMs: options.serverSilenceFallbackMs ?? 1400,
       maxTurnMs: options.maxTurnMs ?? 30000,
       preRollFrames: options.preRollFrames ?? 6,
       minSpeechMs: options.minSpeechMs ?? 160,
+      initialPrompt: options.initialPrompt || DEFAULT_INITIAL_PROMPT,
+      beamSize: options.beamSize ?? 5,
     };
   }
 
   createSession(callbacks = {}) {
-    return new BufferedNova3Session(this.ai, this.options, callbacks);
+    return new BufferedHighAccuracySession(this.ai, this.options, callbacks);
   }
 }
 
-class BufferedNova3Session {
+class BufferedHighAccuracySession {
   constructor(ai, config, callbacks) {
     this.ai = ai;
     this.config = config;
@@ -193,15 +210,20 @@ class BufferedNova3Session {
   async transcribeTurn(frames, reason) {
     if (this.closed) return;
     const wav = makeWav(frames, this.config.sampleRate);
+    const audio = bytesToBase64(wav);
     let lastError;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const body = new Response(wav).body;
-        const result = await this.ai.run('@cf/deepgram/nova-3', {
-          audio: { body, contentType: 'audio/wav' },
+        const result = await this.ai.run(FINAL_STT_MODEL, {
+          audio,
+          task: 'transcribe',
           language: this.config.language,
-          smart_format: this.config.smartFormat,
-          punctuate: this.config.punctuate,
+          vad_filter: true,
+          initial_prompt: this.config.initialPrompt,
+          beam_size: this.config.beamSize,
+          condition_on_previous_text: false,
+          no_speech_threshold: 0.5,
+          hallucination_silence_threshold: 1.0,
         });
         if (this.closed) return;
         const transcript = extractBatchTranscript(result);
@@ -209,12 +231,12 @@ class BufferedNova3Session {
           this.callbacks.onUtterance?.(transcript);
           return;
         }
-        lastError = new Error(`Nova-3 returned an empty transcript (${reason})`);
+        lastError = new Error(`Whisper large v3 turbo returned an empty transcript (${reason})`);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
       }
     }
-    if (!this.closed) this.callbacks.onFatalError?.(lastError || new Error('Nova-3 turn transcription failed'));
+    if (!this.closed) this.callbacks.onFatalError?.(lastError || new Error('High-accuracy Japanese transcription failed'));
   }
 
   close() {
