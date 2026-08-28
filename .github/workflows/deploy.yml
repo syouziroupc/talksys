@@ -21,10 +21,12 @@ jobs:
         run: |
           node --check src/index.js
           node --check src/worker.js
+          node --check src/realtime-voice-client.js
           node --check desktop/main.cjs
           node --check desktop/preload.cjs
           node --check desktop/overlay-preload.cjs
           node --check desktop/renderer.js
+          node --check desktop/realtime-voice.js
           node --check desktop/overlay.js
           node <<'NODE'
           const fs = require('fs');
@@ -38,6 +40,8 @@ jobs:
           node --check /tmp/talksys-browser.js
       - name: Run Worker API tests
         run: npm test
+      - name: Check Wrangler bundle
+        run: npx wrangler deploy --dry-run
       - name: Install screenshot fonts
         run: |
           sudo apt-get update -qq
@@ -64,7 +68,9 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require('fs');
-          const html = fs.readFileSync('desktop/index.html', 'utf8').replace('<script src="renderer.js"></script>', '');
+          const html = fs.readFileSync('desktop/index.html', 'utf8')
+            .replace('<script src="renderer.js"></script>', '')
+            .replace('<script src="realtime-voice.js"></script>', '');
           fs.writeFileSync('/tmp/talksys-desktop.html', html);
           NODE
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=520,760 --screenshot=desktop-control.png file:///tmp/talksys-desktop.html
