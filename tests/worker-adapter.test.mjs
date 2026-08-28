@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractText, wrapAI, TEXT_MODEL, VISION_MODEL } from '../src/worker.js';
+import {
+  extractText,
+  wrapAI,
+  cleanSpeechText,
+  parseScreenDecision,
+  MeloJapaneseTTS,
+  TEXT_MODEL,
+  VISION_MODEL,
+  JAPANESE_TTS_MODEL,
+} from '../src/worker.js';
 
 test('extractText supports OpenAI-compatible choices', () => {
   assert.equal(extractText({ choices: [{ message: { content: '  こんにちは  ' } }] }), 'こんにちは');
@@ -38,4 +47,37 @@ test('vision requests are routed to current UI-capable model in non-thinking JSO
   assert.equal(seen.input.chat_template_kwargs.enable_thinking, false);
   assert.ok(seen.input.max_tokens >= 512);
   assert.match(result.response, /"found":false/);
+});
+
+test('screen decision parser accepts only explicit inspect true', () => {
+  assert.deepEqual(
+    parseScreenDecision('prefix {"inspect":true,"query":"保存ボタン"} suffix'),
+    { inspect: true, query: '保存ボタン' },
+  );
+  assert.deepEqual(parseScreenDecision('{"inspect":"true","query":"x"}'), { inspect: false, query: 'x' });
+  assert.deepEqual(parseScreenDecision('not json'), { inspect: false, query: '' });
+});
+
+test('speech cleaner removes visual-only markup and raw urls', () => {
+  const cleaned = cleanSpeechText('**確認** https://example.com を見てください。');
+  assert.equal(cleaned, '確認 リンク を見てください。');
+});
+
+test('Japanese TTS uses MeloTTS with JP language and returns audio bytes', async () => {
+  let seen;
+  const tts = new MeloJapaneseTTS({
+    async run(model, input, options) {
+      seen = { model, input, options };
+      return new Response(new Uint8Array([1, 2, 3, 4]), {
+        status: 200,
+        headers: { 'content-type': 'audio/mpeg' },
+      });
+    },
+  });
+  const audio = await tts.synthesize('こんにちは。');
+  assert.equal(seen.model, JAPANESE_TTS_MODEL);
+  assert.equal(seen.input.lang, 'JP');
+  assert.equal(seen.input.prompt, 'こんにちは。');
+  assert.equal(seen.options.returnRawResponse, true);
+  assert.equal(audio.byteLength, 4);
 });
