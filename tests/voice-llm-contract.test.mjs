@@ -6,6 +6,8 @@ const source = await readFile(new URL('../src/worker.js', import.meta.url), 'utf
 const realtime = await readFile(new URL('../src/realtime-voice-client.js', import.meta.url), 'utf8');
 const fallback = await readFile(new URL('../src/voice-fallback-client.js', import.meta.url), 'utf8');
 const streaming = await readFile(new URL('../src/streaming-workers-ai.js', import.meta.url), 'utf8');
+const stt = await readFile(new URL('../src/finalizable-nova3.js', import.meta.url), 'utf8');
+const reranker = await readFile(new URL('../src/search-rerank.js', import.meta.url), 'utf8');
 
 test('voice uses one unified Qwen 3.8 27B runtime model', () => {
   assert.match(streaming, /LIVE_VOICE_MODEL\s*=\s*'@cf\/qwen\/qwen3\.8-27b'/);
@@ -14,17 +16,36 @@ test('voice uses one unified Qwen 3.8 27B runtime model', () => {
   assert.match(streaming, /enable_thinking:\s*false/);
 });
 
+test('final Japanese transcription uses Whisper large v3 turbo accuracy settings', () => {
+  assert.match(stt, /FINAL_STT_MODEL\s*=\s*'@cf\/openai\/whisper-large-v3-turbo'/);
+  assert.match(stt, /language:\s*this\.config\.language/);
+  assert.match(stt, /vad_filter:\s*true/);
+  assert.match(stt, /beam_size:\s*this\.config\.beamSize/);
+  assert.match(stt, /condition_on_previous_text:\s*false/);
+  assert.match(stt, /initial_prompt:\s*this\.config\.initialPrompt/);
+  assert.match(source, /sttModel:\s*FINAL_STT_MODEL/);
+});
+
 test('casual path allows useful 2 to 4 sentence replies', () => {
   assert.match(source, /原則2〜4文/);
-  assert.match(source, /max_tokens:\s*220/);
+  assert.match(source, /max_tokens:\s*240/);
   assert.match(source, /casualResponseSentences:\s*'2-4'/);
 });
 
-test('grounded questions still search but do not switch to another runtime model', () => {
+test('grounded questions search, rerank, and keep the same runtime model', () => {
   assert.match(source, /function\s+groundedChatInput/);
-  assert.match(source, /max_tokens:\s*420/);
+  assert.match(source, /max_tokens:\s*440/);
   assert.match(source, /const\s+searchIntent\s*=\s*!screenIntent\s*&&\s*needsWebSearch\(transcript\)/);
-  assert.match(source, /streamWorkersAIText\(this\.env\.AI,\s*model,\s*input/);
+  assert.match(source, /rerankSearchResults\(this\.env\.AI,\s*transcript,\s*rawResults,\s*5\)/);
+  assert.match(source, /streamWorkersAIText\(this\.env\.AI,\s*LIVE_VOICE_MODEL,\s*input/);
+  assert.match(reranker, /@cf\/baai\/bge-reranker-base/);
+});
+
+test('search announces a short spoken wait phrase before retrieval', () => {
+  assert.match(source, /function\s+announceSearchWait/);
+  assert.match(source, /ちょっと調べますね。/);
+  assert.match(source, /transient:\s*true/);
+  assert.match(source, /searchWaitSpeech:\s*true/);
 });
 
 test('LLM response is streamed into early speech chunks', () => {
@@ -44,7 +65,8 @@ test('typed chat is routed to the same voice agent instance', () => {
 });
 
 test('grounded prompt forbids unsupported external and screen claims', () => {
-  assert.match(source, /検索結果にない固有名詞、数値、日付、仕様を勝手に補完しない/);
+  assert.match(source, /モデルの記憶で固有名詞、数値、日付、仕様を補完しない/);
+  assert.match(source, /検索結果が1件しかない場合や結果同士が食い違う場合/);
   assert.match(source, /実際に行っていないPC操作/);
   assert.match(source, /現在画面を断定できるのは/);
 });
@@ -78,9 +100,9 @@ test('voice mirrors finalized assistant text in complete transcript format', () 
   assert.match(source, /text:\s*reply/);
 });
 
-test('voice health exposes live stream v11 and Gemini Live upgrade path', () => {
-  assert.match(source, /VOICE_REVISION\s*=\s*'live-stream-v11'/);
+test('voice health exposes accurate grounded v12', () => {
+  assert.match(source, /VOICE_REVISION\s*=\s*'accurate-grounded-v12'/);
   assert.match(source, /webSearchPolicy:\s*'knowledge-questions-default-search'/);
+  assert.match(source, /searchReranker:\s*SEARCH_RERANK_MODEL/);
   assert.match(source, /geminiLivePreferredWhenConfigured:\s*true/);
-  assert.match(source, /api\/gemini-live-token/);
 });
