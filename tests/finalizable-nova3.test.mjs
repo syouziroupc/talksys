@@ -27,10 +27,18 @@ function pcmFrame(amplitude, samples = 800) {
   return data.buffer;
 }
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 test('server VAD sends Deepgram Finalize after speech followed by silence', async () => {
   const ws = new FakeWebSocket();
   const ai = { async run() { return { webSocket: ws }; } };
-  const stt = new FinalizableNova3STT(ai, { sampleRate: 16000, forceFinalizeSilenceMs: 650 });
+  const stt = new FinalizableNova3STT(ai, {
+    sampleRate: 16000,
+    forceFinalizeSilenceMs: 650,
+    explicitCommitGraceMs: 50,
+  });
   const session = stt.createSession({});
   await session.waitUntilReady();
 
@@ -58,4 +66,49 @@ test('Finalize result is emitted as a complete utterance even without speech_fin
   }));
 
   assert.equal(utterance, '発言の確定テストです');
+});
+
+test('explicit forceFinalize commits latest interim even when Deepgram never returns from_finalize', async () => {
+  const ws = new FakeWebSocket();
+  const ai = { async run() { return { webSocket: ws }; } };
+  let utterance = '';
+  const stt = new FinalizableNova3STT(ai, {
+    explicitCommitGraceMs: 20,
+    explicitCommitMaxWaitMs: 80,
+  });
+  const session = stt.createSession({ onUtterance: (text) => { utterance = text; } });
+  await session.waitUntilReady();
+
+  ws.emit('message', JSON.stringify({
+    type: 'Results',
+    is_final: false,
+    speech_final: false,
+    from_finalize: false,
+    channel: { alternatives: [{ transcript: '今日は何をしようか' }] },
+  }));
+
+  assert.equal(stt.forceFinalize('client_end'), true);
+  assert.ok(ws.sent.some((item) => typeof item === 'string' && JSON.parse(item).type === 'Finalize'));
+  await wait(35);
+  assert.equal(utterance, '今日は何をしようか');
+});
+
+test('explicit forceFinalize commits an is_final result without waiting for speech_final', async () => {
+  const ws = new FakeWebSocket();
+  const ai = { async run() { return { webSocket: ws }; } };
+  let utterance = '';
+  const stt = new FinalizableNova3STT(ai, { explicitCommitGraceMs: 100 });
+  const session = stt.createSession({ onUtterance: (text) => { utterance = text; } });
+  await session.waitUntilReady();
+
+  stt.forceFinalize('client_end');
+  ws.emit('message', JSON.stringify({
+    type: 'Results',
+    is_final: true,
+    speech_final: false,
+    from_finalize: false,
+    channel: { alternatives: [{ transcript: '確定します' }] },
+  }));
+
+  assert.equal(utterance, '確定します');
 });
