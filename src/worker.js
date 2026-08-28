@@ -39,12 +39,23 @@ function extractText(value, depth = 0) {
 function wrapAI(ai) {
   return {
     async run(model, input) {
+      const isVision = model === LEGACY_VISION_MODEL;
       const targetModel = model === LEGACY_TEXT_MODEL
         ? TEXT_MODEL
-        : model === LEGACY_VISION_MODEL
+        : isVision
           ? VISION_MODEL
           : model;
-      const result = await ai.run(targetModel, input);
+      const targetInput = isVision
+        ? {
+            ...input,
+            max_tokens: Math.max(512, Number(input?.max_tokens) || 0),
+            chat_template_kwargs: {
+              ...(input?.chat_template_kwargs || {}),
+              enable_thinking: false,
+            },
+          }
+        : input;
+      const result = await ai.run(targetModel, targetInput);
       const response = extractText(result);
       return response ? { ...result, response } : result;
     },
