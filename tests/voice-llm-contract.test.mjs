@@ -4,17 +4,19 @@ import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../src/worker.js', import.meta.url), 'utf8');
 
-test('voice onTurn uses the AI SDK 7 instructions field', () => {
-  assert.match(source, /instructions:\s*VOICE_SYSTEM_PROMPT/);
-  assert.doesNotMatch(source, /\bsystem:\s*VOICE_SYSTEM_PROMPT/);
+test('voice onTurn uses the direct Workers AI binding', () => {
+  assert.match(source, /await\s+this\.env\.AI\.run\(TEXT_MODEL/);
+  assert.doesNotMatch(source, /createWorkersAI/);
+  assert.doesNotMatch(source, /streamText\(/);
 });
 
-test('voice onTurn returns the Cloudflare Voice-supported result.stream', () => {
-  assert.match(source, /return\s+result\.stream\s*;/);
-  assert.doesNotMatch(source, /return\s+result\.fullStream\s*;/);
+test('voice onTurn returns a non-empty cleaned string', () => {
+  assert.match(source, /cleanSpeechText\(extractText\(result\)\)/);
+  assert.match(source, /return\s+reply\s*;/);
 });
 
-test('voice health exposes the deployed LLM stream contract', () => {
-  assert.match(source, /llmStream:\s*'result\.stream'/);
-  assert.match(source, /aiSdkContract:\s*7/);
+test('voice health exposes direct-binding transport', () => {
+  assert.match(source, /llmTransport:\s*'env\.AI\.run'/);
+  assert.match(source, /llmStreaming:\s*false/);
+  assert.match(source, /VOICE_REVISION\s*=\s*'direct-binding-v3'/);
 });
