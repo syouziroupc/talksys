@@ -1,7 +1,5 @@
 import { Agent, routeAgentRequest } from 'agents';
 import { withVoice } from '@cloudflare/voice';
-import { streamText } from 'ai';
-import { createWorkersAI } from 'workers-ai-provider';
 import app from './index.js';
 import { REALTIME_VOICE_CLIENT } from './realtime-voice-client.js';
 import { VOICE_MARKER_BRIDGE } from './voice-marker-bridge.js';
@@ -15,7 +13,7 @@ import {
   wrapAI,
 } from './voice-helpers.js';
 
-const VOICE_REVISION = 'buffered-binary-v2';
+const VOICE_REVISION = 'direct-binding-v3';
 
 const VOICE_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声アシスタントです。電話で人と会話しているように、短く、自然に、テンポよく話してください。
 - 原則1〜3文で答える。長い説明は求められた時だけ行う。
@@ -162,23 +160,24 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       screenContext = '';
     }
 
-    const workersAI = createWorkersAI({ binding: this.env.AI });
     const userContent = screenContext
       ? `${transcript}\n\n[システムが取得した現在画面の情報]\n${screenContext}`
       : transcript;
-    const result = streamText({
-      model: workersAI(TEXT_MODEL, { sessionAffinity: this.sessionAffinity }),
-      instructions: VOICE_SYSTEM_PROMPT,
+    const result = await this.env.AI.run(TEXT_MODEL, {
       messages: [
+        { role: 'system', content: VOICE_SYSTEM_PROMPT },
         ...context.messages.map((message) => ({
           role: message.role,
           content: message.content,
         })),
         { role: 'user', content: userContent },
       ],
-      abortSignal: context.signal,
+      max_tokens: 220,
+      temperature: 0.35,
     });
-    return result.stream;
+    const reply = cleanSpeechText(extractText(result));
+    if (!reply) throw new Error('Voice LLM returned an empty response');
+    return reply;
   }
 }
 
@@ -237,8 +236,8 @@ export default {
         batchFinalStt: true,
         sttModel: '@cf/deepgram/nova-3',
         sttLanguage: 'ja',
-        llmStream: 'result.stream',
-        aiSdkContract: 7,
+        llmTransport: 'env.AI.run',
+        llmStreaming: false,
         bargeIn: true,
         aiScreenDecision: true,
         japaneseTts: true,
