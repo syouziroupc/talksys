@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "talksys",
-  "main": "src/index.js",
+  "main": "src/worker.js",
   "compatibility_date": "2026-08-26",
   "ai": {
     "binding": "AI"
