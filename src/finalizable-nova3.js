@@ -96,7 +96,6 @@ class BufferedNova3Session {
     this.currentFrames = [];
     this.currentDurationMs = 0;
     this.processing = Promise.resolve();
-    this.turnSequence = 0;
     this.ready = Promise.resolve();
   }
 
@@ -185,14 +184,13 @@ class BufferedNova3Session {
     this.preRoll = [];
 
     if (!frames.length || durationMs < this.config.minSpeechMs) return false;
-    const turnId = ++this.turnSequence;
     this.processing = this.processing
       .catch(() => {})
-      .then(() => this.transcribeTurn(frames, turnId, reason));
+      .then(() => this.transcribeTurn(frames, reason));
     return true;
   }
 
-  async transcribeTurn(frames, turnId, reason) {
+  async transcribeTurn(frames, reason) {
     if (this.closed) return;
     const wav = makeWav(frames, this.config.sampleRate);
     let lastError;
@@ -205,7 +203,7 @@ class BufferedNova3Session {
           smart_format: this.config.smartFormat,
           punctuate: this.config.punctuate,
         });
-        if (this.closed || turnId !== this.turnSequence) return;
+        if (this.closed) return;
         const transcript = extractBatchTranscript(result);
         if (transcript) {
           this.callbacks.onUtterance?.(transcript);
