@@ -1,7 +1,7 @@
 import { routeAgentRequest } from 'agents';
 import app from './index.js';
 import legacyWorker, { TalkSysVoiceAgent as LegacyTalkSysVoiceAgent } from './worker.js';
-import { GEMINI_LIVE_CLIENT } from './gemini-live-client.js';
+import { GEMINI_LIVE_PRIMARY } from './gemini-live-primary.js';
 import { VOICE_MARKER_BRIDGE } from './voice-marker-bridge.js';
 import { REALTIME_VOICE_CLIENT } from './realtime-voice-client.js';
 import { VOICE_FALLBACK_CLIENT } from './voice-fallback-client.js';
@@ -47,6 +47,13 @@ async function mintGeminiLiveToken(env) {
       uses: 1,
       expireTime,
       newSessionExpireTime,
+      liveConnectConstraints: {
+        model: GEMINI_LIVE_MODEL,
+        config: {
+          responseModalities: ['AUDIO'],
+          sessionResumption: {},
+        },
+      },
     }),
   });
 
@@ -94,7 +101,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    if (url.pathname === '/gemini-live.js') return serveScript(GEMINI_LIVE_CLIENT);
+    if (url.pathname === '/gemini-live.js') return serveScript(GEMINI_LIVE_PRIMARY);
 
     // Legacy files are intentionally not loaded by the page. The Gemini client
     // fetches them only when token provisioning is unavailable or repeatedly
@@ -116,16 +123,19 @@ export default {
         geminiLiveModel: GEMINI_LIVE_MODEL,
         clientToServer: true,
         ephemeralTokens: true,
+        constrainedEphemeralTokens: true,
         nativeAudioInput: 'pcm16-16khz',
         nativeAudioOutput: 'pcm16-24khz',
         inputAudioTranscription: true,
         outputAudioTranscription: true,
         japaneseSpeechLanguage: 'ja-JP',
+        hybridVad: true,
         googleSearchGrounding: true,
         screenFunctionCalling: true,
         sessionResumption: true,
         contextWindowCompression: true,
         bargeIn: true,
+        typedChatTransport: 'realtimeInput.text',
         typedChatSharesLiveSession: true,
         legacyCloudflareVoiceFallback: true,
       });
