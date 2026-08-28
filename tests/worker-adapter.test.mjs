@@ -9,7 +9,7 @@ import {
   TEXT_MODEL,
   VISION_MODEL,
   JAPANESE_TTS_MODEL,
-} from '../src/worker.js';
+} from '../src/voice-helpers.js';
 
 test('extractText supports OpenAI-compatible choices', () => {
   assert.equal(extractText({ choices: [{ message: { content: '  こんにちは  ' } }] }), 'こんにちは');
