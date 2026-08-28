@@ -6,28 +6,28 @@ const source = await readFile(new URL('../src/worker.js', import.meta.url), 'utf
 const realtime = await readFile(new URL('../src/realtime-voice-client.js', import.meta.url), 'utf8');
 const fallback = await readFile(new URL('../src/voice-fallback-client.js', import.meta.url), 'utf8');
 
-test('voice routes casual chat to Llama 3B and grounded facts to Qwen', () => {
-  assert.match(source, /CASUAL_VOICE_MODEL\s*=\s*'@cf\/meta\/llama-3\.2-3b-instruct'/);
-  assert.match(source, /GROUNDED_VOICE_MODEL\s*=\s*'@cf\/qwen\/qwen3\.8-27b'/);
+test('voice routes casual chat to GPT-OSS 20B and grounded facts to GPT-OSS 120B', () => {
+  assert.match(source, /CASUAL_VOICE_MODEL\s*=\s*'@cf\/openai\/gpt-oss-20b'/);
+  assert.match(source, /GROUNDED_VOICE_MODEL\s*=\s*'@cf\/openai\/gpt-oss-120b'/);
   assert.match(source, /await\s+this\.env\.AI\.run\(\s*CASUAL_VOICE_MODEL/);
   assert.match(source, /await\s+this\.env\.AI\.run\(\s*GROUNDED_VOICE_MODEL/);
 });
 
-test('casual path stays fast but allows useful 2 to 4 sentence replies', () => {
+test('casual path allows useful 2 to 4 sentence replies on 20B', () => {
   assert.match(source, /原則2〜4文/);
-  assert.match(source, /max_tokens:\s*180/);
-  assert.match(source, /casualPrompt:\s*'balanced-2-4-sentences'/);
+  assert.match(source, /max_tokens:\s*220/);
+  assert.match(source, /casualPrompt:\s*'gptoss20b-balanced-2-4-sentences'/);
   assert.match(source, /casualResponseSentences:\s*'2-4'/);
 });
 
-test('grounded calls explicitly disable reasoning', () => {
-  assert.match(source, /reasoning_effort:\s*null/);
-  assert.match(source, /enable_thinking:\s*false/);
-  assert.match(source, /clear_thinking:\s*true/);
+test('GPT-OSS grounded path uses documented messages/max_tokens style', () => {
+  assert.match(source, /function\s+groundedChatInput/);
+  assert.match(source, /max_tokens:\s*420/);
+  assert.match(source, /GROUNDED_VOICE_MODEL,[\s\S]*groundedChatInput/);
 });
 
 test('grounded prompt forbids unsupported external and screen claims', () => {
-  assert.match(source, /検索結果にない事実は補完しない/);
+  assert.match(source, /検索結果にない固有名詞、数値、日付、仕様を勝手に補完しない/);
   assert.match(source, /実際に行っていないPC操作/);
   assert.match(source, /現在画面を断定できるのは/);
 });
@@ -63,9 +63,10 @@ test('voice mirrors finalized assistant text in complete transcript format', () 
   assert.match(source, /text:\s*reply/);
 });
 
-test('voice health exposes fast grounded v9 search and echo guard', () => {
-  assert.match(source, /VOICE_REVISION\s*=\s*'fast-grounded-v9'/);
+test('voice health exposes GPT-OSS v10 grounding and echo guard', () => {
+  assert.match(source, /VOICE_REVISION\s*=\s*'grounded-gptoss-v10'/);
   assert.match(source, /webSearch:\s*true/);
+  assert.match(source, /webSearchPolicy:\s*'knowledge-questions-default-search'/);
   assert.match(source, /webSearchEngine:\s*'wikipedia\+bing-html\+google-news'/);
   assert.match(source, /searchRelevanceFilter:\s*true/);
   assert.match(source, /ttsEchoGuardMs:\s*350/);
