@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FinalizableNova3STT,
+  FINAL_STT_MODEL,
   TURN_START_MARKER,
   TURN_COMMIT_MARKER,
 } from '../src/finalizable-nova3.js';
@@ -21,18 +22,14 @@ function wait(ms = 0) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-test('binary start/end markers produce a batch Nova-3 utterance', async () => {
+test('binary start/end markers produce a Whisper large v3 turbo utterance', async () => {
   let seenModel = '';
   let seenInput;
   const ai = {
     async run(model, input) {
       seenModel = model;
       seenInput = input;
-      return {
-        results: {
-          channels: [{ alternatives: [{ transcript: '今日は何をしようか' }] }],
-        },
-      };
+      return { text: '今日は何をしようか' };
     },
   };
   let utterance = '';
@@ -49,14 +46,20 @@ test('binary start/end markers produce a batch Nova-3 utterance', async () => {
   await wait(20);
 
   assert.equal(speechStarts, 1);
-  assert.equal(seenModel, '@cf/deepgram/nova-3');
+  assert.equal(FINAL_STT_MODEL, '@cf/openai/whisper-large-v3-turbo');
+  assert.equal(seenModel, FINAL_STT_MODEL);
   assert.equal(seenInput.language, 'ja');
-  assert.equal(seenInput.audio.contentType, 'audio/wav');
-  assert.ok(seenInput.audio.body instanceof ReadableStream);
+  assert.equal(seenInput.task, 'transcribe');
+  assert.equal(seenInput.vad_filter, true);
+  assert.equal(seenInput.condition_on_previous_text, false);
+  assert.equal(seenInput.beam_size, 5);
+  assert.match(seenInput.initial_prompt, /TalkSys/);
+  assert.equal(typeof seenInput.audio, 'string');
+  assert.ok(seenInput.audio.length > 50);
   assert.equal(utterance, '今日は何をしようか');
 });
 
-test('commit marker with no captured speech does not invoke Nova-3', async () => {
+test('commit marker with no captured speech does not invoke STT', async () => {
   let calls = 0;
   const stt = new FinalizableNova3STT({ async run() { calls += 1; return {}; } });
   const session = stt.createSession({});
@@ -71,11 +74,7 @@ test('server VAD remains as a fallback when explicit markers are unavailable', a
   const ai = {
     async run() {
       calls += 1;
-      return {
-        results: {
-          channels: [{ alternatives: [{ transcript: 'サーバー側でも確定' }] }],
-        },
-      };
+      return { text: 'サーバー側でも確定' };
     },
   };
   const stt = new FinalizableNova3STT(ai, {
@@ -100,11 +99,7 @@ test('batch STT retries once after a transient Workers AI failure', async () => 
     async run() {
       calls += 1;
       if (calls === 1) throw new Error('temporary');
-      return {
-        results: {
-          channels: [{ alternatives: [{ transcript: '再試行成功' }] }],
-        },
-      };
+      return { text: '再試行成功' };
     },
   };
   const stt = new FinalizableNova3STT(ai, { minSpeechMs: 100 });
