@@ -168,17 +168,24 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
 }
 
 async function serveVoiceSmoke(env) {
-  const audio = await new MeloJapaneseTTS(env.AI).synthesize('音声テストです。自然な日本語で応答しています。');
-  if (!audio || audio.byteLength < 100) {
-    return Response.json({ ok: false, error: 'tts_failed' }, { status: 500 });
+  try {
+    const audio = await new MeloJapaneseTTS(env.AI).synthesize('音声テストです。自然な日本語で応答しています。');
+    if (!audio || audio.byteLength < 100) {
+      return Response.json({ ok: false, error: 'tts_empty_audio' }, { status: 500 });
+    }
+    return new Response(audio, {
+      headers: {
+        'content-type': 'audio/mpeg',
+        'cache-control': 'no-store',
+        'x-talksys-voice': 'melotts-jp',
+      },
+    });
+  } catch (error) {
+    const message = String(error?.message || error || 'unknown_tts_error')
+      .replace(/[A-Za-z0-9_\-]{32,}/g, '[redacted]')
+      .slice(0, 500);
+    return Response.json({ ok: false, error: message }, { status: 500 });
   }
-  return new Response(audio, {
-    headers: {
-      'content-type': 'audio/mpeg',
-      'cache-control': 'no-store',
-      'x-talksys-voice': 'melotts-jp',
-    },
-  });
 }
 
 export default {
