@@ -63,21 +63,20 @@ test('speech cleaner removes visual-only markup and raw urls', () => {
   assert.equal(cleaned, '確認 リンク を見てください。');
 });
 
-test('Japanese TTS uses MeloTTS with JP language and returns audio bytes', async () => {
+test('Japanese TTS uses MeloTTS JP and decodes Workers AI base64 audio', async () => {
   let seen;
+  const expected = new Uint8Array([1, 2, 3, 4]);
+  const base64 = Buffer.from(expected).toString('base64');
   const tts = new MeloJapaneseTTS({
     async run(model, input, options) {
       seen = { model, input, options };
-      return new Response(new Uint8Array([1, 2, 3, 4]), {
-        status: 200,
-        headers: { 'content-type': 'audio/mpeg' },
-      });
+      return { audio: base64 };
     },
   });
   const audio = await tts.synthesize('こんにちは。');
   assert.equal(seen.model, JAPANESE_TTS_MODEL);
   assert.equal(seen.input.lang, 'JP');
   assert.equal(seen.input.prompt, 'こんにちは。');
-  assert.equal(seen.options.returnRawResponse, true);
-  assert.equal(audio.byteLength, 4);
+  assert.equal(seen.options, undefined);
+  assert.deepEqual(new Uint8Array(audio), expected);
 });
