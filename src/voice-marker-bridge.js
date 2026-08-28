@@ -5,6 +5,17 @@ export const VOICE_MARKER_BRIDGE = String.raw`(() => {
   const originalSend = WebSocket.prototype.send;
   if (WebSocket.prototype.__talksysTurnBridge) return;
   Object.defineProperty(WebSocket.prototype, '__talksysTurnBridge', { value: true });
+
+  function localThinking(socket) {
+    queueMicrotask(() => {
+      try {
+        socket.dispatchEvent(new MessageEvent('message', {
+          data: JSON.stringify({ type: 'status', status: 'thinking', local_turn_boundary: true })
+        }));
+      } catch {}
+    });
+  }
+
   WebSocket.prototype.send = function(data) {
     originalSend.call(this, data);
     if (typeof data !== 'string') return;
@@ -14,6 +25,7 @@ export const VOICE_MARKER_BRIDGE = String.raw`(() => {
       originalSend.call(this, START.buffer.slice(0));
     } else if (message?.type === 'utterance_commit') {
       originalSend.call(this, END.buffer.slice(0));
+      localThinking(this);
     }
   };
 })();
