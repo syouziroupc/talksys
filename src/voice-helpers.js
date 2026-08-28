@@ -89,6 +89,24 @@ export async function normalizeAudioResult(result) {
   return null;
 }
 
+function isTransientTtsError(error) {
+  const message = String(error?.message || error || '');
+  return /(?:3043|internal server error|out of capacity|temporar|timeout)/i.test(message);
+}
+
+function delay(ms, signal) {
+  if (signal?.aborted) return Promise.reject(signal.reason || new Error('aborted'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(signal.reason || new Error('aborted'));
+      }, { once: true });
+    }
+  });
+}
+
 export class MeloJapaneseTTS {
   constructor(ai) {
     this.ai = ai;
@@ -97,12 +115,25 @@ export class MeloJapaneseTTS {
   async synthesize(text, signal) {
     const spoken = cleanSpeechText(text);
     if (!spoken) return null;
-    const result = await this.ai.run(
-      JAPANESE_TTS_MODEL,
-      { prompt: spoken, lang: 'JP' },
-      signal ? { signal } : undefined,
-    );
-    return normalizeAudioResult(result);
+
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const result = await this.ai.run(
+          JAPANESE_TTS_MODEL,
+          { prompt: spoken, lang: 'JP' },
+          signal ? { signal } : undefined,
+        );
+        const audio = await normalizeAudioResult(result);
+        if (audio && audio.byteLength > 0) return audio;
+        lastError = new Error('MeloTTS returned empty audio');
+      } catch (error) {
+        lastError = error;
+        if (!isTransientTtsError(error) || attempt >= 2) throw error;
+      }
+      await delay(attempt === 0 ? 120 : 320, signal);
+    }
+    throw lastError || new Error('MeloTTS failed');
   }
 }
 
