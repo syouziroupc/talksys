@@ -15,13 +15,7 @@
     const voices = speechSynthesis.getVoices();
     const japanese = voices.filter((voice) => /^ja(?:-|_)/i.test(voice.lang || ''));
     if (!japanese.length) return null;
-    return japanese.find((voice) => /Google|Microsoft|Nanami|Keita|Kyoko|Otoya/i.test(voice.name || '')) || japanese[0];
-  }
-
-  function latestAssistantText() {
-    const nodes = chat.querySelectorAll('.msg.assistant');
-    if (!nodes.length) return '';
-    return String(nodes[nodes.length - 1].textContent || '').trim();
+    return japanese.find((voice) => /Google|Microsoft|Nanami|Keita|Kyoko|Otoya|Japanese/i.test(voice.name || '')) || japanese[0];
   }
 
   function isVoiceSessionActive() {
@@ -29,33 +23,41 @@
     return /通話中|接続中/.test(text) || voiceButton?.classList.contains('active');
   }
 
-  function speakFallback(text) {
-    const value = String(text || '').trim();
+  function speakJapanese(text) {
+    const value = String(text || '').replace(/https?:\/\/\S+/g, 'リンク').trim();
     if (!value || !isVoiceSessionActive()) return;
     const now = Date.now();
-    if (value === lastSpoken && now - lastSpokenAt < 12000) return;
+    if (value === lastSpoken && now - lastSpokenAt < 10000) return;
     lastSpoken = value;
     lastSpokenAt = now;
-
     speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(value);
     utterance.lang = 'ja-JP';
-    utterance.rate = 1.02;
+    utterance.rate = 1.04;
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
     const voice = pickJapaneseVoice();
     if (voice) utterance.voice = voice;
-    utterance.onstart = () => { status.textContent = 'クラウド音声に障害があるため、端末の日本語音声で読み上げています。'; };
-    utterance.onerror = () => { status.textContent = '読み上げに失敗しました。返答はチャット欄に表示しています。'; };
+    utterance.onstart = () => { if (isVoiceSessionActive()) status.textContent = '応答を読み上げています。途中でも話しかけられます。'; };
+    utterance.onerror = () => { if (isVoiceSessionActive()) status.textContent = '日本語音声を再生できません。返答はチャット欄に表示しています。'; };
     utterance.onend = () => { if (isVoiceSessionActive()) status.textContent = '聞いています'; };
     speechSynthesis.speak(utterance);
   }
 
+  new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (!node.classList.contains('assistant')) continue;
+        speakJapanese(node.textContent || '');
+      }
+    }
+  }).observe(chat, { childList: true });
+
   new MutationObserver(() => {
-    const text = String(status.textContent || '');
-    if (!/(3043|Internal server error|音声エラー)/i.test(text)) return;
-    speakFallback(latestAssistantText());
+    if (/話しています|割り込/i.test(String(status.textContent || '')) && speechSynthesis.speaking) speechSynthesis.cancel();
   }).observe(status, { childList: true, characterData: true, subtree: true });
 
+  speechSynthesis.getVoices();
   window.addEventListener('beforeunload', () => speechSynthesis.cancel(), { once: true });
 })();
