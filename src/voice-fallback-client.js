@@ -1,12 +1,131 @@
 export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
   'use strict';
 
-  if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) return;
-
   const status = document.getElementById('status');
   const chat = document.getElementById('chat');
   const voiceButton = document.getElementById('voice');
+  const form = document.getElementById('form');
+  const input = document.getElementById('input');
+  const sendButton = document.getElementById('send');
   if (!status || !chat) return;
+
+  const canTts = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+  let textSocket = null;
+  let textWelcomed = false;
+  let textBusy = false;
+  let queuedText = '';
+
+  function addMessage(role, text) {
+    if (!text) return;
+    const node = document.createElement('div');
+    node.className = 'msg ' + role;
+    node.textContent = text;
+    chat.appendChild(node);
+    node.scrollIntoView({ block: 'nearest' });
+  }
+
+  function agentWsUrl() {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return protocol + '//' + location.host + '/agents/talk-sys-voice-agent/default';
+  }
+
+  function finishTypedTurn() {
+    textBusy = false;
+    if (sendButton) sendButton.disabled = false;
+    if (input) input.focus();
+    if (!isVoiceSessionActive()) status.textContent = '';
+  }
+
+  function sendQueuedText() {
+    if (!textWelcomed || !queuedText || !textSocket || textSocket.readyState !== WebSocket.OPEN) return;
+    const value = queuedText;
+    queuedText = '';
+    textSocket.send(JSON.stringify({ type: 'text_message', text: value }));
+  }
+
+  function ensureTextSocket() {
+    if (textSocket && (textSocket.readyState === WebSocket.OPEN || textSocket.readyState === WebSocket.CONNECTING)) {
+      sendQueuedText();
+      return;
+    }
+    textWelcomed = false;
+    textSocket = new WebSocket(agentWsUrl());
+    textSocket.addEventListener('open', () => {
+      textSocket.send(JSON.stringify({ type: 'hello', protocol_version: 1 }));
+    });
+    textSocket.addEventListener('message', (event) => {
+      if (typeof event.data !== 'string') return;
+      let data;
+      try { data = JSON.parse(event.data); } catch { return; }
+      if (data.type === 'welcome') {
+        textWelcomed = true;
+        sendQueuedText();
+        return;
+      }
+      if (data.type === 'search_status') {
+        status.textContent = data.phase === 'searching' ? '確認のため検索しています…' : '検索結果から答えています…';
+        return;
+      }
+      if (data.type === 'assistant_stream_start') {
+        window.dispatchEvent(new CustomEvent('talksys:assistant-stream-start', { detail: data }));
+        return;
+      }
+      if (data.type === 'assistant_speech_chunk') {
+        window.dispatchEvent(new CustomEvent('talksys:assistant-speech-chunk', { detail: data }));
+        return;
+      }
+      if (data.type === 'assistant_stream_end') {
+        window.dispatchEvent(new CustomEvent('talksys:assistant-stream-end', { detail: data }));
+        return;
+      }
+      if (data.type === 'transcript' && data.role === 'assistant' && data.text) {
+        addMessage('assistant', data.text);
+        finishTypedTurn();
+        return;
+      }
+      if (data.type === 'error') {
+        addMessage('assistant', 'エラー: ' + (data.message || '応答に失敗しました'));
+        finishTypedTurn();
+      }
+    });
+    textSocket.addEventListener('close', () => {
+      textWelcomed = false;
+      if (textBusy) {
+        addMessage('assistant', '接続が切れました。もう一度送ってください。');
+        queuedText = '';
+        finishTypedTurn();
+      }
+    });
+    textSocket.addEventListener('error', () => {
+      if (textBusy) status.textContent = '文字チャット接続を再確認しています…';
+    });
+  }
+
+  function submitTyped(event) {
+    const value = String(input?.value || '').trim();
+    if (!value || textBusy) return false;
+    if (event) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+    textBusy = true;
+    queuedText = value;
+    if (input) input.value = '';
+    if (sendButton) sendButton.disabled = true;
+    addMessage('user', value);
+    status.textContent = '考えています…';
+    ensureTextSocket();
+    sendQueuedText();
+    return true;
+  }
+
+  if (form && input) {
+    form.addEventListener('submit', (event) => submitTyped(event), true);
+    input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.shiftKey) return;
+      submitTyped(event);
+    }, true);
+  }
 
   let lastSpoken = '';
   let lastSpokenAt = 0;
@@ -27,6 +146,7 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
   }
 
   function pickJapaneseVoice() {
+    if (!canTts) return null;
     const voices = speechSynthesis.getVoices();
     const japanese = voices.filter((voice) => /^ja(?:-|_)/i.test(voice.lang || ''));
     if (!japanese.length) return null;
@@ -44,6 +164,7 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
   }
 
   function cancelSpeech(interrupted = false) {
+    if (!canTts) return;
     ttsGeneration += 1;
     activeUtterances = 0;
     speechSynthesis.cancel();
@@ -81,7 +202,7 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
   }
 
   function beginStream(id) {
-    if (streamId === id) return;
+    if (!canTts || streamId === id) return;
     cancelSpeech(false);
     streamId = id || '';
     streamedText = '';
@@ -89,17 +210,19 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
   }
 
   function enqueueStreamChunk(detail) {
+    if (!canTts) return;
     const id = String(detail?.streamId || '');
     const text = normalize(detail?.text);
     if (!text || !isVoiceSessionActive()) return;
     if (!streamId || streamId !== id) beginStream(id);
-    streamedText += (streamedText ? '' : '') + text;
+    streamedText += text;
     const generation = ttsGeneration;
     activeUtterances += 1;
     speechSynthesis.speak(makeUtterance(text, generation));
   }
 
   function finishStream(detail) {
+    if (!canTts) return;
     const id = String(detail?.streamId || '');
     if (streamId && id && id !== streamId) return;
     streamEnded = true;
@@ -112,6 +235,7 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
   }
 
   function speakWhole(text) {
+    if (!canTts) return;
     const value = normalize(text);
     if (!value || !isVoiceSessionActive()) return;
     const now = Date.now();
@@ -137,21 +261,24 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
     if (isVoiceSessionActive()) status.textContent = '割り込みを聞いています…';
   });
 
-  const chatObserver = new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-      for (const node of mutation.addedNodes) {
-        if (!(node instanceof HTMLElement)) continue;
-        if (!node.classList.contains('assistant')) continue;
-        speakWhole(node.textContent || '');
+  if (canTts) {
+    const chatObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (!node.classList.contains('assistant')) continue;
+          speakWhole(node.textContent || '');
+        }
       }
-    }
-  });
-  chatObserver.observe(chat, { childList: true });
+    });
+    chatObserver.observe(chat, { childList: true });
+    speechSynthesis.getVoices();
+  }
 
-  speechSynthesis.getVoices();
   window.addEventListener('beforeunload', () => {
     cancelSpeech(false);
     setTtsState(false);
+    try { textSocket?.close(); } catch {}
   }, { once: true });
 })();
 `;
