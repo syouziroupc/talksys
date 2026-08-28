@@ -1,4 +1,4 @@
-export const LIVE_VOICE_MODEL = '@cf/zai-org/glm-5.3-flash';
+export const LIVE_VOICE_MODEL = '@cf/qwen/qwen3.8-27b';
 
 function readDelta(payload) {
   if (!payload || typeof payload !== 'object') return '';
@@ -60,7 +60,7 @@ function liveModelInput(input) {
     ...input,
     max_completion_tokens: Number(input?.max_completion_tokens || input?.max_tokens || 260),
     max_tokens: undefined,
-    reasoning_effort: 'low',
+    reasoning_effort: null,
     chat_template_kwargs: {
       ...(input?.chat_template_kwargs || {}),
       enable_thinking: false,
