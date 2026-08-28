@@ -62,20 +62,31 @@ const VoiceAgentBase = withVoice(Agent, {
   diagnostics: { browserConsole: false },
 });
 
-export class TalkSysVoiceAgent extends VoiceAgentBase {
-  transcriber = new FinalizableNova3STT(this.env.AI, {
+function createJapaneseTranscriber(ai) {
+  return new FinalizableNova3STT(ai, {
     language: 'ja',
     endpointingMs: 480,
     utteranceEndMs: 1000,
     forceFinalizeSilenceMs: 650,
+    explicitCommitGraceMs: 450,
+    explicitCommitMaxWaitMs: 1800,
     smartFormat: true,
     punctuate: true,
     keyterms: ['TalkSys', 'Cloudflare', 'Windows', 'パソコン'],
     sampleRate: 16000,
   });
+}
 
+export class TalkSysVoiceAgent extends VoiceAgentBase {
   tts = new MeloJapaneseTTS(this.env.AI);
   screenWaiters = new Map();
+  voiceTranscribers = new Map();
+
+  createTranscriber(connection) {
+    const provider = createJapaneseTranscriber(this.env.AI);
+    this.voiceTranscribers.set(connection.id, provider);
+    return provider;
+  }
 
   beforeSynthesize(text) {
     const cleaned = cleanSpeechText(text);
@@ -92,6 +103,10 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     await this.speak(connection, 'はい、TalkSysです。どうぞ。');
   }
 
+  onCallEnd(connection) {
+    this.voiceTranscribers.delete(connection.id);
+  }
+
   onMessage(connection, message) {
     if (typeof message !== 'string') return;
     let data;
@@ -100,6 +115,19 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     } catch {
       return;
     }
+
+    if (data?.type === 'utterance_commit') {
+      const provider = this.voiceTranscribers.get(connection.id);
+      const accepted = provider?.forceFinalize('client_end') ?? false;
+      connection.send(JSON.stringify({
+        type: 'utterance_commit_ack',
+        id: typeof data.id === 'string' ? data.id : '',
+        accepted,
+        diagnostics: provider?.diagnostics() || { active: false },
+      }));
+      return;
+    }
+
     if (data?.type !== 'screen_result' || typeof data.id !== 'string') return;
     const waiter = this.screenWaiters.get(data.id);
     if (!waiter || waiter.connectionId !== connection.id) return;
@@ -209,6 +237,8 @@ export default {
         realtime: true,
         continuousStt: true,
         forcedFinalization: true,
+        explicitTurnCommit: true,
+        localTranscriptFallback: true,
         bargeIn: true,
         aiScreenDecision: true,
         japaneseTts: true,
