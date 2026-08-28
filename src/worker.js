@@ -15,15 +15,15 @@ import {
   wrapAI,
 } from './voice-helpers.js';
 
-const VOICE_REVISION = 'fast-grounded-v9';
-const CASUAL_VOICE_MODEL = '@cf/meta/llama-3.2-3b-instruct';
-const GROUNDED_VOICE_MODEL = '@cf/qwen/qwen3.8-27b';
+const VOICE_REVISION = 'grounded-gptoss-v10';
+const CASUAL_VOICE_MODEL = '@cf/openai/gpt-oss-20b';
+const GROUNDED_VOICE_MODEL = '@cf/openai/gpt-oss-120b';
 
-const CASUAL_SYSTEM_PROMPT = `日本語の自然な会話相手として答える。電話会話なので冗長にはしないが、質問・相談・雑談には原則2〜4文で答え、要点だけの一言で終わらせない。まず直接答え、その後に理由・補足・具体例のいずれかを1つ加え、会話を続ける意味があるときだけ短い質問を1つ返す。挨拶、相槌、Yes/Noだけで十分な発話は短くてよい。雑談をPC操作の話にしない。知らない事実や現在情報は作らず、必要なら確認が必要だと短く言う。定型的な前置き、Markdown、URL読み上げは避ける。`;
+const CASUAL_SYSTEM_PROMPT = `日本語の自然な会話相手として答える。電話会話なので冗長にはしないが、質問・相談・雑談には原則2〜4文で答え、要点だけの一言で終わらせない。まず直接答え、その後に理由・補足・具体例のいずれかを1つ加え、会話を続ける意味があるときだけ短い質問を1つ返す。挨拶、相槌、Yes/Noだけで十分な発話は短くてよい。雑談をPC操作の話にしない。外部の事実・製品・人物・制度・技術仕様などについて検索結果が無い状態では、記憶だけで具体的な数字や現在情報を断定しない。分からない場合は作らず、確認が必要だと短く伝える。定型的な前置き、Markdown、URL読み上げは避ける。`;
 
 const GROUNDED_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声アシスタントです。電話会話として自然に、通常2〜4文で必要な情報を省略しすぎず答えてください。
 絶対ルール:
-- [ウェブ検索結果] がある外部事実は、その結果に書かれた範囲だけで答える。検索結果にない事実は補完しない。
+- [ウェブ検索結果] がある外部事実は、その結果に書かれた範囲を最優先して答える。検索結果にない固有名詞、数値、日付、仕様を勝手に補完しない。
 - 検索結果が無い、無関係、食い違う場合は推測せず「確認できない」と短く伝える。
 - 過去のassistant発言は事実の証拠にしない。
 - 実際に行っていないPC操作を「開いた」「押した」「変更した」と言わない。
@@ -53,8 +53,17 @@ function fastChatInput(messages, maxCompletionTokens = 240, temperature = 0.25) 
 function casualChatInput(messages) {
   return {
     messages,
-    max_tokens: 180,
-    temperature: 0.55,
+    max_tokens: 220,
+    temperature: 0.45,
+    top_p: 0.9,
+  };
+}
+
+function groundedChatInput(messages) {
+  return {
+    messages,
+    max_tokens: 420,
+    temperature: 0.2,
     top_p: 0.9,
   };
 }
@@ -178,7 +187,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     } else if (searchIntent) {
       try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'searching', searched: true })); } catch {}
       const results = await webSearch(transcript, { limit: 5, timeoutMs: 1900 });
-      searchContext = formatSearchContext(results) || '有効な検索結果なし。現在情報は推測しないこと。';
+      searchContext = formatSearchContext(results) || '有効な検索結果なし。外部事実は推測しないこと。';
       try {
         context.connection.send(JSON.stringify({
           type: 'search_status',
@@ -198,11 +207,11 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     if (searchIntent || screenIntent) {
       result = await this.env.AI.run(
         GROUNDED_VOICE_MODEL,
-        fastChatInput([
+        groundedChatInput([
           { role: 'system', content: GROUNDED_SYSTEM_PROMPT },
           ...context.messages.slice(-6).map((message) => ({ role: message.role, content: message.content })),
           { role: 'user', content: userContent },
-        ], 360, 0.15),
+        ]),
       );
     } else {
       result = await this.env.AI.run(
@@ -264,12 +273,13 @@ export default {
         sttLanguage: 'ja',
         casualLlmModel: CASUAL_VOICE_MODEL,
         groundedLlmModel: GROUNDED_VOICE_MODEL,
-        casualPrompt: 'balanced-2-4-sentences',
+        casualPrompt: 'gptoss20b-balanced-2-4-sentences',
         casualResponseSentences: '2-4',
         llmTransport: 'env.AI.run',
-        llmThinking: false,
+        llmThinking: 'model-native',
         casualConversation: true,
         webSearch: true,
+        webSearchPolicy: 'knowledge-questions-default-search',
         webSearchEngine: 'wikipedia+bing-html+google-news',
         searchRelevanceFilter: true,
         groundedExternalFacts: true,
