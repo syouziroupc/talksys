@@ -2,7 +2,7 @@ const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen } = require
 const path = require('node:path');
 const { writeFile } = require('node:fs/promises');
 
-const DEFAULT_API_BASE = process.env.TALKSYS_API_BASE || 'http://127.0.0.1:8787';
+const DEFAULT_API_BASE = process.env.TALKSYS_API_BASE || 'https://talksys.syouziroupc.workers.dev';
 let mainWindow = null;
 let overlayWindow = null;
 let overlayReady = false;
