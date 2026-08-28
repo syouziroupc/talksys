@@ -23,7 +23,7 @@ test('text requests are routed to current multilingual model', async () => {
   assert.equal(result.response, 'ok');
 });
 
-test('vision requests are routed to current UI-capable model', async () => {
+test('vision requests are routed to current UI-capable model in non-thinking JSON mode', async () => {
   let seen;
   const ai = wrapAI({
     async run(model, input) {
@@ -32,8 +32,10 @@ test('vision requests are routed to current UI-capable model', async () => {
     },
   });
   const image = 'data:image/png;base64,AA==';
-  const result = await ai.run('@cf/meta/llama-3.2-11b-vision-instruct', { messages: [], image });
+  const result = await ai.run('@cf/meta/llama-3.2-11b-vision-instruct', { messages: [], image, max_tokens: 180 });
   assert.equal(seen.model, VISION_MODEL);
   assert.equal(seen.input.image, image);
+  assert.equal(seen.input.chat_template_kwargs.enable_thinking, false);
+  assert.ok(seen.input.max_tokens >= 512);
   assert.match(result.response, /"found":false/);
 });
