@@ -1,7 +1,7 @@
 import { routeAgentRequest } from 'agents';
 import app from './index.js';
 import legacyWorker, { TalkSysVoiceAgent as LegacyTalkSysVoiceAgent } from './worker.js';
-import { GEMINI_LIVE_PRIMARY } from './gemini-live-primary.js';
+import { GEMINI_PHONE_CLIENT } from './gemini-phone-client.js';
 import { VOICE_MARKER_BRIDGE } from './voice-marker-bridge.js';
 import { REALTIME_VOICE_CLIENT } from './realtime-voice-client.js';
 import { VOICE_FALLBACK_CLIENT } from './voice-fallback-client.js';
@@ -11,8 +11,6 @@ const VOICE_REVISION = 'gemini-live-v13';
 const GEMINI_LIVE_MODEL = 'gemini-3.1-flash-live-preview';
 const GEMINI_LIVE_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained';
 
-// Keep the old Cloudflare Voice durable object intact as an explicit fallback.
-// The primary browser path no longer uses this class when Gemini is configured.
 export class TalkSysVoiceAgent extends LegacyTalkSysVoiceAgent {}
 
 function noStoreJson(data, status = 200) {
@@ -68,9 +66,7 @@ async function mintGeminiLiveToken(env) {
   }
 
   const token = await response.json();
-  if (!token?.name) {
-    return noStoreJson({ available: false, reason: 'gemini_ephemeral_token_empty' }, 502);
-  }
+  if (!token?.name) return noStoreJson({ available: false, reason: 'gemini_ephemeral_token_empty' }, 502);
 
   return noStoreJson({
     available: true,
@@ -101,24 +97,19 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    if (url.pathname === '/gemini-live.js') return serveScript(GEMINI_LIVE_PRIMARY);
-
-    // Legacy files are intentionally not loaded by the page. The Gemini client
-    // fetches them only when token provisioning is unavailable or repeatedly
-    // fails, making Cloudflare Voice a true fallback instead of a parallel path.
+    if (url.pathname === '/gemini-live.js') return serveScript(GEMINI_PHONE_CLIENT);
     if (url.pathname === '/voice-marker-bridge.js') return serveScript(VOICE_MARKER_BRIDGE);
     if (url.pathname === '/realtime-voice.js') return serveScript(REALTIME_VOICE_CLIENT);
     if (url.pathname === '/voice-fallback.js') return serveScript(VOICE_FALLBACK_CLIENT);
 
-    if (url.pathname === '/api/gemini-live-token' && request.method === 'POST') {
-      return mintGeminiLiveToken(env);
-    }
+    if (url.pathname === '/api/gemini-live-token' && request.method === 'POST') return mintGeminiLiveToken(env);
 
     if (url.pathname === '/voice-health') {
       return noStoreJson({
         ok: true,
         voiceRevision: VOICE_REVISION,
         primary: 'gemini-live',
+        phoneMode: true,
         geminiLiveConfigured: Boolean(env.GEMINI_API_KEY),
         geminiLiveModel: GEMINI_LIVE_MODEL,
         clientToServer: true,
@@ -130,18 +121,18 @@ export default {
         outputAudioTranscription: true,
         japaneseSpeechLanguage: 'ja-JP',
         hybridVad: true,
+        localEndSilenceMs: 440,
+        bargeInDetectionMs: 120,
         googleSearchGrounding: true,
         screenFunctionCalling: true,
         sessionResumption: true,
         contextWindowCompression: true,
-        bargeIn: true,
         typedChatTransport: 'realtimeInput.text',
         typedChatSharesLiveSession: true,
         legacyCloudflareVoiceFallback: true,
       });
     }
 
-    // Preserve existing diagnostic endpoints for the fallback implementation.
     if ((url.pathname === '/api/voice-smoke' && request.method === 'GET') ||
         (url.pathname === '/api/web-search' && request.method === 'GET')) {
       return legacyWorker.fetch(request, env, ctx);
