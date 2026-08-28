@@ -22,6 +22,7 @@ jobs:
           node --check src/index.js
           node --check src/worker.js
           node --check src/worker-v13.js
+          node --check src/gemini-live-primary.js
           node --check src/gemini-live-client.js
           node --check src/realtime-voice-client.js
           node --check src/voice-fallback-client.js
@@ -47,12 +48,13 @@ jobs:
           const fs = require('fs');
           const wrangler = fs.readFileSync('wrangler.jsonc','utf8');
           const worker = fs.readFileSync('src/worker-v13.js','utf8');
-          const client = fs.readFileSync('src/gemini-live-client.js','utf8');
+          const client = fs.readFileSync('src/gemini-live-primary.js','utf8');
           if (!wrangler.includes('"main": "src/worker-v13.js"')) throw new Error('v13 is not the Wrangler entrypoint');
-          for (const required of ['gemini-live-v13','googleSearch','inputAudioTranscription','outputAudioTranscription','sessionResumption','contextWindowCompression']) {
+          for (const required of ['gemini-live-v13','googleSearch','inputAudioTranscription','outputAudioTranscription','sessionResumption','contextWindowCompression','realtimeInput','audioStreamEnd','thinkingLevel']) {
             if (!(worker + client).includes(required)) throw new Error('missing Gemini Live contract: ' + required);
           }
           if (client.includes('SpeechSynthesisUtterance')) throw new Error('Gemini primary path must not use browser TTS');
+          if (client.includes('clientContent:')) throw new Error('Gemini 3.1 ongoing typed chat must use realtimeInput.text');
           NODE
       - name: Run Worker API tests
         run: npm test
