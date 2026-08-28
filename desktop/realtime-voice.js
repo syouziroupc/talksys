@@ -6,6 +6,8 @@
   const SILENCE_MS = 650;
   const MIN_SPEECH_START = 0.018;
   const MIN_SPEECH_END = 0.012;
+  const COMMIT_RETRY_MS = 900;
+  const COMMIT_RETRY_LIMIT = 2;
 
   const originalVoice = document.getElementById('voice');
   const status = document.getElementById('status');
@@ -39,6 +41,9 @@
   let silenceTimer = null;
   let noiseFloor = 0.008;
   let micFrames = 0;
+  let pendingCommitId = '';
+  let commitRetryCount = 0;
+  let commitTimer = null;
 
   function setStatus(text) {
     status.textContent = text || '';
@@ -82,7 +87,11 @@
   }
 
   function sendJson(data) {
-    if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(data));
+      return true;
+    }
+    return false;
   }
 
   function floatTo16BitPCM(samples) {
@@ -145,13 +154,50 @@
     silenceTimer = null;
   }
 
+  function clearCommitTimer() {
+    if (!commitTimer) return;
+    clearTimeout(commitTimer);
+    commitTimer = null;
+  }
+
+  function finishPendingCommit() {
+    clearCommitTimer();
+    pendingCommitId = '';
+    commitRetryCount = 0;
+  }
+
+  function newCommitId() {
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') return globalThis.crypto.randomUUID();
+    return Date.now().toString(36) + Math.random().toString(36).slice(2);
+  }
+
+  function sendUtteranceCommit() {
+    if (!pendingCommitId) pendingCommitId = newCommitId();
+    if (!sendJson({ type: 'utterance_commit', id: pendingCommitId })) return;
+    clearCommitTimer();
+    commitTimer = setTimeout(() => {
+      commitTimer = null;
+      if (!pendingCommitId || serverStatus === 'thinking' || serverStatus === 'speaking') return;
+      if (commitRetryCount >= COMMIT_RETRY_LIMIT) {
+        setStatus('発言の確定待ちです。音声認識の応答を待っています…');
+        return;
+      }
+      commitRetryCount += 1;
+      setStatus('発言の確定を再試行中…');
+      sendUtteranceCommit();
+    }, COMMIT_RETRY_MS);
+  }
+
   function endDetectedSpeech() {
     if (!speaking) return;
     speaking = false;
     speechChunks = 0;
     clearSpeechTimer();
     sendJson({ type: 'end_of_speech' });
-    if (serverStatus === 'listening') setStatus('発言を確定中…');
+    pendingCommitId = newCommitId();
+    commitRetryCount = 0;
+    sendUtteranceCommit();
+    if (serverStatus === 'listening') setStatus('発言を確定しています…');
   }
 
   function processAudioLevel(level) {
@@ -279,10 +325,12 @@
         serverStatus = data.status || 'idle';
         if (serverStatus === 'listening') {
           inCall = true;
-          if (!speaking) setStatus(micFrames > 0 ? '聞いています' : 'マイク入力を待っています…');
+          if (!speaking && !pendingCommitId) setStatus(micFrames > 0 ? '聞いています' : 'マイク入力を待っています…');
         } else if (serverStatus === 'thinking') {
+          finishPendingCommit();
           setStatus('考えています…');
         } else if (serverStatus === 'speaking') {
+          finishPendingCommit();
           setStatus('応答中。途中でもそのまま話しかけられます。');
         } else if (serverStatus === 'idle') {
           inCall = false;
@@ -291,11 +339,23 @@
         setVoiceUi();
         return;
       }
+      if (data.type === 'utterance_commit_ack') {
+        if (!pendingCommitId || (data.id && data.id !== pendingCommitId)) return;
+        if (data.accepted === false) {
+          setStatus('発言確定を受理できませんでした。STTを再接続します…');
+          return;
+        }
+        const frames = Number(data.diagnostics?.audioFrames || 0);
+        const results = Number(data.diagnostics?.resultFrames || 0);
+        setStatus('発言確定を受理しました（音声 ' + frames + ' / 認識 ' + results + '）。');
+        return;
+      }
       if (data.type === 'transcript_interim') {
         if (data.text) setStatus('聞き取り: ' + data.text);
         return;
       }
       if (data.type === 'transcript' && data.text) {
+        if (data.role !== 'assistant') finishPendingCommit();
         addMessage(data.role === 'assistant' ? 'assistant' : 'user', data.text);
         return;
       }
@@ -312,6 +372,7 @@
     socket.onclose = () => {
       welcomed = false;
       inCall = false;
+      finishPendingCommit();
       setVoiceUi();
       if (desiredCall && !manualStop) {
         setStatus('再接続中…');
@@ -349,12 +410,17 @@
   function endCall() {
     manualStop = true;
     desiredCall = false;
-    if (speaking) sendJson({ type: 'end_of_speech' });
+    if (speaking) {
+      sendJson({ type: 'end_of_speech' });
+      pendingCommitId = newCommitId();
+      sendUtteranceCommit();
+    }
     if (inCall) sendJson({ type: 'end_call' });
     inCall = false;
     speaking = false;
     speechChunks = 0;
     clearSpeechTimer();
+    finishPendingCommit();
     stopPlayback();
     if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop());
     mediaStream = null;
