@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { streamWorkersAIText, readDelta, splitSpeechChunks, LIVE_VOICE_MODEL, liveModelInput } from '../src/streaming-workers-ai.js';
 
-test('live voice uses one GLM 5.3 Flash model', () => {
-  assert.equal(LIVE_VOICE_MODEL, '@cf/zai-org/glm-5.3-flash');
+test('live voice uses one Qwen 3.8 27B model', () => {
+  assert.equal(LIVE_VOICE_MODEL, '@cf/qwen/qwen3.8-27b');
   const input = liveModelInput({ messages: [], max_tokens: 220, temperature: 0.3 });
   assert.equal(input.stream, true);
   assert.equal(input.max_completion_tokens, 220);
-  assert.equal(input.reasoning_effort, 'low');
+  assert.equal(input.reasoning_effort, null);
   assert.equal(input.chat_template_kwargs.enable_thinking, false);
   assert.equal(input.chat_template_kwargs.clear_thinking, true);
 });
