@@ -5,24 +5,26 @@ import { readFile } from 'node:fs/promises';
 const source = await readFile(new URL('../src/worker.js', import.meta.url), 'utf8');
 const realtime = await readFile(new URL('../src/realtime-voice-client.js', import.meta.url), 'utf8');
 const fallback = await readFile(new URL('../src/voice-fallback-client.js', import.meta.url), 'utf8');
+const streaming = await readFile(new URL('../src/streaming-workers-ai.js', import.meta.url), 'utf8');
 
-test('voice routes casual chat to GPT-OSS 20B and grounded facts to GPT-OSS 120B', () => {
-  assert.match(source, /CASUAL_VOICE_MODEL\s*=\s*'@cf\/openai\/gpt-oss-20b'/);
-  assert.match(source, /GROUNDED_VOICE_MODEL\s*=\s*'@cf\/openai\/gpt-oss-120b'/);
-  assert.match(source, /streamWorkersAIText\(this\.env\.AI,\s*model,\s*input/);
+test('voice uses one unified GLM 5.3 Flash runtime model', () => {
+  assert.match(streaming, /LIVE_VOICE_MODEL\s*=\s*'@cf\/zai-org\/glm-5\.3-flash'/);
+  assert.match(streaming, /ai\.run\(LIVE_VOICE_MODEL/);
+  assert.match(streaming, /reasoning_effort:\s*'low'/);
+  assert.match(streaming, /enable_thinking:\s*false/);
 });
 
-test('casual path allows useful 2 to 4 sentence replies on 20B', () => {
+test('casual path allows useful 2 to 4 sentence replies', () => {
   assert.match(source, /原則2〜4文/);
   assert.match(source, /max_tokens:\s*220/);
-  assert.match(source, /casualPrompt:\s*'gptoss20b-balanced-2-4-sentences'/);
   assert.match(source, /casualResponseSentences:\s*'2-4'/);
 });
 
-test('grounded path stays on 120B and uses documented messages max_tokens style', () => {
+test('grounded questions still search but do not switch to another runtime model', () => {
   assert.match(source, /function\s+groundedChatInput/);
   assert.match(source, /max_tokens:\s*420/);
-  assert.match(source, /const\s+model\s*=\s*searchIntent\s*\|\|\s*screenIntent\s*\?\s*GROUNDED_VOICE_MODEL/);
+  assert.match(source, /const\s+searchIntent\s*=\s*!screenIntent\s*&&\s*needsWebSearch\(transcript\)/);
+  assert.match(source, /streamWorkersAIText\(this\.env\.AI,\s*model,\s*input/);
 });
 
 test('LLM response is streamed into early speech chunks', () => {
@@ -34,15 +36,17 @@ test('LLM response is streamed into early speech chunks', () => {
   assert.match(fallback, /talksys:assistant-speech-chunk/);
 });
 
+test('typed chat is routed to the same voice agent instance', () => {
+  assert.match(fallback, /agents\/talk-sys-voice-agent\/default/);
+  assert.match(fallback, /type:\s*'text_message'/);
+  assert.match(fallback, /form\.addEventListener\('submit',[\s\S]*true\)/);
+  assert.match(fallback, /stopImmediatePropagation\(\)/);
+});
+
 test('grounded prompt forbids unsupported external and screen claims', () => {
   assert.match(source, /検索結果にない固有名詞、数値、日付、仕様を勝手に補完しない/);
   assert.match(source, /実際に行っていないPC操作/);
   assert.match(source, /現在画面を断定できるのは/);
-});
-
-test('screen intent and web search are mutually exclusive', () => {
-  assert.match(source, /const\s+screenIntent\s*=\s*mightNeedScreen\(transcript\)/);
-  assert.match(source, /const\s+searchIntent\s*=\s*!screenIntent\s*&&\s*needsWebSearch\(transcript\)/);
 });
 
 test('cloud TTS is skipped and device ja-JP streams chunks', () => {
