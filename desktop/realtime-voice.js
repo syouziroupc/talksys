@@ -2,6 +2,11 @@
   'use strict';
 
   const TARGET_RATE = 16000;
+  const CHUNK_SAMPLES = 800;
+  const SILENCE_MS = 650;
+  const MIN_SPEECH_START = 0.018;
+  const MIN_SPEECH_END = 0.012;
+
   const originalVoice = document.getElementById('voice');
   const status = document.getElementById('status');
   const chat = document.getElementById('chat');
@@ -15,6 +20,7 @@
   let socket = null;
   let audioContext = null;
   let mediaStream = null;
+  let mediaSource = null;
   let workletNode = null;
   let welcomed = false;
   let micReady = false;
@@ -24,10 +30,15 @@
   let playbackQueue = [];
   let playbackSource = null;
   let playing = false;
-  let interruptCount = 0;
   let reconnectTimer = null;
   let manualStop = false;
   let lastTranscriptKey = '';
+
+  let speaking = false;
+  let speechChunks = 0;
+  let silenceTimer = null;
+  let noiseFloor = 0.008;
+  let micFrames = 0;
 
   function setStatus(text) {
     status.textContent = text || '';
@@ -128,48 +139,92 @@
     playNext();
   }
 
-  const WORKLET = "class TalkSysCapture extends AudioWorkletProcessor{constructor(){super();this.buffer=[];this.ratio=sampleRate/16000}process(inputs){const input=inputs[0];if(!input||!input[0])return true;const d=input[0];for(let i=0;i<d.length;i+=this.ratio){const n=Math.floor(i),f=i-n;this.buffer.push(n+1<d.length?d[n]*(1-f)+d[n+1]*f:d[n]||0)}if(this.buffer.length>=1600){const a=new Float32Array(this.buffer);this.buffer=[];this.port.postMessage(a,[a.buffer])}return true}}registerProcessor('talksys-capture',TalkSysCapture);";
+  function clearSpeechTimer() {
+    if (!silenceTimer) return;
+    clearTimeout(silenceTimer);
+    silenceTimer = null;
+  }
+
+  function endDetectedSpeech() {
+    if (!speaking) return;
+    speaking = false;
+    speechChunks = 0;
+    clearSpeechTimer();
+    sendJson({ type: 'end_of_speech' });
+    if (serverStatus === 'listening') setStatus('発言を確定中…');
+  }
+
+  function processAudioLevel(level) {
+    if (!speaking && serverStatus !== 'speaking' && level < 0.03) {
+      noiseFloor = noiseFloor * 0.97 + level * 0.03;
+    }
+
+    const startThreshold = Math.max(MIN_SPEECH_START, Math.min(0.08, noiseFloor * 2.8));
+    const endThreshold = Math.max(MIN_SPEECH_END, Math.min(startThreshold * 0.72, noiseFloor * 1.8));
+    let justStarted = false;
+
+    if (level >= startThreshold) {
+      speechChunks += 1;
+      clearSpeechTimer();
+      if (!speaking && speechChunks >= 2) {
+        speaking = true;
+        justStarted = true;
+        sendJson({ type: 'start_of_speech' });
+        setStatus('話しています…');
+      }
+    } else {
+      speechChunks = 0;
+      if (speaking && level <= endThreshold && !silenceTimer) {
+        silenceTimer = setTimeout(endDetectedSpeech, SILENCE_MS);
+      }
+    }
+
+    if (justStarted && serverStatus === 'speaking') {
+      stopPlayback();
+      sendJson({ type: 'interrupt' });
+    }
+  }
+
+  const WORKLET = "class TalkSysCapture extends AudioWorkletProcessor{constructor(){super();this.buffer=[];this.ratio=sampleRate/16000}process(inputs){const input=inputs[0];if(!input||!input[0])return true;const d=input[0];for(let i=0;i<d.length;i+=this.ratio){const n=Math.floor(i),f=i-n;this.buffer.push(n+1<d.length?d[n]*(1-f)+d[n+1]*f:d[n]||0)}if(this.buffer.length>=800){const a=new Float32Array(this.buffer.splice(0,800));this.port.postMessage(a,[a.buffer])}return true}}registerProcessor('talksys-capture',TalkSysCapture);";
 
   async function ensureAudio() {
     if (micReady && mediaStream && audioContext) {
       if (audioContext.state !== 'running') await audioContext.resume().catch(() => {});
       return;
     }
+
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
+        sampleRate: { ideal: 48000 },
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
         channelCount: 1
       }
     });
-    audioContext = audioContext || new (window.AudioContext || window.webkitAudioContext)();
+
+    audioContext = audioContext || new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
     const workletUrl = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
     try {
       await audioContext.audioWorklet.addModule(workletUrl);
     } finally {
       URL.revokeObjectURL(workletUrl);
     }
-    const source = audioContext.createMediaStreamSource(mediaStream);
-    workletNode = new AudioWorkletNode(audioContext, 'talksys-capture', { numberOfInputs: 1, numberOfOutputs: 0 });
-    source.connect(workletNode);
+
+    mediaSource = audioContext.createMediaStreamSource(mediaStream);
+    workletNode = new AudioWorkletNode(audioContext, 'talksys-capture');
     workletNode.port.onmessage = (event) => {
       const samples = event.data instanceof Float32Array ? event.data : new Float32Array(event.data);
       const level = rms(samples);
-      if (serverStatus === 'speaking' && level > 0.055) {
-        interruptCount += 1;
-        if (interruptCount >= 2) {
-          interruptCount = 0;
-          stopPlayback();
-          sendJson({ type: 'interrupt' });
-        }
-      } else if (level < 0.035) {
-        interruptCount = 0;
-      }
+      micFrames += 1;
+      processAudioLevel(level);
       if (inCall && socket && socket.readyState === WebSocket.OPEN) {
         socket.send(floatTo16BitPCM(samples));
       }
     };
+
+    mediaSource.connect(workletNode);
+    workletNode.connect(audioContext.destination);
     await audioContext.resume().catch(() => {});
     micReady = true;
   }
@@ -224,7 +279,7 @@
         serverStatus = data.status || 'idle';
         if (serverStatus === 'listening') {
           inCall = true;
-          setStatus('聞いています');
+          if (!speaking) setStatus(micFrames > 0 ? '聞いています' : 'マイク入力を待っています…');
         } else if (serverStatus === 'thinking') {
           setStatus('考えています…');
         } else if (serverStatus === 'speaking') {
@@ -294,12 +349,20 @@
   function endCall() {
     manualStop = true;
     desiredCall = false;
+    if (speaking) sendJson({ type: 'end_of_speech' });
     if (inCall) sendJson({ type: 'end_call' });
     inCall = false;
+    speaking = false;
+    speechChunks = 0;
+    clearSpeechTimer();
     stopPlayback();
     if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop());
     mediaStream = null;
     micReady = false;
+    if (mediaSource) {
+      try { mediaSource.disconnect(); } catch {}
+      mediaSource = null;
+    }
     if (workletNode) {
       try { workletNode.disconnect(); } catch {}
       workletNode = null;
