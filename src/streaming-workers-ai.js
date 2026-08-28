@@ -1,3 +1,5 @@
+export const LIVE_VOICE_MODEL = '@cf/zai-org/glm-5.3-flash';
+
 function readDelta(payload) {
   if (!payload || typeof payload !== 'object') return '';
   const choice = payload.choices?.[0];
@@ -36,9 +38,9 @@ function splitSpeechChunks(buffer, force = false) {
       rest = rest.slice(sentence[0].length);
       continue;
     }
-    if (rest.length >= 58) {
-      const commaAt = Math.max(rest.lastIndexOf('、', 58), rest.lastIndexOf('，', 58), rest.lastIndexOf(',', 58));
-      if (commaAt >= 18) {
+    if (rest.length >= 46) {
+      const commaAt = Math.max(rest.lastIndexOf('、', 46), rest.lastIndexOf('，', 46), rest.lastIndexOf(',', 46));
+      if (commaAt >= 16) {
         chunks.push(rest.slice(0, commaAt + 1).trim());
         rest = rest.slice(commaAt + 1);
         continue;
@@ -53,9 +55,24 @@ function splitSpeechChunks(buffer, force = false) {
   return { chunks, rest };
 }
 
-export async function streamWorkersAIText(ai, model, input, options = {}) {
+function liveModelInput(input) {
+  return {
+    ...input,
+    max_completion_tokens: Number(input?.max_completion_tokens || input?.max_tokens || 260),
+    max_tokens: undefined,
+    reasoning_effort: 'low',
+    chat_template_kwargs: {
+      ...(input?.chat_template_kwargs || {}),
+      enable_thinking: false,
+      clear_thinking: true,
+    },
+    stream: true,
+  };
+}
+
+export async function streamWorkersAIText(ai, _model, input, options = {}) {
   const signal = options.signal;
-  const stream = await ai.run(model, { ...input, stream: true }, signal ? { signal } : undefined);
+  const stream = await ai.run(LIVE_VOICE_MODEL, liveModelInput(input), signal ? { signal } : undefined);
   if (!(stream instanceof ReadableStream)) throw new Error('Workers AI did not return a readable stream');
 
   const reader = stream.getReader();
@@ -110,4 +127,4 @@ export async function streamWorkersAIText(ai, model, input, options = {}) {
   return full.trim();
 }
 
-export { readDelta, splitSpeechChunks };
+export { readDelta, splitSpeechChunks, liveModelInput };
