@@ -65,27 +65,22 @@ const VoiceAgentBase = withVoice(Agent, {
 function createJapaneseTranscriber(ai) {
   return new FinalizableNova3STT(ai, {
     language: 'ja',
-    endpointingMs: 480,
-    utteranceEndMs: 1000,
-    forceFinalizeSilenceMs: 650,
-    explicitCommitGraceMs: 450,
-    explicitCommitMaxWaitMs: 1800,
+    sampleRate: 16000,
     smartFormat: true,
     punctuate: true,
-    keyterms: ['TalkSys', 'Cloudflare', 'Windows', 'パソコン'],
-    sampleRate: 16000,
+    serverSilenceFallbackMs: 1400,
+    maxTurnMs: 30000,
+    preRollFrames: 6,
+    minSpeechMs: 160,
   });
 }
 
 export class TalkSysVoiceAgent extends VoiceAgentBase {
   tts = new MeloJapaneseTTS(this.env.AI);
   screenWaiters = new Map();
-  voiceTranscribers = new Map();
 
-  createTranscriber(connection) {
-    const provider = createJapaneseTranscriber(this.env.AI);
-    this.voiceTranscribers.set(connection.id, provider);
-    return provider;
+  createTranscriber() {
+    return createJapaneseTranscriber(this.env.AI);
   }
 
   beforeSynthesize(text) {
@@ -100,11 +95,11 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
   }
 
   async onCallStart(connection) {
-    await this.speak(connection, 'はい、TalkSysです。どうぞ。');
-  }
-
-  onCallEnd(connection) {
-    this.voiceTranscribers.delete(connection.id);
+    try {
+      await this.speak(connection, 'はい、TalkSysです。どうぞ。');
+    } catch {
+      // TTS障害で通話/STTまで巻き添えにしない。
+    }
   }
 
   onMessage(connection, message) {
@@ -115,19 +110,6 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     } catch {
       return;
     }
-
-    if (data?.type === 'utterance_commit') {
-      const provider = this.voiceTranscribers.get(connection.id);
-      const accepted = provider?.forceFinalize('client_end') ?? false;
-      connection.send(JSON.stringify({
-        type: 'utterance_commit_ack',
-        id: typeof data.id === 'string' ? data.id : '',
-        accepted,
-        diagnostics: provider?.diagnostics() || { active: false },
-      }));
-      return;
-    }
-
     if (data?.type !== 'screen_result' || typeof data.id !== 'string') return;
     const waiter = this.screenWaiters.get(data.id);
     if (!waiter || waiter.connectionId !== connection.id) return;
@@ -235,10 +217,11 @@ export default {
       return Response.json({
         ok: true,
         realtime: true,
-        continuousStt: true,
-        forcedFinalization: true,
-        explicitTurnCommit: true,
-        localTranscriptFallback: true,
+        continuousAudio: true,
+        binaryTurnMarkers: true,
+        batchFinalStt: true,
+        sttModel: '@cf/deepgram/nova-3',
+        sttLanguage: 'ja',
         bargeIn: true,
         aiScreenDecision: true,
         japaneseTts: true,
