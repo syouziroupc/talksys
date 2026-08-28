@@ -60,6 +60,35 @@ export function parseScreenDecision(text) {
   }
 }
 
+function decodeBase64Audio(base64) {
+  const value = String(base64 || '').trim();
+  if (!value) return null;
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+export async function normalizeAudioResult(result) {
+  if (!result) return null;
+  if (result instanceof Response) {
+    if (!result.ok) return null;
+    return result.arrayBuffer();
+  }
+  if (result instanceof ArrayBuffer) return result;
+  if (result instanceof Uint8Array) {
+    return result.buffer.slice(result.byteOffset, result.byteOffset + result.byteLength);
+  }
+  if (result instanceof ReadableStream) {
+    return new Response(result).arrayBuffer();
+  }
+  if (typeof result === 'string') return decodeBase64Audio(result);
+  if (typeof result === 'object' && typeof result.audio === 'string') {
+    return decodeBase64Audio(result.audio);
+  }
+  return null;
+}
+
 export class MeloJapaneseTTS {
   constructor(ai) {
     this.ai = ai;
@@ -68,13 +97,12 @@ export class MeloJapaneseTTS {
   async synthesize(text, signal) {
     const spoken = cleanSpeechText(text);
     if (!spoken) return null;
-    const response = await this.ai.run(
+    const result = await this.ai.run(
       JAPANESE_TTS_MODEL,
       { prompt: spoken, lang: 'JP' },
-      { returnRawResponse: true, ...(signal ? { signal } : {}) },
+      signal ? { signal } : undefined,
     );
-    if (!(response instanceof Response) || !response.ok) return null;
-    return response.arrayBuffer();
+    return normalizeAudioResult(result);
   }
 }
 
