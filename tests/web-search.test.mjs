@@ -2,15 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { needsWebSearch, parseRss, parseBingHtml, relevanceScore, formatSearchContext } from '../src/web-search.js';
 
-test('casual Japanese chat skips web search', () => {
+test('casual Japanese chat and personal advice skip web search', () => {
   assert.equal(needsWebSearch('こんにちは'), false);
   assert.equal(needsWebSearch('今日は疲れたなあ'), false);
+  assert.equal(needsWebSearch('最近仕事ばかりで疲れてる。どうしたらいいと思う'), false);
 });
 
 test('current and factual Japanese questions request web search', () => {
   assert.equal(needsWebSearch('今日のニュースを教えて'), true);
   assert.equal(needsWebSearch('現在の総理大臣は誰'), true);
   assert.equal(needsWebSearch('この商品の今の価格を調べて'), true);
+});
+
+test('ordinary knowledge questions default to web search', () => {
+  assert.equal(needsWebSearch('HIFUってどういうもの？'), true);
+  assert.equal(needsWebSearch('キャビテーションとHIFUの違いは'), true);
+  assert.equal(needsWebSearch('Windows 11の要件を説明して'), true);
+  assert.equal(needsWebSearch('Cloudflare Workersって何'), true);
 });
 
 test('RSS parser extracts result fields', () => {
