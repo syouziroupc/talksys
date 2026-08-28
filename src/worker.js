@@ -3,6 +3,7 @@ import { withVoice } from '@cloudflare/voice';
 import app from './index.js';
 import { REALTIME_VOICE_CLIENT } from './realtime-voice-client.js';
 import { VOICE_MARKER_BRIDGE } from './voice-marker-bridge.js';
+import { VOICE_FALLBACK_CLIENT } from './voice-fallback-client.js';
 import { FinalizableNova3STT } from './finalizable-nova3.js';
 import {
   TEXT_MODEL,
@@ -13,16 +14,31 @@ import {
   wrapAI,
 } from './voice-helpers.js';
 
-const VOICE_REVISION = 'direct-binding-v5';
+const VOICE_REVISION = 'grounded-chat-v6';
+const VOICE_TEXT_MODEL = '@cf/qwen/qwen3.8-27b';
 
-const VOICE_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声アシスタントです。電話で人と会話しているように、短く、自然に、テンポよく話してください。
-- 原則1〜3文で答える。長い説明は求められた時だけ行う。
-- Markdown、箇条書き記号、URLの読み上げは避け、耳で理解しやすい文章にする。
+const VOICE_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声アシスタントです。
+
+会話の基本:
+- 普通の日常会話、雑談、相談、挨拶には、普通の会話相手として自然に応じる。何でもPC操作の話に結び付けない。
+- 電話で話しているように短く自然に返す。通常は1〜3文。必要なら会話を続けるための短い質問を1つだけ返してよい。
+- 「承知しました」「お手伝いします」などの定型句を毎回つけない。
+- Markdown、箇条書き記号、URLなど、耳で聞き取りにくい表現は避ける。
 - ユーザーが言い直したり途中で割り込んだ場合は、新しい発話を優先する。
-- 不必要な前置きや「承知しました」の連発を避ける。
-- 画面確認結果が与えられた場合は、その事実を使って具体的に案内する。
-- 画面確認が必要なのに利用できない場合だけ、画面共有が必要だと一度だけ簡潔に伝える。
-これは電話AIとパソコン作業支援AIの実験系であり、会話の自然さと即応性を優先する。`;
+
+事実性の絶対ルール:
+- 知らない事実、現在の外部情報、ユーザーの個人情報を推測して作らない。分からない場合は短く「そこは確認できない」と言う。
+- 過去のassistant発言は事実の証拠として扱わない。
+- 実際に行っていないPC操作を「開きました」「押しました」「変更しました」などと断定しない。
+- 現在のPC画面について、[システムが取得した現在画面の情報] が今回の入力に存在する場合だけ「見えている」「表示されている」「ここにある」と断定してよい。
+- 画面情報が無い場合は、画面内容を想像しない。必要なら「画面を確認すれば案内できる」とだけ言う。
+- 曖昧な依頼で事実を補完するくらいなら、短い確認質問をする。
+
+PC支援:
+- 画面確認結果が与えられた場合は、その結果だけを根拠に具体的に案内する。
+- 画面確認結果に無いボタン名、エラー、配置を勝手に補わない。
+
+目的は、電話AIとして自然に会話しつつ、PC作業支援では観測した事実だけを使うこと。`;
 
 const SCREEN_INTENT_RE = /(画面|ウィンドウ|ボタン|アイコン|メニュー|タブ|クリック|押して|押す|開いて|開きたい|どこ|エラー表示|表示され|見えて|矢印|指して|デスクトップ|ブラウザ|設定画面)/i;
 
@@ -52,7 +68,7 @@ async function decideScreen(ai, transcript, history, signal) {
     fastChatInput([
       {
         role: 'system',
-        content: 'ユーザーの依頼に答えるため、現在のPC画面を実際に見る必要があるか判定してください。一般知識、雑談、文章作成、単純質問ではfalse。現在表示中のボタン・アイコン・エラー・ウィンドウ・操作場所・画面状態を確認しないと正確に答えられない場合だけtrue。JSON以外を返さない。形式: {"inspect":true|false,"query":"画面上で確認すべき対象を短く"}',
+        content: '今回の依頼に答えるため現在のPC画面を実際に見る必要があるかだけ判定する。雑談、一般知識、文章相談、日常会話はfalse。現在表示中のボタン、アイコン、エラー、ウィンドウ、操作場所を確認しないと正確に答えられない時だけtrue。JSON以外を返さない。形式: {"inspect":true|false,"query":"確認対象を短く"}',
       },
       {
         role: 'user',
@@ -116,7 +132,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
 
   async onCallStart(connection) {
     try {
-      await this.speak(connection, 'はい、TalkSysです。どうぞ。');
+      await this.speak(connection, 'はい、TalkSysです。');
     } catch {
       // TTS障害で通話/STTまで巻き添えにしない。
     }
@@ -185,22 +201,19 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       ? `${transcript}\n\n[システムが取得した現在画面の情報]\n${screenContext}`
       : transcript;
     const result = await this.env.AI.run(
-      TEXT_MODEL,
+      VOICE_TEXT_MODEL,
       fastChatInput([
         { role: 'system', content: VOICE_SYSTEM_PROMPT },
-        ...context.messages.map((message) => ({
+        ...context.messages.slice(-16).map((message) => ({
           role: message.role,
           content: message.content,
         })),
         { role: 'user', content: userContent },
-      ], 512, 0.35),
+      ], 420, 0.45),
     );
     const reply = cleanSpeechText(extractText(result));
     if (!reply) throw new Error('Voice LLM returned an empty response');
 
-    // Existing TalkSys clients consume the complete `transcript` event.
-    // Cloudflare Voice emits assistant streaming events during an active call,
-    // so mirror the finalized reply in the complete format as a compatibility path.
     try {
       context.connection.send(JSON.stringify({
         type: 'transcript',
@@ -208,7 +221,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
         text: reply,
       }));
     } catch {
-      // The Voice mixin still owns the normal streaming transcript/TTS pipeline.
+      // Voice mixin owns the normal transcript/TTS pipeline.
     }
 
     return reply;
@@ -260,6 +273,16 @@ export default {
       });
     }
 
+    if (url.pathname === '/voice-fallback.js') {
+      return new Response(VOICE_FALLBACK_CLIENT, {
+        headers: {
+          'content-type': 'text/javascript; charset=utf-8',
+          'cache-control': 'no-store',
+          'x-talksys-voice-revision': VOICE_REVISION,
+        },
+      });
+    }
+
     if (url.pathname === '/voice-health') {
       return Response.json({
         ok: true,
@@ -270,14 +293,19 @@ export default {
         batchFinalStt: true,
         sttModel: '@cf/deepgram/nova-3',
         sttLanguage: 'ja',
+        llmModel: VOICE_TEXT_MODEL,
         llmTransport: 'env.AI.run',
         llmStreaming: false,
         llmThinking: false,
+        casualConversation: true,
+        groundedScreenClaims: true,
         screenIntentGate: true,
         assistantTranscriptCompat: true,
+        ttsPrimary: '@cf/myshell-ai/melotts',
+        ttsRetries: 3,
+        deviceTtsFallback: true,
         bargeIn: true,
         aiScreenDecision: true,
-        japaneseTts: true,
       }, {
         headers: {
           'cache-control': 'no-store',
@@ -305,7 +333,7 @@ export default {
       return new Response(
         html.replace(
           '</body>',
-          '<script src="/voice-marker-bridge.js"></script><script src="/realtime-voice.js"></script></body>',
+          '<script src="/voice-marker-bridge.js"></script><script src="/realtime-voice.js"></script><script src="/voice-fallback.js"></script></body>',
         ),
         { status: response.status, statusText: response.statusText, headers },
       );
