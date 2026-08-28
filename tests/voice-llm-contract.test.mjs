@@ -7,10 +7,10 @@ const realtime = await readFile(new URL('../src/realtime-voice-client.js', impor
 const fallback = await readFile(new URL('../src/voice-fallback-client.js', import.meta.url), 'utf8');
 const streaming = await readFile(new URL('../src/streaming-workers-ai.js', import.meta.url), 'utf8');
 
-test('voice uses one unified GLM 5.3 Flash runtime model', () => {
-  assert.match(streaming, /LIVE_VOICE_MODEL\s*=\s*'@cf\/zai-org\/glm-5\.3-flash'/);
+test('voice uses one unified Qwen 3.8 27B runtime model', () => {
+  assert.match(streaming, /LIVE_VOICE_MODEL\s*=\s*'@cf\/qwen\/qwen3\.8-27b'/);
   assert.match(streaming, /ai\.run\(LIVE_VOICE_MODEL/);
-  assert.match(streaming, /reasoning_effort:\s*'low'/);
+  assert.match(streaming, /reasoning_effort:\s*null/);
   assert.match(streaming, /enable_thinking:\s*false/);
 });
 
