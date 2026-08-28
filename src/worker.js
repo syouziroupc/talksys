@@ -4,6 +4,7 @@ import { streamText } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import app from './index.js';
 import { REALTIME_VOICE_CLIENT } from './realtime-voice-client.js';
+import { VOICE_MARKER_BRIDGE } from './voice-marker-bridge.js';
 import { FinalizableNova3STT } from './finalizable-nova3.js';
 import {
   TEXT_MODEL,
@@ -204,6 +205,15 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    if (url.pathname === '/voice-marker-bridge.js') {
+      return new Response(VOICE_MARKER_BRIDGE, {
+        headers: {
+          'content-type': 'text/javascript; charset=utf-8',
+          'cache-control': 'no-store',
+        },
+      });
+    }
+
     if (url.pathname === '/realtime-voice.js') {
       return new Response(REALTIME_VOICE_CLIENT, {
         headers: {
@@ -244,7 +254,10 @@ export default {
       headers.delete('content-length');
       headers.set('cache-control', 'no-store');
       return new Response(
-        html.replace('</body>', '<script src="/realtime-voice.js"></script></body>'),
+        html.replace(
+          '</body>',
+          '<script src="/voice-marker-bridge.js"></script><script src="/realtime-voice.js"></script></body>',
+        ),
         { status: response.status, statusText: response.statusText, headers },
       );
     }
