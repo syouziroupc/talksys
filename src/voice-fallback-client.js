@@ -10,6 +10,9 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
   if (!status || !chat) return;
 
   const canTts = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+  const TTS_HEARTBEAT_MS = 1200;
+  const TTS_WATCHDOG_MIN_MS = 6500;
+  const TTS_WATCHDOG_MAX_MS = 18000;
   let textSocket = null;
   let textWelcomed = false;
   let textBusy = false;
@@ -50,9 +53,7 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
     }
     textWelcomed = false;
     textSocket = new WebSocket(agentWsUrl());
-    textSocket.addEventListener('open', () => {
-      textSocket.send(JSON.stringify({ type: 'hello', protocol_version: 1 }));
-    });
+    textSocket.addEventListener('open', () => textSocket.send(JSON.stringify({ type: 'hello', protocol_version: 1 })));
     textSocket.addEventListener('message', (event) => {
       if (typeof event.data !== 'string') return;
       let data;
@@ -131,15 +132,19 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
   let lastSpokenAt = 0;
   let ttsActive = false;
   let ttsGeneration = 0;
-  let activeUtterances = 0;
   let streamId = '';
   let streamedText = '';
   let streamEnded = false;
   let lastStreamedFinal = '';
   let lastStreamedAt = 0;
+  let speechQueue = [];
+  let currentUtterance = null;
+  let currentText = '';
+  let speechWatchdog = null;
+  let speechHeartbeat = null;
 
   function setTtsState(active, detail = {}) {
-    if (ttsActive === active && !detail.interrupted) return;
+    if (ttsActive === active && !detail.interrupted && !detail.recovered) return;
     ttsActive = active;
     window.__talksysDeviceTtsSpeaking = active;
     window.dispatchEvent(new CustomEvent(active ? 'talksys:tts-start' : 'talksys:tts-end', { detail }));
@@ -163,12 +168,28 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
     return String(value || '').replace(/https?:\/\/\S+/g, 'リンク').replace(/\s+/g, ' ').trim();
   }
 
-  function cancelSpeech(interrupted = false) {
-    if (!canTts) return;
-    ttsGeneration += 1;
-    activeUtterances = 0;
-    speechSynthesis.cancel();
-    if (ttsActive) setTtsState(false, { interrupted });
+  function clearSpeechTimers() {
+    if (speechWatchdog) clearTimeout(speechWatchdog);
+    speechWatchdog = null;
+    if (speechHeartbeat) clearInterval(speechHeartbeat);
+    speechHeartbeat = null;
+  }
+
+  function finishTtsIfIdle(detail = {}) {
+    if (currentUtterance || speechQueue.length || !streamEnded) return;
+    clearSpeechTimers();
+    if (ttsActive) setTtsState(false, detail);
+    if (isVoiceSessionActive()) status.textContent = '聞いています';
+  }
+
+  function recoverSpeechEngine(generation) {
+    if (generation !== ttsGeneration || !currentUtterance) return;
+    currentUtterance = null;
+    currentText = '';
+    clearSpeechTimers();
+    try { speechSynthesis.cancel(); } catch {}
+    if (ttsActive) setTtsState(false, { recovered: true });
+    setTimeout(() => pumpSpeechQueue(generation), 80);
   }
 
   function makeUtterance(text, generation) {
@@ -180,25 +201,58 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
     const voice = pickJapaneseVoice();
     if (voice) utterance.voice = voice;
     utterance.onstart = () => {
-      if (generation !== ttsGeneration) return;
+      if (generation !== ttsGeneration || currentUtterance !== utterance) return;
       setTtsState(true);
       if (isVoiceSessionActive()) status.textContent = 'AIが話しています。途中でそのまま割り込めます。';
     };
-    utterance.onend = () => {
-      if (generation !== ttsGeneration) return;
-      activeUtterances = Math.max(0, activeUtterances - 1);
-      if (activeUtterances === 0 && streamEnded) {
-        setTtsState(false);
-        if (isVoiceSessionActive()) status.textContent = '聞いています';
-      }
+    const complete = (failed) => {
+      if (generation !== ttsGeneration || currentUtterance !== utterance) return;
+      currentUtterance = null;
+      currentText = '';
+      clearSpeechTimers();
+      if (failed && isVoiceSessionActive()) status.textContent = '日本語音声の再生を復旧しています…';
+      pumpSpeechQueue(generation);
+      finishTtsIfIdle(failed ? { recovered: true } : {});
     };
-    utterance.onerror = () => {
-      if (generation !== ttsGeneration) return;
-      activeUtterances = Math.max(0, activeUtterances - 1);
-      if (activeUtterances === 0) setTtsState(false);
-      if (isVoiceSessionActive()) status.textContent = '日本語音声を再生できません。返答はチャット欄に表示しています。';
-    };
+    utterance.onend = () => complete(false);
+    utterance.onerror = () => complete(true);
     return utterance;
+  }
+
+  function pumpSpeechQueue(generation = ttsGeneration) {
+    if (!canTts || generation !== ttsGeneration || currentUtterance) return;
+    const text = speechQueue.shift();
+    if (!text) {
+      finishTtsIfIdle();
+      return;
+    }
+    currentText = text;
+    const utterance = makeUtterance(text, generation);
+    currentUtterance = utterance;
+    const watchdogMs = Math.max(TTS_WATCHDOG_MIN_MS, Math.min(TTS_WATCHDOG_MAX_MS, 3500 + text.length * 180));
+    speechWatchdog = setTimeout(() => recoverSpeechEngine(generation), watchdogMs);
+    if (!speechHeartbeat) {
+      speechHeartbeat = setInterval(() => {
+        if (generation !== ttsGeneration || !currentUtterance) return;
+        try {
+          if (speechSynthesis.paused) speechSynthesis.resume();
+          else if (!speechSynthesis.speaking) speechSynthesis.resume();
+        } catch {}
+      }, TTS_HEARTBEAT_MS);
+    }
+    try { speechSynthesis.speak(utterance); }
+    catch { recoverSpeechEngine(generation); }
+  }
+
+  function cancelSpeech(interrupted = false) {
+    if (!canTts) return;
+    ttsGeneration += 1;
+    speechQueue = [];
+    currentUtterance = null;
+    currentText = '';
+    clearSpeechTimers();
+    try { speechSynthesis.cancel(); } catch {}
+    if (ttsActive) setTtsState(false, { interrupted });
   }
 
   function beginStream(id) {
@@ -216,9 +270,8 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
     if (!text || !isVoiceSessionActive()) return;
     if (!streamId || streamId !== id) beginStream(id);
     streamedText += text;
-    const generation = ttsGeneration;
-    activeUtterances += 1;
-    speechSynthesis.speak(makeUtterance(text, generation));
+    speechQueue.push(text);
+    pumpSpeechQueue(ttsGeneration);
   }
 
   function finishStream(detail) {
@@ -228,10 +281,7 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
     streamEnded = true;
     lastStreamedFinal = normalize(detail?.text) || normalize(streamedText);
     lastStreamedAt = Date.now();
-    if (activeUtterances === 0) {
-      setTtsState(false);
-      if (isVoiceSessionActive()) status.textContent = '聞いています';
-    }
+    finishTtsIfIdle();
   }
 
   function speakWhole(text) {
@@ -247,9 +297,8 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
     streamId = '';
     streamedText = value;
     streamEnded = true;
-    const generation = ttsGeneration;
-    activeUtterances = 1;
-    speechSynthesis.speak(makeUtterance(value, generation));
+    speechQueue.push(value);
+    pumpSpeechQueue(ttsGeneration);
   }
 
   window.addEventListener('talksys:assistant-stream-start', (event) => beginStream(String(event.detail?.streamId || '')));
@@ -273,6 +322,7 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
     });
     chatObserver.observe(chat, { childList: true });
     speechSynthesis.getVoices();
+    window.addEventListener('voiceschanged', () => speechSynthesis.getVoices());
   }
 
   window.addEventListener('beforeunload', () => {
