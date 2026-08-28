@@ -13,7 +13,7 @@ import {
   wrapAI,
 } from './voice-helpers.js';
 
-const VOICE_REVISION = 'direct-binding-v3';
+const VOICE_REVISION = 'direct-binding-v4';
 
 const VOICE_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声アシスタントです。電話で人と会話しているように、短く、自然に、テンポよく話してください。
 - 原則1〜3文で答える。長い説明は求められた時だけ行う。
@@ -24,12 +24,32 @@ const VOICE_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声ア�
 - 画面確認が必要なのに利用できない場合だけ、画面共有が必要だと一度だけ簡潔に伝える。
 これは電話AIとパソコン作業支援AIの実験系であり、会話の自然さと即応性を優先する。`;
 
+const SCREEN_INTENT_RE = /(画面|ウィンドウ|ボタン|アイコン|メニュー|タブ|クリック|押して|押す|開いて|開きたい|どこ|エラー表示|表示され|見えて|矢印|指して|デスクトップ|ブラウザ|設定画面)/i;
+
+function mightNeedScreen(transcript) {
+  return SCREEN_INTENT_RE.test(String(transcript || ''));
+}
+
+function fastChatInput(messages, maxCompletionTokens = 320, temperature = 0.25) {
+  return {
+    messages,
+    max_completion_tokens: maxCompletionTokens,
+    temperature,
+    reasoning_effort: null,
+    chat_template_kwargs: {
+      enable_thinking: false,
+      clear_thinking: true,
+    },
+  };
+}
+
 async function decideScreen(ai, transcript, history, signal) {
   const recent = Array.isArray(history)
     ? history.slice(-4).map((item) => `${item.role}: ${item.content}`).join('\n')
     : '';
-  const result = await ai.run(TEXT_MODEL, {
-    messages: [
+  const result = await ai.run(
+    TEXT_MODEL,
+    fastChatInput([
       {
         role: 'system',
         content: 'ユーザーの依頼に答えるため、現在のPC画面を実際に見る必要があるか判定してください。一般知識、雑談、文章作成、単純質問ではfalse。現在表示中のボタン・アイコン・エラー・ウィンドウ・操作場所・画面状態を確認しないと正確に答えられない場合だけtrue。JSON以外を返さない。形式: {"inspect":true|false,"query":"画面上で確認すべき対象を短く"}',
@@ -38,10 +58,9 @@ async function decideScreen(ai, transcript, history, signal) {
         role: 'user',
         content: `直近の会話:\n${recent || '(なし)'}\n\n今回の発話:\n${transcript}`,
       },
-    ],
-    max_tokens: 100,
-    temperature: 0,
-  }, signal ? { signal } : undefined);
+    ], 128, 0),
+    signal ? { signal } : undefined,
+  );
   return parseScreenDecision(extractText(result));
 }
 
@@ -146,35 +165,36 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
 
   async onTurn(transcript, context) {
     let screenContext = '';
-    try {
-      const decision = await decideScreen(this.env.AI, transcript, context.messages, context.signal);
-      if (decision.inspect) {
-        const screen = await this.requestScreen(
-          context.connection,
-          decision.query || transcript,
-          context.signal,
-        );
-        screenContext = formatScreenContext(screen);
+    if (mightNeedScreen(transcript)) {
+      try {
+        const decision = await decideScreen(this.env.AI, transcript, context.messages, context.signal);
+        if (decision.inspect) {
+          const screen = await this.requestScreen(
+            context.connection,
+            decision.query || transcript,
+            context.signal,
+          );
+          screenContext = formatScreenContext(screen);
+        }
+      } catch {
+        screenContext = '';
       }
-    } catch {
-      screenContext = '';
     }
 
     const userContent = screenContext
       ? `${transcript}\n\n[システムが取得した現在画面の情報]\n${screenContext}`
       : transcript;
-    const result = await this.env.AI.run(TEXT_MODEL, {
-      messages: [
+    const result = await this.env.AI.run(
+      TEXT_MODEL,
+      fastChatInput([
         { role: 'system', content: VOICE_SYSTEM_PROMPT },
         ...context.messages.map((message) => ({
           role: message.role,
           content: message.content,
         })),
         { role: 'user', content: userContent },
-      ],
-      max_tokens: 220,
-      temperature: 0.35,
-    });
+      ], 512, 0.35),
+    );
     const reply = cleanSpeechText(extractText(result));
     if (!reply) throw new Error('Voice LLM returned an empty response');
     return reply;
@@ -238,6 +258,8 @@ export default {
         sttLanguage: 'ja',
         llmTransport: 'env.AI.run',
         llmStreaming: false,
+        llmThinking: false,
+        screenIntentGate: true,
         bargeIn: true,
         aiScreenDecision: true,
         japaneseTts: true,
