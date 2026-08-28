@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { needsWebSearch, parseRss, parseBingHtml, relevanceScore, formatSearchContext } from '../src/web-search.js';
+import { needsWebSearch, simplifySearchQuery, parseRss, parseBingHtml, relevanceScore, formatSearchContext } from '../src/web-search.js';
 
 test('casual Japanese chat, personal advice, and conversation memory skip web search', () => {
   assert.equal(needsWebSearch('こんにちは'), false);
@@ -24,6 +24,12 @@ test('ordinary knowledge questions default to web search', () => {
   assert.equal(needsWebSearch('Cloudflare Workersって何'), true);
 });
 
+test('search query rewrite strips Japanese question filler and preserves entities', () => {
+  assert.equal(simplifySearchQuery('HIFUってどういうもの？'), 'HIFU');
+  assert.equal(simplifySearchQuery('Cloudflare Workersって何？'), 'Cloudflare Workers');
+  assert.match(simplifySearchQuery('現在の日本の総理大臣は誰？'), /日本.*総理大臣/);
+});
+
 test('RSS parser extracts result fields', () => {
   const xml = `<?xml version="1.0"?><rss><channel><item><title><![CDATA[Example &amp; News]]></title><link>https://example.com/a</link><description><![CDATA[最新の説明です。]]></description></item></channel></rss>`;
   const results = parseRss(xml, 'test-rss');
@@ -34,18 +40,19 @@ test('RSS parser extracts result fields', () => {
   assert.match(formatSearchContext(results), /Source: example\.com/);
 });
 
-test('Bing HTML parser extracts b_algo results', () => {
+test('Bing HTML parser extracts b_algo results and custom engine', () => {
   const html = `<ol><li class="b_algo"><h2><a href="https://example.jp/pm">日本の内閣総理大臣</a></h2><div><p>現在の内閣総理大臣について説明します。</p></div></li></ol>`;
-  const results = parseBingHtml(html);
+  const results = parseBingHtml(html, 8, 'bing-official-jp');
   assert.equal(results.length, 1);
   assert.equal(results[0].title, '日本の内閣総理大臣');
   assert.equal(results[0].url, 'https://example.jp/pm');
+  assert.equal(results[0].engine, 'bing-official-jp');
 });
 
-test('relevance ranking rejects unrelated junk and rewards query overlap', () => {
+test('relevance ranking rejects unrelated junk and rewards authoritative overlap', () => {
   const query = '現在の日本の総理大臣は誰？';
-  const relevant = relevanceScore(query, { title: '内閣総理大臣 - 日本', snippet: '日本の首相について', url: 'https://example.jp/pm' });
+  const relevant = relevanceScore(query, { title: '内閣総理大臣 - 日本', snippet: '日本の首相について', url: 'https://www.kantei.go.jp/example' });
   const junk = relevanceScore(query, { title: 'Bookcase Junk Journal Printable Kit', snippet: 'Vintage book lover digital download', url: 'https://example.com/junk' });
-  assert.ok(relevant >= 2);
+  assert.ok(relevant >= 4);
   assert.equal(junk, 0);
 });
