@@ -19,8 +19,10 @@ export function needsWebSearch(text) {
 export function simplifySearchQuery(value) {
   const original = String(value || '').trim();
   const simplified = original
-    .replace(/(?:検索して|検索|調べて|調べる|教えてください|教えて|説明して|知りたい|知ってる|について|最新|現在|いま|今の|今日の?|本当|事実|ですか|でしょうか|なの|なのか|って|とは|誰|何)/gi, ' ')
-    .replace(/[？?。！!、]/g, ' ')
+    .replace(/(?:検索して|検索|調べて|調べる|教えてください|教えて|説明して|知りたい|知ってる|について|最新|現在|いま|今の|今日の?|本当|事実|ですか|でしょうか|なの|なのか|って|とは)/gi, ' ')
+    .replace(/(?:どういうもの|どんなもの|どういう意味|どういう|どんな|なぜ|なんで|どうして|どれくらい|どのくらい|どっち|どちら|どれが|何が|何を|何の|誰が|誰|いつ|どこ|何)/gi, ' ')
+    .replace(/(?:を教えて|を説明して|について説明|について知りたい|って教えて)/gi, ' ')
+    .replace(/[？?。！!、：:「」『』]/g, ' ')
     .replace(/(^|\s)[のはがをにでとへ](?=\s|$)/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -71,7 +73,8 @@ export function relevanceScore(query, result) {
   }
   try {
     const host = new URL(result.url).hostname.toLowerCase();
-    if (/\.go\.jp$|\.lg\.jp$|wikipedia\.org$/.test(host)) score += 2;
+    if (/\.go\.jp$|\.lg\.jp$/.test(host)) score += 4;
+    else if (/wikipedia\.org$/.test(host)) score += 2;
   } catch {}
   return score;
 }
@@ -92,7 +95,7 @@ function uniqueRanked(query, results, limit) {
     .map(({ score, ...item }) => item);
 }
 
-export function parseBingHtml(html, limit = 8) {
+export function parseBingHtml(html, limit = 8, engine = 'bing-html') {
   const blocks = String(html || '').match(/<li[^>]+class="[^"]*b_algo[^"]*"[\s\S]*?<\/li>/gi) || [];
   const out = [];
   for (const block of blocks) {
@@ -104,7 +107,7 @@ export function parseBingHtml(html, limit = 8) {
     const p = block.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
     const snippet = p ? stripHtml(p[1]) : '';
     if (!title || !/^https?:\/\//i.test(url)) continue;
-    out.push({ title: title.slice(0, 220), url: url.slice(0, 700), snippet: snippet.slice(0, 800), engine: 'bing-html' });
+    out.push({ title: title.slice(0, 220), url: url.slice(0, 700), snippet: snippet.slice(0, 800), engine });
     if (out.length >= limit) break;
   }
   return out;
@@ -141,12 +144,12 @@ async function searchWikipedia(query, timeoutMs) {
   } catch { return []; }
 }
 
-async function searchBingHtml(query, timeoutMs) {
+async function searchBingHtml(query, timeoutMs, engine = 'bing-html') {
   const url = `https://www.bing.com/search?setlang=ja-JP&cc=jp&mkt=ja-JP&q=${encodeURIComponent(query)}`;
   try {
     const response = await fetch(url, { headers: { accept: 'text/html,application/xhtml+xml', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36' }, signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) return [];
-    return parseBingHtml(await response.text());
+    return parseBingHtml(await response.text(), 8, engine);
   } catch { return []; }
 }
 
@@ -175,9 +178,11 @@ export async function webSearch(query, options = {}) {
   const limit = Math.max(1, Math.min(8, Number(options.limit) || 5));
   const timeoutMs = Math.max(800, Math.min(3500, Number(options.timeoutMs) || 1900));
   const perSourceTimeout = Math.max(750, Math.min(timeoutMs, 1900));
+  const officialQuery = `${q} site:go.jp`;
   const batches = await Promise.all([
     searchWikipedia(q, perSourceTimeout),
-    searchBingHtml(q, perSourceTimeout),
+    searchBingHtml(q, perSourceTimeout, 'bing-html'),
+    searchBingHtml(officialQuery, perSourceTimeout, 'bing-official-jp'),
     searchGoogleNews(q, perSourceTimeout),
     searchBingRss(q, perSourceTimeout),
   ]);
