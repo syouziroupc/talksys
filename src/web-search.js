@@ -1,9 +1,10 @@
 const FACTUAL_RE = /(検索|調べ|最新|現在|いま|今の|今日|昨日|明日|ニュース|価格|値段|発売|誰|いつ|どこ|何年|何月|本当|事実|仕様|法律|制度|営業時間|天気|株価|為替|相場|ランキング|結果|予定|日程|とは|について教えて|知ってる|どうなって|何があった)/i;
 const CASUAL_RE = /^(おはよう|こんにちは|こんばんは|もしもし|ありがとう|ありがと|疲れた|眠い|腹減った|お腹すいた|暇|つかれた|元気|どうも|うん|はい|へえ|そうなんだ|なるほど|笑|わら)/i;
+const FEELING_RE = /^(?:今日は|今日も|今は|なんか|ちょっと|かなり|すごく|めっちゃ|もう)?(?:ちょっと|かなり|すごく|めっちゃ)?(?:疲れた|つかれた|眠い|ねむい|腹減った|お腹すいた|暇だ|暇|しんどい|つらい|嬉しい|うれしい|悲しい|かなしい|楽しい|たのしい|元気だ|元気)[。！!…〜ーなぁなあ]*$/i;
 
 export function needsWebSearch(text) {
   const value = String(text || '').trim();
-  if (!value || CASUAL_RE.test(value)) return false;
+  if (!value || CASUAL_RE.test(value) || FEELING_RE.test(value)) return false;
   return FACTUAL_RE.test(value);
 }
 
