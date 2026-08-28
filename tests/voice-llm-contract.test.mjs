@@ -9,8 +9,7 @@ const fallback = await readFile(new URL('../src/voice-fallback-client.js', impor
 test('voice routes casual chat to GPT-OSS 20B and grounded facts to GPT-OSS 120B', () => {
   assert.match(source, /CASUAL_VOICE_MODEL\s*=\s*'@cf\/openai\/gpt-oss-20b'/);
   assert.match(source, /GROUNDED_VOICE_MODEL\s*=\s*'@cf\/openai\/gpt-oss-120b'/);
-  assert.match(source, /await\s+this\.env\.AI\.run\(\s*CASUAL_VOICE_MODEL/);
-  assert.match(source, /await\s+this\.env\.AI\.run\(\s*GROUNDED_VOICE_MODEL/);
+  assert.match(source, /streamWorkersAIText\(this\.env\.AI,\s*model,\s*input/);
 });
 
 test('casual path allows useful 2 to 4 sentence replies on 20B', () => {
@@ -20,10 +19,19 @@ test('casual path allows useful 2 to 4 sentence replies on 20B', () => {
   assert.match(source, /casualResponseSentences:\s*'2-4'/);
 });
 
-test('GPT-OSS grounded path uses documented messages/max_tokens style', () => {
+test('grounded path stays on 120B and uses documented messages max_tokens style', () => {
   assert.match(source, /function\s+groundedChatInput/);
   assert.match(source, /max_tokens:\s*420/);
-  assert.match(source, /GROUNDED_VOICE_MODEL,[\s\S]*groundedChatInput/);
+  assert.match(source, /const\s+model\s*=\s*searchIntent\s*\|\|\s*screenIntent\s*\?\s*GROUNDED_VOICE_MODEL/);
+});
+
+test('LLM response is streamed into early speech chunks', () => {
+  assert.match(source, /assistant_stream_start/);
+  assert.match(source, /assistant_speech_chunk/);
+  assert.match(source, /assistant_stream_end/);
+  assert.match(source, /llmStreaming:\s*true/);
+  assert.match(source, /incrementalSpeechChunks:\s*true/);
+  assert.match(fallback, /talksys:assistant-speech-chunk/);
 });
 
 test('grounded prompt forbids unsupported external and screen claims', () => {
@@ -37,24 +45,27 @@ test('screen intent and web search are mutually exclusive', () => {
   assert.match(source, /const\s+searchIntent\s*=\s*!screenIntent\s*&&\s*needsWebSearch\(transcript\)/);
 });
 
-test('cloud TTS is skipped and device ja-JP is production speech path', () => {
+test('cloud TTS is skipped and device ja-JP streams chunks', () => {
   assert.match(source, /beforeSynthesize\(\)\s*\{\s*return null;/);
-  assert.match(source, /connectionGreetingTts:\s*false/);
   assert.match(source, /cloudTtsDisabled:\s*true/);
-  assert.match(source, /ttsPrimary:\s*'device-ja-JP'/);
+  assert.match(source, /ttsPrimary:\s*'device-ja-JP-streamed-chunks'/);
+  assert.match(fallback, /speechSynthesis\.speak\(makeUtterance\(text, generation\)\)/);
 });
 
-test('device TTS events suppress PCM and VAD to prevent self-listening', () => {
-  assert.match(fallback, /talksys:tts-start/);
-  assert.match(fallback, /talksys:tts-end/);
-  assert.match(realtime, /TTS_ECHO_GUARD_MS\s*=\s*350/);
-  assert.match(realtime, /function\s+micSuppressedForTts/);
-  assert.match(realtime, /if\s*\(micSuppressedForTts\(\)\)\s*\{[\s\S]*?resetSpeechDetection\(\);[\s\S]*?return;/);
-  assert.match(realtime, /window\.addEventListener\('talksys:tts-start',\s*handleDeviceTtsStart\)/);
-  assert.match(realtime, /window\.addEventListener\('talksys:tts-end',\s*handleDeviceTtsEnd\)/);
-  assert.match(source, /selfSpeechGuard:\s*true/);
-  assert.match(source, /halfDuplexDuringDeviceTts:\s*true/);
-  assert.match(source, /bargeIn:\s*false/);
+test('40ms capture and safe barge-in are enabled', () => {
+  assert.match(realtime, /CHUNK_SAMPLES\s*=\s*640/);
+  assert.match(realtime, /SILENCE_MS\s*=\s*520/);
+  assert.match(realtime, /TTS_BARGE_FRAMES\s*=\s*4/);
+  assert.match(realtime, /function\s+processBargeIn/);
+  assert.match(realtime, /talksys:barge-in/);
+  assert.match(source, /halfDuplexDuringDeviceTts:\s*false/);
+  assert.match(source, /bargeIn:\s*true/);
+});
+
+test('assistant echo is filtered after barge-in', () => {
+  assert.match(source, /function\s+looksLikeAssistantEcho/);
+  assert.match(source, /echoTranscriptFilter:\s*true/);
+  assert.match(source, /looksLikeAssistantEcho\(text,\s*recentAssistant\)/);
 });
 
 test('voice mirrors finalized assistant text in complete transcript format', () => {
@@ -63,11 +74,9 @@ test('voice mirrors finalized assistant text in complete transcript format', () 
   assert.match(source, /text:\s*reply/);
 });
 
-test('voice health exposes GPT-OSS v10 grounding and echo guard', () => {
-  assert.match(source, /VOICE_REVISION\s*=\s*'grounded-gptoss-v10'/);
-  assert.match(source, /webSearch:\s*true/);
+test('voice health exposes live stream v11 and Gemini Live upgrade path', () => {
+  assert.match(source, /VOICE_REVISION\s*=\s*'live-stream-v11'/);
   assert.match(source, /webSearchPolicy:\s*'knowledge-questions-default-search'/);
-  assert.match(source, /webSearchEngine:\s*'wikipedia\+bing-html\+google-news'/);
-  assert.match(source, /searchRelevanceFilter:\s*true/);
-  assert.match(source, /ttsEchoGuardMs:\s*350/);
+  assert.match(source, /geminiLivePreferredWhenConfigured:\s*true/);
+  assert.match(source, /api\/gemini-live-token/);
 });
