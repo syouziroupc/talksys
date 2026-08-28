@@ -13,7 +13,7 @@ import {
   wrapAI,
 } from './voice-helpers.js';
 
-const VOICE_REVISION = 'direct-binding-v4';
+const VOICE_REVISION = 'direct-binding-v5';
 
 const VOICE_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声アシスタントです。電話で人と会話しているように、短く、自然に、テンポよく話してください。
 - 原則1〜3文で答える。長い説明は求められた時だけ行う。
@@ -197,6 +197,20 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     );
     const reply = cleanSpeechText(extractText(result));
     if (!reply) throw new Error('Voice LLM returned an empty response');
+
+    // Existing TalkSys clients consume the complete `transcript` event.
+    // Cloudflare Voice emits assistant streaming events during an active call,
+    // so mirror the finalized reply in the complete format as a compatibility path.
+    try {
+      context.connection.send(JSON.stringify({
+        type: 'transcript',
+        role: 'assistant',
+        text: reply,
+      }));
+    } catch {
+      // The Voice mixin still owns the normal streaming transcript/TTS pipeline.
+    }
+
     return reply;
   }
 }
@@ -260,6 +274,7 @@ export default {
         llmStreaming: false,
         llmThinking: false,
         screenIntentGate: true,
+        assistantTranscriptCompat: true,
         bargeIn: true,
         aiScreenDecision: true,
         japaneseTts: true,
