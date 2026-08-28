@@ -9,6 +9,7 @@ export const REALTIME_VOICE_CLIENT = String.raw`(() => {
   const MIN_SPEECH_END = 0.012;
   const COMMIT_RETRY_MS = 900;
   const COMMIT_RETRY_LIMIT = 2;
+  const TTS_ECHO_GUARD_MS = 350;
 
   const voiceOriginal = document.getElementById('voice');
   if (!voiceOriginal || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
@@ -48,6 +49,8 @@ export const REALTIME_VOICE_CLIENT = String.raw`(() => {
   let pendingCommitId = '';
   let commitRetryCount = 0;
   let commitTimer = null;
+  let deviceTtsSpeaking = Boolean(window.__talksysDeviceTtsSpeaking);
+  let deviceTtsGuardUntil = 0;
 
   function setStatus(text) {
     if (status) status.textContent = text || '';
@@ -157,12 +160,40 @@ export const REALTIME_VOICE_CLIENT = String.raw`(() => {
     commitRetryCount = 0;
   }
 
+  function resetSpeechDetection() {
+    speaking = false;
+    speechChunks = 0;
+    clearSpeechTimer();
+  }
+
+  function micSuppressedForTts() {
+    return deviceTtsSpeaking || Date.now() < deviceTtsGuardUntil;
+  }
+
+  function handleDeviceTtsStart() {
+    deviceTtsSpeaking = true;
+    deviceTtsGuardUntil = Number.MAX_SAFE_INTEGER;
+    resetSpeechDetection();
+    finishPendingCommit();
+    setStatus('応答を読み上げています…');
+  }
+
+  function handleDeviceTtsEnd() {
+    deviceTtsSpeaking = false;
+    deviceTtsGuardUntil = Date.now() + TTS_ECHO_GUARD_MS;
+    resetSpeechDetection();
+    setTimeout(() => {
+      if (inCall && !micSuppressedForTts() && !speaking && !pendingCommitId) setStatus('聞いています');
+    }, TTS_ECHO_GUARD_MS + 30);
+  }
+
   function newCommitId() {
     if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') return globalThis.crypto.randomUUID();
     return Date.now().toString(36) + Math.random().toString(36).slice(2);
   }
 
   function sendUtteranceCommit() {
+    if (micSuppressedForTts()) return;
     if (!pendingCommitId) pendingCommitId = newCommitId();
     if (!sendJson({ type: 'utterance_commit', id: pendingCommitId })) return;
     clearCommitTimer();
@@ -180,7 +211,10 @@ export const REALTIME_VOICE_CLIENT = String.raw`(() => {
   }
 
   function endDetectedSpeech() {
-    if (!speaking) return;
+    if (!speaking || micSuppressedForTts()) {
+      resetSpeechDetection();
+      return;
+    }
     speaking = false;
     speechChunks = 0;
     clearSpeechTimer();
@@ -192,6 +226,8 @@ export const REALTIME_VOICE_CLIENT = String.raw`(() => {
   }
 
   function processAudioLevel(level) {
+    if (micSuppressedForTts()) return;
+
     if (!speaking && serverStatus !== 'speaking' && level < 0.03) {
       noiseFloor = noiseFloor * 0.97 + level * 0.03;
     }
@@ -253,16 +289,18 @@ export const REALTIME_VOICE_CLIENT = String.raw`(() => {
 
     workletNode.port.onmessage = (event) => {
       const samples = event.data instanceof Float32Array ? event.data : new Float32Array(event.data);
-      const level = rms(samples);
       micFrames += 1;
+      if (micSuppressedForTts()) {
+        resetSpeechDetection();
+        return;
+      }
+      const level = rms(samples);
       processAudioLevel(level);
       if (inCall && socket && socket.readyState === WebSocket.OPEN) {
         socket.send(floatTo16BitPCM(samples));
       }
     };
 
-    // AudioWorklet は出力先までグラフをつながないとブラウザが処理を停止することがある。
-    // processor は output を書かないので、destination へ接続してもマイク音はスピーカーへ流れない。
     mediaSource.connect(workletNode);
     workletNode.connect(audioContext.destination);
     await audioContext.resume().catch(() => {});
@@ -304,13 +342,14 @@ export const REALTIME_VOICE_CLIENT = String.raw`(() => {
         serverStatus = data.status || 'idle';
         if (serverStatus === 'listening') {
           inCall = true;
-          if (!speaking && !pendingCommitId) setStatus(micFrames > 0 ? '聞いています' : 'マイク入力を待っています…');
+          if (micSuppressedForTts()) setStatus('応答を読み上げています…');
+          else if (!speaking && !pendingCommitId) setStatus(micFrames > 0 ? '聞いています' : 'マイク入力を待っています…');
         } else if (serverStatus === 'thinking') {
           finishPendingCommit();
-          setStatus('考えています…');
+          if (!micSuppressedForTts()) setStatus('考えています…');
         } else if (serverStatus === 'speaking') {
           finishPendingCommit();
-          setStatus('応答中。途中でもそのまま話しかけられます。');
+          if (!micSuppressedForTts()) setStatus('応答を準備しています…');
         } else if (serverStatus === 'idle') {
           inCall = false;
           if (desiredCall) setStatus('通話を開始しています…');
@@ -331,7 +370,7 @@ export const REALTIME_VOICE_CLIENT = String.raw`(() => {
         return;
       }
       if (data.type === 'transcript_interim') {
-        if (data.text) setStatus('聞き取り: ' + data.text);
+        if (data.text && !micSuppressedForTts()) setStatus('聞き取り: ' + data.text);
         return;
       }
       if (data.type === 'transcript' && data.text) {
@@ -442,16 +481,14 @@ export const REALTIME_VOICE_CLIENT = String.raw`(() => {
   function endCall() {
     manualStop = true;
     desiredCall = false;
-    if (speaking) {
+    if (speaking && !micSuppressedForTts()) {
       sendJson({ type: 'end_of_speech' });
       pendingCommitId = newCommitId();
       sendUtteranceCommit();
     }
     if (inCall) sendJson({ type: 'end_call' });
     inCall = false;
-    speaking = false;
-    speechChunks = 0;
-    clearSpeechTimer();
+    resetSpeechDetection();
     finishPendingCommit();
     stopPlayback();
     if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop());
@@ -472,6 +509,9 @@ export const REALTIME_VOICE_CLIENT = String.raw`(() => {
     setStatus('');
     setVoiceUi();
   }
+
+  window.addEventListener('talksys:tts-start', handleDeviceTtsStart);
+  window.addEventListener('talksys:tts-end', handleDeviceTtsEnd);
 
   voice.addEventListener('click', async () => {
     if (desiredCall) endCall();
