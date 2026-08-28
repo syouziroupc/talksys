@@ -5,6 +5,7 @@ import { REALTIME_VOICE_CLIENT } from './realtime-voice-client.js';
 import { VOICE_MARKER_BRIDGE } from './voice-marker-bridge.js';
 import { VOICE_FALLBACK_CLIENT } from './voice-fallback-client.js';
 import { FinalizableNova3STT } from './finalizable-nova3.js';
+import { needsWebSearch, webSearch, formatSearchContext } from './web-search.js';
 import {
   TEXT_MODEL,
   extractText,
@@ -14,21 +15,25 @@ import {
   wrapAI,
 } from './voice-helpers.js';
 
-const VOICE_REVISION = 'grounded-chat-v6';
-const VOICE_TEXT_MODEL = '@cf/qwen/qwen3.8-27b';
+const VOICE_REVISION = 'grounded-search-v7';
+const CASUAL_VOICE_MODEL = '@cf/zai-org/glm-4.7-flash';
+const GROUNDED_VOICE_MODEL = '@cf/qwen/qwen3.8-27b';
 
 const VOICE_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声アシスタントです。
 
 会話の基本:
 - 普通の日常会話、雑談、相談、挨拶には、普通の会話相手として自然に応じる。何でもPC操作の話に結び付けない。
-- 電話で話しているように短く自然に返す。通常は1〜3文。必要なら会話を続けるための短い質問を1つだけ返してよい。
+- 電話で話しているように短く自然に返す。通常は1〜3文。必要なら会話を続ける短い質問を1つだけ返してよい。
 - 「承知しました」「お手伝いします」などの定型句を毎回つけない。
 - Markdown、箇条書き記号、URLなど、耳で聞き取りにくい表現は避ける。
 - ユーザーが言い直したり途中で割り込んだ場合は、新しい発話を優先する。
 
 事実性の絶対ルール:
-- 知らない事実、現在の外部情報、ユーザーの個人情報を推測して作らない。分からない場合は短く「そこは確認できない」と言う。
+- 知らない事実、現在の外部情報、ユーザーの個人情報を推測して作らない。
 - 過去のassistant発言は事実の証拠として扱わない。
+- [ウェブ検索結果] がある場合、現在の出来事、人物、価格、日程、制度、仕様など外部事実は検索結果に書かれた範囲だけで答える。検索結果に無い内容を補完しない。
+- [ウェブ検索結果] が「有効な結果なし」の場合、現在情報を推測せず、確認できなかったと短く伝える。
+- 検索結果が食い違う場合は断定せず、その旨を言う。必要なら情報源のサイト名だけ短く伝える。URLは読み上げない。
 - 実際に行っていないPC操作を「開きました」「押しました」「変更しました」などと断定しない。
 - 現在のPC画面について、[システムが取得した現在画面の情報] が今回の入力に存在する場合だけ「見えている」「表示されている」「ここにある」と断定してよい。
 - 画面情報が無い場合は、画面内容を想像しない。必要なら「画面を確認すれば案内できる」とだけ言う。
@@ -38,15 +43,15 @@ PC支援:
 - 画面確認結果が与えられた場合は、その結果だけを根拠に具体的に案内する。
 - 画面確認結果に無いボタン名、エラー、配置を勝手に補わない。
 
-目的は、電話AIとして自然に会話しつつ、PC作業支援では観測した事実だけを使うこと。`;
+目的は、電話AIとして自然に会話しつつ、外部事実は検索、PC操作は実画面という観測済み情報だけを使うこと。`;
 
-const SCREEN_INTENT_RE = /(画面|ウィンドウ|ボタン|アイコン|メニュー|タブ|クリック|押して|押す|開いて|開きたい|どこ|エラー表示|表示され|見えて|矢印|指して|デスクトップ|ブラウザ|設定画面)/i;
+const SCREEN_INTENT_RE = /(画面|ウィンドウ|ボタン|アイコン|メニュー|タブ|クリック|押して|押す|開いて|開きたい|どこにある|どのボタン|エラー表示|表示され|見えて|矢印|指して|デスクトップ|ブラウザ|設定画面)/i;
 
 function mightNeedScreen(transcript) {
   return SCREEN_INTENT_RE.test(String(transcript || ''));
 }
 
-function fastChatInput(messages, maxCompletionTokens = 320, temperature = 0.25) {
+function fastChatInput(messages, maxCompletionTokens = 240, temperature = 0.25) {
   return {
     messages,
     max_completion_tokens: maxCompletionTokens,
@@ -74,7 +79,7 @@ async function decideScreen(ai, transcript, history, signal) {
         role: 'user',
         content: `直近の会話:\n${recent || '(なし)'}\n\n今回の発話:\n${transcript}`,
       },
-    ], 128, 0),
+    ], 96, 0),
     signal ? { signal } : undefined,
   );
   return parseScreenDecision(extractText(result));
@@ -92,7 +97,7 @@ function formatScreenContext(screen) {
 }
 
 const VoiceAgentBase = withVoice(Agent, {
-  historyLimit: 24,
+  historyLimit: 20,
   audioFormat: 'mp3',
   maxMessageCount: 500,
   diagnostics: { browserConsole: false },
@@ -104,7 +109,7 @@ function createJapaneseTranscriber(ai) {
     sampleRate: 16000,
     smartFormat: true,
     punctuate: true,
-    serverSilenceFallbackMs: 1400,
+    serverSilenceFallbackMs: 1100,
     maxTurnMs: 30000,
     preRollFrames: 6,
     minSpeechMs: 160,
@@ -112,6 +117,8 @@ function createJapaneseTranscriber(ai) {
 }
 
 export class TalkSysVoiceAgent extends VoiceAgentBase {
+  // withVoice requires a TTS provider property, but browser/device ja-JP TTS is the
+  // production speech path. beforeSynthesize() returns null so cloud TTS is skipped.
   tts = new MeloJapaneseTTS(this.env.AI);
   screenWaiters = new Map();
 
@@ -119,9 +126,8 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     return createJapaneseTranscriber(this.env.AI);
   }
 
-  beforeSynthesize(text) {
-    const cleaned = cleanSpeechText(text);
-    return cleaned || null;
+  beforeSynthesize() {
+    return null;
   }
 
   afterTranscribe(transcript) {
@@ -130,12 +136,9 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     return text;
   }
 
-  async onCallStart(connection) {
-    try {
-      await this.speak(connection, 'はい、TalkSysです。');
-    } catch {
-      // TTS障害で通話/STTまで巻き添えにしない。
-    }
+  onCallStart() {
+    // Do not synthesize a greeting. The client is already connected and can enter
+    // listening immediately, avoiding a slow/failed TTS call at call startup.
   }
 
   onMessage(connection, message) {
@@ -165,7 +168,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       };
       const timer = setTimeout(
         () => finish({ type: 'screen_result', id, available: false, error: 'timeout' }),
-        6500,
+        5000,
       );
       this.screenWaiters.set(id, { connectionId: connection.id, finish });
       if (signal) {
@@ -180,8 +183,12 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
   }
 
   async onTurn(transcript, context) {
+    const screenIntent = mightNeedScreen(transcript);
+    const searchIntent = !screenIntent && needsWebSearch(transcript);
     let screenContext = '';
-    if (mightNeedScreen(transcript)) {
+    let searchContext = '';
+
+    if (screenIntent) {
       try {
         const decision = await decideScreen(this.env.AI, transcript, context.messages, context.signal);
         if (decision.inspect) {
@@ -195,21 +202,38 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       } catch {
         screenContext = '';
       }
+    } else if (searchIntent) {
+      const results = await webSearch(transcript, { limit: 5, timeoutMs: 2300 });
+      searchContext = formatSearchContext(results) || '有効な結果なし。現在情報は推測しないこと。';
+      try {
+        context.connection.send(JSON.stringify({
+          type: 'search_status',
+          searched: true,
+          resultCount: results.length,
+          sources: results.slice(0, 3).map((item) => ({ title: item.title, url: item.url })),
+        }));
+      } catch {}
     }
 
-    const userContent = screenContext
-      ? `${transcript}\n\n[システムが取得した現在画面の情報]\n${screenContext}`
-      : transcript;
+    let userContent = transcript;
+    if (screenContext) {
+      userContent += `\n\n[システムが取得した現在画面の情報]\n${screenContext}`;
+    }
+    if (searchIntent) {
+      userContent += `\n\n[ウェブ検索結果]\n${searchContext}`;
+    }
+
+    const model = searchIntent ? GROUNDED_VOICE_MODEL : CASUAL_VOICE_MODEL;
     const result = await this.env.AI.run(
-      VOICE_TEXT_MODEL,
+      model,
       fastChatInput([
         { role: 'system', content: VOICE_SYSTEM_PROMPT },
-        ...context.messages.slice(-16).map((message) => ({
+        ...context.messages.slice(-10).map((message) => ({
           role: message.role,
           content: message.content,
         })),
         { role: 'user', content: userContent },
-      ], 420, 0.45),
+      ], searchIntent ? 360 : 220, searchIntent ? 0.2 : 0.55),
     );
     const reply = cleanSpeechText(extractText(result));
     if (!reply) throw new Error('Voice LLM returned an empty response');
@@ -220,9 +244,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
         role: 'assistant',
         text: reply,
       }));
-    } catch {
-      // Voice mixin owns the normal transcript/TTS pipeline.
-    }
+    } catch {}
 
     return reply;
   }
@@ -238,7 +260,7 @@ async function serveVoiceSmoke(env) {
       headers: {
         'content-type': 'audio/mpeg',
         'cache-control': 'no-store',
-        'x-talksys-voice': 'melotts-jp',
+        'x-talksys-voice': 'melotts-jp-diagnostic-only',
       },
     });
   } catch (error) {
@@ -283,6 +305,13 @@ export default {
       });
     }
 
+    if (url.pathname === '/api/web-search' && request.method === 'GET') {
+      const query = String(url.searchParams.get('q') || '').trim();
+      if (!query) return Response.json({ ok: false, error: 'q is required' }, { status: 400 });
+      const results = await webSearch(query, { limit: 5, timeoutMs: 3000 });
+      return Response.json({ ok: true, query, results }, { headers: { 'cache-control': 'no-store' } });
+    }
+
     if (url.pathname === '/voice-health') {
       return Response.json({
         ok: true,
@@ -293,17 +322,20 @@ export default {
         batchFinalStt: true,
         sttModel: '@cf/deepgram/nova-3',
         sttLanguage: 'ja',
-        llmModel: VOICE_TEXT_MODEL,
+        casualLlmModel: CASUAL_VOICE_MODEL,
+        groundedLlmModel: GROUNDED_VOICE_MODEL,
         llmTransport: 'env.AI.run',
-        llmStreaming: false,
         llmThinking: false,
         casualConversation: true,
+        webSearch: true,
+        webSearchEngine: 'bing-rss',
+        groundedExternalFacts: true,
         groundedScreenClaims: true,
         screenIntentGate: true,
         assistantTranscriptCompat: true,
-        ttsPrimary: '@cf/myshell-ai/melotts',
-        ttsRetries: 3,
-        deviceTtsFallback: true,
+        connectionGreetingTts: false,
+        cloudTtsDisabled: true,
+        ttsPrimary: 'device-ja-JP',
         bargeIn: true,
         aiScreenDecision: true,
       }, {
