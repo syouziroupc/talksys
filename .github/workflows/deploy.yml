@@ -1,4 +1,4 @@
-name: Deploy to Cloudflare
+name: Validate and Deploy
 
 on:
   push:
@@ -8,6 +8,9 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,6 +20,7 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           node --check src/index.js
+          node --check src/worker.js
           node --check desktop/main.cjs
           node --check desktop/preload.cjs
           node --check desktop/overlay-preload.cjs
@@ -73,8 +77,10 @@ jobs:
             web-mobile.png
             desktop-control.png
             desktop-overlay.png
-      - uses: cloudflare/wrangler-action@v4
+      - name: Deploy directly when repository credentials are configured
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
+        uses: cloudflare/wrangler-action@v4
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
