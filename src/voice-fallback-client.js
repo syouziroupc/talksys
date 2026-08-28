@@ -10,6 +10,14 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
 
   let lastSpoken = '';
   let lastSpokenAt = 0;
+  let ttsActive = false;
+
+  function setTtsState(active) {
+    if (ttsActive === active) return;
+    ttsActive = active;
+    window.__talksysDeviceTtsSpeaking = active;
+    window.dispatchEvent(new CustomEvent(active ? 'talksys:tts-start' : 'talksys:tts-end'));
+  }
 
   function pickJapaneseVoice() {
     const voices = speechSynthesis.getVoices();
@@ -41,12 +49,15 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
     const voice = pickJapaneseVoice();
     if (voice) utterance.voice = voice;
     utterance.onstart = () => {
-      if (isVoiceSessionActive()) status.textContent = '応答を読み上げています。途中でもそのまま話しかけられます。';
+      setTtsState(true);
+      if (isVoiceSessionActive()) status.textContent = '応答を読み上げています。読み上げ後すぐ聞き取りを再開します。';
     };
     utterance.onend = () => {
+      setTtsState(false);
       if (isVoiceSessionActive()) status.textContent = '聞いています';
     };
     utterance.onerror = () => {
+      setTtsState(false);
       if (isVoiceSessionActive()) status.textContent = '日本語音声を再生できません。返答はチャット欄に表示しています。';
     };
     speechSynthesis.speak(utterance);
@@ -63,13 +74,10 @@ export const VOICE_FALLBACK_CLIENT = String.raw`(() => {
   });
   chatObserver.observe(chat, { childList: true });
 
-  const statusObserver = new MutationObserver(() => {
-    const text = String(status.textContent || '');
-    if (/話しています|割り込/i.test(text) && speechSynthesis.speaking) speechSynthesis.cancel();
-  });
-  statusObserver.observe(status, { childList: true, characterData: true, subtree: true });
-
   speechSynthesis.getVoices();
-  window.addEventListener('beforeunload', () => speechSynthesis.cancel(), { once: true });
+  window.addEventListener('beforeunload', () => {
+    speechSynthesis.cancel();
+    setTtsState(false);
+  }, { once: true });
 })();
 `;
