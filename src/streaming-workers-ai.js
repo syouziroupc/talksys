@@ -32,17 +32,17 @@ function splitSpeechChunks(buffer, force = false) {
   const chunks = [];
   let rest = String(buffer || '');
   while (rest) {
-    const sentence = rest.match(/^([\s\S]*?[。！？!?]+)(?:\s+|$)/u);
+    const sentence = rest.match(/^([\s\S]*?[。！？!?]+)/u);
     if (sentence && sentence[1].trim().length >= 3) {
       chunks.push(sentence[1].trim());
-      rest = rest.slice(sentence[0].length);
+      rest = rest.slice(sentence[0].length).replace(/^\s+/, '');
       continue;
     }
     if (rest.length >= 46) {
       const commaAt = Math.max(rest.lastIndexOf('、', 46), rest.lastIndexOf('，', 46), rest.lastIndexOf(',', 46));
       if (commaAt >= 16) {
         chunks.push(rest.slice(0, commaAt + 1).trim());
-        rest = rest.slice(commaAt + 1);
+        rest = rest.slice(commaAt + 1).replace(/^\s+/, '');
         continue;
       }
     }
