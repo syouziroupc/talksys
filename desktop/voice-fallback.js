@@ -10,6 +10,14 @@
 
   let lastSpoken = '';
   let lastSpokenAt = 0;
+  let ttsActive = false;
+
+  function setTtsState(active) {
+    if (ttsActive === active) return;
+    ttsActive = active;
+    window.__talksysDeviceTtsSpeaking = active;
+    window.dispatchEvent(new CustomEvent(active ? 'talksys:tts-start' : 'talksys:tts-end'));
+  }
 
   function pickJapaneseVoice() {
     const voices = speechSynthesis.getVoices();
@@ -30,6 +38,7 @@
     if (value === lastSpoken && now - lastSpokenAt < 10000) return;
     lastSpoken = value;
     lastSpokenAt = now;
+
     speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(value);
     utterance.lang = 'ja-JP';
@@ -38,9 +47,18 @@
     utterance.volume = 1.0;
     const voice = pickJapaneseVoice();
     if (voice) utterance.voice = voice;
-    utterance.onstart = () => { if (isVoiceSessionActive()) status.textContent = '応答を読み上げています。途中でも話しかけられます。'; };
-    utterance.onerror = () => { if (isVoiceSessionActive()) status.textContent = '日本語音声を再生できません。返答はチャット欄に表示しています。'; };
-    utterance.onend = () => { if (isVoiceSessionActive()) status.textContent = '聞いています'; };
+    utterance.onstart = () => {
+      setTtsState(true);
+      if (isVoiceSessionActive()) status.textContent = '応答を読み上げています。読み上げ後すぐ聞き取りを再開します。';
+    };
+    utterance.onerror = () => {
+      setTtsState(false);
+      if (isVoiceSessionActive()) status.textContent = '日本語音声を再生できません。返答はチャット欄に表示しています。';
+    };
+    utterance.onend = () => {
+      setTtsState(false);
+      if (isVoiceSessionActive()) status.textContent = '聞いています';
+    };
     speechSynthesis.speak(utterance);
   }
 
@@ -54,10 +72,9 @@
     }
   }).observe(chat, { childList: true });
 
-  new MutationObserver(() => {
-    if (/話しています|割り込/i.test(String(status.textContent || '')) && speechSynthesis.speaking) speechSynthesis.cancel();
-  }).observe(status, { childList: true, characterData: true, subtree: true });
-
   speechSynthesis.getVoices();
-  window.addEventListener('beforeunload', () => speechSynthesis.cancel(), { once: true });
+  window.addEventListener('beforeunload', () => {
+    speechSynthesis.cancel();
+    setTtsState(false);
+  }, { once: true });
 })();
