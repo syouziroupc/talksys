@@ -17,21 +17,22 @@ function entryScore(entry) {
   return Number.isFinite(n) ? n : null;
 }
 
-export async function rerankSearchResults(ai, query, results, limit = 5) {
+export async function rerankSearchResults(ai, query, results, limit = 3) {
   const input = Array.isArray(results) ? results.filter(Boolean).slice(0, 12) : [];
-  if (!ai || typeof ai.run !== 'function' || input.length < 2) return input.slice(0, limit);
+  const outputLimit = Math.max(1, Math.min(3, Number(limit) || 3));
+  if (!ai || typeof ai.run !== 'function' || input.length < 2) return input.slice(0, outputLimit);
 
   try {
     const contexts = input.map((item) => ({
-      text: `${String(item.title || '').slice(0, 220)}\n${String(item.snippet || '').slice(0, 900)}`,
+      text: `${String(item.title || '').slice(0, 220)}\n${String(item.snippet || '').slice(0, 700)}`,
     }));
     const response = await ai.run(SEARCH_RERANK_MODEL, {
       query: String(query || '').slice(0, 500),
       contexts,
-      top_k: Math.min(input.length, Math.max(limit, 5)),
+      top_k: Math.min(input.length, Math.max(outputLimit, 5)),
     });
     const rankedEntries = extractRankedEntries(response);
-    if (!rankedEntries.length) return input.slice(0, limit);
+    if (!rankedEntries.length) return input.slice(0, outputLimit);
 
     const used = new Set();
     const ranked = [];
@@ -39,15 +40,14 @@ export async function rerankSearchResults(ai, query, results, limit = 5) {
       const index = entryIndex(entry);
       if (index < 0 || index >= input.length || used.has(index)) continue;
       const score = entryScore(entry);
-      // Extremely weak semantic matches are more dangerous than returning fewer sources.
       if (score !== null && score < 0.08) continue;
       used.add(index);
       ranked.push({ ...input[index], rerankScore: score });
-      if (ranked.length >= limit) break;
+      if (ranked.length >= outputLimit) break;
     }
-    if (!ranked.length) return input.slice(0, limit);
+    if (!ranked.length) return input.slice(0, outputLimit);
     return ranked;
   } catch {
-    return input.slice(0, limit);
+    return input.slice(0, outputLimit);
   }
 }
