@@ -6,6 +6,7 @@ import { VOICE_MARKER_BRIDGE } from './voice-marker-bridge.js';
 import { VOICE_FALLBACK_CLIENT } from './voice-fallback-client.js';
 import { FinalizableNova3STT } from './finalizable-nova3.js';
 import { needsWebSearch, webSearch, formatSearchContext } from './web-search.js';
+import { streamWorkersAIText } from './streaming-workers-ai.js';
 import {
   TEXT_MODEL,
   extractText,
@@ -15,7 +16,7 @@ import {
   wrapAI,
 } from './voice-helpers.js';
 
-const VOICE_REVISION = 'grounded-gptoss-v10';
+const VOICE_REVISION = 'live-stream-v11';
 const CASUAL_VOICE_MODEL = '@cf/openai/gpt-oss-20b';
 const GROUNDED_VOICE_MODEL = '@cf/openai/gpt-oss-120b';
 
@@ -68,6 +69,23 @@ function groundedChatInput(messages) {
   };
 }
 
+function normalizedSpeech(value) {
+  return String(value || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+function looksLikeAssistantEcho(transcript, assistantText) {
+  const heard = normalizedSpeech(transcript);
+  const spoken = normalizedSpeech(assistantText);
+  if (heard.length < 7 || spoken.length < 12) return false;
+  if (spoken.includes(heard)) return true;
+  const grams = new Set();
+  for (let i = 0; i < heard.length - 1; i += 1) grams.add(heard.slice(i, i + 2));
+  if (!grams.size) return false;
+  let overlap = 0;
+  for (const gram of grams) if (spoken.includes(gram)) overlap += 1;
+  return overlap / grams.size >= 0.82;
+}
+
 async function decideScreen(ai, transcript, history, signal) {
   const recent = Array.isArray(history)
     ? history.slice(-3).map((item) => `${item.role}: ${item.content}`).join('\n')
@@ -111,16 +129,19 @@ function createJapaneseTranscriber(ai) {
     sampleRate: 16000,
     smartFormat: true,
     punctuate: true,
-    serverSilenceFallbackMs: 1050,
+    serverSilenceFallbackMs: 950,
     maxTurnMs: 30000,
     preRollFrames: 6,
-    minSpeechMs: 160,
+    minSpeechMs: 140,
   });
 }
 
 export class TalkSysVoiceAgent extends VoiceAgentBase {
   tts = new MeloJapaneseTTS(this.env.AI);
   screenWaiters = new Map();
+  currentAssistantText = '';
+  lastAssistantText = '';
+  assistantSpeechAt = 0;
 
   createTranscriber() {
     return createJapaneseTranscriber(this.env.AI);
@@ -133,6 +154,8 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
   afterTranscribe(transcript) {
     const text = String(transcript || '').trim();
     if (!text || /^[えーあーうーん\s。、]+$/u.test(text)) return null;
+    const recentAssistant = this.currentAssistantText || this.lastAssistantText;
+    if (Date.now() - this.assistantSpeechAt < 12000 && looksLikeAssistantEcho(text, recentAssistant)) return null;
     return text;
   }
 
@@ -186,7 +209,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       }
     } else if (searchIntent) {
       try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'searching', searched: true })); } catch {}
-      const results = await webSearch(transcript, { limit: 5, timeoutMs: 1900 });
+      const results = await webSearch(transcript, { limit: 5, timeoutMs: 1800 });
       searchContext = formatSearchContext(results) || '有効な検索結果なし。外部事実は推測しないこと。';
       try {
         context.connection.send(JSON.stringify({
@@ -203,29 +226,51 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     if (screenContext) userContent += `\n\n[システムが取得した現在画面の情報]\n${screenContext}`;
     if (searchIntent) userContent += `\n\n[ウェブ検索結果]\n${searchContext}`;
 
-    let result;
-    if (searchIntent || screenIntent) {
-      result = await this.env.AI.run(
-        GROUNDED_VOICE_MODEL,
-        groundedChatInput([
-          { role: 'system', content: GROUNDED_SYSTEM_PROMPT },
-          ...context.messages.slice(-6).map((message) => ({ role: message.role, content: message.content })),
-          { role: 'user', content: userContent },
-        ]),
-      );
-    } else {
-      result = await this.env.AI.run(
-        CASUAL_VOICE_MODEL,
-        casualChatInput([
-          { role: 'system', content: CASUAL_SYSTEM_PROMPT },
-          ...context.messages.slice(-6).map((message) => ({ role: message.role, content: message.content })),
-          { role: 'user', content: userContent },
-        ]),
-      );
+    const model = searchIntent || screenIntent ? GROUNDED_VOICE_MODEL : CASUAL_VOICE_MODEL;
+    const prompt = searchIntent || screenIntent ? GROUNDED_SYSTEM_PROMPT : CASUAL_SYSTEM_PROMPT;
+    const input = (searchIntent || screenIntent ? groundedChatInput : casualChatInput)([
+      { role: 'system', content: prompt },
+      ...context.messages.slice(-6).map((message) => ({ role: message.role, content: message.content })),
+      { role: 'user', content: userContent },
+    ]);
+
+    const streamId = crypto.randomUUID();
+    this.currentAssistantText = '';
+    this.assistantSpeechAt = Date.now();
+    try { context.connection.send(JSON.stringify({ type: 'assistant_stream_start', streamId })); } catch {}
+
+    let resultText;
+    try {
+      resultText = await streamWorkersAIText(this.env.AI, model, input, {
+        signal: context.signal,
+        onDelta: (_delta, full) => {
+          this.currentAssistantText = full;
+        },
+        onSpeechChunk: (chunk, sequence) => {
+          const spoken = cleanSpeechText(chunk);
+          if (!spoken) return;
+          try {
+            context.connection.send(JSON.stringify({
+              type: 'assistant_speech_chunk',
+              streamId,
+              sequence,
+              text: spoken,
+            }));
+          } catch {}
+        },
+      });
+    } catch (error) {
+      this.currentAssistantText = '';
+      try { context.connection.send(JSON.stringify({ type: 'assistant_stream_end', streamId, interrupted: true })); } catch {}
+      throw error;
     }
 
-    const reply = cleanSpeechText(extractText(result));
+    const reply = cleanSpeechText(resultText);
     if (!reply) throw new Error('Voice LLM returned an empty response');
+    this.lastAssistantText = reply;
+    this.currentAssistantText = '';
+    this.assistantSpeechAt = Date.now();
+    try { context.connection.send(JSON.stringify({ type: 'assistant_stream_end', streamId, text: reply })); } catch {}
     try { context.connection.send(JSON.stringify({ type: 'transcript', role: 'assistant', text: reply })); } catch {}
     return reply;
   }
@@ -242,6 +287,43 @@ async function serveVoiceSmoke(env) {
   }
 }
 
+async function serveGeminiLiveToken(env) {
+  if (!env.GEMINI_API_KEY) {
+    return Response.json({ available: false, reason: 'GEMINI_API_KEY_not_configured' }, { status: 503, headers: { 'cache-control': 'no-store' } });
+  }
+  const now = Date.now();
+  const response = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-goog-api-key': env.GEMINI_API_KEY,
+    },
+    body: JSON.stringify({
+      uses: 1,
+      expireTime: new Date(now + 30 * 60 * 1000).toISOString(),
+      newSessionExpireTime: new Date(now + 60 * 1000).toISOString(),
+      liveConnectConstraints: {
+        model: 'models/gemini-3.1-flash-live-preview',
+        config: {
+          sessionResumption: {},
+          responseModalities: ['AUDIO'],
+        },
+      },
+    }),
+  });
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 500);
+    return Response.json({ available: false, reason: 'gemini_token_failed', detail }, { status: 502, headers: { 'cache-control': 'no-store' } });
+  }
+  const token = await response.json();
+  return Response.json({
+    available: true,
+    token: token.name,
+    model: 'gemini-3.1-flash-live-preview',
+    endpoint: 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained',
+  }, { headers: { 'cache-control': 'no-store' } });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -255,6 +337,7 @@ export default {
     if (url.pathname === '/voice-fallback.js') {
       return new Response(VOICE_FALLBACK_CLIENT, { headers: { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store', 'x-talksys-voice-revision': VOICE_REVISION } });
     }
+    if (url.pathname === '/api/gemini-live-token' && request.method === 'POST') return serveGeminiLiveToken(env);
     if (url.pathname === '/api/web-search' && request.method === 'GET') {
       const query = String(url.searchParams.get('q') || '').trim();
       if (!query) return Response.json({ ok: false, error: 'q is required' }, { status: 400 });
@@ -273,9 +356,11 @@ export default {
         sttLanguage: 'ja',
         casualLlmModel: CASUAL_VOICE_MODEL,
         groundedLlmModel: GROUNDED_VOICE_MODEL,
+        llmStreaming: true,
+        incrementalSpeechChunks: true,
         casualPrompt: 'gptoss20b-balanced-2-4-sentences',
         casualResponseSentences: '2-4',
-        llmTransport: 'env.AI.run',
+        llmTransport: 'env.AI.run-stream',
         llmThinking: 'model-native',
         casualConversation: true,
         webSearch: true,
@@ -288,11 +373,14 @@ export default {
         assistantTranscriptCompat: true,
         connectionGreetingTts: false,
         cloudTtsDisabled: true,
-        ttsPrimary: 'device-ja-JP',
+        ttsPrimary: 'device-ja-JP-streamed-chunks',
         selfSpeechGuard: true,
-        halfDuplexDuringDeviceTts: true,
+        echoTranscriptFilter: true,
+        halfDuplexDuringDeviceTts: false,
         ttsEchoGuardMs: 350,
-        bargeIn: false,
+        bargeIn: true,
+        geminiLivePreferredWhenConfigured: true,
+        geminiLiveConfigured: Boolean(env.GEMINI_API_KEY),
         aiScreenDecision: true,
       }, { headers: { 'cache-control': 'no-store', 'x-talksys-voice-revision': VOICE_REVISION } });
     }
