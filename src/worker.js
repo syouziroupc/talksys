@@ -15,7 +15,7 @@ import {
   wrapAI,
 } from './voice-helpers.js';
 
-const VOICE_REVISION = 'buffered-binary-v1';
+const VOICE_REVISION = 'buffered-binary-v2';
 
 const VOICE_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声アシスタントです。電話で人と会話しているように、短く、自然に、テンポよく話してください。
 - 原則1〜3文で答える。長い説明は求められた時だけ行う。
@@ -168,7 +168,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       : transcript;
     const result = streamText({
       model: workersAI(TEXT_MODEL, { sessionAffinity: this.sessionAffinity }),
-      system: VOICE_SYSTEM_PROMPT,
+      instructions: VOICE_SYSTEM_PROMPT,
       messages: [
         ...context.messages.map((message) => ({
           role: message.role,
@@ -178,7 +178,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       ],
       abortSignal: context.signal,
     });
-    return result.fullStream;
+    return result.stream;
   }
 }
 
@@ -237,6 +237,8 @@ export default {
         batchFinalStt: true,
         sttModel: '@cf/deepgram/nova-3',
         sttLanguage: 'ja',
+        llmStream: 'result.stream',
+        aiSdkContract: 7,
         bargeIn: true,
         aiScreenDecision: true,
         japaneseTts: true,
