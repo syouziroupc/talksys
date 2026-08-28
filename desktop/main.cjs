@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen, session } = require('electron');
 const path = require('node:path');
 const { writeFile } = require('node:fs/promises');
 
@@ -33,6 +33,24 @@ async function postApi(route, body, apiBase) {
   }
   if (!response.ok) throw new Error(data.error || `API error ${response.status}`);
   return data;
+}
+
+function isTrustedMainWindow(webContents) {
+  return Boolean(
+    webContents &&
+    mainWindow &&
+    !mainWindow.isDestroyed() &&
+    webContents.id === mainWindow.webContents.id
+  );
+}
+
+function configureMediaPermissions() {
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+    return permission === 'media' && isTrustedMainWindow(webContents);
+  });
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(permission === 'media' && isTrustedMainWindow(webContents));
+  });
 }
 
 function createMainWindow() {
@@ -202,6 +220,7 @@ ipcMain.handle('capture:save', async () => {
 });
 
 app.whenReady().then(() => {
+  configureMediaPermissions();
   createMainWindow();
   createOverlayWindow();
 
