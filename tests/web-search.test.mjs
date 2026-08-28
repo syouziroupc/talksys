@@ -2,10 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { needsWebSearch, parseRss, parseBingHtml, relevanceScore, formatSearchContext } from '../src/web-search.js';
 
-test('casual Japanese chat and personal advice skip web search', () => {
+test('casual Japanese chat, personal advice, and conversation memory skip web search', () => {
   assert.equal(needsWebSearch('こんにちは'), false);
   assert.equal(needsWebSearch('今日は疲れたなあ'), false);
   assert.equal(needsWebSearch('最近仕事ばかりで疲れてる。どうしたらいいと思う'), false);
+  assert.equal(needsWebSearch('さっき言った合言葉は？'), false);
+  assert.equal(needsWebSearch('前に話した内容を覚えてる？'), false);
+  assert.equal(needsWebSearch('それどう思う？'), false);
 });
 
 test('current and factual Japanese questions request web search', () => {
