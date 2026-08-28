@@ -15,6 +15,8 @@ import {
   wrapAI,
 } from './voice-helpers.js';
 
+const VOICE_REVISION = 'buffered-binary-v1';
+
 const VOICE_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声アシスタントです。電話で人と会話しているように、短く、自然に、テンポよく話してください。
 - 原則1〜3文で答える。長い説明は求められた時だけ行う。
 - Markdown、箇条書き記号、URLの読み上げは避け、耳で理解しやすい文章にする。
@@ -210,6 +212,7 @@ export default {
         headers: {
           'content-type': 'text/javascript; charset=utf-8',
           'cache-control': 'no-store',
+          'x-talksys-voice-revision': VOICE_REVISION,
         },
       });
     }
@@ -219,6 +222,7 @@ export default {
         headers: {
           'content-type': 'text/javascript; charset=utf-8',
           'cache-control': 'no-store',
+          'x-talksys-voice-revision': VOICE_REVISION,
         },
       });
     }
@@ -226,6 +230,7 @@ export default {
     if (url.pathname === '/voice-health') {
       return Response.json({
         ok: true,
+        voiceRevision: VOICE_REVISION,
         realtime: true,
         continuousAudio: true,
         binaryTurnMarkers: true,
@@ -235,6 +240,11 @@ export default {
         bargeIn: true,
         aiScreenDecision: true,
         japaneseTts: true,
+      }, {
+        headers: {
+          'cache-control': 'no-store',
+          'x-talksys-voice-revision': VOICE_REVISION,
+        },
       });
     }
 
@@ -253,6 +263,7 @@ export default {
       const headers = new Headers(response.headers);
       headers.delete('content-length');
       headers.set('cache-control', 'no-store');
+      headers.set('x-talksys-voice-revision', VOICE_REVISION);
       return new Response(
         html.replace(
           '</body>',
