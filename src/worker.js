@@ -5,15 +5,34 @@ const LEGACY_VISION_MODEL = '@cf/meta/llama-3.2-11b-vision-instruct';
 const TEXT_MODEL = '@cf/zai-org/glm-4.7-flash';
 const VISION_MODEL = '@cf/google/gemma-4-26b-a4b-it';
 
-function extractText(result) {
-  if (typeof result?.response === 'string') return result.response.trim();
-  const content = result?.choices?.[0]?.message?.content;
-  if (typeof content === 'string') return content.trim();
-  if (Array.isArray(content)) {
-    return content.map((part) => typeof part === 'string' ? part : part?.text || '').join('').trim();
+function extractText(value, depth = 0) {
+  if (depth > 6 || value == null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const text = extractText(item, depth + 1);
+      if (text) return text;
+    }
+    return '';
   }
-  if (typeof result?.result === 'string') return result.result.trim();
-  if (typeof result?.output_text === 'string') return result.output_text.trim();
+  if (typeof value !== 'object') return '';
+
+  const candidates = [
+    value.response,
+    value.choices?.[0]?.message?.content,
+    value.choices?.[0]?.text,
+    value.result,
+    value.output_text,
+    value.output,
+    value.message?.content,
+    value.content,
+    value.text,
+  ];
+  for (const candidate of candidates) {
+    if (candidate === value) continue;
+    const text = extractText(candidate, depth + 1);
+    if (text) return text;
+  }
   return '';
 }
 
