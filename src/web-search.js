@@ -3,13 +3,15 @@ const KNOWLEDGE_QUESTION_RE = /(って何|ってなに|とは何|どういう|�
 const CASUAL_RE = /^(おはよう|こんにちは|こんばんは|もしもし|ありがとう|ありがと|疲れた|眠い|腹減った|お腹すいた|暇|つかれた|元気|どうも|うん|はい|へえ|そうなんだ|なるほど|笑|わら)/i;
 const FEELING_RE = /^(?:今日は|今日も|今は|なんか|ちょっと|かなり|すごく|めっちゃ|もう)?(?:ちょっと|かなり|すごく|めっちゃ)?(?:疲れた|つかれた|眠い|ねむい|腹減った|お腹すいた|暇だ|暇|しんどい|つらい|嬉しい|うれしい|悲しい|かなしい|楽しい|たのしい|元気だ|元気)[。！!…〜ーなぁなあ]*$/i;
 const PERSONAL_ADVICE_RE = /(?:俺|僕|私|自分|仕事|学校|大学|家族|友達|恋人|今日|最近).*(?:疲れ|つかれ|眠|しんど|つら|悩|困|忙|嬉|悲|どうしたら|どうすれば|どう思う)/i;
+const CONVERSATION_MEMORY_RE = /(さっき|先ほど|前に|前の話|この会話|今の話|今言った|前に言った|話した|言った|覚えて|覚えてる|覚えている|合言葉|私が|僕が|俺が)/i;
 const EXTERNAL_ENTITY_RE = /(?:Windows|Android|iPhone|Cloudflare|OpenAI|Google|Microsoft|Amazon|Meta|NVIDIA|AMD|Intel|CPU|GPU|Wi-?Fi|Linux|GitHub|日本|アメリカ|中国|政府|首相|大統領|会社|企業|大学|製品|モデル|法律|制度)/i;
 
 export function needsWebSearch(text) {
   const value = String(text || '').trim();
   if (!value || CASUAL_RE.test(value) || FEELING_RE.test(value)) return false;
+  if (CONVERSATION_MEMORY_RE.test(value) && !/(検索|調べ|最新|現在|ニュース|価格|仕様|法律|制度)/i.test(value)) return false;
   if (PERSONAL_ADVICE_RE.test(value) && !EXTERNAL_ENTITY_RE.test(value)) return false;
-  if (FACTUAL_RE.test(value) || KNOWLEDGE_QUESTION_RE.test(value) || /[？?]/.test(value)) return true;
+  if (FACTUAL_RE.test(value) || KNOWLEDGE_QUESTION_RE.test(value)) return true;
   if (EXTERNAL_ENTITY_RE.test(value) && value.length >= 4) return true;
   return false;
 }
