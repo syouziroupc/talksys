@@ -1,9 +1,10 @@
 import { Agent, routeAgentRequest } from 'agents';
-import { withVoice, WorkersAINova3STT } from '@cloudflare/voice';
+import { withVoice } from '@cloudflare/voice';
 import { streamText } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import app from './index.js';
 import { REALTIME_VOICE_CLIENT } from './realtime-voice-client.js';
+import { FinalizableNova3STT } from './finalizable-nova3.js';
 import {
   TEXT_MODEL,
   extractText,
@@ -62,12 +63,11 @@ const VoiceAgentBase = withVoice(Agent, {
 });
 
 export class TalkSysVoiceAgent extends VoiceAgentBase {
-  transcriber = new WorkersAINova3STT(this.env.AI, {
+  transcriber = new FinalizableNova3STT(this.env.AI, {
     language: 'ja',
-    // 220ms は日本語の文中ポーズまで発話終了と誤認しやすい。
-    // 約0.5秒の無音を一区切りにして、電話会話らしい反応速度とのバランスを取る。
     endpointingMs: 480,
-    utteranceEndMs: 900,
+    utteranceEndMs: 1000,
+    forceFinalizeSilenceMs: 650,
     smartFormat: true,
     punctuate: true,
     keyterms: ['TalkSys', 'Cloudflare', 'Windows', 'パソコン'],
@@ -208,6 +208,7 @@ export default {
         ok: true,
         realtime: true,
         continuousStt: true,
+        forcedFinalization: true,
         bargeIn: true,
         aiScreenDecision: true,
         japaneseTts: true,
