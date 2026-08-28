@@ -64,8 +64,10 @@ const VoiceAgentBase = withVoice(Agent, {
 export class TalkSysVoiceAgent extends VoiceAgentBase {
   transcriber = new WorkersAINova3STT(this.env.AI, {
     language: 'ja',
-    endpointingMs: 220,
-    utteranceEndMs: 650,
+    // 220ms は日本語の文中ポーズまで発話終了と誤認しやすい。
+    // 約0.5秒の無音を一区切りにして、電話会話らしい反応速度とのバランスを取る。
+    endpointingMs: 480,
+    utteranceEndMs: 900,
     smartFormat: true,
     punctuate: true,
     keyterms: ['TalkSys', 'Cloudflare', 'Windows', 'パソコン'],
