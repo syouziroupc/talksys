@@ -153,7 +153,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   }
 
   function speakJapaneseFallback(text) {
-    const value = String(text || '').replace(/https?:\/\/\S+/g, 'リンク').replace(/[*_#>`~]/g, '').replace(/\s+/g, ' ').trim();
+    const value = String(text || '').replace(/https?:\/\/\S+/g, 'リンク').replace(/[*_#>\x60~]/g, '').replace(/\s+/g, ' ').trim();
     if (!value || serverAudioThisTurn || deviceSpeaking) return false;
     const selected = pickJapaneseVoice();
     if (!selected) {
