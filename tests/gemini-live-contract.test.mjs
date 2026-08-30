@@ -7,6 +7,7 @@ import { GEMINI_TRANSCRIBE_COMPANION } from '../src/gemini-transcribe-companion.
 const workerSource = fs.readFileSync(new URL('../src/worker-v13.js', import.meta.url), 'utf8');
 const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 const desktopSource = fs.readFileSync(new URL('../desktop/gemini-live.js', import.meta.url), 'utf8');
+const desktopTranscribe = fs.readFileSync(new URL('../desktop/gemini-transcribe.js', import.meta.url), 'utf8');
 const desktopHtml = fs.readFileSync(new URL('../desktop/index.html', import.meta.url), 'utf8');
 
 test('Gemini Live v13.1 is the primary native audio path', () => {
@@ -81,18 +82,23 @@ test('worker serves v13.1, both model-bound token purposes, and keeps API key se
   assert.doesNotMatch(GEMINI_LIVE_V13_CLIENT + GEMINI_TRANSCRIBE_COMPANION, /GEMINI_API_KEY/);
 });
 
-test('desktop uses Gemini native conversation rather than WebSpeech', () => {
+test('desktop uses Gemini native conversation and dedicated transcription rather than WebSpeech', () => {
   assert.match(desktopSource, /gemini-3\.1-flash-live-preview/);
   assert.match(desktopSource, /realtimeInput: \{ text:/);
   assert.match(desktopSource, /languageCodes: \['ja-JP'\]/);
-  assert.match(desktopSource, /customVocabulary: CUSTOM_VOCABULARY/);
-  assert.match(desktopSource, /mode: 'SMART'/);
   assert.match(desktopSource, /googleSearch: \{\}/);
   assert.match(desktopSource, /inspect_current_screen/);
   assert.match(desktopSource, /audioStreamEnd: true/);
   assert.match(desktopSource, /voiceName: 'Kore'/);
   assert.doesNotMatch(desktopSource, /SpeechRecognition|SpeechSynthesisUtterance/);
+  assert.match(desktopTranscribe, /gemini-3\.5-transcribe-live/);
+  assert.match(desktopTranscribe, /purpose: 'transcription'/);
+  assert.match(desktopTranscribe, /languageCodes: \['ja-JP'\]/);
+  assert.match(desktopTranscribe, /customVocabulary: CUSTOM_VOCABULARY/);
+  assert.match(desktopTranscribe, /mode: 'SMART'/);
+  assert.doesNotMatch(desktopTranscribe, /SpeechRecognition|SpeechSynthesisUtterance/);
   assert.match(desktopHtml, /script src="gemini-live\.js"/);
+  assert.match(desktopHtml, /script src="gemini-transcribe\.js"/);
   assert.doesNotMatch(desktopHtml, /realtime-voice\.js|voice-fallback\.js|renderer\.js/);
   assert.match(desktopHtml, /wss:\/\/generativelanguage\.googleapis\.com/);
 });
