@@ -45,26 +45,7 @@ jobs:
           NODE
           node --check /tmp/talksys-browser.js
 
-      - name: Verify Cloudflare live v14 architecture contract
-        run: |
-          node <<'NODE'
-          const fs = require('fs');
-          const wrangler = fs.readFileSync('wrangler.jsonc','utf8');
-          const worker = fs.readFileSync('src/worker-v14.js','utf8');
-          const client = fs.readFileSync('src/cloudflare-live-client.js','utf8');
-          const stt = fs.readFileSync('src/cloudflare-japanese-stt.js','utf8');
-          const tts = fs.readFileSync('src/cloudflare-japanese-tts.js','utf8');
-          const llm = fs.readFileSync('src/cloudflare-llm.js','utf8');
-          const all = worker + client + stt + tts + llm;
-          if (!wrangler.includes('"main": "src/worker-v14.js"')) throw new Error('v14 is not the Wrangler entrypoint');
-          for (const required of ['cloudflare-live-v14','openai/gpt-4o-transcribe','@cf/deepgram/nova-3','openai/gpt-5.4-mini','@cf/nvidia/nemotron-3-120b-a12b','web_search_preview','inworld/tts-1.5-max','text_message']) {
-            if (!all.includes(required)) throw new Error('missing Cloudflare v14 contract: ' + required);
-          }
-          if (/GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/.test(all)) throw new Error('provider API key dependency found');
-          if (/SpeechRecognition|SpeechSynthesisUtterance/.test(client)) throw new Error('primary live client still depends on WebSpeech');
-          NODE
-
-      - name: Run Worker API tests
+      - name: Run v14.1 architecture and Worker API tests
         run: npm test
 
       - name: Check Wrangler bundle
