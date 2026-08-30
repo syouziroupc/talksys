@@ -5,6 +5,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   const CHUNK_SAMPLES = 640; // 40 ms at 16 kHz
   const BARGE_THRESHOLD = 0.035;
   const BARGE_FRAMES = 3;
+  const DEVICE_TTS_GUARD_MS = 350;
 
   const originalVoice = document.getElementById('voice');
   const form = document.getElementById('form');
@@ -20,6 +21,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   if (!originalVoice || !form || !input || !chat || !navigator.mediaDevices?.getUserMedia) return;
 
   const voice = originalVoice.cloneNode(true);
+  voice.disabled = false;
   originalVoice.replaceWith(voice);
 
   let socket = null;
@@ -41,7 +43,13 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   let pendingText = [];
   let streamNode = null;
   let streamText = '';
+  let currentAssistantText = '';
   let lastAdded = '';
+  let serverAudioThisTurn = false;
+  let ttsFailedThisTurn = false;
+  let deviceSpeaking = false;
+  let deviceGuardUntil = 0;
+  let deviceUtterance = null;
 
   function setStatus(text) { if (status) status.textContent = text || ''; }
 
@@ -61,6 +69,9 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   function beginAssistantStream() {
     if (streamNode) return;
     streamText = '';
+    currentAssistantText = '';
+    serverAudioThisTurn = false;
+    ttsFailedThisTurn = false;
     streamNode = document.createElement('div');
     streamNode.className = 'msg assistant';
     chat.appendChild(streamNode);
@@ -71,18 +82,21 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     if (!delta) return;
     beginAssistantStream();
     streamText += delta;
+    currentAssistantText = streamText;
     streamNode.textContent = streamText;
     streamNode.scrollIntoView({ block: 'nearest' });
   }
 
   function finishAssistantStream(finalText) {
     const value = String(finalText || streamText || '').trim();
+    currentAssistantText = value;
     if (streamNode) {
       streamNode.textContent = value;
       streamNode = null;
       streamText = '';
       if (value) lastAdded = 'assistant:' + value;
     } else if (value) addMessage('assistant', value);
+    if (ttsFailedThisTurn && !serverAudioThisTurn && value) setTimeout(() => speakJapaneseFallback(value), 120);
   }
 
   function setVoiceUi() {
@@ -122,6 +136,62 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     return Math.sqrt(sum / Math.max(1, samples.length));
   }
 
+  function pickJapaneseVoice() {
+    if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) return null;
+    const voices = speechSynthesis.getVoices().filter((item) => /^ja(?:-|_)/i.test(item.lang || ''));
+    if (!voices.length) return null;
+    return voices.find((item) => /Google|Microsoft|Nanami|Keita|Kyoko|Otoya|Japanese/i.test(item.name || '')) || voices[0];
+  }
+
+  function cancelDeviceSpeech(interrupted = false) {
+    if (!deviceSpeaking && !deviceUtterance) return;
+    try { speechSynthesis.cancel(); } catch {}
+    deviceSpeaking = false;
+    deviceUtterance = null;
+    deviceGuardUntil = Date.now() + DEVICE_TTS_GUARD_MS;
+    if (interrupted) sendJson({ type: 'interrupt' });
+  }
+
+  function speakJapaneseFallback(text) {
+    const value = String(text || '').replace(/https?:\/\/\S+/g, 'リンク').replace(/[*_#>`~]/g, '').replace(/\s+/g, ' ').trim();
+    if (!value || serverAudioThisTurn || deviceSpeaking) return false;
+    const selected = pickJapaneseVoice();
+    if (!selected) {
+      setStatus('サーバー音声に失敗しました。端末に日本語音声がありません。');
+      return false;
+    }
+    try {
+      speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(value);
+      utterance.voice = selected;
+      utterance.lang = selected.lang || 'ja-JP';
+      utterance.rate = 1.04;
+      utterance.pitch = 1;
+      utterance.volume = 1;
+      deviceUtterance = utterance;
+      utterance.onstart = () => {
+        if (deviceUtterance !== utterance) return;
+        deviceSpeaking = true;
+        setStatus('AIが話しています。途中で割り込めます。');
+      };
+      const done = () => {
+        if (deviceUtterance !== utterance) return;
+        deviceUtterance = null;
+        deviceSpeaking = false;
+        deviceGuardUntil = Date.now() + DEVICE_TTS_GUARD_MS;
+        if (desiredCall) setTimeout(() => { if (!deviceSpeaking && desiredCall) setStatus('聞いています'); }, DEVICE_TTS_GUARD_MS);
+      };
+      utterance.onend = done;
+      utterance.onerror = done;
+      speechSynthesis.speak(utterance);
+      return true;
+    } catch {
+      deviceSpeaking = false;
+      deviceUtterance = null;
+      return false;
+    }
+  }
+
   function stopPlayback(interruptServer = false) {
     playbackQueue = [];
     playing = false;
@@ -130,6 +200,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       try { playbackSource.disconnect(); } catch {}
       playbackSource = null;
     }
+    if (deviceSpeaking || deviceUtterance) cancelDeviceSpeech(false);
     if (interruptServer) sendJson({ type: 'interrupt' });
   }
 
@@ -153,12 +224,16 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       source.start();
     } catch {
       playing = false;
-      setStatus('音声再生に失敗しました。');
+      setStatus('サーバー音声の再生に失敗しました。');
+      ttsFailedThisTurn = true;
       playNext();
     }
   }
 
   function queueAudio(buffer) {
+    serverAudioThisTurn = true;
+    ttsFailedThisTurn = false;
+    if (deviceSpeaking || deviceUtterance) cancelDeviceSpeech(false);
     playbackQueue.push(buffer);
     playNext();
   }
@@ -187,15 +262,17 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     workletNode.port.onmessage = (event) => {
       const samples = event.data instanceof Float32Array ? event.data : new Float32Array(event.data);
       const level = rms(samples);
-      if (playing || serverStatus === 'speaking') {
+      const assistantSpeaking = playing || serverStatus === 'speaking' || deviceSpeaking || Date.now() < deviceGuardUntil;
+      if (assistantSpeaking) {
         if (level >= BARGE_THRESHOLD) bargeFrames += 1;
         else bargeFrames = Math.max(0, bargeFrames - 1);
-        if (bargeFrames >= BARGE_FRAMES) {
-          bargeFrames = 0;
-          stopPlayback(true);
-          setStatus('割り込みを聞いています…');
-          sendJson({ type: 'start_of_speech' });
-        }
+        if (bargeFrames < BARGE_FRAMES) return; // Never send the assistant's own audio to STT.
+        bargeFrames = 0;
+        stopPlayback(true);
+        cancelDeviceSpeech(false);
+        deviceGuardUntil = 0;
+        setStatus('割り込みを聞いています…');
+        sendJson({ type: 'start_of_speech' });
       }
       if (inCall && socket?.readyState === WebSocket.OPEN) socket.send(floatToPcm(samples));
     };
@@ -242,7 +319,8 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       const ctx = canvas.getContext('2d', { alpha: false });
       ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
       const response = await fetch('/api/locate', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ query, image: canvas.toDataURL('image/jpeg', 0.76) }),
       });
       const result = await response.json();
@@ -253,6 +331,13 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     } catch (error) {
       sendJson({ type: 'screen_result', id, available: false, error: String(error?.message || error) });
     }
+  }
+
+  function handleTtsError(message) {
+    if (!/tts|speech|音声合成/i.test(String(message || ''))) return false;
+    ttsFailedThisTurn = true;
+    if (currentAssistantText && !serverAudioThisTurn) setTimeout(() => speakJapaneseFallback(currentAssistantText), 180);
+    return true;
   }
 
   function connectSocket() {
@@ -300,7 +385,9 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       }
       if (data.type === 'screen_request') { await handleScreenRequest(data); return; }
       if (data.type === 'completion_outcome' && data.code === 'model_error') setStatus('AI応答を再試行してください。');
-      if (data.type === 'error') setStatus('音声エラー: ' + (data.message || '不明なエラー'));
+      if (data.type === 'error') {
+        if (!handleTtsError(data.message)) setStatus('音声エラー: ' + (data.message || '不明なエラー'));
+      }
     };
     socket.onclose = () => {
       welcomed = false;
@@ -342,6 +429,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     if (inCall) sendJson({ type: 'end_call' });
     inCall = false;
     stopPlayback(false);
+    cancelDeviceSpeech(false);
     mediaStream?.getTracks().forEach((track) => track.stop());
     mediaStream = null;
     micReady = false;
@@ -378,6 +466,10 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   }, true);
 
   voice.addEventListener('click', () => desiredCall ? endCall() : startCall(false));
+  if ('speechSynthesis' in window) {
+    try { speechSynthesis.getVoices(); } catch {}
+    window.addEventListener('voiceschanged', () => { try { speechSynthesis.getVoices(); } catch {} });
+  }
   window.addEventListener('beforeunload', () => {
     manualStop = true;
     endCall();
