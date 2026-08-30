@@ -2,6 +2,7 @@ import { routeAgentRequest } from 'agents';
 import app from './index.js';
 import legacyWorker, { TalkSysVoiceAgent as LegacyTalkSysVoiceAgent } from './worker.js';
 import { GEMINI_LIVE_V13_CLIENT } from './gemini-live-v13-client.js';
+import { GEMINI_TRANSCRIBE_COMPANION } from './gemini-transcribe-companion.js';
 import { VOICE_MARKER_BRIDGE } from './voice-marker-bridge.js';
 import { REALTIME_VOICE_CLIENT } from './realtime-voice-client.js';
 import { VOICE_FALLBACK_CLIENT } from './voice-fallback-client.js';
@@ -12,7 +13,6 @@ const GEMINI_LIVE_MODEL = 'gemini-3.1-flash-live-preview';
 const GEMINI_TRANSCRIBE_MODEL = 'gemini-3.5-transcribe-live';
 const GEMINI_LIVE_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained';
 
-// Kept only so existing Durable Object bindings and fallback sessions remain valid.
 export class TalkSysVoiceAgent extends LegacyTalkSysVoiceAgent {}
 
 function noStoreJson(data, status = 200) {
@@ -27,19 +27,14 @@ function noStoreJson(data, status = 200) {
 
 function isAllowedTokenRequest(request) {
   const origin = request.headers.get('origin');
-  if (!origin || origin === 'null') return true; // Electron/file clients and server-side canary.
-  try {
-    return new URL(origin).host === new URL(request.url).host;
-  } catch {
-    return false;
-  }
+  if (!origin || origin === 'null') return true;
+  try { return new URL(origin).host === new URL(request.url).host; }
+  catch { return false; }
 }
 
 async function mintGeminiLiveToken(request, env) {
   if (!isAllowedTokenRequest(request)) return noStoreJson({ available: false, reason: 'origin_not_allowed' }, 403);
-  if (!env.GEMINI_API_KEY) {
-    return noStoreJson({ available: false, reason: 'GEMINI_API_KEY_not_configured', model: GEMINI_LIVE_MODEL }, 503);
-  }
+  if (!env.GEMINI_API_KEY) return noStoreJson({ available: false, reason: 'GEMINI_API_KEY_not_configured', model: GEMINI_LIVE_MODEL }, 503);
 
   let body = {};
   try { body = await request.json(); } catch {}
@@ -49,16 +44,9 @@ async function mintGeminiLiveToken(request, env) {
   const expireTime = new Date(now + 30 * 60 * 1000).toISOString();
   const newSessionExpireTime = new Date(now + 90 * 1000).toISOString();
 
-  // Keep the token single-use, short-lived and model-bound. The Live setup has
-  // several evolving fields (Search, transcription, tools, VAD), so constraining
-  // only the model avoids rejecting valid new config while never exposing the
-  // long-lived API key to the browser/Electron client.
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-goog-api-key': env.GEMINI_API_KEY,
-    },
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
     body: JSON.stringify({
       uses: 1,
       expireTime,
@@ -71,7 +59,6 @@ async function mintGeminiLiveToken(request, env) {
     const detail = (await response.text()).slice(0, 700);
     return noStoreJson({ available: false, reason: 'gemini_ephemeral_token_failed', purpose, status: response.status, detail }, 502);
   }
-
   const token = await response.json();
   if (!token?.name) return noStoreJson({ available: false, reason: 'gemini_ephemeral_token_empty', purpose }, 502);
 
@@ -98,8 +85,8 @@ function serveScript(source) {
 }
 
 function injectGeminiClient(html) {
-  const script = '<script src="/gemini-live.js"></script>';
-  return html.includes('</body>') ? html.replace('</body>', script + '</body>') : html + script;
+  const scripts = '<script src="/gemini-live.js"></script><script src="/gemini-transcribe.js"></script>';
+  return html.includes('</body>') ? html.replace('</body>', scripts + '</body>') : html + scripts;
 }
 
 export default {
@@ -107,6 +94,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/gemini-live.js') return serveScript(GEMINI_LIVE_V13_CLIENT);
+    if (url.pathname === '/gemini-transcribe.js') return serveScript(GEMINI_TRANSCRIBE_COMPANION);
     if (url.pathname === '/voice-marker-bridge.js') return serveScript(VOICE_MARKER_BRIDGE);
     if (url.pathname === '/realtime-voice.js') return serveScript(REALTIME_VOICE_CLIENT);
     if (url.pathname === '/voice-fallback.js') return serveScript(VOICE_FALLBACK_CLIENT);
