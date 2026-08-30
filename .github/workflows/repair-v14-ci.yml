@@ -43,7 +43,7 @@ jobs:
           function readTag'''
           patched, count = re.subn(
               r"function stripHtml\(value\) \{[\s\S]*?\n\}\n\nfunction readTag",
-              replacement,
+              lambda _match: replacement,
               web,
               count=1,
           )
