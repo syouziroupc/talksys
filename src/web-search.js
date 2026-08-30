@@ -40,11 +40,11 @@ function decodeEntities(value) {
 }
 
 function stripHtml(value) {
-  return decodeEntities(String(value || '')
+  return decodeEntities(String(value || ''))
     .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
     .replace(/<svg\b[\s\S]*?<\/svg>/gi, ' ')
-    .replace(/<[^>]+>/g, ' '))
+    .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
