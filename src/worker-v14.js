@@ -6,14 +6,9 @@ import {
   CloudflareJapaneseSTT,
   REALTIME_STT_MODEL,
   ACCURATE_STT_MODEL,
-  FALLBACK_STT_MODEL,
+  RESOLVER_MODEL,
 } from './cloudflare-japanese-stt.js';
-import {
-  CloudflareJapaneseTTS,
-  PRIMARY_TTS_MODEL,
-  SECONDARY_TTS_MODEL,
-  FALLBACK_TTS_MODEL,
-} from './cloudflare-japanese-tts.js';
+import { CloudflareJapaneseTTS, PRIMARY_TTS_MODEL } from './cloudflare-japanese-tts.js';
 import {
   PRIMARY_CONVERSATION_MODEL,
   FALLBACK_CONVERSATION_MODEL,
@@ -21,19 +16,19 @@ import {
   answerWithCloudflareWebSearch,
 } from './cloudflare-llm.js';
 import { needsWebSearch } from './web-search.js';
-import { cleanSpeechText, wrapAI } from './voice-helpers.js';
+import { cleanSpeechText, extractText, wrapAI } from './voice-helpers.js';
 
-const VOICE_REVISION = 'cloudflare-live-v14';
+const VOICE_REVISION = 'cloudflare-live-v14.1';
 
 const CASUAL_SYSTEM_PROMPT = `あなたはTalkSysという日本語のリアルタイム音声アシスタントです。
 自然な日常会話として答えてください。通常は2〜5文。最初の1文で直接答え、その後に役立つ理由・補足・具体例を1〜3点だけ足してください。
 単なる相槌や挨拶は短くて構いません。相手の言い方を不自然に言い直したり、何でもPC操作へ結び付けたりしないでください。
 モデルの記憶だけで現在情報、価格、人物、法律、製品仕様、医療・技術上の具体的事実を断定しないでください。その種の質問は検索経路へ送られる前提です。
 知らない事実は作らず、不明なら不明と短く言ってください。実行していない操作を「やった」と言わないでください。
-電話会話なのでMarkdown、箇条書きの長い読み上げ、URLの読み上げ、定型的な前置きは避けてください。`;
+電話会話なのでMarkdown、長い箇条書き、URLの読み上げ、定型的な前置きは避けてください。`;
 
 const GROUNDED_SYSTEM_PROMPT = `あなたはTalkSysという日本語のリアルタイム音声アシスタントです。
-この回答は外部事実の確認が必要です。Web検索で確認した内容だけを根拠にし、モデルの記憶で固有名詞・数値・日付・価格・法律・仕様を補完しないでください。
+この回答は外部事実の確認が必要です。今回取得したWebページ本文と検索結果だけを根拠にし、モデルの記憶で固有名詞・数値・日付・価格・法律・仕様を補完しないでください。
 現在情報では新しい情報と公的・一次情報を優先してください。複数ソースが食い違う場合はその不確実性を伝え、確認できなければ推測せず「確認できない」と答えてください。
 回答は日本語で通常2〜5文。最初に結論、その後に重要な根拠を1〜3点。URLそのものは読み上げないでください。`;
 
@@ -94,7 +89,8 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       silenceMs: 520,
       minSpeechMs: 160,
       maxTurnMs: 30000,
-      preRollFrames: 6,
+      preRollFrames: 7,
+      contextProvider: () => this.getConversationHistory(),
     });
   }
 
@@ -112,7 +108,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
   }
 
   onCallStart() {
-    // No cloud greeting: become ready to listen immediately.
+    // No greeting: the connection becomes ready to listen immediately.
   }
 
   onMessage(connection, message) {
@@ -167,9 +163,9 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
   searchResponse(transcript, context) {
     const self = this;
     return this.trackAssistant((async function* () {
-      try {
-        context.connection.send(JSON.stringify({ type: 'search_status', phase: 'searching', searched: true }));
-      } catch {}
+      try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'searching', searched: true })); } catch {}
+      // The Voice pipeline starts sentence TTS as soon as this first sentence is yielded,
+      // while the web retrieval below continues in parallel.
       yield 'ちょっと調べますね。';
       const result = await answerWithCloudflareWebSearch(
         self.env.AI,
@@ -184,7 +180,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
           phase: 'done',
           searched: true,
           provider: result.provider,
-          nativeSearch: result.nativeSearch,
+          nativeSearch: false,
           sources: Array.isArray(result.sources) ? result.sources.map((item) => ({ title: item.title, url: item.url })) : [],
         }));
       } catch {}
@@ -202,7 +198,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
         ...context.messages.slice(-10).map((item) => ({ role: item.role, content: item.content })),
         { role: 'user', content: `${transcript}\n\n[現在画面の確認結果]\n${formatScreenContext(screen)}` },
       ];
-      return this.trackAssistant(streamCloudflareConversation(this.env.AI, messages, { signal: context.signal, maxTokens: 420 }));
+      return this.trackAssistant(streamCloudflareConversation(this.env.AI, messages, { signal: context.signal, maxTokens: 440 }));
     }
 
     if (needsWebSearch(transcript)) return this.searchResponse(transcript, context);
@@ -212,7 +208,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       ...context.messages.slice(-12).map((item) => ({ role: item.role, content: item.content })),
       { role: 'user', content: transcript },
     ];
-    return this.trackAssistant(streamCloudflareConversation(this.env.AI, messages, { signal: context.signal, maxTokens: 380 }));
+    return this.trackAssistant(streamCloudflareConversation(this.env.AI, messages, { signal: context.signal, maxTokens: 440 }));
   }
 }
 
@@ -226,26 +222,22 @@ function serveScript(source) {
   });
 }
 
-async function unifiedSmoke(env) {
-  const report = {
-    ok: true,
-    unifiedBilling: false,
-    conversationModel: PRIMARY_CONVERSATION_MODEL,
-    fallbackConversationModel: FALLBACK_CONVERSATION_MODEL,
-    accurateSttModel: ACCURATE_STT_MODEL,
-    ttsModel: PRIMARY_TTS_MODEL,
-  };
+async function modelSmoke(env) {
+  const started = Date.now();
   try {
-    const result = await env.AI.run(
-      PRIMARY_CONVERSATION_MODEL,
-      { messages: [{ role: 'user', content: '1+1は？ 数字だけ答えて。' }], max_completion_tokens: 32, reasoning_effort: 'low' },
-      { gateway: { id: 'default' } },
-    );
-    report.unifiedBilling = Boolean(result);
+    const result = await env.AI.run(PRIMARY_CONVERSATION_MODEL, {
+      messages: [
+        { role: 'system', content: '日本語で簡潔に答える。' },
+        { role: 'user', content: '1+1は？ 数字だけ答えて。' },
+      ],
+      max_tokens: 48,
+      temperature: 0,
+    });
+    const text = extractText(result);
+    return Response.json({ ok: Boolean(text), model: PRIMARY_CONVERSATION_MODEL, text, elapsedMs: Date.now() - started }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {
-    report.unifiedError = String(error?.message || error).slice(0, 300);
+    return Response.json({ ok: false, model: PRIMARY_CONVERSATION_MODEL, error: String(error?.message || error).slice(0, 400), elapsedMs: Date.now() - started }, { status: 500, headers: { 'cache-control': 'no-store' } });
   }
-  return Response.json(report, { headers: { 'cache-control': 'no-store', 'x-talksys-voice-revision': VOICE_REVISION } });
 }
 
 async function voiceSmoke(env) {
@@ -271,7 +263,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/cloudflare-live.js') return serveScript(CLOUDFLARE_LIVE_CLIENT);
-    if (url.pathname === '/api/unified-smoke' && request.method === 'GET') return unifiedSmoke(env);
+    if (url.pathname === '/api/model-smoke' && request.method === 'GET') return modelSmoke(env);
     if (url.pathname === '/api/voice-smoke' && request.method === 'GET') return voiceSmoke(env);
     if (url.pathname === '/voice-health') {
       return Response.json({
@@ -287,19 +279,17 @@ export default {
         sharedTypedAndVoiceHistory: true,
         sttRealtime: REALTIME_STT_MODEL,
         sttAccurateFinal: ACCURATE_STT_MODEL,
-        sttFallback: FALLBACK_STT_MODEL,
+        sttResolver: RESOLVER_MODEL,
         sttLanguage: 'ja',
+        dualAsrReconciliation: true,
         llmPrimary: PRIMARY_CONVERSATION_MODEL,
         llmFallback: FALLBACK_CONVERSATION_MODEL,
-        nativeWebSearch: 'openai-web-search-via-cloudflare-ai-gateway',
+        webSearch: 'google+duckduckgo+bing+wikipedia+google-news+page-evidence+reranker',
         searchWaitSpeech: true,
-        searchFallback: 'wikipedia+bing+google-news+reranker',
         ttsPrimary: PRIMARY_TTS_MODEL,
-        ttsSecondary: SECONDARY_TTS_MODEL,
-        ttsFallback: FALLBACK_TTS_MODEL,
         serverSideTts: true,
         browserSpeechSynthesisPrimary: false,
-        unifiedBillingOptional: true,
+        deviceJapaneseTtsFallback: true,
         externalProviderKeys: [],
         screenFunction: true,
       }, { headers: { 'cache-control': 'no-store', 'x-talksys-voice-revision': VOICE_REVISION } });
