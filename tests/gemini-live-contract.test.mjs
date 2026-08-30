@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { GEMINI_LIVE_V13_CLIENT } from '../src/gemini-live-v13-client.js';
+import { GEMINI_TRANSCRIBE_COMPANION } from '../src/gemini-transcribe-companion.js';
 
 const workerSource = fs.readFileSync(new URL('../src/worker-v13.js', import.meta.url), 'utf8');
 const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
@@ -18,13 +19,24 @@ test('Gemini Live v13.1 is the primary native audio path', () => {
   assert.match(wranglerSource, /"main":\s*"src\/worker-v13\.js"/);
 });
 
-test('Japanese input transcription uses SMART mode and custom vocabulary', () => {
+test('conversation transcription is Japanese SMART mode with custom vocabulary', () => {
   assert.match(GEMINI_LIVE_V13_CLIENT, /inputAudioTranscription:/);
   assert.match(GEMINI_LIVE_V13_CLIENT, /languageCodes: \['ja-JP'\]/);
   assert.match(GEMINI_LIVE_V13_CLIENT, /customVocabulary: CUSTOM_VOCABULARY/);
   assert.match(GEMINI_LIVE_V13_CLIENT, /mode: 'SMART'/);
   assert.match(GEMINI_LIVE_V13_CLIENT, /interimInputTranscription/);
   assert.match(GEMINI_LIVE_V13_CLIENT, /TRANSCRIPT_GRACE_MS = 520/);
+});
+
+test('dedicated Gemini 3.5 Transcribe companion improves displayed Japanese transcript', () => {
+  assert.match(GEMINI_TRANSCRIBE_COMPANION, /gemini-3\.5-transcribe-live/);
+  assert.match(GEMINI_TRANSCRIBE_COMPANION, /purpose: 'transcription'/);
+  assert.match(GEMINI_TRANSCRIBE_COMPANION, /languageCodes: \['ja-JP'\]/);
+  assert.match(GEMINI_TRANSCRIBE_COMPANION, /customVocabulary: CUSTOM_VOCABULARY/);
+  assert.match(GEMINI_TRANSCRIBE_COMPANION, /mode: 'SMART'/);
+  assert.match(GEMINI_TRANSCRIBE_COMPANION, /interimInputTranscription/);
+  assert.match(GEMINI_TRANSCRIBE_COMPANION, /inputTranscription/);
+  assert.match(GEMINI_TRANSCRIBE_COMPANION, /高精度文字起こし/);
 });
 
 test('hybrid VAD ends speech quickly while server VAD remains enabled', () => {
@@ -53,21 +65,23 @@ test('screen inspection is a Gemini function tool and unsupported claims are for
   assert.match(GEMINI_LIVE_V13_CLIENT, /\/api\/locate/);
 });
 
-test('worker serves v13.1 and keeps long-lived Gemini key server-side', () => {
+test('worker serves v13.1, both model-bound token purposes, and keeps API key server-side', () => {
   assert.match(workerSource, /VOICE_REVISION = 'gemini-live-v13\.1'/);
   assert.match(workerSource, /GEMINI_LIVE_V13_CLIENT/);
-  assert.match(workerSource, /primary: 'gemini-live'/);
-  assert.match(workerSource, /smartJapaneseTranscription: true/);
+  assert.match(workerSource, /GEMINI_TRANSCRIBE_COMPANION/);
+  assert.match(workerSource, /GEMINI_TRANSCRIBE_MODEL = 'gemini-3\.5-transcribe-live'/);
+  assert.match(workerSource, /purpose === 'transcription'/);
+  assert.match(workerSource, /parallelHighAccuracyTranscription: true/);
   assert.match(workerSource, /spokenSearchWaitPhrase: true/);
   assert.match(workerSource, /typedChatTransport: 'realtimeInput\.text'/);
-  assert.match(workerSource, /liveConnectConstraints/);
-  assert.match(workerSource, /model: `models\/\$\{GEMINI_LIVE_MODEL\}`/);
+  assert.match(workerSource, /liveConnectConstraints: \{ model: `models\/\$\{model\}` \}/);
   assert.match(workerSource, /uses: 1/);
   assert.match(workerSource, /x-goog-api-key/);
-  assert.doesNotMatch(GEMINI_LIVE_V13_CLIENT, /GEMINI_API_KEY/);
+  assert.match(workerSource, /gemini-transcribe\.js/);
+  assert.doesNotMatch(GEMINI_LIVE_V13_CLIENT + GEMINI_TRANSCRIBE_COMPANION, /GEMINI_API_KEY/);
 });
 
-test('desktop uses the same Gemini Live architecture rather than WebSpeech', () => {
+test('desktop uses Gemini native conversation rather than WebSpeech', () => {
   assert.match(desktopSource, /gemini-3\.1-flash-live-preview/);
   assert.match(desktopSource, /realtimeInput: \{ text:/);
   assert.match(desktopSource, /languageCodes: \['ja-JP'\]/);
