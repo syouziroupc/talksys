@@ -1,4 +1,4 @@
-name: Repair v14.1 CI
+name: Repair v14.1 Source
 
 on:
   push:
@@ -14,30 +14,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Repair live client syntax and stale CI contract
+      - name: Repair live client syntax
         shell: bash
         run: |
           python <<'PY'
           from pathlib import Path
-          import re
 
-          client_path = Path('src/cloudflare-live-client.js')
-          client = client_path.read_text(encoding='utf-8')
+          path = Path('src/cloudflare-live-client.js')
+          source = path.read_text(encoding='utf-8')
           broken = ".replace(/[*_#>`~]/g, '')"
           fixed = ".replace(/[*_#>\\x60~]/g, '')"
-          if broken in client:
-              client = client.replace(broken, fixed)
-              client_path.write_text(client, encoding='utf-8')
-
-          workflow_path = Path('.github/workflows/deploy.yml')
-          workflow = workflow_path.read_text(encoding='utf-8')
-          workflow = re.sub(
-              r"\n      - name: Verify Cloudflare live v14 architecture contract\n        run: \|\n[\s\S]*?(?=\n      - name: Run Worker API tests)",
-              "\n",
-              workflow,
-              count=1,
-          )
-          workflow_path.write_text(workflow, encoding='utf-8')
+          if broken in source:
+              source = source.replace(broken, fixed)
+              path.write_text(source, encoding='utf-8')
           PY
 
           node --check src/cloudflare-live-client.js
@@ -50,6 +39,6 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/cloudflare-live-client.js .github/workflows/deploy.yml
-          git commit -m "Repair v14.1 live client syntax and CI contract"
+          git add src/cloudflare-live-client.js
+          git commit -m "Repair v14.1 live client syntax"
           git push
