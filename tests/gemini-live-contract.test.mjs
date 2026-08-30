@@ -1,66 +1,84 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { GEMINI_PHONE_CLIENT } from '../src/gemini-phone-client.js';
+import { GEMINI_LIVE_V13_CLIENT } from '../src/gemini-live-v13-client.js';
 
 const workerSource = fs.readFileSync(new URL('../src/worker-v13.js', import.meta.url), 'utf8');
 const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
+const desktopSource = fs.readFileSync(new URL('../desktop/gemini-live.js', import.meta.url), 'utf8');
+const desktopHtml = fs.readFileSync(new URL('../desktop/index.html', import.meta.url), 'utf8');
 
-test('Gemini Live is the primary low-latency native audio phone path', () => {
-  assert.match(GEMINI_PHONE_CLIENT, /gemini-3\.1-flash-live-preview/);
-  assert.match(GEMINI_PHONE_CLIENT, /audio\/pcm;rate=/);
-  assert.match(GEMINI_PHONE_CLIENT, /OUTPUT_RATE = 24000/);
-  assert.match(GEMINI_PHONE_CLIENT, /CHUNK_SAMPLES = 640/);
-  assert.match(GEMINI_PHONE_CLIENT, /thinkingLevel: 'minimal'/);
-  assert.doesNotMatch(GEMINI_PHONE_CLIENT, /SpeechSynthesisUtterance/);
+test('Gemini Live v13.1 is the primary native audio path', () => {
+  assert.match(GEMINI_LIVE_V13_CLIENT, /gemini-3\.1-flash-live-preview/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /CHUNK_SAMPLES = 640/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /audio\/pcm;rate=/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /thinkingLevel: 'LOW'/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /voiceName: 'Kore'/);
+  assert.doesNotMatch(GEMINI_LIVE_V13_CLIENT, /SpeechSynthesisUtterance/);
   assert.match(wranglerSource, /"main":\s*"src\/worker-v13\.js"/);
 });
 
-test('Gemini Live owns search, transcription, resumption and context compression', () => {
-  assert.match(GEMINI_PHONE_CLIENT, /googleSearch: \{\}/);
-  assert.match(GEMINI_PHONE_CLIENT, /inputAudioTranscription: \{\}/);
-  assert.match(GEMINI_PHONE_CLIENT, /outputAudioTranscription: \{\}/);
-  assert.match(GEMINI_PHONE_CLIENT, /sessionResumption:/);
-  assert.match(GEMINI_PHONE_CLIENT, /contextWindowCompression: \{ slidingWindow: \{\} \}/);
-  assert.match(GEMINI_PHONE_CLIENT, /languageCode: 'ja-JP'/);
-  assert.match(GEMINI_PHONE_CLIENT, /START_OF_ACTIVITY_INTERRUPTS/);
+test('Japanese input transcription uses SMART mode and custom vocabulary', () => {
+  assert.match(GEMINI_LIVE_V13_CLIENT, /inputAudioTranscription:/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /languageCodes: \['ja-JP'\]/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /customVocabulary: CUSTOM_VOCABULARY/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /mode: 'SMART'/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /interimInputTranscription/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /TRANSCRIPT_GRACE_MS = 520/);
 });
 
-test('hybrid VAD finalizes Japanese speech early while server VAD remains enabled', () => {
-  assert.match(GEMINI_PHONE_CLIENT, /LOCAL_END_SILENCE_MS = 440/);
-  assert.match(GEMINI_PHONE_CLIENT, /audioStreamEnd: true/);
-  assert.match(GEMINI_PHONE_CLIENT, /automaticActivityDetection:/);
-  assert.match(GEMINI_PHONE_CLIENT, /disabled: false/);
+test('hybrid VAD ends speech quickly while server VAD remains enabled', () => {
+  assert.match(GEMINI_LIVE_V13_CLIENT, /LOCAL_END_SILENCE_MS = 560/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /audioStreamEnd: true/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /automaticActivityDetection:/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /disabled: false/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /silenceDurationMs: 800/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /START_OF_ACTIVITY_INTERRUPTS/);
 });
 
-test('typed chat uses Gemini realtimeInput.text in the same Live session', () => {
-  assert.match(GEMINI_PHONE_CLIENT, /realtimeInput: \{ text \}/);
-  assert.doesNotMatch(GEMINI_PHONE_CLIENT, /clientContent:/);
-  assert.match(GEMINI_PHONE_CLIENT, /inspect_current_screen/);
-  assert.match(GEMINI_PHONE_CLIENT, /toolResponse:/);
+test('search, long conversation and typed chat stay inside one Live session', () => {
+  assert.match(GEMINI_LIVE_V13_CLIENT, /googleSearch: \{\}/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /sessionResumption:/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /contextWindowCompression:/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /SESSION_ROTATE_MS = 12 \* 60 \* 1000/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /realtimeInput: \{ text \}/);
+  assert.doesNotMatch(GEMINI_LIVE_V13_CLIENT, /clientContent:/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /ちょっと調べますね/);
 });
 
-test('transcription finalization tolerates out-of-order turnComplete and transcription events', () => {
-  assert.match(GEMINI_PHONE_CLIENT, /TRANSCRIPT_SETTLE_MS = 420/);
-  assert.match(GEMINI_PHONE_CLIENT, /scheduleSettle/);
+test('screen inspection is a Gemini function tool and unsupported claims are forbidden', () => {
+  assert.match(GEMINI_LIVE_V13_CLIENT, /inspect_current_screen/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /toolResponse:/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /ツール結果にない画面内容/);
+  assert.match(GEMINI_LIVE_V13_CLIENT, /\/api\/locate/);
 });
 
-test('v13 worker exposes phone mode and constrained ephemeral token contract', () => {
-  assert.match(workerSource, /VOICE_REVISION = 'gemini-live-v13'/);
+test('worker serves v13.1 and keeps long-lived Gemini key server-side', () => {
+  assert.match(workerSource, /VOICE_REVISION = 'gemini-live-v13\.1'/);
+  assert.match(workerSource, /GEMINI_LIVE_V13_CLIENT/);
   assert.match(workerSource, /primary: 'gemini-live'/);
-  assert.match(workerSource, /phoneMode: true/);
-  assert.match(workerSource, /googleSearchGrounding: true/);
-  assert.match(workerSource, /hybridVad: true/);
+  assert.match(workerSource, /smartJapaneseTranscription: true/);
+  assert.match(workerSource, /spokenSearchWaitPhrase: true/);
   assert.match(workerSource, /typedChatTransport: 'realtimeInput\.text'/);
-  assert.match(workerSource, /legacyCloudflareVoiceFallback: true/);
   assert.match(workerSource, /liveConnectConstraints/);
-  assert.match(workerSource, /GEMINI_API_KEY_not_configured/);
+  assert.match(workerSource, /model: `models\/\$\{GEMINI_LIVE_MODEL\}`/);
+  assert.match(workerSource, /uses: 1/);
+  assert.match(workerSource, /x-goog-api-key/);
+  assert.doesNotMatch(GEMINI_LIVE_V13_CLIENT, /GEMINI_API_KEY/);
 });
 
-test('long-lived Gemini API key stays server-side', () => {
-  assert.match(workerSource, /generativelanguage\.googleapis\.com\/v1beta\/auth_tokens/);
-  assert.match(workerSource, /x-goog-api-key/);
-  assert.match(workerSource, /uses: 1/);
-  assert.doesNotMatch(GEMINI_PHONE_CLIENT, /GEMINI_API_KEY/);
-  assert.match(GEMINI_PHONE_CLIENT, /\/api\/gemini-live-token/);
+test('desktop uses the same Gemini Live architecture rather than WebSpeech', () => {
+  assert.match(desktopSource, /gemini-3\.1-flash-live-preview/);
+  assert.match(desktopSource, /realtimeInput: \{ text:/);
+  assert.match(desktopSource, /languageCodes: \['ja-JP'\]/);
+  assert.match(desktopSource, /customVocabulary: CUSTOM_VOCABULARY/);
+  assert.match(desktopSource, /mode: 'SMART'/);
+  assert.match(desktopSource, /googleSearch: \{\}/);
+  assert.match(desktopSource, /inspect_current_screen/);
+  assert.match(desktopSource, /audioStreamEnd: true/);
+  assert.match(desktopSource, /voiceName: 'Kore'/);
+  assert.doesNotMatch(desktopSource, /SpeechRecognition|SpeechSynthesisUtterance/);
+  assert.match(desktopHtml, /script src="gemini-live\.js"/);
+  assert.doesNotMatch(desktopHtml, /realtime-voice\.js|voice-fallback\.js|renderer\.js/);
+  assert.match(desktopHtml, /wss:\/\/generativelanguage\.googleapis\.com/);
 });
