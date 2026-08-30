@@ -9,6 +9,7 @@ import { wrapAI } from './voice-helpers.js';
 
 const VOICE_REVISION = 'gemini-live-v13.1';
 const GEMINI_LIVE_MODEL = 'gemini-3.1-flash-live-preview';
+const GEMINI_TRANSCRIBE_MODEL = 'gemini-3.5-transcribe-live';
 const GEMINI_LIVE_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained';
 
 // Kept only so existing Durable Object bindings and fallback sessions remain valid.
@@ -35,20 +36,23 @@ function isAllowedTokenRequest(request) {
 }
 
 async function mintGeminiLiveToken(request, env) {
-  if (!isAllowedTokenRequest(request)) {
-    return noStoreJson({ available: false, reason: 'origin_not_allowed' }, 403);
-  }
+  if (!isAllowedTokenRequest(request)) return noStoreJson({ available: false, reason: 'origin_not_allowed' }, 403);
   if (!env.GEMINI_API_KEY) {
-    return noStoreJson({
-      available: false,
-      reason: 'GEMINI_API_KEY_not_configured',
-      model: GEMINI_LIVE_MODEL,
-    }, 503);
+    return noStoreJson({ available: false, reason: 'GEMINI_API_KEY_not_configured', model: GEMINI_LIVE_MODEL }, 503);
   }
 
+  let body = {};
+  try { body = await request.json(); } catch {}
+  const purpose = body?.purpose === 'transcription' ? 'transcription' : 'conversation';
+  const model = purpose === 'transcription' ? GEMINI_TRANSCRIBE_MODEL : GEMINI_LIVE_MODEL;
   const now = Date.now();
   const expireTime = new Date(now + 30 * 60 * 1000).toISOString();
   const newSessionExpireTime = new Date(now + 90 * 1000).toISOString();
+
+  // Keep the token single-use, short-lived and model-bound. The Live setup has
+  // several evolving fields (Search, transcription, tools, VAD), so constraining
+  // only the model avoids rejecting valid new config while never exposing the
+  // long-lived API key to the browser/Electron client.
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
     method: 'POST',
     headers: {
@@ -59,33 +63,23 @@ async function mintGeminiLiveToken(request, env) {
       uses: 1,
       expireTime,
       newSessionExpireTime,
-      liveConnectConstraints: {
-        model: `models/${GEMINI_LIVE_MODEL}`,
-        config: {
-          responseModalities: ['AUDIO'],
-          sessionResumption: {},
-        },
-      },
+      liveConnectConstraints: { model: `models/${model}` },
     }),
   });
 
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 700);
-    return noStoreJson({
-      available: false,
-      reason: 'gemini_ephemeral_token_failed',
-      status: response.status,
-      detail,
-    }, 502);
+    return noStoreJson({ available: false, reason: 'gemini_ephemeral_token_failed', purpose, status: response.status, detail }, 502);
   }
 
   const token = await response.json();
-  if (!token?.name) return noStoreJson({ available: false, reason: 'gemini_ephemeral_token_empty' }, 502);
+  if (!token?.name) return noStoreJson({ available: false, reason: 'gemini_ephemeral_token_empty', purpose }, 502);
 
   return noStoreJson({
     available: true,
     token: token.name,
-    model: GEMINI_LIVE_MODEL,
+    purpose,
+    model,
     endpoint: GEMINI_LIVE_ENDPOINT,
     expireTime,
     newSessionExpireTime,
@@ -126,12 +120,14 @@ export default {
         primary: 'gemini-live',
         geminiLiveConfigured: Boolean(env.GEMINI_API_KEY),
         geminiLiveModel: GEMINI_LIVE_MODEL,
+        dedicatedTranscriptionModel: GEMINI_TRANSCRIBE_MODEL,
         clientToServer: true,
         ephemeralTokens: true,
-        constrainedEphemeralTokens: true,
+        singleUseModelBoundTokens: true,
         nativeAudioInput: 'pcm16-16khz',
         nativeAudioOutput: 'pcm16-24khz',
         nativeAudioResponse: true,
+        parallelHighAccuracyTranscription: true,
         inputAudioTranscription: true,
         inputAudioLanguageCodes: ['ja-JP'],
         smartJapaneseTranscription: true,
@@ -153,7 +149,6 @@ export default {
       });
     }
 
-    // Diagnostics remain available for the fallback implementation only.
     if ((url.pathname === '/api/voice-smoke' && request.method === 'GET') ||
         (url.pathname === '/api/web-search' && request.method === 'GET')) {
       return legacyWorker.fetch(request, env, ctx);
