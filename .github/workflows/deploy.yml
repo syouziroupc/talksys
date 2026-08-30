@@ -86,7 +86,7 @@ jobs:
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=520,760 --screenshot=desktop-control.png file:///tmp/talksys-desktop.html
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1280,720 --screenshot=desktop-overlay.png "file://${GITHUB_WORKSPACE}/desktop/overlay.html?debug=1"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ui-screenshots
           path: |
