@@ -9,22 +9,41 @@ jobs:
   probe-production:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Probe production Worker
         shell: bash
         run: |
           set +e
           host=talksys.syouziroupc.workers.dev
+          base="https://$host"
           echo "===== PRODUCTION: $host ====="
           getent ahosts "$host" | head -20 || true
-          echo "--- /health ---"
-          curl -sS -i --max-time 20 "https://$host/health" | head -40 || true
-          echo "--- /voice-health ---"
-          curl -sS -i --max-time 20 "https://$host/voice-health" | head -60 || true
-          echo "--- /api/model-smoke ---"
-          curl -sS -i --max-time 30 "https://$host/api/model-smoke" | head -60 || true
+          for path in /health /voice-health /api/model-smoke; do
+            echo "--- $path ---"
+            curl -sS -i --max-time 30 "$base$path" | head -80 || true
+          done
           echo "--- /api/voice-smoke ---"
-          curl -sS -D - -o /tmp/voice-smoke.bin --max-time 30 "https://$host/api/voice-smoke" | head -60 || true
-          test -f /tmp/voice-smoke.bin && wc -c /tmp/voice-smoke.bin || true
+          curl -sS -D - -o /tmp/voice-smoke.bin --max-time 35 "$base/api/voice-smoke" | head -80 || true
+          test -f /tmp/voice-smoke.bin && { wc -c /tmp/voice-smoke.bin; cat /tmp/voice-smoke.bin; echo; } || true
+          echo "--- /api/chat casual ---"
+          curl -sS -i --max-time 45 "$base/api/chat" -H 'content-type: application/json' --data '{"messages":[{"role":"user","content":"1+1は？数字だけ答えて。"}]}' | head -100 || true
+          echo "--- /api/chat malformed ---"
+          curl -sS -i --max-time 20 "$base/api/chat" -H 'content-type: application/json' --data '{"messages":"invalid"}' | head -80 || true
+          echo "--- /api/locate validation ---"
+          curl -sS -i --max-time 20 "$base/api/locate" -H 'content-type: application/json' --data '{"query":"送信ボタン","image":"invalid"}' | head -80 || true
+          echo "--- Agent WebSocket hello ---"
+          node <<'NODE'
+          const url='wss://talksys.syouziroupc.workers.dev/agents/talk-sys-voice-agent/default';
+          const ws=new WebSocket(url);
+          const timer=setTimeout(()=>{console.log('ws_timeout');try{ws.close()}catch{}},10000);
+          ws.onopen=()=>{console.log('ws_open');ws.send(JSON.stringify({type:'hello',protocol_version:1}))};
+          ws.onmessage=e=>{console.log('ws_message',String(e.data).slice(0,1000));clearTimeout(timer);ws.close()};
+          ws.onerror=e=>console.log('ws_error',e?.message||'error');
+          ws.onclose=e=>{console.log('ws_close',e.code,e.reason||'');clearTimeout(timer)};
+          await new Promise(r=>setTimeout(r,11000));
+          NODE
 
   probe-v14-temporary:
     runs-on: ubuntu-latest
@@ -34,8 +53,20 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
+      - name: Add temporary-only public fetch compatibility
+        shell: bash
+        run: |
+          python <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('wrangler.jsonc')
+          data=json.loads(p.read_text())
+          flags=data.setdefault('compatibility_flags',[])
+          if 'global_fetch_strictly_public' not in flags:
+              flags.append('global_fetch_strictly_public')
+          p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+          PY
       - name: Deploy v14.1 to isolated temporary Cloudflare account
-        id: deploy
         shell: bash
         run: |
           set +e
@@ -45,33 +76,41 @@ jobs:
           python <<'PY'
           import re
           from pathlib import Path
-          text = Path('/tmp/wrangler-temp.log').read_text(errors='replace')
-          # Never expose the bearer claim URL or temporary credentials in public logs.
-          safe = re.sub(r'https://dash\.cloudflare\.com/claim-preview\?claimToken=[^\s]+', '[CLAIM URL REDACTED]', text)
-          safe = re.sub(r'(?i)(apiToken|tokenId|claimToken)\s*[:=]\s*[^\s]+', r'\1=[REDACTED]', safe)
-          urls = re.findall(r'https://[A-Za-z0-9.-]+\.workers\.dev', text)
-          print('temporary_workers_url=' + (urls[-1] if urls else ''))
+          text=Path('/tmp/wrangler-temp.log').read_text(errors='replace')
+          safe=re.sub(r'https://dash\.cloudflare\.com/claim-preview\?claimToken=[^\s]+','[CLAIM URL REDACTED]',text)
+          safe=re.sub(r'(?i)(apiToken|tokenId|claimToken)\s*[:=]\s*[^\s]+',r'\1=[REDACTED]',safe)
+          urls=re.findall(r'https://[A-Za-z0-9.-]+\.workers\.dev',text)
+          print('temporary_workers_url='+(urls[-1] if urls else ''))
           for line in safe.splitlines():
-              if any(k in line for k in ['ERROR', 'Error', 'Uploaded ', 'Deployed ', 'Temporary account ready', 'Account:', 'Claim within:', 'CLAIM URL REDACTED', 'workers.dev']):
+              if any(k in line for k in ['ERROR','Error','Uploaded ','Deployed ','Temporary account ready','Account:','Claim within:','CLAIM URL REDACTED','workers.dev']):
                   print(line[:500])
           Path('/tmp/temp-url.txt').write_text(urls[-1] if urls else '')
           PY
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
-      - name: Probe temporary v14.1 endpoints
+      - name: Probe temporary v14.1 endpoints and agent route
         shell: bash
         run: |
           set +e
           url="$(cat /tmp/temp-url.txt 2>/dev/null)"
-          if [ -z "$url" ]; then
-            echo "No temporary Worker URL; deployment did not produce a preview."
-            exit 0
-          fi
+          if [ -z "$url" ]; then echo "No temporary Worker URL"; exit 0; fi
           echo "===== TEMPORARY V14.1: $url ====="
           for path in /health /voice-health /api/model-smoke; do
             echo "--- $path ---"
-            curl -sS -i --max-time 35 "$url$path" | head -80 || true
+            curl -sS -i --max-time 40 "$url$path" | head -100 || true
           done
           echo "--- /api/voice-smoke ---"
-          curl -sS -D - -o /tmp/v14-voice.bin --max-time 35 "$url/api/voice-smoke" | head -80 || true
-          test -f /tmp/v14-voice.bin && wc -c /tmp/v14-voice.bin || true
+          curl -sS -D - -o /tmp/v14-voice.bin --max-time 40 "$url/api/voice-smoke" | head -100 || true
+          test -f /tmp/v14-voice.bin && { wc -c /tmp/v14-voice.bin; head -c 500 /tmp/v14-voice.bin; echo; } || true
+          echo "--- /api/chat ---"
+          curl -sS -i --max-time 45 "$url/api/chat" -H 'content-type: application/json' --data '{"messages":[{"role":"user","content":"1+1は？数字だけ答えて。"}]}' | head -100 || true
+          echo "--- Agent WebSocket hello ---"
+          URL="$url" node <<'NODE'
+          const base=process.env.URL.replace(/^https:/,'wss:');
+          const ws=new WebSocket(base+'/agents/talk-sys-voice-agent/default');
+          const timer=setTimeout(()=>{console.log('ws_timeout');try{ws.close()}catch{}},10000);
+          ws.onopen=()=>{console.log('ws_open');ws.send(JSON.stringify({type:'hello',protocol_version:1}))};
+          ws.onmessage=e=>{console.log('ws_message',String(e.data).slice(0,1000));clearTimeout(timer);ws.close()};
+          ws.onerror=e=>console.log('ws_error',e?.message||'error');
+          ws.onclose=e=>{console.log('ws_close',e.code,e.reason||'');clearTimeout(timer)};
+          await new Promise(r=>setTimeout(r,11000));
+          NODE
