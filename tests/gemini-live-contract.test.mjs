@@ -5,12 +5,9 @@ import { CLOUDFLARE_LIVE_CLIENT } from '../src/cloudflare-live-client.js';
 import {
   REALTIME_STT_MODEL,
   ACCURATE_STT_MODEL,
-  FALLBACK_STT_MODEL,
+  RESOLVER_MODEL,
 } from '../src/cloudflare-japanese-stt.js';
-import {
-  PRIMARY_TTS_MODEL,
-  SECONDARY_TTS_MODEL,
-} from '../src/cloudflare-japanese-tts.js';
+import { PRIMARY_TTS_MODEL } from '../src/cloudflare-japanese-tts.js';
 import {
   PRIMARY_CONVERSATION_MODEL,
   FALLBACK_CONVERSATION_MODEL,
@@ -19,56 +16,66 @@ import {
 const workerSource = fs.readFileSync(new URL('../src/worker-v14.js', import.meta.url), 'utf8');
 const sttSource = fs.readFileSync(new URL('../src/cloudflare-japanese-stt.js', import.meta.url), 'utf8');
 const llmSource = fs.readFileSync(new URL('../src/cloudflare-llm.js', import.meta.url), 'utf8');
+const webSource = fs.readFileSync(new URL('../src/web-search.js', import.meta.url), 'utf8');
 const ttsSource = fs.readFileSync(new URL('../src/cloudflare-japanese-tts.js', import.meta.url), 'utf8');
 const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
-test('v14 is Cloudflare-only primary voice architecture with no provider secrets', () => {
+test('v14.1 is fully keyless Cloudflare primary architecture', () => {
   assert.match(wranglerSource, /"main":\s*"src\/worker-v14\.js"/);
-  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v14'/);
+  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v14\.1'/);
   assert.match(workerSource, /providerApiKeysRequired: false/);
-  assert.doesNotMatch(workerSource + CLOUDFLARE_LIVE_CLIENT, /GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/);
+  assert.doesNotMatch(workerSource + CLOUDFLARE_LIVE_CLIENT + sttSource + llmSource + ttsSource, /GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /CHUNK_SAMPLES = 640/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /preferred_format: 'mp3'/);
-  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /SpeechRecognition|SpeechSynthesisUtterance/);
+  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /SpeechRecognition/);
 });
 
-test('Japanese STT combines realtime Nova-3 with high-accuracy Cloudflare unified final transcription', () => {
+test('Japanese STT is realtime Nova plus Whisper final with disagreement resolver', () => {
   assert.equal(REALTIME_STT_MODEL, '@cf/deepgram/nova-3');
-  assert.equal(ACCURATE_STT_MODEL, 'openai/gpt-4o-transcribe');
-  assert.equal(FALLBACK_STT_MODEL, '@cf/openai/whisper-large-v3-turbo');
+  assert.equal(ACCURATE_STT_MODEL, '@cf/openai/whisper-large-v3-turbo');
+  assert.equal(RESOLVER_MODEL, '@cf/qwen/qwen3.8-27b');
   assert.match(sttSource, /language: 'ja'/);
-  assert.match(sttSource, /gateway: \{ id: 'default' \}/);
   assert.match(sttSource, /silenceMs: options\.silenceMs \?\? 520/);
   assert.match(sttSource, /condition_on_previous_text: false/);
-  assert.match(sttSource, /beam_size: 7/);
+  assert.match(sttSource, /beam_size: 8/);
+  assert.match(sttSource, /score >= 0\.78/);
+  assert.match(workerSource, /dualAsrReconciliation: true/);
 });
 
-test('conversation uses one strong fast model with a Cloudflare-hosted fallback', () => {
-  assert.equal(PRIMARY_CONVERSATION_MODEL, 'openai/gpt-5.4-mini');
-  assert.equal(FALLBACK_CONVERSATION_MODEL, '@cf/nvidia/nemotron-3-120b-a12b');
-  assert.match(llmSource, /reasoning_effort: 'low'/);
+test('conversation uses Cloudflare-hosted gpt-oss 120B with Qwen fallback', () => {
+  assert.equal(PRIMARY_CONVERSATION_MODEL, '@cf/openai/gpt-oss-120b');
+  assert.equal(FALLBACK_CONVERSATION_MODEL, '@cf/qwen/qwen3.8-27b');
+  assert.match(llmSource, /max_tokens: maxTokens/);
   assert.match(llmSource, /stream: true/);
   assert.match(workerSource, /historyLimit: 32/);
   assert.match(workerSource, /maxMessageCount: 1000/);
 });
 
-test('factual questions use provider-native web search and speak a wait phrase first', () => {
-  assert.match(llmSource, /web_search_preview/);
-  assert.match(llmSource, /search_context_size: 'medium'/);
-  assert.match(llmSource, /country: 'JP'/);
+test('factual questions use multi-engine page evidence, reranking and spoken wait', () => {
+  for (const required of ['google-html','duckduckgo-html','bing-html','wikipedia-ja','google-news']) assert.match(webSource, new RegExp(required));
+  assert.match(webSource, /enrichResult/);
+  assert.match(webSource, /extractPageExcerpt/);
+  assert.match(llmSource, /rerankSearchResults/);
   assert.match(workerSource, /yield 'ちょっと調べますね。'/);
   assert.match(workerSource, /needsWebSearch\(transcript\)/);
-  assert.match(workerSource, /nativeWebSearch: 'openai-web-search-via-cloudflare-ai-gateway'/);
+  assert.match(workerSource, /検索結果だけを根拠/);
 });
 
-test('server TTS is Japanese-capable and keyless through Cloudflare Unified Billing', () => {
-  assert.equal(PRIMARY_TTS_MODEL, 'inworld/tts-1.5-max');
-  assert.equal(SECONDARY_TTS_MODEL, 'openai/tts-1');
-  assert.match(ttsSource, /voice_id: 'Hana'/);
-  assert.match(ttsSource, /output_format: 'mp3'/);
-  assert.match(ttsSource, /gateway: \{ id: 'default' \}/);
-  assert.match(workerSource, /serverSideTts: true/);
+test('server TTS is Cloudflare-hosted Melo and device fallback is Japanese-only', () => {
+  assert.equal(PRIMARY_TTS_MODEL, '@cf/myshell-ai/melotts');
+  assert.match(ttsSource, /MeloJapaneseTTS/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /\^ja\(\?:-\|_\)/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /SpeechSynthesisUtterance/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /serverAudioThisTurn/);
   assert.match(workerSource, /browserSpeechSynthesisPrimary: false/);
+  assert.match(workerSource, /deviceJapaneseTtsFallback: true/);
+});
+
+test('assistant playback is never streamed back into STT unless human barge-in wins', () => {
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /Never send the assistant's own audio to STT/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /BARGE_FRAMES = 3/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /type: 'interrupt'/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /DEVICE_TTS_GUARD_MS = 350/);
 });
 
 test('typed chat shares the exact same durable voice agent websocket', () => {
@@ -78,9 +85,7 @@ test('typed chat shares the exact same durable voice agent websocket', () => {
   assert.match(workerSource, /sharedTypedAndVoiceHistory: true/);
 });
 
-test('barge-in and current-screen inspection stay in the live path', () => {
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /BARGE_FRAMES = 3/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /type: 'interrupt'/);
+test('current-screen inspection stays grounded in actual screenshot results', () => {
   assert.match(CLOUDFLARE_LIVE_CLIENT, /\/api\/locate/);
   assert.match(workerSource, /type: 'screen_request'/);
   assert.match(workerSource, /画面情報に無いボタン名/);
