@@ -30,6 +30,7 @@ jobs:
           node --check desktop/preload.cjs
           node --check desktop/overlay-preload.cjs
           node --check desktop/gemini-live.js
+          node --check desktop/gemini-transcribe.js
           node --check desktop/overlay.js
           node --check scripts/verify-gemini-live.mjs
           node <<'NODE'
@@ -51,11 +52,12 @@ jobs:
           const web = fs.readFileSync('src/gemini-live-v13-client.js','utf8');
           const transcribe = fs.readFileSync('src/gemini-transcribe-companion.js','utf8');
           const desktop = fs.readFileSync('desktop/gemini-live.js','utf8');
+          const desktopTranscribe = fs.readFileSync('desktop/gemini-transcribe.js','utf8');
           const desktopHtml = fs.readFileSync('desktop/index.html','utf8');
           const verifier = fs.readFileSync('scripts/verify-gemini-live.mjs','utf8');
           if (!wrangler.includes('"main": "src/worker-v13.js"')) throw new Error('v13.1 is not the Wrangler entrypoint');
           for (const required of ['gemini-live-v13.1','gemini-3.5-transcribe-live','googleSearch','inputAudioTranscription','outputAudioTranscription','sessionResumption','contextWindowCompression','realtimeInput','audioStreamEnd','thinkingLevel']) {
-            if (!(worker + web + transcribe + desktop + verifier).includes(required)) throw new Error('missing Gemini Live contract: ' + required);
+            if (!(worker + web + transcribe + desktop + desktopTranscribe + verifier).includes(required)) throw new Error('missing Gemini Live contract: ' + required);
           }
           for (const client of [web, desktop]) {
             if (client.includes('SpeechSynthesisUtterance') || client.includes('SpeechRecognition')) throw new Error('Gemini primary path must not use WebSpeech');
@@ -64,11 +66,15 @@ jobs:
               if (!client.includes(required)) throw new Error('client contract missing: ' + required);
             }
           }
-          for (const required of ["purpose: 'transcription'", 'gemini-3.5-transcribe-live', "languageCodes: ['ja-JP']", "mode: 'SMART'", 'customVocabulary']) {
-            if (!transcribe.includes(required)) throw new Error('transcription companion missing: ' + required);
+          for (const client of [transcribe, desktopTranscribe]) {
+            for (const required of ["purpose: 'transcription'", 'gemini-3.5-transcribe-live', "languageCodes: ['ja-JP']", "mode: 'SMART'", 'customVocabulary']) {
+              if (!client.includes(required)) throw new Error('transcription companion missing: ' + required);
+            }
           }
           if (!worker.includes('/gemini-transcribe.js')) throw new Error('transcription companion is not served');
-          if (!desktopHtml.includes('<script src="gemini-live.js"></script>')) throw new Error('Desktop is not using Gemini Live');
+          for (const required of ['<script src="gemini-live.js"></script>', '<script src="gemini-transcribe.js"></script>']) {
+            if (!desktopHtml.includes(required)) throw new Error('Desktop missing ' + required);
+          }
           if (/renderer\.js|realtime-voice\.js|voice-fallback\.js/.test(desktopHtml)) throw new Error('Desktop still boots legacy voice path');
           for (const required of ['verifySearchAndWaitPhrase','verifyJapaneseTranscriptionWithGeneratedAudio','verifyEightTurnsAndResumption']) {
             if (!verifier.includes(required)) throw new Error('real canary verifier missing: ' + required);
@@ -104,7 +110,9 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require('fs');
-          const html = fs.readFileSync('desktop/index.html', 'utf8').replace('<script src="gemini-live.js"></script>', '');
+          const html = fs.readFileSync('desktop/index.html', 'utf8')
+            .replace('<script src="gemini-live.js"></script>', '')
+            .replace('<script src="gemini-transcribe.js"></script>', '');
           fs.writeFileSync('/tmp/talksys-desktop.html', html);
           NODE
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=520,760 --screenshot=desktop-control.png file:///tmp/talksys-desktop.html
