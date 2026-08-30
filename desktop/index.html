@@ -24,7 +24,7 @@
       <label>TalkSys API URL<input id="apiBase" type="url" spellcheck="false" placeholder="https://...workers.dev"></label>
     </details>
     <section id="chat" class="chat" aria-live="polite">
-      <div class="msg assistant">Gemini Liveに接続すると、日本語のネイティブ音声で連続会話します。現在情報はGoogle検索で確認し、画面確認が必要なときだけデスクトップを取得します。</div>
+      <div class="msg assistant">Gemini Liveに接続すると、日本語のネイティブ音声で連続会話します。表示字幕はGemini 3.5 Transcribe Liveで高精度化し、現在情報はGoogle検索で確認します。</div>
     </section>
     <div id="status" class="status"></div>
     <div class="note">音声と文字入力は同じLiveセッションです。AIの音声中でもそのまま話しかけて割り込めます。</div>
@@ -34,5 +34,6 @@
     </form>
   </main>
   <script src="gemini-live.js"></script>
+  <script src="gemini-transcribe.js"></script>
 </body>
 </html>
