@@ -1,0 +1,27 @@
+name: Probe TalkSys Live
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe public Worker candidates
+        shell: bash
+        run: |
+          set +e
+          for host in \
+            talksys.syouziroupc.workers.dev \
+            talksys.syouziroupc.workers.dev; do
+            echo "===== HOST: $host ====="
+            getent ahosts "$host" | head -20 || true
+            echo "--- /health headers ---"
+            curl -sS -i --max-time 20 "https://$host/health" | head -80 || true
+            echo
+            echo "--- / headers ---"
+            curl -sS -i --max-time 20 "https://$host/" | head -80 || true
+            echo
+          done
