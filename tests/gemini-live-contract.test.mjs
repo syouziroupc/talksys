@@ -1,104 +1,87 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { GEMINI_LIVE_V13_CLIENT } from '../src/gemini-live-v13-client.js';
-import { GEMINI_TRANSCRIBE_COMPANION } from '../src/gemini-transcribe-companion.js';
+import { CLOUDFLARE_LIVE_CLIENT } from '../src/cloudflare-live-client.js';
+import {
+  REALTIME_STT_MODEL,
+  ACCURATE_STT_MODEL,
+  FALLBACK_STT_MODEL,
+} from '../src/cloudflare-japanese-stt.js';
+import {
+  PRIMARY_TTS_MODEL,
+  SECONDARY_TTS_MODEL,
+} from '../src/cloudflare-japanese-tts.js';
+import {
+  PRIMARY_CONVERSATION_MODEL,
+  FALLBACK_CONVERSATION_MODEL,
+} from '../src/cloudflare-llm.js';
 
-const workerSource = fs.readFileSync(new URL('../src/worker-v13.js', import.meta.url), 'utf8');
+const workerSource = fs.readFileSync(new URL('../src/worker-v14.js', import.meta.url), 'utf8');
+const sttSource = fs.readFileSync(new URL('../src/cloudflare-japanese-stt.js', import.meta.url), 'utf8');
+const llmSource = fs.readFileSync(new URL('../src/cloudflare-llm.js', import.meta.url), 'utf8');
+const ttsSource = fs.readFileSync(new URL('../src/cloudflare-japanese-tts.js', import.meta.url), 'utf8');
 const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
-const desktopSource = fs.readFileSync(new URL('../desktop/gemini-live.js', import.meta.url), 'utf8');
-const desktopTranscribe = fs.readFileSync(new URL('../desktop/gemini-transcribe.js', import.meta.url), 'utf8');
-const desktopHtml = fs.readFileSync(new URL('../desktop/index.html', import.meta.url), 'utf8');
 
-test('Gemini Live v13.1 is the primary native audio path', () => {
-  assert.match(GEMINI_LIVE_V13_CLIENT, /gemini-3\.1-flash-live-preview/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /CHUNK_SAMPLES = 640/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /audio\/pcm;rate=/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /thinkingLevel: 'LOW'/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /voiceName: 'Kore'/);
-  assert.doesNotMatch(GEMINI_LIVE_V13_CLIENT, /SpeechSynthesisUtterance/);
-  assert.match(wranglerSource, /"main":\s*"src\/worker-v13\.js"/);
+test('v14 is Cloudflare-only primary voice architecture with no provider secrets', () => {
+  assert.match(wranglerSource, /"main":\s*"src\/worker-v14\.js"/);
+  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v14'/);
+  assert.match(workerSource, /providerApiKeysRequired: false/);
+  assert.doesNotMatch(workerSource + CLOUDFLARE_LIVE_CLIENT, /GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /CHUNK_SAMPLES = 640/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /preferred_format: 'mp3'/);
+  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /SpeechRecognition|SpeechSynthesisUtterance/);
 });
 
-test('conversation transcription is Japanese SMART mode with custom vocabulary', () => {
-  assert.match(GEMINI_LIVE_V13_CLIENT, /inputAudioTranscription:/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /languageCodes: \['ja-JP'\]/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /customVocabulary: CUSTOM_VOCABULARY/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /mode: 'SMART'/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /interimInputTranscription/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /TRANSCRIPT_GRACE_MS = 520/);
+test('Japanese STT combines realtime Nova-3 with high-accuracy Cloudflare unified final transcription', () => {
+  assert.equal(REALTIME_STT_MODEL, '@cf/deepgram/nova-3');
+  assert.equal(ACCURATE_STT_MODEL, 'openai/gpt-4o-transcribe');
+  assert.equal(FALLBACK_STT_MODEL, '@cf/openai/whisper-large-v3-turbo');
+  assert.match(sttSource, /language: 'ja'/);
+  assert.match(sttSource, /gateway: \{ id: 'default' \}/);
+  assert.match(sttSource, /silenceMs: options\.silenceMs \?\? 520/);
+  assert.match(sttSource, /condition_on_previous_text: false/);
+  assert.match(sttSource, /beam_size: 7/);
 });
 
-test('dedicated Gemini 3.5 Transcribe companion improves displayed Japanese transcript', () => {
-  assert.match(GEMINI_TRANSCRIBE_COMPANION, /gemini-3\.5-transcribe-live/);
-  assert.match(GEMINI_TRANSCRIBE_COMPANION, /purpose: 'transcription'/);
-  assert.match(GEMINI_TRANSCRIBE_COMPANION, /languageCodes: \['ja-JP'\]/);
-  assert.match(GEMINI_TRANSCRIBE_COMPANION, /customVocabulary: CUSTOM_VOCABULARY/);
-  assert.match(GEMINI_TRANSCRIBE_COMPANION, /mode: 'SMART'/);
-  assert.match(GEMINI_TRANSCRIBE_COMPANION, /interimInputTranscription/);
-  assert.match(GEMINI_TRANSCRIBE_COMPANION, /inputTranscription/);
-  assert.match(GEMINI_TRANSCRIBE_COMPANION, /高精度文字起こし/);
+test('conversation uses one strong fast model with a Cloudflare-hosted fallback', () => {
+  assert.equal(PRIMARY_CONVERSATION_MODEL, 'openai/gpt-5.4-mini');
+  assert.equal(FALLBACK_CONVERSATION_MODEL, '@cf/nvidia/nemotron-3-120b-a12b');
+  assert.match(llmSource, /reasoning_effort: 'low'/);
+  assert.match(llmSource, /stream: true/);
+  assert.match(workerSource, /historyLimit: 32/);
+  assert.match(workerSource, /maxMessageCount: 1000/);
 });
 
-test('hybrid VAD ends speech quickly while server VAD remains enabled', () => {
-  assert.match(GEMINI_LIVE_V13_CLIENT, /LOCAL_END_SILENCE_MS = 560/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /audioStreamEnd: true/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /automaticActivityDetection:/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /disabled: false/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /silenceDurationMs: 800/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /START_OF_ACTIVITY_INTERRUPTS/);
+test('factual questions use provider-native web search and speak a wait phrase first', () => {
+  assert.match(llmSource, /web_search_preview/);
+  assert.match(llmSource, /search_context_size: 'medium'/);
+  assert.match(llmSource, /country: 'JP'/);
+  assert.match(workerSource, /yield 'ちょっと調べますね。'/);
+  assert.match(workerSource, /needsWebSearch\(transcript\)/);
+  assert.match(workerSource, /nativeWebSearch: 'openai-web-search-via-cloudflare-ai-gateway'/);
 });
 
-test('search, long conversation and typed chat stay inside one Live session', () => {
-  assert.match(GEMINI_LIVE_V13_CLIENT, /googleSearch: \{\}/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /sessionResumption:/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /contextWindowCompression:/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /SESSION_ROTATE_MS = 12 \* 60 \* 1000/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /realtimeInput: \{ text \}/);
-  assert.doesNotMatch(GEMINI_LIVE_V13_CLIENT, /clientContent:/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /ちょっと調べますね/);
+test('server TTS is Japanese-capable and keyless through Cloudflare Unified Billing', () => {
+  assert.equal(PRIMARY_TTS_MODEL, 'inworld/tts-1.5-max');
+  assert.equal(SECONDARY_TTS_MODEL, 'openai/tts-1');
+  assert.match(ttsSource, /voice_id: 'Hana'/);
+  assert.match(ttsSource, /output_format: 'mp3'/);
+  assert.match(ttsSource, /gateway: \{ id: 'default' \}/);
+  assert.match(workerSource, /serverSideTts: true/);
+  assert.match(workerSource, /browserSpeechSynthesisPrimary: false/);
 });
 
-test('screen inspection is a Gemini function tool and unsupported claims are forbidden', () => {
-  assert.match(GEMINI_LIVE_V13_CLIENT, /inspect_current_screen/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /toolResponse:/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /ツール結果にない画面内容/);
-  assert.match(GEMINI_LIVE_V13_CLIENT, /\/api\/locate/);
+test('typed chat shares the exact same durable voice agent websocket', () => {
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /text_message/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /AGENT_PATH = '\/agents\/talk-sys-voice-agent\/default'/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /Keep the agent WebSocket alive so typed chat keeps the same conversation/);
+  assert.match(workerSource, /sharedTypedAndVoiceHistory: true/);
 });
 
-test('worker serves v13.1, both model-bound token purposes, and keeps API key server-side', () => {
-  assert.match(workerSource, /VOICE_REVISION = 'gemini-live-v13\.1'/);
-  assert.match(workerSource, /GEMINI_LIVE_V13_CLIENT/);
-  assert.match(workerSource, /GEMINI_TRANSCRIBE_COMPANION/);
-  assert.match(workerSource, /GEMINI_TRANSCRIBE_MODEL = 'gemini-3\.5-transcribe-live'/);
-  assert.match(workerSource, /purpose === 'transcription'/);
-  assert.match(workerSource, /parallelHighAccuracyTranscription: true/);
-  assert.match(workerSource, /spokenSearchWaitPhrase: true/);
-  assert.match(workerSource, /typedChatTransport: 'realtimeInput\.text'/);
-  assert.match(workerSource, /liveConnectConstraints: \{ model: `models\/\$\{model\}` \}/);
-  assert.match(workerSource, /uses: 1/);
-  assert.match(workerSource, /x-goog-api-key/);
-  assert.match(workerSource, /gemini-transcribe\.js/);
-  assert.doesNotMatch(GEMINI_LIVE_V13_CLIENT + GEMINI_TRANSCRIBE_COMPANION, /GEMINI_API_KEY/);
-});
-
-test('desktop uses Gemini native conversation and dedicated transcription rather than WebSpeech', () => {
-  assert.match(desktopSource, /gemini-3\.1-flash-live-preview/);
-  assert.match(desktopSource, /realtimeInput: \{ text:/);
-  assert.match(desktopSource, /languageCodes: \['ja-JP'\]/);
-  assert.match(desktopSource, /googleSearch: \{\}/);
-  assert.match(desktopSource, /inspect_current_screen/);
-  assert.match(desktopSource, /audioStreamEnd: true/);
-  assert.match(desktopSource, /voiceName: 'Kore'/);
-  assert.doesNotMatch(desktopSource, /SpeechRecognition|SpeechSynthesisUtterance/);
-  assert.match(desktopTranscribe, /gemini-3\.5-transcribe-live/);
-  assert.match(desktopTranscribe, /purpose: 'transcription'/);
-  assert.match(desktopTranscribe, /languageCodes: \['ja-JP'\]/);
-  assert.match(desktopTranscribe, /customVocabulary: CUSTOM_VOCABULARY/);
-  assert.match(desktopTranscribe, /mode: 'SMART'/);
-  assert.doesNotMatch(desktopTranscribe, /SpeechRecognition|SpeechSynthesisUtterance/);
-  assert.match(desktopHtml, /script src="gemini-live\.js"/);
-  assert.match(desktopHtml, /script src="gemini-transcribe\.js"/);
-  assert.doesNotMatch(desktopHtml, /realtime-voice\.js|voice-fallback\.js|renderer\.js/);
-  assert.match(desktopHtml, /wss:\/\/generativelanguage\.googleapis\.com/);
+test('barge-in and current-screen inspection stay in the live path', () => {
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /BARGE_FRAMES = 3/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /type: 'interrupt'/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /\/api\/locate/);
+  assert.match(workerSource, /type: 'screen_request'/);
+  assert.match(workerSource, /画面情報に無いボタン名/);
 });
