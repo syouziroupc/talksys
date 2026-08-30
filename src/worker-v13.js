@@ -1,16 +1,17 @@
 import { routeAgentRequest } from 'agents';
 import app from './index.js';
 import legacyWorker, { TalkSysVoiceAgent as LegacyTalkSysVoiceAgent } from './worker.js';
-import { GEMINI_PHONE_CLIENT } from './gemini-phone-client.js';
+import { GEMINI_LIVE_V13_CLIENT } from './gemini-live-v13-client.js';
 import { VOICE_MARKER_BRIDGE } from './voice-marker-bridge.js';
 import { REALTIME_VOICE_CLIENT } from './realtime-voice-client.js';
 import { VOICE_FALLBACK_CLIENT } from './voice-fallback-client.js';
 import { wrapAI } from './voice-helpers.js';
 
-const VOICE_REVISION = 'gemini-live-v13';
+const VOICE_REVISION = 'gemini-live-v13.1';
 const GEMINI_LIVE_MODEL = 'gemini-3.1-flash-live-preview';
 const GEMINI_LIVE_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained';
 
+// Kept only so existing Durable Object bindings and fallback sessions remain valid.
 export class TalkSysVoiceAgent extends LegacyTalkSysVoiceAgent {}
 
 function noStoreJson(data, status = 200) {
@@ -23,7 +24,20 @@ function noStoreJson(data, status = 200) {
   });
 }
 
-async function mintGeminiLiveToken(env) {
+function isAllowedTokenRequest(request) {
+  const origin = request.headers.get('origin');
+  if (!origin || origin === 'null') return true; // Electron/file clients and server-side canary.
+  try {
+    return new URL(origin).host === new URL(request.url).host;
+  } catch {
+    return false;
+  }
+}
+
+async function mintGeminiLiveToken(request, env) {
+  if (!isAllowedTokenRequest(request)) {
+    return noStoreJson({ available: false, reason: 'origin_not_allowed' }, 403);
+  }
   if (!env.GEMINI_API_KEY) {
     return noStoreJson({
       available: false,
@@ -34,7 +48,7 @@ async function mintGeminiLiveToken(env) {
 
   const now = Date.now();
   const expireTime = new Date(now + 30 * 60 * 1000).toISOString();
-  const newSessionExpireTime = new Date(now + 2 * 60 * 1000).toISOString();
+  const newSessionExpireTime = new Date(now + 90 * 1000).toISOString();
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
     method: 'POST',
     headers: {
@@ -46,7 +60,7 @@ async function mintGeminiLiveToken(env) {
       expireTime,
       newSessionExpireTime,
       liveConnectConstraints: {
-        model: GEMINI_LIVE_MODEL,
+        model: `models/${GEMINI_LIVE_MODEL}`,
         config: {
           responseModalities: ['AUDIO'],
           sessionResumption: {},
@@ -75,6 +89,7 @@ async function mintGeminiLiveToken(env) {
     endpoint: GEMINI_LIVE_ENDPOINT,
     expireTime,
     newSessionExpireTime,
+    revision: VOICE_REVISION,
   });
 }
 
@@ -97,19 +112,18 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    if (url.pathname === '/gemini-live.js') return serveScript(GEMINI_PHONE_CLIENT);
+    if (url.pathname === '/gemini-live.js') return serveScript(GEMINI_LIVE_V13_CLIENT);
     if (url.pathname === '/voice-marker-bridge.js') return serveScript(VOICE_MARKER_BRIDGE);
     if (url.pathname === '/realtime-voice.js') return serveScript(REALTIME_VOICE_CLIENT);
     if (url.pathname === '/voice-fallback.js') return serveScript(VOICE_FALLBACK_CLIENT);
 
-    if (url.pathname === '/api/gemini-live-token' && request.method === 'POST') return mintGeminiLiveToken(env);
+    if (url.pathname === '/api/gemini-live-token' && request.method === 'POST') return mintGeminiLiveToken(request, env);
 
     if (url.pathname === '/voice-health') {
       return noStoreJson({
         ok: true,
         voiceRevision: VOICE_REVISION,
         primary: 'gemini-live',
-        phoneMode: true,
         geminiLiveConfigured: Boolean(env.GEMINI_API_KEY),
         geminiLiveModel: GEMINI_LIVE_MODEL,
         clientToServer: true,
@@ -117,22 +131,29 @@ export default {
         constrainedEphemeralTokens: true,
         nativeAudioInput: 'pcm16-16khz',
         nativeAudioOutput: 'pcm16-24khz',
+        nativeAudioResponse: true,
         inputAudioTranscription: true,
+        inputAudioLanguageCodes: ['ja-JP'],
+        smartJapaneseTranscription: true,
+        customVocabulary: true,
         outputAudioTranscription: true,
-        japaneseSpeechLanguage: 'ja-JP',
         hybridVad: true,
-        localEndSilenceMs: 440,
-        bargeInDetectionMs: 120,
+        localEndSilenceMs: 560,
+        serverVadFallbackMs: 800,
         googleSearchGrounding: true,
+        spokenSearchWaitPhrase: true,
         screenFunctionCalling: true,
         sessionResumption: true,
+        proactiveSessionRotation: true,
         contextWindowCompression: true,
+        thinkingLevel: 'LOW',
         typedChatTransport: 'realtimeInput.text',
         typedChatSharesLiveSession: true,
         legacyCloudflareVoiceFallback: true,
       });
     }
 
+    // Diagnostics remain available for the fallback implementation only.
     if ((url.pathname === '/api/voice-smoke' && request.method === 'GET') ||
         (url.pathname === '/api/web-search' && request.method === 'GET')) {
       return legacyWorker.fetch(request, env, ctx);
