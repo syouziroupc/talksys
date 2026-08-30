@@ -1,4 +1,4 @@
-name: Validate and Deploy
+name: Validate, Deploy and Verify
 
 on:
   push:
@@ -11,9 +11,11 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+      EXPECTED_VOICE_REVISION: cloudflare-live-v14.1
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
@@ -93,10 +95,45 @@ jobs:
             desktop-control.png
             desktop-overlay.png
 
-      - name: Deploy directly when repository credentials are configured
+      - name: Probe production before deployment
+        run: |
+          set +e
+          body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health")"
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            echo "::warning::Production /voice-health is unreachable before deployment."
+          else
+            BODY="$body" node <<'NODE'
+          let data = {};
+          try { data = JSON.parse(process.env.BODY || '{}'); } catch {}
+          console.log('Current production voiceRevision:', data.voiceRevision || '(missing)');
+          NODE
+          fi
+
+      - name: Deploy to Cloudflare when repository credentials are configured
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
+
+      - name: Verify production revision and deployment readiness
+        run: |
+          body="$(curl -fsS --max-time 30 "$PRODUCTION_URL/voice-health")" || {
+            echo "::error::Production /voice-health is unreachable."
+            exit 1
+          }
+          revision="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||''))")"
+          echo "Production voiceRevision: ${revision:-missing}"
+          echo "Expected voiceRevision: $EXPECTED_VOICE_REVISION"
+          if [ "$revision" = "$EXPECTED_VOICE_REVISION" ]; then
+            exit 0
+          fi
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Production is stale and deployment is blocked because CLOUDFLARE_API_TOKEN and/or CLOUDFLARE_ACCOUNT_ID are not configured in GitHub Actions secrets."
+          else
+            echo "::error::Deployment completed or was attempted, but production revision does not match the expected v14.1 revision."
+          fi
+          exit 1
