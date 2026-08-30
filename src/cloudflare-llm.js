@@ -2,8 +2,8 @@ import { extractText } from './voice-helpers.js';
 import { webSearch, formatSearchContext } from './web-search.js';
 import { rerankSearchResults } from './search-rerank.js';
 
-export const PRIMARY_CONVERSATION_MODEL = 'openai/gpt-5.4-mini';
-export const FALLBACK_CONVERSATION_MODEL = '@cf/nvidia/nemotron-3-120b-a12b';
+export const PRIMARY_CONVERSATION_MODEL = '@cf/openai/gpt-oss-120b';
+export const FALLBACK_CONVERSATION_MODEL = '@cf/qwen/qwen3.8-27b';
 
 function readDelta(payload) {
   if (!payload || typeof payload !== 'object') return '';
@@ -25,29 +25,23 @@ function readDelta(payload) {
   return '';
 }
 
-function extractResponsesText(value, depth = 0) {
+function readFinal(value, depth = 0) {
   if (depth > 8 || value == null) return '';
   if (typeof value === 'string') return value.trim();
-  if (Array.isArray(value)) {
-    const direct = value.map((item) => extractResponsesText(item, depth + 1)).filter(Boolean).join('');
-    return direct.trim();
-  }
+  if (Array.isArray(value)) return value.map((item) => readFinal(item, depth + 1)).filter(Boolean).join('').trim();
   if (typeof value !== 'object') return '';
   const candidates = [
+    value.response,
+    value.choices?.[0]?.message?.content,
     value.output_text,
     value.text,
     value.content,
-    value.message?.content,
-    value.result?.output_text,
-    value.result?.text,
-    value.result?.output,
+    value.result,
     value.output,
-    value.response,
-    value.choices?.[0]?.message?.content,
   ];
   for (const candidate of candidates) {
     if (candidate === value) continue;
-    const text = extractResponsesText(candidate, depth + 1);
+    const text = readFinal(candidate, depth + 1);
     if (text) return text;
   }
   return '';
@@ -81,139 +75,82 @@ async function* parseSse(stream, signal) {
         yield delta;
       }
     }
-    buffer += decoder.decode();
   } finally {
     try { reader.releaseLock(); } catch {}
   }
 }
 
-function primaryChatInput(messages, maxTokens = 360) {
+function modelInput(model, messages, maxTokens) {
+  if (model === FALLBACK_CONVERSATION_MODEL) {
+    return {
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.25,
+      top_p: 0.9,
+      stream: true,
+      chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
+    };
+  }
   return {
     messages,
-    max_completion_tokens: maxTokens,
-    reasoning_effort: 'low',
-    stream: true,
-  };
-}
-
-function fallbackChatInput(messages, maxTokens = 360) {
-  return {
-    messages,
-    max_completion_tokens: maxTokens,
+    max_tokens: maxTokens,
     temperature: 0.28,
     top_p: 0.9,
     stream: true,
   };
 }
 
+async function openModelStream(ai, model, messages, maxTokens, signal) {
+  return ai.run(model, modelInput(model, messages, maxTokens), signal ? { signal } : undefined);
+}
+
 export async function* streamCloudflareConversation(ai, messages, options = {}) {
   const signal = options.signal;
-  const maxTokens = options.maxTokens || 360;
-  let stream;
-  let provider = 'unified';
+  const maxTokens = options.maxTokens || 420;
+  let result;
   try {
-    stream = await ai.run(
-      PRIMARY_CONVERSATION_MODEL,
-      primaryChatInput(messages, maxTokens),
-      { gateway: { id: 'default' }, ...(signal ? { signal } : {}) },
-    );
-    if (!(stream instanceof ReadableStream)) {
-      const text = extractResponsesText(stream) || extractText(stream);
-      if (text) yield text;
-      return;
-    }
+    result = await openModelStream(ai, PRIMARY_CONVERSATION_MODEL, messages, maxTokens, signal);
   } catch {
-    provider = 'workers-ai';
+    result = await openModelStream(ai, FALLBACK_CONVERSATION_MODEL, messages, maxTokens, signal);
   }
-
-  if (provider === 'workers-ai') {
-    stream = await ai.run(
-      FALLBACK_CONVERSATION_MODEL,
-      fallbackChatInput(messages, maxTokens),
-      signal ? { signal } : undefined,
-    );
-  }
-
-  if (!(stream instanceof ReadableStream)) {
-    const text = extractResponsesText(stream) || extractText(stream);
+  if (!(result instanceof ReadableStream)) {
+    const text = readFinal(result) || extractText(result);
     if (text) yield text;
     return;
   }
-  yield* parseSse(stream, signal);
-}
-
-function recentConversation(messages) {
-  if (!Array.isArray(messages)) return '';
-  return messages.slice(-10)
-    .map((item) => `${item.role === 'assistant' ? 'AI' : 'ユーザー'}: ${String(item.content || '').replace(/\s+/g, ' ').slice(0, 500)}`)
-    .join('\n')
-    .slice(0, 5000);
-}
-
-function groundedInput(question, history, systemPrompt) {
-  return [
-    systemPrompt,
-    '',
-    '[直近の会話]',
-    recentConversation(history) || '(なし)',
-    '',
-    '[今回の質問]',
-    question,
-  ].join('\n');
+  yield* parseSse(result, signal);
 }
 
 export async function answerWithCloudflareWebSearch(ai, question, history, systemPrompt, options = {}) {
   const signal = options.signal;
-  const input = groundedInput(question, history, systemPrompt);
-  try {
-    const result = await ai.run(
-      PRIMARY_CONVERSATION_MODEL,
-      {
-        input,
-        instructions: '外部事実は必ずWeb検索結果に基づいて回答する。検索で確認できない事実は推測しない。日本語で自然に答える。',
-        max_output_tokens: 520,
-        reasoning: { effort: 'low' },
-        tools: [{
-          type: 'web_search_preview',
-          search_context_size: 'medium',
-          user_location: { type: 'approximate', country: 'JP', timezone: 'Asia/Tokyo' },
-        }],
-        store: false,
-      },
-      { gateway: { id: 'default' }, ...(signal ? { signal } : {}) },
-    );
-    const text = extractResponsesText(result) || extractText(result);
-    if (text) return { text, provider: 'gpt-5.4-mini-web-search', nativeSearch: true };
-  } catch {
-    // Unified Billing may not be funded. Use a keyless Workers AI fallback below.
-  }
-
-  const raw = await webSearch(question, { limit: 8, timeoutMs: 2800 });
-  const ranked = await rerankSearchResults(ai, question, raw, 5);
+  const raw = await webSearch(question, { limit: 12, timeoutMs: 3600, enrichPages: true });
+  const ranked = await rerankSearchResults(ai, question, raw, 6);
   const searchContext = formatSearchContext(ranked);
-  if (!searchContext) return {
-    text: '確認できる検索結果を取得できませんでした。推測では答えません。',
-    provider: 'workers-ai-search-fallback',
-    nativeSearch: false,
-    sources: [],
-  };
+  if (!searchContext) {
+    return {
+      text: '確認できる検索結果を取得できませんでした。推測では答えません。',
+      provider: 'cloudflare-workers-ai-grounded-search',
+      nativeSearch: false,
+      sources: [],
+    };
+  }
 
   const messages = [
     { role: 'system', content: systemPrompt },
-    ...history.slice(-8).map((item) => ({ role: item.role, content: item.content })),
+    ...history.slice(-10).map((item) => ({ role: item.role, content: item.content })),
     {
       role: 'user',
-      content: `${question}\n\n[検索結果]\n${searchContext}\n\n検索結果に書かれていない外部事実は補わず、日本語で2〜4文で答えてください。`,
+      content: `${question}\n\n[Web検索で取得した根拠]\n${searchContext}\n\n必ず上の根拠だけで答えてください。根拠同士が食い違う場合は、その点を明示してください。検索結果にない固有名詞・数値・日付・価格・法令・仕様をモデル知識から補わないでください。日本語で2〜5文。`,
     },
   ];
   let text = '';
-  for await (const delta of streamCloudflareConversation(ai, messages, { signal, maxTokens: 480 })) text += delta;
+  for await (const delta of streamCloudflareConversation(ai, messages, { signal, maxTokens: 560 })) text += delta;
   return {
     text: text.trim() || '検索結果から確実な回答を作れませんでした。',
-    provider: 'workers-ai-search-fallback',
+    provider: 'cloudflare-workers-ai-grounded-search',
     nativeSearch: false,
-    sources: ranked.slice(0, 4),
+    sources: ranked.slice(0, 5),
   };
 }
 
-export { extractResponsesText, readDelta };
+export { readFinal, readDelta };
