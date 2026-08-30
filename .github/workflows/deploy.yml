@@ -23,6 +23,7 @@ jobs:
           node --check src/worker.js
           node --check src/worker-v13.js
           node --check src/gemini-live-v13-client.js
+          node --check src/gemini-transcribe-companion.js
           node --check src/realtime-voice-client.js
           node --check src/voice-fallback-client.js
           node --check desktop/main.cjs
@@ -30,6 +31,7 @@ jobs:
           node --check desktop/overlay-preload.cjs
           node --check desktop/gemini-live.js
           node --check desktop/overlay.js
+          node --check scripts/verify-gemini-live.mjs
           node <<'NODE'
           const fs = require('fs');
           const source = fs.readFileSync('src/index.js', 'utf8');
@@ -47,11 +49,13 @@ jobs:
           const wrangler = fs.readFileSync('wrangler.jsonc','utf8');
           const worker = fs.readFileSync('src/worker-v13.js','utf8');
           const web = fs.readFileSync('src/gemini-live-v13-client.js','utf8');
+          const transcribe = fs.readFileSync('src/gemini-transcribe-companion.js','utf8');
           const desktop = fs.readFileSync('desktop/gemini-live.js','utf8');
           const desktopHtml = fs.readFileSync('desktop/index.html','utf8');
+          const verifier = fs.readFileSync('scripts/verify-gemini-live.mjs','utf8');
           if (!wrangler.includes('"main": "src/worker-v13.js"')) throw new Error('v13.1 is not the Wrangler entrypoint');
-          for (const required of ['gemini-live-v13.1','googleSearch','inputAudioTranscription','outputAudioTranscription','sessionResumption','contextWindowCompression','realtimeInput','audioStreamEnd','thinkingLevel']) {
-            if (!(worker + web + desktop).includes(required)) throw new Error('missing Gemini Live contract: ' + required);
+          for (const required of ['gemini-live-v13.1','gemini-3.5-transcribe-live','googleSearch','inputAudioTranscription','outputAudioTranscription','sessionResumption','contextWindowCompression','realtimeInput','audioStreamEnd','thinkingLevel']) {
+            if (!(worker + web + transcribe + desktop + verifier).includes(required)) throw new Error('missing Gemini Live contract: ' + required);
           }
           for (const client of [web, desktop]) {
             if (client.includes('SpeechSynthesisUtterance') || client.includes('SpeechRecognition')) throw new Error('Gemini primary path must not use WebSpeech');
@@ -60,8 +64,15 @@ jobs:
               if (!client.includes(required)) throw new Error('client contract missing: ' + required);
             }
           }
+          for (const required of ["purpose: 'transcription'", 'gemini-3.5-transcribe-live', "languageCodes: ['ja-JP']", "mode: 'SMART'", 'customVocabulary']) {
+            if (!transcribe.includes(required)) throw new Error('transcription companion missing: ' + required);
+          }
+          if (!worker.includes('/gemini-transcribe.js')) throw new Error('transcription companion is not served');
           if (!desktopHtml.includes('<script src="gemini-live.js"></script>')) throw new Error('Desktop is not using Gemini Live');
           if (/renderer\.js|realtime-voice\.js|voice-fallback\.js/.test(desktopHtml)) throw new Error('Desktop still boots legacy voice path');
+          for (const required of ['verifySearchAndWaitPhrase','verifyJapaneseTranscriptionWithGeneratedAudio','verifyEightTurnsAndResumption']) {
+            if (!verifier.includes(required)) throw new Error('real canary verifier missing: ' + required);
+          }
           NODE
       - name: Run Worker API tests
         run: npm test
