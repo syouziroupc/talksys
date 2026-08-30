@@ -17,22 +17,23 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
+
       - name: Check JavaScript syntax
         run: |
           node --check src/index.js
+          node --check src/worker-v14.js
+          node --check src/cloudflare-live-client.js
+          node --check src/cloudflare-japanese-stt.js
+          node --check src/cloudflare-japanese-tts.js
+          node --check src/cloudflare-llm.js
           node --check src/worker.js
-          node --check src/worker-v13.js
-          node --check src/gemini-live-v13-client.js
-          node --check src/gemini-transcribe-companion.js
-          node --check src/realtime-voice-client.js
-          node --check src/voice-fallback-client.js
+          node --check src/web-search.js
+          node --check src/search-rerank.js
+          node --check src/voice-helpers.js
           node --check desktop/main.cjs
           node --check desktop/preload.cjs
           node --check desktop/overlay-preload.cjs
-          node --check desktop/gemini-live.js
-          node --check desktop/gemini-transcribe.js
           node --check desktop/overlay.js
-          node --check scripts/verify-gemini-live.mjs
           node <<'NODE'
           const fs = require('fs');
           const source = fs.readFileSync('src/index.js', 'utf8');
@@ -43,51 +44,37 @@ jobs:
           fs.writeFileSync('/tmp/talksys-browser.js', browserScript[1]);
           NODE
           node --check /tmp/talksys-browser.js
-      - name: Verify Gemini Live v13.1 architecture contract
+
+      - name: Verify Cloudflare live v14 architecture contract
         run: |
           node <<'NODE'
           const fs = require('fs');
           const wrangler = fs.readFileSync('wrangler.jsonc','utf8');
-          const worker = fs.readFileSync('src/worker-v13.js','utf8');
-          const web = fs.readFileSync('src/gemini-live-v13-client.js','utf8');
-          const transcribe = fs.readFileSync('src/gemini-transcribe-companion.js','utf8');
-          const desktop = fs.readFileSync('desktop/gemini-live.js','utf8');
-          const desktopTranscribe = fs.readFileSync('desktop/gemini-transcribe.js','utf8');
-          const desktopHtml = fs.readFileSync('desktop/index.html','utf8');
-          const verifier = fs.readFileSync('scripts/verify-gemini-live.mjs','utf8');
-          if (!wrangler.includes('"main": "src/worker-v13.js"')) throw new Error('v13.1 is not the Wrangler entrypoint');
-          for (const required of ['gemini-live-v13.1','gemini-3.5-transcribe-live','googleSearch','inputAudioTranscription','outputAudioTranscription','sessionResumption','contextWindowCompression','realtimeInput','audioStreamEnd','thinkingLevel']) {
-            if (!(worker + web + transcribe + desktop + desktopTranscribe + verifier).includes(required)) throw new Error('missing Gemini Live contract: ' + required);
+          const worker = fs.readFileSync('src/worker-v14.js','utf8');
+          const client = fs.readFileSync('src/cloudflare-live-client.js','utf8');
+          const stt = fs.readFileSync('src/cloudflare-japanese-stt.js','utf8');
+          const tts = fs.readFileSync('src/cloudflare-japanese-tts.js','utf8');
+          const llm = fs.readFileSync('src/cloudflare-llm.js','utf8');
+          const all = worker + client + stt + tts + llm;
+          if (!wrangler.includes('"main": "src/worker-v14.js"')) throw new Error('v14 is not the Wrangler entrypoint');
+          for (const required of ['cloudflare-live-v14','openai/gpt-4o-transcribe','@cf/deepgram/nova-3','openai/gpt-5.4-mini','@cf/nvidia/nemotron-3-120b-a12b','web_search_preview','inworld/tts-1.5-max','text_message']) {
+            if (!all.includes(required)) throw new Error('missing Cloudflare v14 contract: ' + required);
           }
-          for (const client of [web, desktop]) {
-            if (client.includes('SpeechSynthesisUtterance') || client.includes('SpeechRecognition')) throw new Error('Gemini primary path must not use WebSpeech');
-            if (client.includes('clientContent:')) throw new Error('ongoing typed chat must use realtimeInput.text');
-            for (const required of ["languageCodes: ['ja-JP']", "mode: 'SMART'", 'customVocabulary', 'googleSearch: {}', 'audioStreamEnd: true', "voiceName: 'Kore'"]) {
-              if (!client.includes(required)) throw new Error('client contract missing: ' + required);
-            }
-          }
-          for (const client of [transcribe, desktopTranscribe]) {
-            for (const required of ["purpose: 'transcription'", 'gemini-3.5-transcribe-live', "languageCodes: ['ja-JP']", "mode: 'SMART'", 'customVocabulary']) {
-              if (!client.includes(required)) throw new Error('transcription companion missing: ' + required);
-            }
-          }
-          if (!worker.includes('/gemini-transcribe.js')) throw new Error('transcription companion is not served');
-          for (const required of ['<script src="gemini-live.js"></script>', '<script src="gemini-transcribe.js"></script>']) {
-            if (!desktopHtml.includes(required)) throw new Error('Desktop missing ' + required);
-          }
-          if (/renderer\.js|realtime-voice\.js|voice-fallback\.js/.test(desktopHtml)) throw new Error('Desktop still boots legacy voice path');
-          for (const required of ['verifySearchAndWaitPhrase','verifyJapaneseTranscriptionWithGeneratedAudio','verifyEightTurnsAndResumption']) {
-            if (!verifier.includes(required)) throw new Error('real canary verifier missing: ' + required);
-          }
+          if (/GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/.test(all)) throw new Error('provider API key dependency found');
+          if (/SpeechRecognition|SpeechSynthesisUtterance/.test(client)) throw new Error('primary live client still depends on WebSpeech');
           NODE
+
       - name: Run Worker API tests
         run: npm test
+
       - name: Check Wrangler bundle
         run: npx wrangler deploy --dry-run
+
       - name: Install screenshot fonts
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq fonts-noto-cjk fonts-noto-color-emoji
+
       - name: Render Web UI screenshots
         run: |
           node <<'NODE'
@@ -99,24 +86,23 @@ jobs:
           html = html
             .replace('id="screenPanel" class="screen" hidden', 'id="screenPanel" class="screen"')
             .replace('<video id="screenVideo" autoplay playsinline muted></video>', '<div style="aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;background:#e4e4e7;color:#52525b;font-size:22px;line-height:1.4">デスクトップ共有プレビュー</div>')
-            .replace('<svg id="overlay" class="overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"></svg>', '<svg class="overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="debugArrow" markerWidth="40" markerHeight="40" refX="34" refY="20" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L0,40 L40,20 z" fill="#ff3b30"/></marker></defs><line x1="720" y1="430" x2="555" y2="535" stroke="#ff3b30" stroke-width="16" stroke-linecap="round" marker-end="url(#debugArrow)"/><circle cx="555" cy="535" r="34" fill="none" stroke="#ff3b30" stroke-width="13"/></svg>')
-            .replace('画面共有を開始してください。', '共有中。対象を矢印で案内します。')
-            .replace('<div id="targetNote" class="target-note"></div>', '<div class="target-note">→ Google Chrome アイコン（表示例）</div>');
+            .replace('画面共有を開始してください。', '共有中。対象を矢印で案内します。');
           fs.writeFileSync('/tmp/talksys.html', html);
           NODE
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1280,900 --screenshot=web-desktop.png file:///tmp/talksys.html
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot=web-mobile.png file:///tmp/talksys.html
-      - name: Render Desktop Companion screenshots
+
+      - name: Render Desktop shell screenshots
         run: |
           node <<'NODE'
           const fs = require('fs');
-          const html = fs.readFileSync('desktop/index.html', 'utf8')
-            .replace('<script src="gemini-live.js"></script>', '')
-            .replace('<script src="gemini-transcribe.js"></script>', '');
+          let html = fs.readFileSync('desktop/index.html', 'utf8');
+          html = html.replace(/<script[^>]+><\/script>/g, '');
           fs.writeFileSync('/tmp/talksys-desktop.html', html);
           NODE
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=520,760 --screenshot=desktop-control.png file:///tmp/talksys-desktop.html
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1280,720 --screenshot=desktop-overlay.png "file://${GITHUB_WORKSPACE}/desktop/overlay.html?debug=1"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ui-screenshots
@@ -125,6 +111,7 @@ jobs:
             web-mobile.png
             desktop-control.png
             desktop-overlay.png
+
       - name: Deploy directly when repository credentials are configured
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         uses: cloudflare/wrangler-action@v4
