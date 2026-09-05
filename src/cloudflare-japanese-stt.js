@@ -163,7 +163,6 @@ ${nova}`;
     if (text && text.length <= maxLength) return text;
   } catch {}
 
-  // Prefer Whisper except where it appears to have dropped most of a stable Nova sentence.
   if (whisper.length < nova.length * 0.42 && nova.length >= 10) return nova;
   return whisper;
 }
@@ -174,12 +173,14 @@ export class CloudflareJapaneseSTT {
     this.options = {
       sampleRate: options.sampleRate ?? 16000,
       language: options.language || 'ja',
-      endpointingMs: options.endpointingMs ?? 400,
-      utteranceEndMs: options.utteranceEndMs ?? 850,
-      silenceMs: options.silenceMs ?? 520,
-      minSpeechMs: options.minSpeechMs ?? 160,
+      endpointingMs: options.endpointingMs ?? 320,
+      utteranceEndMs: options.utteranceEndMs ?? 720,
+      silenceMs: options.silenceMs ?? 440,
+      minSpeechMs: options.minSpeechMs ?? 140,
       maxTurnMs: options.maxTurnMs ?? 30000,
       preRollFrames: options.preRollFrames ?? 7,
+      fastFinalConfidence: options.fastFinalConfidence ?? 0.88,
+      fastFinalMinChars: options.fastFinalMinChars ?? 2,
       keyterms: Array.isArray(options.keyterms) && options.keyterms.length ? options.keyterms : DEFAULT_TERMS,
       contextProvider: options.contextProvider,
     };
@@ -205,7 +206,10 @@ class CloudflareJapaneseSession {
     this.durationMs = 0;
     this.noiseFloor = 0.004;
     this.latestNova = '';
+    this.latestNovaConfidence = 0;
     this.finalNova = [];
+    this.finalNovaConfidenceSum = 0;
+    this.finalNovaConfidenceWeight = 0;
     this.processing = Promise.resolve();
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     this.ready.catch(() => {});
@@ -257,10 +261,18 @@ class CloudflareJapaneseSession {
     let data;
     try { data = JSON.parse(event.data); } catch { return; }
     if (data?.type !== 'Results') return;
-    const text = String(data?.channel?.alternatives?.[0]?.transcript || '').trim();
+    const alternative = data?.channel?.alternatives?.[0];
+    const text = String(alternative?.transcript || '').trim();
     if (!text) return;
+    const confidence = Number(alternative?.confidence);
+    const safeConfidence = Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0;
+    this.latestNovaConfidence = safeConfidence;
+
     if (data.is_final) {
       this.finalNova.push(text);
+      const weight = Math.max(1, normalizeForCompare(text).length);
+      this.finalNovaConfidenceSum += safeConfidence * weight;
+      this.finalNovaConfidenceWeight += weight;
       this.latestNova = this.finalNova.join(' ').trim();
     } else {
       const prefix = this.finalNova.join(' ').trim();
@@ -294,6 +306,9 @@ class CloudflareJapaneseSession {
       this.silenceMs = 0;
       this.finalNova = [];
       this.latestNova = '';
+      this.latestNovaConfidence = 0;
+      this.finalNovaConfidenceSum = 0;
+      this.finalNovaConfidenceWeight = 0;
       this.callbacks.onSpeechStart?.();
       return;
     }
@@ -310,6 +325,12 @@ class CloudflareJapaneseSession {
     const frames = this.frames;
     const durationMs = this.durationMs;
     const novaText = this.latestNova || this.finalNova.join(' ').trim();
+    const novaConfidence = this.finalNovaConfidenceWeight > 0
+      ? this.finalNovaConfidenceSum / this.finalNovaConfidenceWeight
+      : this.latestNovaConfidence;
+    const hasStableFinal = this.finalNova.length > 0;
+    const normalizedLength = normalizeForCompare(novaText).length;
+
     this.speechActive = false;
     this.startFrames = 0;
     this.silenceMs = 0;
@@ -318,7 +339,24 @@ class CloudflareJapaneseSession {
     this.preRoll = [];
     this.finalNova = [];
     this.latestNova = '';
+    this.latestNovaConfidence = 0;
+    this.finalNovaConfidenceSum = 0;
+    this.finalNovaConfidenceWeight = 0;
     if (!frames.length || durationMs < this.config.minSpeechMs) return;
+
+    const canUseFastNova = Boolean(
+      novaText
+      && normalizedLength >= this.config.fastFinalMinChars
+      && novaConfidence >= this.config.fastFinalConfidence
+      && (hasStableFinal || novaConfidence >= Math.min(0.97, this.config.fastFinalConfidence + 0.05))
+    );
+
+    if (canUseFastNova) {
+      this.processing = this.processing.catch(() => {}).then(() => {
+        if (!this.closed) this.callbacks.onUtterance?.(novaText);
+      });
+      return;
+    }
 
     this.processing = this.processing.catch(() => {}).then(async () => {
       const wav = makeWav(frames, this.config.sampleRate);
