@@ -10,36 +10,53 @@ import {
 } from './cloudflare-japanese-stt.js';
 import { CloudflareJapaneseTTS, PRIMARY_TTS_MODEL } from './cloudflare-japanese-tts.js';
 import {
-  PRIMARY_CONVERSATION_MODEL,
+  LIVE_CONVERSATION_MODEL,
+  QUALITY_CONVERSATION_MODEL,
+  GROUNDING_CONVERSATION_MODEL,
   FALLBACK_CONVERSATION_MODEL,
-  streamCloudflareConversation,
+  streamCloudflareLiveConversation,
+  streamCloudflareQualityConversation,
   answerWithCloudflareWebSearch,
+  benchmarkVoiceModels,
 } from './cloudflare-llm.js';
 import { needsWebSearch } from './web-search.js';
 import { cleanSpeechText, extractText, wrapAI } from './voice-helpers.js';
 
-const VOICE_REVISION = 'cloudflare-live-v14.1';
+const VOICE_REVISION = 'cloudflare-live-v15.0';
 
-const CASUAL_SYSTEM_PROMPT = `あなたはTalkSysという日本語のリアルタイム音声アシスタントです。
-自然な日常会話として答えてください。通常は2〜5文。最初の1文で直接答え、その後に役立つ理由・補足・具体例を1〜3点だけ足してください。
-単なる相槌や挨拶は短くて構いません。相手の言い方を不自然に言い直したり、何でもPC操作へ結び付けたりしないでください。
+const CASUAL_SYSTEM_PROMPT = `あなたはTalkSysという日本語のリアルタイム音声会話アシスタントです。
+相手と電話で自然に話しているように会話してください。発話の意図を直接受け止め、最初の一文から返答を始めてください。
+短い雑談や相槌は短く、相談・意見・説明は必要なだけ話してください。毎回同じ長さ、同じ型、同じ締め方にしないでください。
+直前の会話で共有された話題・人物・対象・ユーザーの立場を自然に引き継ぎ、「それ」「さっきの件」のような参照を文脈から扱ってください。
+相手の言葉を無意味に言い直さないでください。毎回質問で終わらせず、会話を続ける価値がある場合だけ自然な一言を返してください。
+冗談、驚き、迷い、軽い感情表現は文脈に合う範囲で自然に使えますが、過剰に演技しないでください。
 モデルの記憶だけで現在情報、価格、人物、法律、製品仕様、医療・技術上の具体的事実を断定しないでください。その種の質問は検索経路へ送られる前提です。
-知らない事実は作らず、不明なら不明と短く言ってください。実行していない操作を「やった」と言わないでください。
+知らない事実は作らず、不明なら不明と言ってください。実行していない操作を「やった」と言わないでください。
 電話会話なのでMarkdown、長い箇条書き、URLの読み上げ、定型的な前置きは避けてください。`;
+
+const QUALITY_SYSTEM_PROMPT = `${CASUAL_SYSTEM_PROMPT}
+今回は少し考える必要がある会話です。表面的な相槌だけで済ませず、論点を整理し、必要なら複数の見方を示してください。
+ただし講義調に長々と話さず、電話で聞いて理解できる自然なまとまりにしてください。`;
 
 const GROUNDED_SYSTEM_PROMPT = `あなたはTalkSysという日本語のリアルタイム音声アシスタントです。
 この回答は外部事実の確認が必要です。今回取得したWebページ本文と検索結果だけを根拠にし、モデルの記憶で固有名詞・数値・日付・価格・法律・仕様を補完しないでください。
 現在情報では新しい情報と公的・一次情報を優先してください。複数ソースが食い違う場合はその不確実性を伝え、確認できなければ推測せず「確認できない」と答えてください。
-回答は日本語で通常2〜5文。最初に結論、その後に重要な根拠を1〜3点。URLそのものは読み上げないでください。`;
+回答は電話で自然に聞ける日本語にしてください。最初に結論を言い、その後に重要な根拠だけを必要な量で補足してください。URLそのものは読み上げないでください。`;
 
 const SCREEN_SYSTEM_PROMPT = `あなたはTalkSysという日本語のPC操作支援アシスタントです。
 今回渡された[現在画面の確認結果]だけを根拠に画面について答えてください。画面情報に無いボタン名、文字、エラー、位置を作らないでください。
-対象が特定できない場合は断定せず、画面共有や追加確認を求めてください。通常2〜4文で簡潔に案内してください。`;
+対象が特定できない場合は断定せず、画面共有や追加確認を求めてください。電話で聞き取りやすい順序で簡潔に案内してください。`;
 
 const SCREEN_INTENT_RE = /(画面|ウィンドウ|ボタン|アイコン|メニュー|タブ|クリック|タップ|押して|押す|開いて|どこにある|どのボタン|エラー表示|表示され|見えて|矢印|指して|デスクトップ|ブラウザ|設定画面)/i;
+const QUALITY_INTENT_RE = /(どう思う|どう考える|考えて|なぜ|理由|比較|どっち|どちら|相談|どうすれば|どうしたら|説明して|整理して|メリット|デメリット|可能性|戦略|設計|方針|判断|選ぶ|選択|改善|問題点|原因|将来|実現可能|おすすめ)/i;
 
 function mightNeedScreen(text) {
   return SCREEN_INTENT_RE.test(String(text || ''));
+}
+
+function needsQualityConversation(text) {
+  const value = String(text || '').trim();
+  return value.length >= 52 || QUALITY_INTENT_RE.test(value);
 }
 
 function normalizedSpeech(value) {
@@ -66,10 +83,14 @@ function formatScreenContext(screen) {
   return `対象「${String(result.label || '対象').slice(0, 160)}」を検出。位置 x=${Number(result.x) || 0}, y=${Number(result.y) || 0}。補足: ${String(result.note || '').slice(0, 300)}`;
 }
 
+function sessionAffinity(context) {
+  return `talksys-${String(context?.connection?.id || 'default').replace(/[^a-zA-Z0-9_.:-]/g, '').slice(0, 96)}`;
+}
+
 const VoiceAgentBase = withVoice(Agent, {
-  historyLimit: 32,
+  historyLimit: 48,
   audioFormat: 'mp3',
-  maxMessageCount: 1000,
+  maxMessageCount: 1200,
   diagnostics: { browserConsole: false },
 });
 
@@ -84,12 +105,13 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     return new CloudflareJapaneseSTT(this.env.AI, {
       language: 'ja',
       sampleRate: 16000,
-      endpointingMs: 400,
-      utteranceEndMs: 850,
-      silenceMs: 520,
-      minSpeechMs: 160,
+      endpointingMs: 320,
+      utteranceEndMs: 720,
+      silenceMs: 440,
+      minSpeechMs: 140,
       maxTurnMs: 30000,
       preRollFrames: 7,
+      fastFinalConfidence: 0.88,
       contextProvider: () => this.getConversationHistory(),
     });
   }
@@ -108,7 +130,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
   }
 
   onCallStart() {
-    // No greeting: the connection becomes ready to listen immediately.
+    // No greeting: become ready to listen immediately.
   }
 
   onMessage(connection, message) {
@@ -139,11 +161,14 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     });
   }
 
-  trackAssistant(iterable) {
+  trackAssistant(iterable, context, tier) {
     const self = this;
     return (async function* () {
       self.currentAssistantText = '';
       self.assistantSpeechAt = Date.now();
+      try {
+        context?.connection?.send(JSON.stringify({ type: 'model_route', tier }));
+      } catch {}
       try {
         for await (const delta of iterable) {
           const value = String(delta || '');
@@ -164,15 +189,17 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     const self = this;
     return this.trackAssistant((async function* () {
       try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'searching', searched: true })); } catch {}
-      // The Voice pipeline starts sentence TTS as soon as this first sentence is yielded,
-      // while the web retrieval below continues in parallel.
+      // The Voice pipeline can synthesize this sentence while retrieval continues.
       yield 'ちょっと調べますね。';
       const result = await answerWithCloudflareWebSearch(
         self.env.AI,
         transcript,
         context.messages,
         GROUNDED_SYSTEM_PROMPT,
-        { signal: context.signal },
+        {
+          signal: context.signal,
+          sessionAffinity: sessionAffinity(context),
+        },
       );
       try {
         context.connection.send(JSON.stringify({
@@ -180,35 +207,68 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
           phase: 'done',
           searched: true,
           provider: result.provider,
+          model: result.model,
           nativeSearch: false,
           sources: Array.isArray(result.sources) ? result.sources.map((item) => ({ title: item.title, url: item.url })) : [],
         }));
       } catch {}
       yield String(result.text || '確認できませんでした。');
-    })());
+    })(), context, 'grounded');
   }
 
   async onTurn(transcript, context) {
+    const affinity = sessionAffinity(context);
+
     if (mightNeedScreen(transcript)) {
       let screen;
       try { screen = await this.requestScreen(context.connection, transcript, context.signal); }
       catch { screen = { available: false }; }
       const messages = [
         { role: 'system', content: SCREEN_SYSTEM_PROMPT },
-        ...context.messages.slice(-10).map((item) => ({ role: item.role, content: item.content })),
+        ...context.messages.slice(-14).map((item) => ({ role: item.role, content: item.content })),
         { role: 'user', content: `${transcript}\n\n[現在画面の確認結果]\n${formatScreenContext(screen)}` },
       ];
-      return this.trackAssistant(streamCloudflareConversation(this.env.AI, messages, { signal: context.signal, maxTokens: 440 }));
+      return this.trackAssistant(
+        streamCloudflareQualityConversation(this.env.AI, messages, {
+          signal: context.signal,
+          maxTokens: 460,
+          sessionAffinity: affinity,
+        }),
+        context,
+        'screen-quality',
+      );
     }
 
     if (needsWebSearch(transcript)) return this.searchResponse(transcript, context);
 
+    const quality = needsQualityConversation(transcript);
     const messages = [
-      { role: 'system', content: CASUAL_SYSTEM_PROMPT },
-      ...context.messages.slice(-12).map((item) => ({ role: item.role, content: item.content })),
+      { role: 'system', content: quality ? QUALITY_SYSTEM_PROMPT : CASUAL_SYSTEM_PROMPT },
+      ...context.messages.slice(-(quality ? 18 : 16)).map((item) => ({ role: item.role, content: item.content })),
       { role: 'user', content: transcript },
     ];
-    return this.trackAssistant(streamCloudflareConversation(this.env.AI, messages, { signal: context.signal, maxTokens: 440 }));
+
+    if (quality) {
+      return this.trackAssistant(
+        streamCloudflareQualityConversation(this.env.AI, messages, {
+          signal: context.signal,
+          maxTokens: 480,
+          sessionAffinity: affinity,
+        }),
+        context,
+        'quality',
+      );
+    }
+
+    return this.trackAssistant(
+      streamCloudflareLiveConversation(this.env.AI, messages, {
+        signal: context.signal,
+        maxTokens: 320,
+        sessionAffinity: affinity,
+      }),
+      context,
+      'live',
+    );
   }
 }
 
@@ -222,22 +282,48 @@ function serveScript(source) {
   });
 }
 
-async function modelSmoke(env) {
+async function smokeModel(env, model) {
   const started = Date.now();
   try {
-    const result = await env.AI.run(PRIMARY_CONVERSATION_MODEL, {
+    const result = await env.AI.run(model, {
       messages: [
         { role: 'system', content: '日本語で簡潔に答える。' },
         { role: 'user', content: '1+1は？ 数字だけ答えて。' },
       ],
-      max_tokens: 48,
+      max_completion_tokens: 48,
       temperature: 0,
+      stream: false,
+      ...(model === LIVE_CONVERSATION_MODEL ? {
+        reasoning_effort: null,
+        chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
+      } : {}),
     });
     const text = extractText(result);
-    return Response.json({ ok: Boolean(text), model: PRIMARY_CONVERSATION_MODEL, text, elapsedMs: Date.now() - started }, { headers: { 'cache-control': 'no-store' } });
+    return Response.json(
+      { ok: Boolean(text), model, text, elapsedMs: Date.now() - started },
+      { headers: { 'cache-control': 'no-store' } },
+    );
   } catch (error) {
-    return Response.json({ ok: false, model: PRIMARY_CONVERSATION_MODEL, error: String(error?.message || error).slice(0, 400), elapsedMs: Date.now() - started }, { status: 500, headers: { 'cache-control': 'no-store' } });
+    return Response.json(
+      { ok: false, model, error: String(error?.message || error).slice(0, 400), elapsedMs: Date.now() - started },
+      { status: 500, headers: { 'cache-control': 'no-store' } },
+    );
   }
+}
+
+async function voiceModelBench(request, env) {
+  let prompt = '';
+  if (request.method === 'POST') {
+    try {
+      const body = await request.json();
+      prompt = typeof body?.prompt === 'string' ? body.prompt : '';
+    } catch {}
+  }
+  const result = await benchmarkVoiceModels(env.AI, {
+    prompt,
+    sessionAffinity: `talksys-bench-${crypto.randomUUID()}`,
+  });
+  return Response.json(result, { headers: { 'cache-control': 'no-store' } });
 }
 
 async function voiceSmoke(env) {
@@ -263,7 +349,10 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/cloudflare-live.js') return serveScript(CLOUDFLARE_LIVE_CLIENT);
-    if (url.pathname === '/api/model-smoke' && request.method === 'GET') return modelSmoke(env);
+    if (url.pathname === '/api/model-smoke' && request.method === 'GET') return smokeModel(env, LIVE_CONVERSATION_MODEL);
+    if (url.pathname === '/api/quality-model-smoke' && request.method === 'GET') return smokeModel(env, QUALITY_CONVERSATION_MODEL);
+    if (url.pathname === '/api/grounded-model-smoke' && request.method === 'GET') return smokeModel(env, GROUNDING_CONVERSATION_MODEL);
+    if (url.pathname === '/api/voice-model-bench' && (request.method === 'GET' || request.method === 'POST')) return voiceModelBench(request, env);
     if (url.pathname === '/api/voice-smoke' && request.method === 'GET') return voiceSmoke(env);
     if (url.pathname === '/voice-health') {
       return Response.json({
@@ -273,17 +362,26 @@ export default {
         providerApiKeysRequired: false,
         realtimeAudio: true,
         audioChunkMs: 40,
-        serverTurnDetectionMs: 520,
+        serverTurnDetectionMs: 440,
         bargeIn: true,
         conversationPersistence: 'durable-object-sqlite',
         sharedTypedAndVoiceHistory: true,
+        promptPrefixCaching: true,
+        sessionAffinity: true,
         sttRealtime: REALTIME_STT_MODEL,
         sttAccurateFinal: ACCURATE_STT_MODEL,
         sttResolver: RESOLVER_MODEL,
         sttLanguage: 'ja',
+        sttHighConfidenceFastPath: true,
+        sttFastFinalConfidence: 0.88,
         dualAsrReconciliation: true,
-        llmPrimary: PRIMARY_CONVERSATION_MODEL,
+        llmLive: LIVE_CONVERSATION_MODEL,
+        llmQuality: QUALITY_CONVERSATION_MODEL,
+        llmGrounded: GROUNDING_CONVERSATION_MODEL,
         llmFallback: FALLBACK_CONVERSATION_MODEL,
+        llmRouting: 'live-qwen / quality-glm-flash-with-qwen-fallback / grounded-gpt-oss-with-fallbacks',
+        qualityModelPaidAccessOptional: true,
+        modelBenchmarkEndpoint: '/api/voice-model-bench',
         webSearch: 'google+duckduckgo+bing+wikipedia+google-news+page-evidence+reranker',
         searchWaitSpeech: true,
         ttsPrimary: PRIMARY_TTS_MODEL,
