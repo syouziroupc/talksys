@@ -36,3 +36,5 @@ jobs:
           git add src/worker-v14.js src/cloudflare-live-client.js src/web-search.js src/search-orchestrator.js tests/voice-llm-contract.test.mjs tests/gemini-live-contract.test.mjs tests/web-search.test.mjs tests/contextual-conversation-regression.test.mjs
           git commit -m "v18.5: contextual conversation, route search and robust reply audio"
           git push origin HEAD:fix/v18-4-bounded-precision-search
+
+# retry after updating the patch runner for the current test layout
