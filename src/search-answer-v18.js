@@ -137,6 +137,7 @@ export async function answerWithVerifiedWebSearch(ai, question, history, systemP
   }
   const auditMs = Date.now() - auditStarted;
 
+  // Mechanical evidence guard is the final authority. It now rejects generic article titles before any title-based rescue can be spoken.
   const unsupported = unsupportedNamedCandidates(text, base.sources || []);
   if (!text || BAD_SEARCH_BOILERPLATE_RE.test(text) || unsupported.length) {
     const rescue = sourceTitleRescue(base.resolvedQuestion || question, base.sources || []);
