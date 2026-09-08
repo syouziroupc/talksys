@@ -62,6 +62,7 @@ test('UI states that context is inherited and provides a safe processing trace',
   assert.doesNotMatch(html, /以前の質問内容は次の質問へ引き継ぎません/);
   assert.match(html, /AI処理ビュー/);
   assert.match(html, /内部の推論文ではなく/);
+  assert.match(html, /会話から解決した検索課題/);
   assert.match(trace, /search_trace/);
-  assert.match(trace, /会話から解決した検索課題/);
+  assert.match(trace, /trace-resolved/);
 });
