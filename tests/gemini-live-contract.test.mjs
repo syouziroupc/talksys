@@ -35,15 +35,17 @@ const webSource = fs.readFileSync(new URL('../src/web-search.js', import.meta.ur
 const ttsSource = fs.readFileSync(new URL('../src/cloudflare-japanese-tts.js', import.meta.url), 'utf8');
 const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
-test('v20 production entrypoint uses one Cloudflare conversation agent with embedded tools and stays keyless', () => {
+test('v20.1 production entrypoint uses tiered Cloudflare conversation and deterministic real search while staying keyless', () => {
   assert.match(wranglerSource, /"main":\s*"src\/worker-v20\.js"/);
-  assert.match(productionWorkerSource, /VOICE_REVISION = 'cloudflare-agent-tools-v20\.0'/);
+  assert.match(productionWorkerSource, /VOICE_REVISION = 'cloudflare-agent-v20\.1-fast-search'/);
   assert.match(productionWorkerSource, /extends BaseTalkSysVoiceAgent/);
-  assert.match(productionWorkerSource, /conversationOrchestrator: 'single-agent-v20'/);
-  assert.match(productionWorkerSource, /toolCalling: 'cloudflare-embedded-function-calling'/);
-  assert.match(productionWorkerSource, /modelDecidesToolUse: true/);
+  assert.match(productionWorkerSource, /conversationOrchestrator: 'tiered-fast-agent-v20\.1'/);
+  assert.match(productionWorkerSource, /toolCalling: 'deterministic-search-router-v20\.1'/);
+  assert.match(productionWorkerSource, /modelDecidesToolUse: false/);
+  assert.match(productionWorkerSource, /ordinaryConversationUsesToolInference: false/);
   assert.match(productionWorkerSource, /searchPlannerBeforeRetrieval: false/);
   assert.match(productionWorkerSource, /searchAnswerCascade: false/);
+  assert.doesNotMatch(productionWorkerSource, /runWithTools/);
   assert.match(workerSource, /mode: 'phone-consultation-only'/);
   assert.match(workerSource, /providerApiKeysRequired: false/);
   assert.match(workerSource, /screenFunction: false/);
@@ -63,7 +65,7 @@ test('Japanese STT keeps high-confidence fast path and now receives conversation
   assert.match(workerSource, /sttUsesConversationContext: true/);
 });
 
-test('legacy live, quality and grounded routes remain available while GLM is the v20 conversation center', () => {
+test('legacy live, quality and grounded routes remain available while Qwen is the v20.1 fast center and GLM handles quality turns', () => {
   assert.equal(LIVE_CONVERSATION_MODEL, '@cf/qwen/qwen3.8-27b');
   assert.equal(QUALITY_CONVERSATION_MODEL, '@cf/zai-org/glm-5.3-flash');
   assert.equal(GROUNDING_CONVERSATION_MODEL, '@cf/deepseek-ai/deepseek-v4-pro-0813');
@@ -71,7 +73,10 @@ test('legacy live, quality and grounded routes remain available while GLM is the
   assert.equal(FALLBACK_CONVERSATION_MODEL, '@cf/qwen/qwen3.8-27b');
   assert.match(workerSource, /qualityRouteForComplexConversation: true/);
   assert.match(workerSource, /casualFastPath: true/);
-  assert.match(productionWorkerSource, /primaryConversationModel: QUALITY_CONVERSATION_MODEL/);
+  assert.match(productionWorkerSource, /primaryConversationModel: LIVE_CONVERSATION_MODEL/);
+  assert.match(productionWorkerSource, /qualityConversationModel: QUALITY_CONVERSATION_MODEL/);
+  assert.match(productionWorkerSource, /streamBoundedLiveConversation/);
+  assert.match(productionWorkerSource, /streamBoundedQualityConversation/);
 });
 
 test('live Qwen fallback disables thinking and bounded conversation enforces startup timeouts', () => {
@@ -84,9 +89,11 @@ test('live Qwen fallback disables thinking and bounded conversation enforces sta
   assert.match(boundedSource, /fallbackTimeoutMs/);
   assert.match(boundedSource, /Workers AI first token/);
   assert.match(workerSource, /openTimeoutMs: 1900/);
+  assert.match(productionWorkerSource, /openTimeoutMs: 1500/);
+  assert.match(productionWorkerSource, /firstTokenTimeoutMs: 1800/);
 });
 
-test('v19 search stack remains as a rollback baseline while v20 uses evidence-only tool retrieval', () => {
+test('v19 search stack remains as a rollback baseline while v20.1 uses deterministic evidence-only retrieval', () => {
   assert.equal(SEARCH_MAX_QUERIES, 8);
   assert.equal(SEARCH_MAX_ROUNDS, 2);
   for (const required of ['google-html', 'duckduckgo-html', 'bing-html', 'wikipedia-ja', 'google-news']) assert.match(webSource, new RegExp(required));
@@ -97,8 +104,9 @@ test('v19 search stack remains as a rollback baseline while v20 uses evidence-on
   assert.match(fallbackSource, /format=rss/);
   assert.match(workerSource, /shouldDeepSearch\(transcript, history\)/);
   assert.match(legacyV19Source, /answerWithContextualVerifiedSearchV19/);
-  assert.match(productionWorkerSource, /runWithTools/);
   assert.match(productionWorkerSource, /collectWebEvidenceV20/);
+  assert.match(productionWorkerSource, /requiresFreshSearch\(transcript\)/);
+  assert.doesNotMatch(productionWorkerSource, /runWithTools/);
   assert.doesNotMatch(productionWorkerSource, /answerWithContextualVerifiedSearchV19/);
   assert.doesNotMatch(searchToolV20Source, /runNonStreamingCascade/);
   assert.doesNotMatch(searchToolV20Source, /auditAnswer/);

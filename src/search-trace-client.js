@@ -22,7 +22,7 @@ export const SEARCH_TRACE_CLIENT = String.raw`(() => {
       planning: '会話文脈を整理中',
       plan_ready: '検索課題を確定',
       searching: 'Web検索中',
-      recovery: '追加検索中',
+      recovery: '補助検索中',
       reranking: '関連度を評価中',
       evidence_ready: '根拠を選定',
       answering: '回答生成中',
@@ -42,6 +42,7 @@ export const SEARCH_TRACE_CLIENT = String.raw`(() => {
   }
 
   function render(data) {
+    if (!data) return;
     seenSearch = true;
     panel.hidden = false;
     stage.textContent = labelPhase(data.phase);
@@ -71,6 +72,13 @@ export const SEARCH_TRACE_CLIENT = String.raw`(() => {
     });
   }
 
+  window.addEventListener('talksys-search-trace', (event) => render(event.detail));
+  window.addEventListener('talksys-model-route', (event) => {
+    if (seenSearch) addLog('回答ルート: ' + text(event.detail?.tier, '自動'));
+  });
+
+  // Compatibility fallback for older live clients. v20.1 forwards these events
+  // directly from the real socket, so correctness no longer depends on this patch.
   const NativeWebSocket = window.WebSocket;
   if (!NativeWebSocket) return;
   class TraceWebSocket extends NativeWebSocket {
