@@ -127,13 +127,23 @@ test('planner falls back from primary grounded model to gpt-oss', async () => {
   assert.match(plan.resolvedQuestion, /大阪/);
 });
 
-test('search uses two-pass research budget and deterministic filler, not a free-writing model', async () => {
+test('search uses two-pass research budget and lightweight contextual progress speech', async () => {
   assert.equal(SEARCH_MAX_ROUNDS, 2);
-  assert.equal(SEARCH_FILLER_MODEL, 'deterministic-safe-filler');
-  const ai = { async run() { throw new Error('filler must not invoke AI'); } };
+  let called = false;
+  const ai = {
+    async run(model) {
+      called = true;
+      assert.equal(model, SEARCH_FILLER_MODEL);
+      return { response: '3万円前後のノートパソコン購入先' };
+    },
+  };
   const started = Date.now();
-  const filler = await generateSearchFiller(ai, '今いくら？', []);
-  assert.equal(filler, '詳しく確認します。少し待ってください。');
+  const filler = await generateSearchFiller(ai, 'どこで買うのがいい？', [
+    { role: 'user', content: '3万円くらいのノートパソコンを探している' },
+  ]);
+  assert.equal(called, true);
+  assert.match(filler, /^今、.+について検索しています。少しお待ちください。$/);
+  assert.match(filler, /ノートパソコン/);
   assert.ok(Date.now() - started >= SEARCH_FILLER_MIN_DELAY_MS - 50);
 });
 
@@ -141,4 +151,5 @@ test('filler sanitizer only accepts safe non-answer phrases', () => {
   assert.equal(sanitizeFiller('価格は3万円です。'), '');
   assert.equal(sanitizeFiller('えーと、ヤマダ電機ならあります。'), '');
   assert.equal(sanitizeFiller('詳しく確認します。少し待ってください。'), '詳しく確認します。少し待ってください。');
+  assert.equal(sanitizeFiller('今、3万円のノートパソコンについて検索しています。少しお待ちください。'), '今、3万円のノートパソコンについて検索しています。少しお待ちください。');
 });

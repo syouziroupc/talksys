@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 
+// v18.1 regression coverage: typed input remains part of the phone-only consultation UI.
 async function body(response) {
   return response.json();
 }
@@ -25,6 +26,8 @@ test('GET / renders phone-only realtime consultation UI', async () => {
   assert.match(html, /電話相談モード/);
   assert.match(html, /リアルタイム通話/);
   assert.match(html, /検索は精度優先/);
+  assert.match(html, /話したことにする/);
+  assert.match(html, /文字入力は「話したこと」として会話履歴に入ります/);
   assert.doesNotMatch(html, /画面共有/);
   assert.doesNotMatch(html, /PNG保存/);
   assert.doesNotMatch(html, /overlay/);

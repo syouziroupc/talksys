@@ -1,7 +1,7 @@
 import { webSearch, needsWebSearch, looksContextDependentFollowup } from './web-search.js';
 import { rerankSearchResults } from './search-rerank.js';
 import { extractText } from './voice-helpers.js';
-import { GROUNDING_VOICE_MODEL, GROUNDING_FALLBACK_MODEL } from './streaming-workers-ai.js';
+import { LIVE_VOICE_MODEL, GROUNDING_VOICE_MODEL, GROUNDING_FALLBACK_MODEL } from './streaming-workers-ai.js';
 import {
   buildDeterministicSearchQueries,
   dedupeSearchResults,
@@ -10,10 +10,10 @@ import {
   searchOpenStreetMapLocal,
 } from './search-fallbacks.js';
 
-export const SEARCH_FILLER_MODEL = 'deterministic-safe-filler';
+export const SEARCH_FILLER_MODEL = LIVE_VOICE_MODEL;
 export const SEARCH_MAX_QUERIES = 8;
 export const SEARCH_MAX_ROUNDS = 2;
-export const SEARCH_FILLER_MIN_DELAY_MS = 1200;
+export const SEARCH_FILLER_MIN_DELAY_MS = 650;
 
 const CONTEXT_SEARCH_CUE_RE = /(どこ|どっち|どちら|どれ|おすすめ|買|購入|店|店舗|販売|価格|値段|在庫|営業時間|比較|評判|今|現在|最新|調べ|検索|本当|事実|仕様|法律|制度|ニュース)/i;
 const EXTERNAL_CONTEXT_RE = /(パソコン|PC|ノート|iPhone|Android|Windows|Mac|製品|商品|店|店舗|会社|企業|大学|病院|ホテル|飲食|法律|制度|ニュース|価格|在庫|営業時間|市|区|町|村|県|都|府|道|Amazon|楽天|Yahoo|Google|Microsoft|Apple|Cloudflare)/i;
@@ -322,8 +322,27 @@ export async function runDeepSearch(ai, transcript, history, signal, options = {
   };
 }
 
+function sanitizeProgressTopic(value) {
+  return String(value || '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[「」『』"']/g, '')
+    .replace(/^(?:検索対象|トピック|topic)[:：]\s*/i, '')
+    .replace(/(?:について)?検索(?:しています|中です)?[。！!]?$/u, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 52);
+}
+
+function fallbackProgressTopic(transcript, history) {
+  const current = cleanQuery(transcript);
+  const contextual = heuristicContextQuery(transcript, history);
+  const source = looksContextDependentFollowup(current) ? contextual : current;
+  return sanitizeProgressTopic(source || current || 'ご相談の内容') || 'ご相談の内容';
+}
+
 function sanitizeFiller(value) {
   const text = String(value || '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/^今、.{2,52}について検索しています。少しお待ちください。$/u.test(text)) return text;
   const allowed = [
     '確認します。少し時間かかります。',
     '詳しく確認します。少し待ってください。',
@@ -343,9 +362,35 @@ function wait(ms, signal) {
   });
 }
 
-export async function generateSearchFiller(_ai, _transcript, _history, signal) {
-  await wait(SEARCH_FILLER_MIN_DELAY_MS, signal).catch(() => {});
-  return '詳しく確認します。少し待ってください。';
+export async function generateSearchFiller(ai, transcript, history, signal) {
+  const fallback = fallbackProgressTopic(transcript, history);
+  const recent = recentConversation(history, 8);
+  const modelPromise = ai?.run
+    ? ai.run(SEARCH_FILLER_MODEL, {
+        messages: [
+          {
+            role: 'system',
+            content: '検索本体は別の高精度モデルが実行中です。あなたは待ち時間の短い案内だけ担当します。直前の会話と今回の発話から、今検索している対象を日本語で12〜32文字程度に要約してください。回答・推測・店名の新規生成は禁止。検索対象の短い名詞句だけを返してください。',
+          },
+          {
+            role: 'user',
+            content: `直近の会話:\n${recent || '(なし)'}\n\n今回の発話:\n${String(transcript || '').slice(0, 800)}`,
+          },
+        ],
+        max_completion_tokens: 64,
+        temperature: 0,
+        reasoning_effort: null,
+        chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
+      }, signal ? { signal } : undefined).catch(() => null)
+    : Promise.resolve(null);
+
+  const [result] = await Promise.all([
+    modelPromise,
+    wait(SEARCH_FILLER_MIN_DELAY_MS, signal).catch(() => null),
+  ]);
+  const topic = sanitizeProgressTopic(extractText(result)) || fallback;
+  const phrase = `今、${topic}について検索しています。少しお待ちください。`;
+  return sanitizeFiller(phrase) || `今、${fallback.slice(0, 52)}について検索しています。少しお待ちください。`;
 }
 
 export { parsePlannerJson, uniqueQueries, dedupeResults, sanitizeFiller, assessCoverage, parseCoverageJson };

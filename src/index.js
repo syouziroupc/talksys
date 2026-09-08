@@ -15,7 +15,10 @@ const HTML = `<!doctype html>
     .hero{padding:18px;border-bottom:1px solid #e4e4e7;background:#fafafa}.hero strong{display:block;margin-bottom:5px}.hero p{margin:0;color:#52525b;font-size:13px;line-height:1.65}
     .chat{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:12px;min-height:360px}.msg{max-width:88%;padding:10px 13px;border-radius:14px;white-space:pre-wrap;line-height:1.55;overflow-wrap:anywhere}.user{align-self:flex-end;background:#18181b;color:#fff}.assistant{align-self:flex-start;background:#f1f1f3}
     .status{min-height:38px;font-size:13px;color:#52525b;padding:8px 18px 14px;border-top:1px solid #f4f4f5}
-    .composer{display:none}
+    .text-note{padding:10px 18px 0;color:#71717a;font-size:12px;line-height:1.5}
+    .composer{padding:10px 18px 18px;display:flex;gap:8px;border-top:0;background:#fff}
+    .composer textarea{flex:1;min-width:0;resize:vertical;min-height:48px;max-height:140px;padding:11px 12px;border:1px solid #d4d4d8;border-radius:12px;font:inherit;line-height:1.45}
+    .composer button{border:0;border-radius:12px;background:#18181b;color:#fff;padding:0 15px;font-weight:800;cursor:pointer;white-space:nowrap}
     @media(max-width:620px){.app{min-height:100dvh}.head{padding:12px}.title{font-size:16px}.btn{padding:10px 14px;min-height:44px}.hero{padding:14px 12px}.chat{padding:12px}.msg{max-width:94%}.status{padding:8px 12px 12px}}
   </style>
 </head>
@@ -29,9 +32,10 @@ const HTML = `<!doctype html>
       <strong>検索は精度優先です。</strong>
       <p>最新情報や店・価格・制度などは、会話の文脈を引き継いで複数回検索してから答えます。検索中は少し待つ場合があります。</p>
     </section>
-    <section id="chat" class="chat" aria-live="polite"><div class="msg assistant">通話ボタンを押して、そのまま話してください。</div></section>
+    <section id="chat" class="chat" aria-live="polite"><div class="msg assistant">通話ボタンを押して話せます。外で話せないときは、下の文字入力を発話として同じ会話に送れます。</div></section>
     <div id="status" class="status"></div>
-    <form id="form" class="composer" aria-hidden="true"><textarea id="input" rows="1"></textarea><button id="send" type="submit">送信</button></form>
+    <div class="text-note">文字入力は「話したこと」として会話履歴に入ります。通話していない間はAI音声を再生しません。</div>
+    <form id="form" class="composer"><textarea id="input" rows="2" aria-label="発話テスト入力" placeholder="ここに入力すると、話したこととして送信します"></textarea><button id="send" type="submit">話したことにする</button></form>
   </main>
 </body>
 </html>`;

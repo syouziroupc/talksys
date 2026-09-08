@@ -31,7 +31,7 @@ const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.
 
 test('v18 production entrypoint is phone consultation only and keyless', () => {
   assert.match(wranglerSource, /"main":\s*"src\/worker-v14\.js"/);
-  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v18\.0'/);
+  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v18\.1'/);
   assert.match(workerSource, /mode: 'phone-consultation-only'/);
   assert.match(workerSource, /providerApiKeysRequired: false/);
   assert.match(workerSource, /screenFunction: false/);
@@ -89,12 +89,24 @@ test('v18 factual search uses contextual planning, up to eight queries and two-p
   assert.match(workerSource, /verified-deep-search-v18/);
 });
 
-test('search wait speech is deterministic and cannot leak guessed facts before search finishes', () => {
-  assert.equal(SEARCH_FILLER_MODEL, 'deterministic-safe-filler');
-  assert.match(searchSource, /詳しく確認します。少し待ってください。/);
-  assert.doesNotMatch(searchSource, /ai\.run\(SEARCH_FILLER_MODEL/);
+test('search wait speech uses the lightweight route for topic-only progress while retrieval runs', () => {
+  assert.equal(SEARCH_FILLER_MODEL, LIVE_CONVERSATION_MODEL);
+  assert.match(searchSource, /回答・推測・店名の新規生成は禁止/);
+  assert.match(searchSource, /今、\$\{topic\}について検索しています。少しお待ちください。/);
+  assert.match(searchSource, /ai\?\.run/);
   assert.match(workerSource, /Promise\.race/);
-  assert.match(workerSource, /searchFillerGeneratedInParallel: false/);
+  assert.match(workerSource, /searchFillerGeneratedInParallel: true/);
+});
+
+test('typed speech simulation is silent outside an active call and call startup is manual', () => {
+  assert.match(indexSource, /話したことにする/);
+  assert.match(indexSource, /文字入力は「話したこと」として会話履歴に入ります/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /type: 'text_message'/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /CALL_CONNECT_TIMEOUT_MS = 10000/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /接続が完了しませんでした/);
+  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /setTimeout\(\(\) => startCall\(true\)/);
+  assert.match(workerSource, /typedSpeechSimulation: true/);
+  assert.match(workerSource, /typedSpeechSilentWhenNotInCall: true/);
 });
 
 test('v18 answer layer audits unsupported proper nouns against retrieved evidence', () => {
