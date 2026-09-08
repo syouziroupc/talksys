@@ -8,6 +8,9 @@ export const SEARCH_TOOL_V20_MAX_SOURCES = 10;
 
 const LISTICLE_RE = /(おすすめ\s*\d+選|ランキング|まとめ|選び方|比較.*\d+選|店舗一覧|ショップ一覧)/i;
 const OFFICIAL_HINT_RE = /(公式|店舗情報|会社概要|自治体|市役所|県庁|政府|メーカー|直営)/i;
+const FOLLOWUP_REFERENCE_RE = /(それ|その(?:店|店舗|商品|製品|機種|場所|ホテル|プラン|やつ)?|さっき|前の|こっち|そっち|あっち|同じ(?:もの|やつ|店)?)/i;
+const SHORT_FOLLOWUP_RE = /(どこ(?:で|に|が|の)?|近く|安い(?:の|方|やつ)?|高い(?:の|方|やつ)?|いくら|何時|在庫|営業時間|買える|売って(?:る)?|おすすめ(?:は|どれ)?)/i;
+const CONTEXT_NOISE_RE = /^(?:はい|うん|そう|そうだね|なるほど|ありがとう(?:ございます)?|お願いします?|えーと|うーん|じゃあ|それで)[\s。、！？!?]*$/i;
 
 function clean(value, max = 500) {
   return String(value || '')
@@ -30,6 +33,32 @@ function unique(values, limit = SEARCH_TOOL_V20_MAX_QUERIES) {
     if (out.length >= limit) break;
   }
   return out;
+}
+
+function recentUserContext(history, limit = 2) {
+  const values = [];
+  for (const item of Array.isArray(history) ? history : []) {
+    if (item?.role !== 'user') continue;
+    const value = clean(item.content, 180);
+    if (!value || CONTEXT_NOISE_RE.test(value)) continue;
+    if (values.at(-1) === value) continue;
+    values.push(value);
+  }
+  return values.slice(-limit);
+}
+
+export function resolveSearchSeed(query, history = []) {
+  const current = clean(query, 350);
+  if (!current) return '';
+
+  const prior = recentUserContext(history, 2).filter((value) => value !== current);
+  if (!prior.length) return current;
+
+  const explicitReference = FOLLOWUP_REFERENCE_RE.test(current);
+  const shortEllipticalFollowup = current.length <= 28 && SHORT_FOLLOWUP_RE.test(current);
+  if (!explicitReference && !shortEllipticalFollowup) return current;
+
+  return clean([...prior, current].join(' '), 350);
 }
 
 function sourceQuality(item, index) {
@@ -76,7 +105,7 @@ export function compactToolEvidence(result) {
 
 export async function collectWebEvidenceV20(query, history = [], options = {}) {
   const started = Date.now();
-  const question = clean(query, 350);
+  const question = resolveSearchSeed(query, history);
   if (!question) {
     return {
       revision: SEARCH_TOOL_V20_REVISION,
