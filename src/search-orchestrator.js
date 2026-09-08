@@ -166,7 +166,7 @@ async function runPlannerModel(ai, model, transcript, history, signal) {
 
 export async function planSearchQueries(ai, transcript, history, signal) {
   const fallbackQuestion = heuristicContextQuery(transcript, history) || cleanQuery(transcript);
-  const models = [...new Set([GROUNDING_FALLBACK_MODEL, GROUNDING_VOICE_MODEL].filter(Boolean))];
+  const models = [...new Set([GROUNDING_VOICE_MODEL, GROUNDING_FALLBACK_MODEL].filter(Boolean))];
   for (const model of models) {
     try {
       const planned = await runPlannerModel(ai, model, transcript, history, signal);
@@ -241,7 +241,7 @@ function evidenceSummary(results, limit = 18) {
 
 async function assessCoverage(ai, plan, results, signal) {
   if (!results?.length) return { sufficient: false, reason: 'no_results', queries: [] };
-  const models = [...new Set([GROUNDING_FALLBACK_MODEL, GROUNDING_VOICE_MODEL].filter(Boolean))];
+  const models = [...new Set([GROUNDING_VOICE_MODEL, GROUNDING_FALLBACK_MODEL].filter(Boolean))];
   for (const model of models) {
     try {
       const result = await ai.run(model, {
