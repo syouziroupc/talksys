@@ -38,8 +38,14 @@ replace_once(
 
 p = Path('tests/contextual-conversation-regression.test.mjs')
 t = p.read_text()
-t = t.replace("  assert.match(worker, /rememberConversationTurn/);", "  assert.match(worker, /rememberConversationTurn/);\n  assert.match(worker, /if \(!key\) return/);\n  assert.doesNotMatch(worker, /connection\\?\\.id \\|\\| 'default'/);")
-t = t.replace("  assert.match(orchestrator, /BAD_PROGRESS_TOPIC_RE/);", "  assert.match(orchestrator, /BAD_PROGRESS_TOPIC_RE/);\n  assert.match(orchestrator, /contextualCommand && \\(!topic \\|\\| \/調べ/);")
+t = t.replace(
+    "  assert.match(worker, /rememberConversationTurn/);",
+    "  assert.match(worker, /rememberConversationTurn/);\n  assert.match(worker, /function conversationKey\\(context\\) \\{[\\s\\S]*?const id = String\\(context\\?\\.connection\\?\\.id \\|\\| ''\\)\\.trim\\(\\);[\\s\\S]*?return id \\? id\\.slice\\(0, 160\\) : '';/);\n  assert.match(worker, /getConversationHistory\\(context\\)[\\s\\S]*?if \\(!key\\) return \\[\\];/);\n  assert.match(worker, /rememberConversationTurn\\(context, userText, assistantText\\)[\\s\\S]*?if \\(!key\\) return;/);"
+)
+t = t.replace(
+    "  assert.match(orchestrator, /BAD_PROGRESS_TOPIC_RE/);",
+    "  assert.match(orchestrator, /BAD_PROGRESS_TOPIC_RE/);\n  assert.match(orchestrator, /contextualCommand && \\(!topic \\|\\| \/調べ/);"
+)
 p.write_text(t)
 
 print('v18.5 final safety patch applied')
