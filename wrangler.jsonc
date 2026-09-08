@@ -1,8 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "talksys",
-  // Rollback markers: "main": "src/worker-v20.js", "main": "src/worker-v21.js", "main": "src/worker-v22.js", "main": "src/worker-v23-production.js"
-  "main": "src/worker-v24-production.js",
+  // Rollback markers: "main": "src/worker-v20.js", "main": "src/worker-v21.js", "main": "src/worker-v22.js", "main": "src/worker-v23-production.js", "main": "src/worker-v24-production.js"
+  "main": "src/worker-v25-production.js",
   "compatibility_date": "2026-08-30",
   "compatibility_flags": ["nodejs_compat"],
   "ai": {
