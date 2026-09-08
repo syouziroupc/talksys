@@ -19,11 +19,17 @@ patch.write_text(text)
 
 runpy.run_path(str(patch), run_name='__main__')
 
-# Align the remaining source-contract assertions with v18.5 runtime semantics.
+# Align source-contract assertions with v18.5 runtime semantics.
 p = Path('tests/voice-llm-contract.test.mjs')
 t = p.read_text()
 t = t.replace('SEARCH_FILLER_MIN_DELAY_MS = 650', 'SEARCH_FILLER_MIN_DELAY_MS = 320')
 t = t.replace('verified-two-pass-grounded-search', 'bounded-contextual-grounded-search')
+t = t.replace("  assert.match(cloudflareLlm, /質問に直接答え直してください/);\n", "  assert.match(cloudflareLlm, /deterministicRescue/);\n  assert.match(cloudflareLlm, /perModelTimeoutMs: 3800/);\n")
+p.write_text(t)
+
+# v18.4 budget regression had the old second-progress threshold.
+p = Path('tests/search-budget-regression.test.mjs')
+t = p.read_text().replace('searchSecondProgressSpeechMs: 8000', 'searchSecondProgressSpeechMs: 5500')
 p.write_text(t)
 
 # Add route-search regression using the current test layout.
@@ -37,7 +43,7 @@ if insert not in t:
     t = t.replace(anchor, insert + anchor, 1)
 p.write_text(t)
 
-# The broader contract also encoded the old no-context policy; flip only explicit v18 revision/context markers.
+# The broader contract also encoded the old no-context policy; flip explicit markers.
 p = Path('tests/gemini-live-contract.test.mjs')
 t = p.read_text()
 t = t.replace('crossTurnContext: false', 'crossTurnContext: true')
