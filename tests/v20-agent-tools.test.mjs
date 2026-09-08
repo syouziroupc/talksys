@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { requiresFreshSearch } from '../src/worker-v20.js';
+import { requiresFreshSearch } from '../src/search-policy-v20.js';
 import { compactToolEvidence } from '../src/search-tool-v20.js';
 
 const worker = fs.readFileSync(new URL('../src/worker-v20.js', import.meta.url), 'utf8');
