@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 
+// v18.1 regression coverage: typed input remains part of the phone-only consultation UI.
 async function body(response) {
   return response.json();
 }
