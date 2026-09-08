@@ -10,14 +10,8 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   const originalVoice = document.getElementById('voice');
   const form = document.getElementById('form');
   const input = document.getElementById('input');
-  const sendButton = document.getElementById('send');
   const status = document.getElementById('status');
   const chat = document.getElementById('chat');
-  const screenToggle = document.getElementById('screenToggle');
-  const screenVideo = document.getElementById('screenVideo');
-  const overlay = document.getElementById('overlay');
-  const targetNote = document.getElementById('targetNote');
-  const screenHint = document.getElementById('screenHint');
   if (!originalVoice || !form || !input || !chat || !navigator.mediaDevices?.getUserMedia) return;
 
   const voice = originalVoice.cloneNode(true);
@@ -213,7 +207,6 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       const decoded = await audioContext.decodeAudioData(bytes.slice(0));
       const source = audioContext.createBufferSource();
       source.buffer = decoded;
-      // Speech-first playback chain: modest compression evens out level differences.
       const compressor = audioContext.createDynamicsCompressor();
       compressor.threshold.value = -24;
       compressor.knee.value = 18;
@@ -249,7 +242,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     playNext();
   }
 
-  const WORKLET = "class TalkSysCF14Capture extends AudioWorkletProcessor{constructor(){super();this.b=[];this.r=sampleRate/16000}process(inputs){const i=inputs[0];if(!i||!i[0])return true;const d=i[0];for(let n=0;n<d.length;n+=this.r){const a=Math.floor(n),f=n-a;this.b.push(a+1<d.length?d[a]*(1-f)+d[a+1]*f:d[a]||0)}while(this.b.length>=640){const x=new Float32Array(this.b.splice(0,640));this.port.postMessage(x,[x.buffer])}return true}}registerProcessor('talksys-cf14-capture',TalkSysCF14Capture);";
+  const WORKLET = "class TalkSysCF18Capture extends AudioWorkletProcessor{constructor(){super();this.b=[];this.r=sampleRate/16000}process(inputs){const i=inputs[0];if(!i||!i[0])return true;const d=i[0];for(let n=0;n<d.length;n+=this.r){const a=Math.floor(n),f=n-a;this.b.push(a+1<d.length?d[a]*(1-f)+d[a+1]*f:d[a]||0)}while(this.b.length>=640){const x=new Float32Array(this.b.splice(0,640));this.port.postMessage(x,[x.buffer])}return true}}registerProcessor('talksys-cf18-capture',TalkSysCF18Capture);";
 
   async function ensureAudio() {
     if (micReady && mediaStream && audioContext) {
@@ -269,7 +262,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
     try { await audioContext.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
     mediaSource = audioContext.createMediaStreamSource(mediaStream);
-    workletNode = new AudioWorkletNode(audioContext, 'talksys-cf14-capture');
+    workletNode = new AudioWorkletNode(audioContext, 'talksys-cf18-capture');
     workletNode.port.onmessage = (event) => {
       const samples = event.data instanceof Float32Array ? event.data : new Float32Array(event.data);
       const level = rms(samples);
@@ -296,52 +289,6 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   function maybeStartCall() {
     if (!desiredCall || !welcomed || !micReady || inCall) return;
     sendJson({ type: 'start_call', preferred_format: 'mp3' });
-  }
-
-  function drawArrow(x, y, label) {
-    if (!overlay) return;
-    const px = Math.max(25, Math.min(975, Number(x) || 500));
-    const py = Math.max(25, Math.min(975, Number(y) || 500));
-    const sx = px < 500 ? Math.min(950, px + 190) : Math.max(50, px - 190);
-    const sy = py < 300 ? Math.min(950, py + 165) : Math.max(50, py - 165);
-    overlay.innerHTML = '<defs><marker id="cf14Arrow" markerWidth="40" markerHeight="40" refX="34" refY="20" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L0,40 L40,20 z" fill="#ff3b30"></path></marker></defs><line x1="'+sx+'" y1="'+sy+'" x2="'+px+'" y2="'+py+'" stroke="#ff3b30" stroke-width="16" stroke-linecap="round" marker-end="url(#cf14Arrow)"></line><circle cx="'+px+'" cy="'+py+'" r="34" fill="none" stroke="#ff3b30" stroke-width="13"></circle>';
-    if (targetNote) targetNote.textContent = '→ ' + (label || 'ここです');
-  }
-
-  async function handleScreenRequest(request) {
-    const id = String(request.id || '');
-    const query = String(request.query || '現在の画面を確認してください');
-    const active = screenVideo?.srcObject && screenVideo.videoWidth && screenVideo.videoHeight;
-    if (!active) {
-      if (screenHint) screenHint.textContent = '画面確認が必要です。画面共有を開始してください。';
-      if (screenToggle) {
-        screenToggle.style.outline = '3px solid #ff3b30';
-        setTimeout(() => { screenToggle.style.outline = ''; }, 3000);
-      }
-      sendJson({ type: 'screen_result', id, available: false, error: 'screen_share_required' });
-      return;
-    }
-    try {
-      if (screenHint) screenHint.textContent = 'AIが現在画面を確認しています…';
-      const scale = Math.min(1, 1024 / screenVideo.videoWidth, 720 / screenVideo.videoHeight);
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(screenVideo.videoWidth * scale));
-      canvas.height = Math.max(1, Math.round(screenVideo.videoHeight * scale));
-      const ctx = canvas.getContext('2d', { alpha: false });
-      ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
-      const response = await fetch('/api/locate', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query, image: canvas.toDataURL('image/jpeg', 0.76) }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'screen analysis failed');
-      if (result.found) drawArrow(result.x, result.y, result.label);
-      if (screenHint) screenHint.textContent = result.found ? 'AIが対象を確認しました。' : (result.note || '対象を特定できませんでした。');
-      sendJson({ type: 'screen_result', id, available: true, result });
-    } catch (error) {
-      sendJson({ type: 'screen_result', id, available: false, error: String(error?.message || error) });
-    }
   }
 
   function handleTtsError(message) {
@@ -391,10 +338,11 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       }
       if (data.type === 'playback_interrupt') { stopPlayback(false); return; }
       if (data.type === 'search_status') {
-        setStatus(data.phase === 'searching' ? '確認のため検索しています…' : '検索結果から答えています…');
+        if (data.phase === 'planning') setStatus('検索内容を組み立てています…');
+        else if (data.phase === 'searching') setStatus('複数の情報源を確認しています…');
+        else setStatus('検索結果を検証して答えています…');
         return;
       }
-      if (data.type === 'screen_request') { await handleScreenRequest(data); return; }
       if (data.type === 'completion_outcome' && data.code === 'model_error') setStatus('AI応答を再試行してください。');
       if (data.type === 'error') {
         if (!handleTtsError(data.message)) setStatus('音声エラー: ' + (data.message || '不明なエラー'));
@@ -450,7 +398,6 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     workletNode = null;
     setStatus('');
     setVoiceUi();
-    // Keep the agent WebSocket alive so typed chat keeps the same conversation.
   }
 
   function submitText(event) {

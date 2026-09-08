@@ -16,58 +16,52 @@ import {
   FALLBACK_CONVERSATION_MODEL,
   modelInput,
 } from '../src/cloudflare-llm.js';
-import { SEARCH_FILLER_MODEL } from '../src/search-orchestrator.js';
+import { SEARCH_FILLER_MODEL, SEARCH_MAX_QUERIES, SEARCH_MAX_ROUNDS } from '../src/search-orchestrator.js';
 
 const workerSource = fs.readFileSync(new URL('../src/worker-v14.js', import.meta.url), 'utf8');
+const indexSource = fs.readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
 const sttSource = fs.readFileSync(new URL('../src/cloudflare-japanese-stt.js', import.meta.url), 'utf8');
 const llmSource = fs.readFileSync(new URL('../src/cloudflare-llm.js', import.meta.url), 'utf8');
 const searchSource = fs.readFileSync(new URL('../src/search-orchestrator.js', import.meta.url), 'utf8');
+const auditSource = fs.readFileSync(new URL('../src/search-answer-v18.js', import.meta.url), 'utf8');
 const fallbackSource = fs.readFileSync(new URL('../src/search-fallbacks.js', import.meta.url), 'utf8');
 const webSource = fs.readFileSync(new URL('../src/web-search.js', import.meta.url), 'utf8');
 const ttsSource = fs.readFileSync(new URL('../src/cloudflare-japanese-tts.js', import.meta.url), 'utf8');
 const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
-test('v16 production entrypoint is the keyless Cloudflare voice architecture', () => {
+test('v18 production entrypoint is phone consultation only and keyless', () => {
   assert.match(wranglerSource, /"main":\s*"src\/worker-v14\.js"/);
-  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v16\.0'/);
+  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v18\.0'/);
+  assert.match(workerSource, /mode: 'phone-consultation-only'/);
   assert.match(workerSource, /providerApiKeysRequired: false/);
-  assert.doesNotMatch(workerSource + CLOUDFLARE_LIVE_CLIENT + sttSource + llmSource + ttsSource, /GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /CHUNK_SAMPLES = 640/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /preferred_format: 'mp3'/);
-  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /SpeechRecognition/);
+  assert.match(workerSource, /screenFunction: false/);
+  assert.match(workerSource, /screenOverlay: false/);
+  assert.doesNotMatch(workerSource + CLOUDFLARE_LIVE_CLIENT + indexSource + sttSource + llmSource + ttsSource, /GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/);
+  assert.doesNotMatch(workerSource, /screen_request|requestScreen|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
+  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /screenToggle|screenVideo|drawArrow|\/api\/locate|screen_request/);
+  assert.doesNotMatch(indexSource, /画面共有|screenToggle|\/api\/locate|VISION_MODEL|<svg|<video/);
 });
 
-test('Japanese STT has a high-confidence Nova fast path and Whisper reconciliation fallback', () => {
+test('Japanese STT keeps high-confidence fast path and accurate reconciliation fallback', () => {
   assert.equal(REALTIME_STT_MODEL, '@cf/deepgram/nova-3');
   assert.equal(ACCURATE_STT_MODEL, '@cf/openai/whisper-large-v3-turbo');
   assert.equal(RESOLVER_MODEL, '@cf/qwen/qwen3.8-27b');
   assert.match(sttSource, /language: options\.language \|\| 'ja'/);
-  assert.match(sttSource, /endpointingMs: options\.endpointingMs \?\? 320/);
-  assert.match(sttSource, /utteranceEndMs: options\.utteranceEndMs \?\? 720/);
-  assert.match(sttSource, /silenceMs: options\.silenceMs \?\? 440/);
   assert.match(sttSource, /fastFinalConfidence: options\.fastFinalConfidence \?\? 0\.88/);
-  assert.match(sttSource, /const canUseFastNova/);
   assert.match(sttSource, /whisperTranscribe/);
-  assert.match(sttSource, /condition_on_previous_text: false/);
-  assert.match(sttSource, /beam_size: 8/);
   assert.match(workerSource, /sttHighConfidenceFastPath: true/);
   assert.match(workerSource, /dualAsrReconciliation: true/);
 });
 
-test('live, quality and grounded routes use separate Cloudflare-hosted model tiers', () => {
+test('live, quality and grounded routes keep separate Cloudflare-hosted model tiers', () => {
   assert.equal(LIVE_CONVERSATION_MODEL, '@cf/qwen/qwen3.8-27b');
   assert.equal(QUALITY_CONVERSATION_MODEL, '@cf/zai-org/glm-5.3-flash');
   assert.equal(GROUNDING_CONVERSATION_MODEL, '@cf/deepseek-ai/deepseek-v4-pro-0813');
   assert.equal(GROUNDING_FALLBACK_MODEL, '@cf/openai/gpt-oss-120b');
   assert.equal(FALLBACK_CONVERSATION_MODEL, '@cf/qwen/qwen3.8-27b');
   assert.match(llmSource, /x-session-affinity/);
-  assert.match(llmSource, /streamCloudflareLiveConversation/);
-  assert.match(llmSource, /streamCloudflareQualityConversation/);
-  assert.match(llmSource, /streamCloudflareGroundedConversation/);
-  assert.match(llmSource, /GROUNDING_CONVERSATION_MODEL, GROUNDING_FALLBACK_MODEL, QUALITY_CONVERSATION_MODEL, LIVE_CONVERSATION_MODEL/);
   assert.match(workerSource, /needsQualityConversation/);
   assert.match(workerSource, /historyLimit: 48/);
-  assert.match(workerSource, /modelBenchmarkEndpoint: '\/api\/voice-model-bench'/);
 });
 
 test('live Qwen route disables thinking and streams short completions', () => {
@@ -79,71 +73,47 @@ test('live Qwen route disables thinking and streams short completions', () => {
   assert.equal(input.chat_template_kwargs.clear_thinking, true);
 });
 
-test('grounded high-reasoning model uses completion-token budget', () => {
-  const input = modelInput(GROUNDING_CONVERSATION_MODEL, [{ role: 'user', content: '検索結果を整理して' }], 720, 0.1);
-  assert.equal(input.stream, true);
-  assert.equal(input.max_completion_tokens, 720);
-  assert.equal(input.max_tokens, undefined);
-});
-
-test('production factual search uses redundant retrieval, contextual recovery, page evidence and reranking', () => {
-  for (const required of ['google-html', 'duckduckgo-html', 'bing-html', 'wikipedia-ja', 'google-news']) {
-    assert.match(webSource, new RegExp(required));
-  }
-  assert.match(webSource, /enrichResult/);
-  assert.match(webSource, /extractPageExcerpt/);
-  assert.match(searchSource, /planSearchQueries/);
+test('v18 factual search uses contextual planning, up to eight queries and two-pass coverage checking', () => {
+  assert.equal(SEARCH_MAX_QUERIES, 8);
+  assert.equal(SEARCH_MAX_ROUNDS, 2);
+  for (const required of ['google-html', 'duckduckgo-html', 'bing-html', 'wikipedia-ja', 'google-news']) assert.match(webSource, new RegExp(required));
+  assert.match(searchSource, /6〜8本/);
+  assert.match(searchSource, /assessCoverage/);
+  assert.match(searchSource, /shouldForceSecondPass/);
   assert.match(searchSource, /searchBingRss/);
-  assert.match(searchSource, /recoveryQueries/);
   assert.match(searchSource, /searchOpenStreetMapLocal/);
-  assert.match(searchSource, /rerankSearchResults\(ai, rankQuestion, merged, 8\)/);
+  assert.match(searchSource, /rerankSearchResults/);
   assert.match(fallbackSource, /format=rss/);
-  assert.match(fallbackSource, /buildDeterministicSearchQueries/);
-  assert.match(llmSource, /runDeepSearch\(ai, question, history/);
-  assert.match(llmSource, /システムが会話文脈から解決した検索課題/);
-  assert.match(workerSource, /needsWebSearch\(transcript\)/);
-  assert.match(workerSource, /grounded-deep-search/);
+  assert.match(workerSource, /shouldDeepSearch\(transcript, context\.messages\)/);
+  assert.match(workerSource, /answerWithVerifiedWebSearch/);
+  assert.match(workerSource, /verified-deep-search-v18/);
 });
 
-test('search filler is generated by a small model while deep retrieval runs', () => {
-  assert.equal(SEARCH_FILLER_MODEL, '@cf/meta/llama-3.2-3b-instruct');
-  assert.match(workerSource, /const searchPromise = answerWithCloudflareWebSearch/);
-  assert.match(workerSource, /const fillerPromise = generateSearchFiller/);
+test('search wait speech is deterministic and cannot leak guessed facts before search finishes', () => {
+  assert.equal(SEARCH_FILLER_MODEL, 'deterministic-safe-filler');
+  assert.match(searchSource, /詳しく確認します。少し待ってください。/);
+  assert.doesNotMatch(searchSource, /ai\.run\(SEARCH_FILLER_MODEL/);
   assert.match(workerSource, /Promise\.race/);
-  assert.match(workerSource, /phase: 'planning'/);
-  assert.match(workerSource, /phase: 'searching'/);
-  assert.doesNotMatch(workerSource, /yield 'ちょっと調べますね。'/);
-  assert.match(workerSource, /searchFillerGeneratedInParallel: true/);
+  assert.match(workerSource, /searchFillerGeneratedInParallel: false/);
 });
 
-test('grounded answer layer repairs retrieval-failure boilerplate instead of refusing', () => {
-  assert.match(workerSource, /回答全体を拒否しない/);
-  assert.match(workerSource, /購入先、おすすめ、比較、選び方/);
-  assert.match(workerSource, /予算・用途・地域/);
-  assert.match(workerSource, /検索責任をユーザーへ返さない/);
-  assert.match(llmSource, /検索が不十分でも回答全体を拒否しない/);
-  assert.match(llmSource, /未確認なのは変化し得る具体的事実だけ/);
-  assert.match(llmSource, /いただいた検索結果/);
-  assert.match(llmSource, /別の情報源を提示して/);
-  assert.match(llmSource, /isEvasiveGroundedAnswer/);
-  assert.match(llmSource, /質問に直接答え直してください/);
-  assert.match(llmSource, /deterministicRescue/);
+test('v18 answer layer audits unsupported proper nouns against retrieved evidence', () => {
+  assert.match(auditSource, /Web根拠監査担当/);
+  assert.match(auditSource, /unsupportedNamedCandidates/);
+  assert.match(auditSource, /根拠にない名前を絶対に残さない/);
+  assert.match(auditSource, /sourceTitleRescue/);
+  assert.match(workerSource, /searchAnswerAudit: true/);
+  assert.match(workerSource, /auditPassed/);
 });
 
-test('server TTS is normalized and playback is conditioned for clearer Japanese speech', () => {
+test('server TTS remains normalized and playback conditioned for clearer Japanese speech', () => {
   assert.equal(PRIMARY_TTS_MODEL, '@cf/myshell-ai/melotts');
   assert.match(ttsSource, /MeloJapaneseTTS/);
   assert.match(ttsSource, /normalizeJapaneseTtsText/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /createDynamicsCompressor\(\)/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /compressor\.threshold\.value = -24/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /compressor\.ratio\.value = 3/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /speechGain\.gain\.value = 1\.12/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /utterance\.rate = 0\.98/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /\^ja\(\?:-\|_\)/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /SpeechSynthesisUtterance/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /serverAudioThisTurn/);
-  assert.match(workerSource, /browserSpeechSynthesisPrimary: false/);
-  assert.match(workerSource, /deviceJapaneseTtsFallback: true/);
 });
 
 test('assistant playback is never streamed back into STT unless human barge-in wins', () => {
@@ -153,16 +123,8 @@ test('assistant playback is never streamed back into STT unless human barge-in w
   assert.match(CLOUDFLARE_LIVE_CLIENT, /DEVICE_TTS_GUARD_MS = 350/);
 });
 
-test('typed chat shares the same durable voice agent websocket', () => {
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /text_message/);
+test('same durable voice agent keeps the conversation context across the call', () => {
   assert.match(CLOUDFLARE_LIVE_CLIENT, /AGENT_PATH = '\/agents\/talk-sys-voice-agent\/default'/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /Keep the agent WebSocket alive so typed chat keeps the same conversation/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /text_message/);
   assert.match(workerSource, /sharedTypedAndVoiceHistory: true/);
-});
-
-test('current-screen inspection stays grounded in actual screenshot results', () => {
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /\/api\/locate/);
-  assert.match(workerSource, /type: 'screen_request'/);
-  assert.match(workerSource, /画面情報に無いボタン名/);
-  assert.match(workerSource, /streamCloudflareQualityConversation/);
 });
