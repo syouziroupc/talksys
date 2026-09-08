@@ -1,0 +1,28 @@
+name: Apply v18.3 fast live patch once
+
+on:
+  push:
+    branches: [fix/v18-3-fast-live-stream]
+    paths:
+      - '.github/workflows/v18-3-fast-live-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/v18-3-fast-live-stream
+          fetch-depth: 0
+      - name: Apply repair
+        run: python scripts/patch_v18_3_fast_live.py
+      - name: Commit runtime and tests only
+        run: |
+          git config user.name talksys-ci
+          git config user.email talksys-ci@users.noreply.github.com
+          git add src/cloudflare-llm.js src/worker-v14.js src/cloudflare-live-client.js tests/voice-llm-contract.test.mjs tests/gemini-live-contract.test.mjs
+          git commit -m "v18.3: restore fast live streaming and isolate deep search"
+          git push origin HEAD:fix/v18-3-fast-live-stream
