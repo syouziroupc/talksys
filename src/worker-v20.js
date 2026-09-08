@@ -25,11 +25,11 @@ const GROUNDED_SYSTEM_PROMPT = `あなたはTalkSysという日本語のリア�
 根拠が不足した部分は推測で埋めないでください。確認できた候補がない場合は、確認できなかったと短く明示してください。
 電話で自然に聞ける日本語にし、結論を先に、通常は2〜5文程度で答えてください。URL、Markdown、検索処理の内部説明は読み上げないでください。`;
 
-const QUALITY_INTENT_RE = /(どう思う|どう考える|考えて|なぜ|理由|比較|どっち|どちら|相談|どうすれば|どうしたら|説明して|整理して|メリット|デメリット|可能性|戦略|設計|方針|判断|選ぶ|選択|改善|問題点|原因|将来|実現可能)/i;
+const QUALITY_INTENT_RE = /(どう考える|なぜ|理由|比較|どっち|どちら|どうすれば|どうしたら|整理して|メリット|デメリット|可能性|戦略|設計|方針|改善|問題点|原因|将来|実現可能)/i;
 
 function needsQualityConversation(text) {
   const value = String(text || '').trim();
-  return value.length >= 80 || QUALITY_INTENT_RE.test(value);
+  return value.length >= 120 || QUALITY_INTENT_RE.test(value);
 }
 
 function quickCasualReply(text) {
