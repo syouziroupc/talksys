@@ -31,7 +31,7 @@ const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.
 
 test('v18 production entrypoint is phone consultation only and keyless', () => {
   assert.match(wranglerSource, /"main":\s*"src\/worker-v14\.js"/);
-  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v18\.1'/);
+  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v18\.2'/);
   assert.match(workerSource, /mode: 'phone-consultation-only'/);
   assert.match(workerSource, /providerApiKeysRequired: false/);
   assert.match(workerSource, /screenFunction: false/);
@@ -61,7 +61,7 @@ test('live, quality and grounded routes keep separate Cloudflare-hosted model ti
   assert.equal(FALLBACK_CONVERSATION_MODEL, '@cf/qwen/qwen3.8-27b');
   assert.match(llmSource, /x-session-affinity/);
   assert.match(workerSource, /needsQualityConversation/);
-  assert.match(workerSource, /historyLimit: 48/);
+  assert.match(workerSource, /historyLimit: 4/);
 });
 
 test('live Qwen route disables thinking and streams short completions', () => {
@@ -84,7 +84,7 @@ test('v18 factual search uses contextual planning, up to eight queries and two-p
   assert.match(searchSource, /searchOpenStreetMapLocal/);
   assert.match(searchSource, /rerankSearchResults/);
   assert.match(fallbackSource, /format=rss/);
-  assert.match(workerSource, /shouldDeepSearch\(transcript, context\.messages\)/);
+  assert.match(workerSource, /shouldDeepSearch\(transcript, \[\]\)/);
   assert.match(workerSource, /answerWithVerifiedWebSearch/);
   assert.match(workerSource, /verified-deep-search-v18/);
 });
@@ -98,15 +98,16 @@ test('search wait speech uses the lightweight route for topic-only progress whil
   assert.match(workerSource, /searchFillerGeneratedInParallel: true/);
 });
 
-test('typed speech simulation is silent outside an active call and call startup is manual', () => {
+test('typed speech simulation has audible replies without automatic microphone startup', () => {
   assert.match(indexSource, /話したことにする/);
-  assert.match(indexSource, /文字入力は「話したこと」として会話履歴に入ります/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /type: 'text_message'/);
+  assert.match(indexSource, /返事は文字と音声で再生します/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /typedVoiceOutput = true/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /ensurePlaybackAudio/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /CALL_CONNECT_TIMEOUT_MS = 10000/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /接続が完了しませんでした/);
   assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /setTimeout\(\(\) => startCall\(true\)/);
   assert.match(workerSource, /typedSpeechSimulation: true/);
-  assert.match(workerSource, /typedSpeechSilentWhenNotInCall: true/);
+  assert.match(workerSource, /typedSpeechSilentWhenNotInCall: false/);
+  assert.match(workerSource, /typedSpeechVoiceOutput: true/);
 });
 
 test('v18 answer layer audits unsupported proper nouns against retrieved evidence', () => {
@@ -135,8 +136,11 @@ test('assistant playback is never streamed back into STT unless human barge-in w
   assert.match(CLOUDFLARE_LIVE_CLIENT, /DEVICE_TTS_GUARD_MS = 350/);
 });
 
-test('same durable voice agent keeps the conversation context across the call', () => {
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /AGENT_PATH = '\/agents\/talk-sys-voice-agent\/default'/);
+test('browser sessions are isolated and no prior conversation is reused', () => {
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /crypto\.randomUUID/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /talk-sys-voice-agent\/' \+ AGENT_ID/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /text_message/);
-  assert.match(workerSource, /sharedTypedAndVoiceHistory: true/);
+  assert.match(workerSource, /sharedTypedAndVoiceHistory: false/);
+  assert.match(workerSource, /contextProvider: \(\) => \[\]/);
+  assert.doesNotMatch(workerSource, /context\.messages\.slice/);
 });

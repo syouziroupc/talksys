@@ -30,11 +30,11 @@ const HTML = `<!doctype html>
     </header>
     <section class="hero">
       <strong>検索は精度優先です。</strong>
-      <p>最新情報や店・価格・制度などは、会話の文脈を引き継いで複数回検索してから答えます。検索中は少し待つ場合があります。</p>
+      <p>最新情報や店・価格・制度など、今回の質問だけで外部確認が必要な内容を検索します。以前の会話内容は次の質問へ引き継ぎません。</p>
     </section>
-    <section id="chat" class="chat" aria-live="polite"><div class="msg assistant">通話ボタンを押して話せます。外で話せないときは、下の文字入力を発話として同じ会話に送れます。</div></section>
+    <section id="chat" class="chat" aria-live="polite"><div class="msg assistant">通話ボタンで話せます。外で話せないときは、下の文字入力を発話として送れます。</div></section>
     <div id="status" class="status"></div>
-    <div class="text-note">文字入力は「話したこと」として会話履歴に入ります。通話していない間はAI音声を再生しません。</div>
+    <div class="text-note">文字入力は「話したこと」として送ります。マイクは使わず、返事は文字と音声で再生します。以前の質問内容は次の質問へ引き継ぎません。</div>
     <form id="form" class="composer"><textarea id="input" rows="2" aria-label="発話テスト入力" placeholder="ここに入力すると、話したこととして送信します"></textarea><button id="send" type="submit">話したことにする</button></form>
   </main>
 </body>

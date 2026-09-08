@@ -27,7 +27,8 @@ test('GET / renders phone-only realtime consultation UI', async () => {
   assert.match(html, /リアルタイム通話/);
   assert.match(html, /検索は精度優先/);
   assert.match(html, /話したことにする/);
-  assert.match(html, /文字入力は「話したこと」として会話履歴に入ります/);
+  assert.match(html, /返事は文字と音声で再生します/);
+  assert.match(html, /以前の質問内容は次の質問へ引き継ぎません/);
   assert.doesNotMatch(html, /画面共有/);
   assert.doesNotMatch(html, /PNG保存/);
   assert.doesNotMatch(html, /overlay/);
