@@ -1,0 +1,38 @@
+name: Apply v18.5 contextual conversation repair once
+
+on:
+  push:
+    branches: [fix/v18-4-bounded-precision-search]
+    paths:
+      - '.github/workflows/v18-5-context-memory-audio-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/v18-4-bounded-precision-search
+          fetch-depth: 0
+      - name: Apply context, routing and audio repair
+        run: python scripts/patch_v18_5_context_memory_audio.py
+      - name: Check syntax
+        run: |
+          node --check src/worker-v14.js
+          node --check src/cloudflare-live-client.js
+          node --check src/web-search.js
+          node --check src/search-orchestrator.js
+      - name: Run focused regression tests
+        run: |
+          npm install --no-audit --no-fund
+          node --test tests/contextual-conversation-regression.test.mjs tests/web-search.test.mjs tests/search-budget-regression.test.mjs tests/live-stream-regression.test.mjs
+      - name: Commit runtime and regression tests
+        run: |
+          git config user.name talksys-ci
+          git config user.email talksys-ci@users.noreply.github.com
+          git add src/worker-v14.js src/cloudflare-live-client.js src/web-search.js src/search-orchestrator.js tests/voice-llm-contract.test.mjs tests/gemini-live-contract.test.mjs tests/web-search.test.mjs tests/contextual-conversation-regression.test.mjs
+          git commit -m "v18.5: restore contextual conversation, search intent and audio fallback"
+          git push origin HEAD:fix/v18-4-bounded-precision-search
