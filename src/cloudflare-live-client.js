@@ -104,7 +104,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     } else if (value) addMessage('assistant', value);
     clearTtsFallbackTimer();
     if ((desiredCall || typedVoiceOutput) && !serverAudioThisTurn && value) {
-      const delay = ttsFailedThisTurn ? 120 : 650;
+      const delay = ttsFailedThisTurn ? 100 : 450;
       ttsFallbackTimer = setTimeout(() => {
         ttsFallbackTimer = null;
         if (!serverAudioThisTurn && !playing && !deviceSpeaking) speakJapaneseFallback(value);
@@ -166,7 +166,12 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   }
 
   function speakJapaneseFallback(text) {
-    const value = String(text || '').replace(/https?:\/\/\S+/g, 'リンク').replace(/[*_#>\x60~]/g, '').replace(/\s+/g, ' ').trim();
+    const value = String(text || '')
+      .replace(/https?:\/\/\S+/g, 'リンク')
+      .replace(/[*_#>\x60~]/g, '')
+      .replace(/[•●▪■◆◇▶▷→⇒]/g, '、')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (!(desiredCall || typedVoiceOutput) || !value || serverAudioThisTurn || deviceSpeaking) return false;
     const selected = pickJapaneseVoice();
     if (!selected) {
@@ -178,7 +183,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       const utterance = new SpeechSynthesisUtterance(value);
       utterance.voice = selected;
       utterance.lang = selected.lang || 'ja-JP';
-      utterance.rate = 0.98;
+      utterance.rate = 0.95;
       utterance.pitch = 1;
       utterance.volume = 1;
       deviceUtterance = utterance;
@@ -235,15 +240,29 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       const decoded = await audioContext.decodeAudioData(bytes.slice(0));
       const source = audioContext.createBufferSource();
       source.buffer = decoded;
+
+      // Telephone speech is easier to understand when low rumble is removed and
+      // consonant presence is lifted gently instead of simply making everything louder.
+      const highpass = audioContext.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.value = 90;
+      highpass.Q.value = 0.7;
+      const presence = audioContext.createBiquadFilter();
+      presence.type = 'peaking';
+      presence.frequency.value = 2800;
+      presence.Q.value = 0.9;
+      presence.gain.value = 2.0;
       const compressor = audioContext.createDynamicsCompressor();
-      compressor.threshold.value = -24;
-      compressor.knee.value = 18;
-      compressor.ratio.value = 3;
+      compressor.threshold.value = -22;
+      compressor.knee.value = 16;
+      compressor.ratio.value = 2.6;
       compressor.attack.value = 0.006;
-      compressor.release.value = 0.18;
+      compressor.release.value = 0.2;
       const speechGain = audioContext.createGain();
-      speechGain.gain.value = 1.12;
-      source.connect(compressor);
+      speechGain.gain.value = 1.08;
+      source.connect(highpass);
+      highpass.connect(presence);
+      presence.connect(compressor);
       compressor.connect(speechGain);
       speechGain.connect(audioContext.destination);
       playbackSource = source;
@@ -359,7 +378,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   function handleTtsError(message) {
     if (!/tts|speech|音声合成/i.test(String(message || ''))) return false;
     ttsFailedThisTurn = true;
-    if (currentAssistantText && !serverAudioThisTurn) setTimeout(() => speakJapaneseFallback(currentAssistantText), 180);
+    if (currentAssistantText && !serverAudioThisTurn) setTimeout(() => speakJapaneseFallback(currentAssistantText), 120);
     return true;
   }
 
@@ -408,16 +427,16 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       if (data.type === 'search_status') {
         if (data.phase === 'planning') {
           lastSearchWaitPhrase = '';
-          setStatus('検索内容を確認しています…');
+          setStatus('前の話を踏まえて確認しています…');
         } else if (data.phase === 'searching') {
           const phrase = String(data.waitPhrase || '').trim();
-          setStatus(phrase || '複数の情報源を確認しています…');
+          setStatus(phrase || '情報を確認しています…');
           if (phrase && phrase !== lastSearchWaitPhrase && (desiredCall || typedVoiceOutput)) {
             lastSearchWaitPhrase = phrase;
             setTimeout(() => speakJapaneseFallback(phrase), 20);
           }
         } else {
-          setStatus('検索結果を検証して答えています…');
+          setStatus('確認できた内容をまとめています…');
         }
         return;
       }
