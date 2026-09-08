@@ -70,10 +70,20 @@ function liveModelInput(input) {
   };
 }
 
-export async function streamWorkersAIText(ai, _model, input, options = {}) {
+function modelStreamInput(model, input) {
+  if (model === LIVE_VOICE_MODEL) return liveModelInput(input);
+  return {
+    ...input,
+    stream: true,
+  };
+}
+
+export async function streamWorkersAIText(ai, requestedModel, input, options = {}) {
   const signal = options.signal;
-  const stream = await ai.run(LIVE_VOICE_MODEL, liveModelInput(input), signal ? { signal } : undefined);
+  const model = requestedModel || LIVE_VOICE_MODEL;
+  const stream = await ai.run(model, modelStreamInput(model, input), signal ? { signal } : undefined);
   if (!(stream instanceof ReadableStream)) throw new Error('Workers AI did not return a readable stream');
+  options.onModel?.(model);
 
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -127,4 +137,4 @@ export async function streamWorkersAIText(ai, _model, input, options = {}) {
   return full.trim();
 }
 
-export { readDelta, splitSpeechChunks, liveModelInput };
+export { readDelta, splitSpeechChunks, liveModelInput, modelStreamInput };
