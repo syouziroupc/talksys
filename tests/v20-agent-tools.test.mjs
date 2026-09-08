@@ -26,6 +26,7 @@ test('v20 production entrypoint is a single conversation agent with embedded web
 test('fresh or location-sensitive facts have a narrow mandatory search safety guard', () => {
   assert.equal(requiresFreshSearch('君がおすすめを教えてほしい'), false);
   assert.equal(requiresFreshSearch('YouTubeとネットだけならどんなパソコンがいい？'), false);
+  assert.equal(requiresFreshSearch('今はちょっと疲れた'), false);
   assert.equal(requiresFreshSearch('今3万円以下で何が売ってる？'), true);
   assert.equal(requiresFreshSearch('別府でどこで買える？'), true);
   assert.equal(requiresFreshSearch('その店は今日何時まで？'), true);
