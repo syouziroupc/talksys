@@ -19,6 +19,7 @@ const FOLLOWUP_RE = /^(?:それ|その|さっき|前の|じゃあ|で、?|それ
 const STORE_SIGNAL_RE = /(店|店舗|ショップ|販売|家電|電器|電機|パソコン|PC|ＰＣ|ビックカメラ|ヤマダ|エディオン|ケーズ|コジマ|ハードオフ|パソコン工房|ジョーシン|ドスパラ|PC DEPOT|ピーシーデポ)/i;
 const LISTICLE_RE = /(おすすめ\s*\d+選|ランキング|まとめ|選び方|比較.*\d+選)/i;
 const ROUTE_SERVICE_HOST_RE = /(tokyu\.co\.jp|jr.*\.co\.jp|odakyu\.jp|keio\.co\.jp|seiburailway\.jp|tobu\.co\.jp|keikyu\.co\.jp|tokyometro\.jp|kotsu\.metro\.tokyo\.jp|jorudan\.co\.jp|navitime\.co\.jp|transit\.yahoo\.co\.jp)/i;
+const STATION_TOKEN = '[一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]';
 
 function clean(value, max = 600) {
   return String(value || '')
@@ -40,8 +41,13 @@ function recentUserContext(history, limit = 4) {
 }
 
 function stationNames(text) {
-  const matches = [...clean(text, 900).matchAll(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}駅)/g)]
-    .map((match) => match[1]);
+  const value = clean(text, 900);
+  const pairPattern = new RegExp(`(${STATION_TOKEN}{1,24}?駅)\\s*(?:から|より|→|⇒|〜|～|-)\\s*(${STATION_TOKEN}{1,24}?駅)`, 'i');
+  const pair = value.match(pairPattern);
+  if (pair?.[1] && pair?.[2]) return [...new Set([pair[1], pair[2]])];
+
+  const singlePattern = new RegExp(`(${STATION_TOKEN}{1,24}?駅)(?=(?:から|より|まで|へ|に|で|の|を|が|は|と|周辺|近く|、|。|！|？|!|\\?|\\s|$))`, 'gi');
+  const matches = [...value.matchAll(singlePattern)].map((match) => match[1]);
   return [...new Set(matches)].slice(0, 4);
 }
 
@@ -153,7 +159,6 @@ function scoreCustomSource(item, index, profile) {
     try {
       if (ROUTE_SERVICE_HOST_RE.test(new URL(url).hostname)) score += 28;
     } catch {}
-    if (/小田急/i.test(text) && profile.stations.some((station) => /鷺沼|二子玉川/.test(station))) score -= 12;
   }
 
   if (profile.localCommerce) {
