@@ -35,14 +35,17 @@ test('v19 rejects raw conversational planner output and restores missing context
   assert.ok(plan.queries.every((q) => !/相談したい|かなぁ|なんでもいい/.test(q)));
 });
 
-test('v19 planner-first search remains available as rollback while v20 owns production', () => {
+test('v19 planner-first search remains available as rollback while v20.1 owns production', () => {
   const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
   const workerV19 = fs.readFileSync(new URL('../src/worker-v19.js', import.meta.url), 'utf8');
   const workerV20 = fs.readFileSync(new URL('../src/worker-v20.js', import.meta.url), 'utf8');
   const search = fs.readFileSync(new URL('../src/search-v19.js', import.meta.url), 'utf8');
   assert.match(wrangler, /"main": "src\/worker-v20\.js"/);
-  assert.match(workerV20, /conversationOrchestrator: 'single-agent-v20'/);
-  assert.match(workerV20, /runWithTools/);
+  assert.match(workerV20, /conversationOrchestrator: 'tiered-fast-agent-v20\.1'/);
+  assert.match(workerV20, /toolCalling: 'deterministic-search-router-v20\.1'/);
+  assert.match(workerV20, /collectWebEvidenceV20/);
+  assert.match(workerV20, /requiresFreshSearch\(transcript\)/);
+  assert.doesNotMatch(workerV20, /runWithTools/);
   assert.match(workerV19, /answerWithContextualVerifiedSearchV19/);
   assert.match(workerV19, /cloudflare-live-v19\.0/);
   assert.match(search, /await resolvePlan\(ai, question, history, options\)/);
