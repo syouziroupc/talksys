@@ -5,6 +5,7 @@ import { SEARCH_TRACE_CLIENT } from './search-trace-client.js';
 import { QUALITY_CONVERSATION_MODEL } from './cloudflare-llm.js';
 import { streamBoundedQualityConversation } from './bounded-conversation.js';
 import { collectWebEvidenceV20, compactToolEvidence, SEARCH_TOOL_V20_REVISION } from './search-tool-v20.js';
+import { requiresFreshSearch } from './search-policy-v20.js';
 
 const VOICE_REVISION = 'cloudflare-agent-tools-v20.0';
 
@@ -17,16 +18,6 @@ web_search の query は検索単独で意味が通るようにし、会話で�
 検索結果を受け取った後も同じ会話として答えてください。検索結果のタイトルをそのまま回答にしたり、SEO記事を店舗・商品として扱ったりしないでください。
 現在事実や固有名詞は検索根拠にある範囲だけ述べ、根拠が不足した部分を推測で埋めないでください。
 電話で自然に聞ける日本語にし、結論を先に、通常は2〜5文程度で答えてください。URL、Markdown、検索処理の内部説明は読み上げないでください。`;
-
-const FRESH_FACT_RE = /(最新|現在|いま|今の|今日|明日|昨日|ニュース|価格|値段|在庫|営業時間|営業中|天気|株価|為替|相場|発売|販売中|現行法|法改正|制度改正|予定|日程|時刻表|運行|空席|予約状況)/i;
-const EXPLICIT_SEARCH_RE = /(検索して|検索|調べて|調べる|ウェブで|Webで|ネットで調べ|最新情報)/i;
-const LOCAL_PURCHASE_RE = /(どこで買|どこに売|買える(?:店|場所)|近くの?(?:店|店舗)|(?:店|店舗|販売店).{0,18}(?:ある|開い|営業|在庫)|(?:市内|県内).{0,18}(?:店|店舗|買))/i;
-
-export function requiresFreshSearch(text) {
-  const value = String(text || '').trim();
-  if (!value) return false;
-  return FRESH_FACT_RE.test(value) || EXPLICIT_SEARCH_RE.test(value) || LOCAL_PURCHASE_RE.test(value);
-}
 
 function connectionFrom(context) {
   return context?.connection || context || null;
