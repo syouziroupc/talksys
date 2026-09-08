@@ -29,8 +29,14 @@ function clean(value, max = 700) {
 
 function stationNames(text) {
   const value = clean(text, 900);
-  const pair = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)\s*(?:から|より|→|⇒|〜|～|-)\s*([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)/i);
-  if (pair?.[1] && pair?.[2]) return [...new Set([pair[1], pair[2]])];
+  const explicitPair = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)\s*(?:から|より|→|⇒|〜|～|-)\s*([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)/i);
+  if (explicitPair?.[1] && explicitPair?.[2]) return [...new Set([explicitPair[1], explicitPair[2]])];
+
+  // Spoken Japanese normally omits 駅: 「鷺沼から用賀までの行き方」.
+  // Only profileFor() promotes this pair to transit when the utterance also contains route intent.
+  const spokenPair = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?)(?:駅)?\s*(?:から|より|→|⇒|〜|～|-)\s*([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?)(?:駅)?\s*(?:まで|へ|に)(?=$|[のをがはで、。！？!?\s])/i);
+  if (spokenPair?.[1] && spokenPair?.[2]) return [...new Set([spokenPair[1], spokenPair[2]])];
+
   const matches = [...value.matchAll(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)(?=(?:から|より|まで|へ|に|で|の|を|が|は|と|周辺|近く|、|。|！|？|!|\?|\s|$))/gi)]
     .map((match) => match[1]);
   return [...new Set(matches)].slice(0, 4);
@@ -154,7 +160,8 @@ export function sourceEligibleV23(item, question) {
   const title = clean(item?.title, 240);
   const engine = String(item?.engine || '');
 
-  if (!text || LOW_SIGNAL_ENGINE_RE.test(engine) || /Wikipedia|ウィキペディア/i.test(title)) return false;
+  if (!text) return false;
+  if ((profile.transit || profile.pc || profile.local) && (LOW_SIGNAL_ENGINE_RE.test(engine) || /Wikipedia|ウィキペディア/i.test(title))) return false;
 
   if (profile.transit) {
     const endpoints = profile.stations.slice(0, 2);
