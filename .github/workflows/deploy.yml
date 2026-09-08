@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: cloudflare-agent-v21-mobile-transit-reliability
+      EXPECTED_VOICE_REVISION: cloudflare-agent-v22-grounding-by-default
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -27,8 +27,11 @@ jobs:
           node --check src/worker-v19.js
           node --check src/worker-v20.js
           node --check src/worker-v21.js
+          node --check src/worker-v22.js
           node --check src/search-tool-v20.js
           node --check src/search-v21.js
+          node --check src/search-v22.js
+          node --check src/grounding-policy-v22.js
           node --check src/cloudflare-live-client-v21.js
           node --check src/cloudflare-live-client.js
           node --check src/cloudflare-japanese-stt.js
@@ -99,7 +102,7 @@ jobs:
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
 
-      - name: Verify production v21 voice-agent contract when deployment credentials are configured
+      - name: Verify production v22 grounding contract when deployment credentials are configured
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
           body="$(curl -fsS --max-time 30 "$PRODUCTION_URL/voice-health")" || {
@@ -112,58 +115,37 @@ jobs:
           console.log(JSON.stringify({
             voiceRevision: d.voiceRevision,
             conversationPersistence: d.conversationPersistence,
-            sessionMemoryLifecycle: d.sessionMemoryLifecycle,
-            sessionMemoryTimeBasedExpiry: d.sessionMemoryTimeBasedExpiry,
             crossTurnContext: d.crossTurnContext,
-            crossSessionContext: d.crossSessionContext,
-            trustedCallerIdentityRequired: d.trustedCallerIdentityRequired,
-            voiceBuiltinHistoryDisabled: d.voiceBuiltinHistoryDisabled,
-            conversationContextMaxMessages: d.conversationContextMaxMessages,
-            callerContextMaxMessages: d.callerContextMaxMessages,
-            speechClarityProcessing: d.speechClarityProcessing,
             conversationOrchestrator: d.conversationOrchestrator,
-            primaryConversationModel: d.primaryConversationModel,
             toolCalling: d.toolCalling,
             webSearchTool: d.webSearchTool,
-            webSearchToolRole: d.webSearchToolRole,
-            modelDecidesToolUse: d.modelDecidesToolUse,
-            mandatoryFreshSearchGuard: d.mandatoryFreshSearchGuard,
-            searchPlannerBeforeRetrieval: d.searchPlannerBeforeRetrieval,
-            searchAnswerCascade: d.searchAnswerCascade,
-            searchAuditModelCascade: d.searchAuditModelCascade,
-            fixedSearchWaitSpeech: d.fixedSearchWaitSpeech,
-            searchWaitPhrase: d.searchWaitPhrase,
+            groundingPolicy: d.groundingPolicy,
+            groundingByDefault: d.groundingByDefault,
+            factualQuestionsSearchByDefault: d.factualQuestionsSearchByDefault,
+            nonSearchRouteExternalFactAssertionsForbidden: d.nonSearchRouteExternalFactAssertionsForbidden,
+            evidenceOnlyExternalFacts: d.evidenceOnlyExternalFacts,
+            insufficientEvidenceStopsAssertion: d.insufficientEvidenceStopsAssertion,
+            contextualFollowupGrounding: d.contextualFollowupGrounding,
+            domainSpecificSearchRoutingOnlyOptimizesRetrieval: d.domainSpecificSearchRoutingOnlyOptimizesRetrieval,
             mobileAudioContextPrimedOnUserGesture: d.mobileAudioContextPrimedOnUserGesture,
             proactiveCallGreeting: d.proactiveCallGreeting,
             hiddenModelFailureRetry: d.hiddenModelFailureRetry,
             userFacingMidStreamRetryMessageRemoved: d.userFacingMidStreamRetryMessageRemoved,
-            transitQueriesRequireFreshSearch: d.transitQueriesRequireFreshSearch,
-            stationAreaFollowupsUseConversationContext: d.stationAreaFollowupsUseConversationContext,
           }));
           if (d.voiceRevision !== expected) throw new Error(`expected ${expected}, got ${d.voiceRevision}`);
           if (d.conversationPersistence !== 'call-session-with-trusted-caller-memory') throw new Error('unexpected conversation persistence mode');
-          if (d.sessionMemoryLifecycle !== 'start_call-to-end_call') throw new Error('unexpected session lifecycle');
-          if (d.sessionMemoryTimeBasedExpiry !== false) throw new Error('time-based session expiry must be disabled');
           if (d.crossTurnContext !== true) throw new Error('cross-turn context is not enabled');
-          if (d.crossSessionContext !== 'trusted-caller-only') throw new Error('cross-session context must require a trusted caller');
-          if (d.trustedCallerIdentityRequired !== true) throw new Error('trusted caller identity is not required');
-          if (d.voiceBuiltinHistoryDisabled !== true) throw new Error('shared voice history must be disabled');
-          if (d.conversationContextMaxMessages !== 28) throw new Error('unexpected session context window');
-          if (d.callerContextMaxMessages !== 20) throw new Error('unexpected caller context window');
-          if (d.speechClarityProcessing !== true) throw new Error('speech clarity processing is not enabled');
-          if (d.conversationOrchestrator !== 'tiered-fast-agent-v21') throw new Error('v21 tiered conversation orchestrator is not active');
-          if (d.toolCalling !== 'deterministic-search-router-v21') throw new Error('v21 deterministic search router is not active');
-          if (d.webSearchToolRole !== 'evidence-only') throw new Error('web search tool must return evidence only');
-          if (d.modelDecidesToolUse !== false) throw new Error('ordinary tool inference must remain disabled');
-          if (d.mandatoryFreshSearchGuard !== true) throw new Error('fresh-fact search guard is disabled');
-          if (d.searchPlannerBeforeRetrieval !== false) throw new Error('legacy search planner must not own v21 retrieval');
-          if (d.searchAnswerCascade !== false || d.searchAuditModelCascade !== false) throw new Error('legacy search answer cascades must be disabled');
-          if (d.fixedSearchWaitSpeech !== true || d.searchWaitPhrase !== '少し調べますね。') throw new Error('search wait speech contract failed');
+          if (d.conversationOrchestrator !== 'grounding-by-default-agent-v22') throw new Error('v22 grounding orchestrator is not active');
+          if (d.toolCalling !== 'grounding-policy-router-v22') throw new Error('v22 grounding router is not active');
+          if (d.groundingPolicy !== 'grounding-by-default-v22') throw new Error('v22 grounding policy is not active');
+          if (d.groundingByDefault !== true || d.factualQuestionsSearchByDefault !== true) throw new Error('factual search-by-default is disabled');
+          if (d.nonSearchRouteExternalFactAssertionsForbidden !== true) throw new Error('non-search external fact guard is disabled');
+          if (d.evidenceOnlyExternalFacts !== true || d.insufficientEvidenceStopsAssertion !== true) throw new Error('evidence-only answer guard is disabled');
+          if (d.contextualFollowupGrounding !== true) throw new Error('contextual follow-up grounding is disabled');
+          if (d.domainSpecificSearchRoutingOnlyOptimizesRetrieval !== true) throw new Error('domain routing must not own grounding decisions');
           if (d.mobileAudioContextPrimedOnUserGesture !== true) throw new Error('mobile AudioContext priming is disabled');
           if (d.proactiveCallGreeting !== true) throw new Error('proactive call greeting is disabled');
           if (d.hiddenModelFailureRetry !== true || d.userFacingMidStreamRetryMessageRemoved !== true) throw new Error('hidden answer recovery contract failed');
-          if (d.transitQueriesRequireFreshSearch !== true) throw new Error('transit search guard is disabled');
-          if (d.stationAreaFollowupsUseConversationContext !== true) throw new Error('station-area contextual search is disabled');
           NODE
 
       - name: Report external deployment requirement
