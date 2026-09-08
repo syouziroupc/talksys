@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: cloudflare-agent-v23-mobile-search-pc-quality
+      EXPECTED_VOICE_REVISION: cloudflare-agent-v24-xperia-fast-bargein
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -22,13 +22,13 @@ jobs:
 
       - name: Check JavaScript syntax
         run: |
+          node --check src/worker-v24-production.js
+          node --check src/worker-v24.js
+          node --check src/cloudflare-live-client-v24.js
           node --check src/worker-v23-production.js
           node --check src/worker-v23.js
           node --check src/search-v23.js
-          node --check src/cloudflare-live-client-v23.js
           node --check src/cloudflare-live-client-v23-final.js
-          node --check src/search-trace-client-v23.js
-          node --check src/worker-v22.js
           node --check src/search-v22.js
           node --check src/grounding-policy-v22.js
           node --check src/bounded-conversation.js
@@ -67,9 +67,9 @@ jobs:
         run: |
           echo "Repository Cloudflare credentials are absent."
           echo "Production must be deployed through the authorized external production path."
-          echo "This job will fail unless production actually reaches v23."
+          echo "This job will fail unless production actually reaches v24."
 
-      - name: Verify production v23 contract
+      - name: Verify production v24 contract
         run: |
           expected="$EXPECTED_VOICE_REVISION"
           body=""
@@ -96,32 +96,45 @@ jobs:
           console.log(JSON.stringify({
             voiceRevision: d.voiceRevision,
             conversationOrchestrator: d.conversationOrchestrator,
-            webSearchTool: d.webSearchTool,
-            groundingByDefault: d.groundingByDefault,
-            parallelIntentSearch: d.parallelIntentSearch,
-            audibleSearchWaitSpeech: d.audibleSearchWaitSpeech,
-            pcExpertAnswerMode: d.pcExpertAnswerMode,
-            groundedContinuationRetry: d.groundedContinuationRetry,
-            microphoneConstraintFallback: d.microphoneConstraintFallback,
-            microphoneFrameWatchdog: d.microphoneFrameWatchdog,
-            microphoneAutoRecovery: d.microphoneAutoRecovery,
-            workletToScriptProcessorAutoFallback: d.workletToScriptProcessorAutoFallback,
-            duplicateSearchTraceFixed: d.duplicateSearchTraceFixed,
-            duplicateBrowserTtsGuard: d.duplicateBrowserTtsGuard,
-            serverTtsOwnershipGuard: d.serverTtsOwnershipGuard,
-            mobileAudioContextPrimedOnUserGesture: d.mobileAudioContextPrimedOnUserGesture,
-            hiddenModelFailureRetry: d.hiddenModelFailureRetry,
-            userFacingMidStreamRetryMessageRemoved: d.userFacingMidStreamRetryMessageRemoved,
+            conciseRepliesByDefault: d.conciseRepliesByDefault,
+            pcDecisionDetailOnly: d.pcDecisionDetailOnly,
+            browserStreamingTts: d.browserStreamingTts,
+            browserStreamingTtsStartsAtFirstSentence: d.browserStreamingTtsStartsAtFirstSentence,
+            preListeningMicFrames: d.preListeningMicFrames,
+            startCallPendingGuard: d.startCallPendingGuard,
+            voiceBargeIn: d.voiceBargeIn,
+            hardStopOnUserTranscript: d.hardStopOnUserTranscript,
+            xperiaHandshakeFix: d.xperiaHandshakeFix,
+            contextualSearchSubjectOnlyCarryover: d.contextualSearchSubjectOnlyCarryover,
           }));
           if (d.voiceRevision !== expected) throw new Error(`expected ${expected}, got ${d.voiceRevision}`);
-          if (d.conversationOrchestrator !== 'grounded-conversation-agent-v23') throw new Error('v23 orchestrator is not active');
-          if (d.groundingByDefault !== true) throw new Error('grounding-by-default is disabled');
-          if (d.parallelIntentSearch !== true || d.audibleSearchWaitSpeech !== true) throw new Error('v23 search contract failed');
-          if (d.pcExpertAnswerMode !== true || d.pcExpertGroundedDetail !== true) throw new Error('PC expert mode is disabled');
-          if (d.groundedContinuationRetry !== true) throw new Error('grounded continuation retry is disabled');
-          if (d.microphoneConstraintFallback !== true || d.microphoneFrameWatchdog !== true || d.microphoneAutoRecovery !== true) throw new Error('mobile microphone recovery contract failed');
-          if (d.workletToScriptProcessorAutoFallback !== true) throw new Error('capture processor fallback is disabled');
-          if (d.duplicateSearchTraceFixed !== true || d.duplicateBrowserTtsGuard !== true || d.serverTtsOwnershipGuard !== true) throw new Error('duplicate output guards failed');
-          if (d.mobileAudioContextPrimedOnUserGesture !== true) throw new Error('mobile AudioContext priming is disabled');
-          if (d.hiddenModelFailureRetry !== true || d.userFacingMidStreamRetryMessageRemoved !== true) throw new Error('answer recovery contract failed');
+          if (d.conversationOrchestrator !== 'precise-fast-conversation-agent-v24') throw new Error('v24 orchestrator is not active');
+          const required = [
+            'conciseRepliesByDefault','pcDecisionDetailOnly','browserStreamingTts','browserStreamingTtsStartsAtFirstSentence',
+            'preListeningMicFrames','startCallPendingGuard','voiceBargeIn','hardStopOnUserTranscript','xperiaHandshakeFix',
+            'contextualSearchSubjectOnlyCarryover','microphoneConstraintFallback','microphoneFrameWatchdog','microphoneAutoRecovery',
+            'workletToScriptProcessorAutoFallback'
+          ];
+          for (const key of required) if (d[key] !== true) throw new Error(`${key} is not true`);
+          NODE
+
+      - name: Verify live v24 client
+        run: |
+          script="$(curl -fsS --max-time 20 "$PRODUCTION_URL/cloudflare-live.js")"
+          grep -F "callStartPending" <<< "$script"
+          grep -F "inCall || callStartPending" <<< "$script"
+          grep -F "BARGE_IN_THRESHOLD" <<< "$script"
+          grep -F "talksys-barge-in" <<< "$script"
+          grep -F "queueCompletedStreamSpeech(streamText, false)" <<< "$script"
+
+      - name: Verify contextual search regression
+        run: |
+          body="$(curl -fsS --max-time 35 "$PRODUCTION_URL/api/search-smoke-v24-context")"
+          echo "$body"
+          BODY="$body" node <<'NODE'
+          const d = JSON.parse(process.env.BODY || '{}');
+          if (!d.ok) throw new Error('context smoke returned no evidence');
+          const q = String(d.resolvedQuestion || '');
+          if (!/パソコン/.test(q) || !/中古/.test(q) || !/横浜/.test(q)) throw new Error(`context not preserved: ${q}`);
+          if (/YouTube|ネットサーフィン/i.test(q)) throw new Error(`old usage polluted current search: ${q}`);
           NODE
