@@ -1,0 +1,27 @@
+name: Apply v18.2 audio UI no-history patch once
+
+on:
+  push:
+    branches: [fix/v18-2-audio-ui-no-history]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/v18-2-audio-ui-no-history
+          fetch-depth: 0
+      - name: Apply v18.2 patch
+        run: python scripts/patch_v18_2_once.py
+      - name: Commit patched runtime and remove one-shot helpers
+        run: |
+          rm -f scripts/patch_v18_2_once.py .github/workflows/v18-2-patch-once.yml
+          git config user.name talksys-ci
+          git config user.email talksys-ci@users.noreply.github.com
+          git add -A
+          git commit -m "v18.2: restore audio, isolate turns, and fix search progress UI"
+          git push origin HEAD:fix/v18-2-audio-ui-no-history
