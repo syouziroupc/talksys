@@ -105,10 +105,16 @@ function recentText(history, limit = 8) {
 
 function detectLocation(text) {
   const value = clean(text);
+  const compound = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,14}市(?:の|\s*)[一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,14}(?:区|町|村|丁目))/);
+  if (compound?.[1]) return compound[1].replace(/\s+/g, '').slice(0, 28);
+  const wardTown = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,14}(?:区|町|村|丁目))/);
+  const city = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,16}市)/);
+  if (city?.[1] && wardTown?.[1] && !city[1].includes(wardTown[1])) return `${city[1]} ${wardTown[1]}`.slice(0, 28);
   const matches = [...value.matchAll(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,16}(?:都|道|府|県|市|区|町|村))/g)];
   if (!matches.length) return '';
-  const preferred = matches.find((match) => /(?:市|区|町|村)$/.test(match[1]));
-  return (preferred?.[1] || matches[matches.length - 1][1] || '').slice(0, 20);
+  const granular = [...matches].reverse().find((match) => /(?:区|町|村)$/.test(match[1]));
+  const preferred = granular || matches.find((match) => /市$/.test(match[1])) || matches[matches.length - 1];
+  return String(preferred?.[1] || '').slice(0, 24);
 }
 
 function detectProduct(text) {
@@ -120,16 +126,29 @@ function detectProduct(text) {
   return match?.[1] || '';
 }
 
+function detailLookupQueries(current) {
+  if (!/(電話番号|連絡先|問い合わせ先|住所|所在地|営業時間|営業日|定休日|公式サイト|公式ページ|URL|アクセス)/i.test(current)) return [];
+  const direct = clean(current
+    .replace(/(?:を)?(?:教えて(?:よ|ください)?|知りたい|お願いします?)?[。！？!?]*$/i, '')
+    .replace(/\s+/g, ' '));
+  if (!direct) return [];
+  return [direct, `${direct} 公式`];
+}
+
 export function buildDeterministicSearchQueries(question, history = []) {
   const current = clean(question);
+  const detailQueries = detailLookupQueries(current);
+  if (detailQueries.length) return [...new Set(detailQueries)].slice(0, 2);
+
   const context = recentText(history, 10);
   const all = `${context} ${current}`.trim();
-  const location = detectLocation(all);
+  const currentLocation = detectLocation(current);
+  const location = currentLocation || detectLocation(all);
   const product = detectProduct(all) || '商品';
   const explicitPurchase = /(買|購入|どこで|販売店|店舗|店頭|家電量販店|中古|新品|在庫)/i.test(all);
   const contextualWhere = product !== '商品' && Boolean(location) && /(どこ(?:が|で)?(?:いい|良い|おすすめ)?|市内なら|県内なら)/i.test(current);
   const purchase = explicitPurchase || contextualWhere;
-  const local = Boolean(location) && /(どこ|店|店舗|買|購入|販売|近く|市内|県内)/i.test(all);
+  const local = Boolean(location) && /(どこ|店|店舗|買|購入|販売|近く|周辺|市内|県内)/i.test(all);
   const out = [];
 
   if (purchase && product !== '商品') {
