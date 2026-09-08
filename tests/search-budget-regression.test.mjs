@@ -13,16 +13,19 @@ const orchestrator = await readFile(new URL('../src/search-orchestrator.js', imp
 const worker = await readFile(new URL('../src/worker-v14.js', import.meta.url), 'utf8');
 const audit = await readFile(new URL('../src/search-answer-v18.js', import.meta.url), 'utf8');
 
-test('precision search has explicit bounded phase budgets while normal chat remains separate', () => {
+test('precision search has explicit bounded phase budgets while normal conversation stays on bounded non-search routes', () => {
   assert.equal(SEARCH_TOTAL_BUDGET_MS, 17000);
   assert.equal(SEARCH_PLANNER_BUDGET_MS, 2800);
   assert.equal(SEARCH_FETCH_BUDGET_MS, 4400);
   assert.equal(SEARCH_COVERAGE_BUDGET_MS, 2200);
   assert.match(orchestrator, /High-model query planning never blocks the first deterministic retrieval pass/);
   assert.match(orchestrator, /Promise\.all\(\[plannerPromise, firstSearchPromise\]\)/);
-  assert.match(worker, /normalConversationLiveOnly: true/);
+  assert.match(worker, /normalConversationLiveOnly: false/);
+  assert.match(worker, /qualityRouteForComplexConversation: true/);
   assert.match(worker, /searchPrecisionOnly: true/);
-  assert.match(worker, /searchSecondProgressSpeechMs: 5500/);
+  assert.match(worker, /searchSecondProgressSpeechMs: 4200/);
+  assert.match(worker, /streamBoundedLiveConversation/);
+  assert.match(worker, /streamBoundedQualityConversation/);
 });
 
 test('a hanging non-streaming model cannot block the whole cascade', async () => {
