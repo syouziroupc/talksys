@@ -363,7 +363,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
           }
           setStatus(desiredCall ? '聞いています' : '');
         } else if (serverStatus === 'thinking') setStatus('考えています…');
-        else if (serverStatus === 'speaking') setStatus('AIが話しています。途中でそのまま割り込めます。');
+        else if (serverStatus === 'speaking') setStatus(desiredCall ? 'AIが話しています。途中でそのまま割り込めます。' : '文字で回答しています…');
         else if (serverStatus === 'idle') inCall = false;
         setVoiceUi();
         return;
