@@ -23,7 +23,7 @@ import { answerWithVerifiedWebSearch } from './search-answer-v18.js';
 import { generateSearchFiller, SEARCH_FILLER_MODEL, shouldDeepSearch } from './search-orchestrator.js';
 import { cleanSpeechText, extractText, wrapAI } from './voice-helpers.js';
 
-const VOICE_REVISION = 'cloudflare-live-v18.0';
+const VOICE_REVISION = 'cloudflare-live-v18.1';
 
 const CASUAL_SYSTEM_PROMPT = `あなたはTalkSysという日本語の電話相談アシスタントです。
 相手と電話で自然に話しているように会話してください。発話の意図を直接受け止め、最初の一文から返答を始めてください。
@@ -355,7 +355,10 @@ export default {
         searchMaxRounds: 2,
         searchWaitSpeech: true,
         searchFillerModel: SEARCH_FILLER_MODEL,
-        searchFillerGeneratedInParallel: false,
+        searchFillerGeneratedInParallel: true,
+        typedSpeechSimulation: true,
+        typedSpeechSilentWhenNotInCall: true,
+        callConnectTimeoutMs: 10000,
         searchAnswerAudit: true,
         ttsPrimary: PRIMARY_TTS_MODEL,
         serverSideTts: true,

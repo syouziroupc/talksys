@@ -23,7 +23,7 @@ test('voice keeps fast live model and high-accuracy grounded cascade', () => {
 });
 
 test('v18 phone runtime has no screen overlay or screenshot routing', () => {
-  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.0'/);
+  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.1'/);
   assert.match(worker, /mode: 'phone-consultation-only'/);
   assert.doesNotMatch(worker, /requestScreen|screen_request|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
   assert.doesNotMatch(liveClient, /screenToggle|screenVideo|drawArrow|handleScreenRequest|api\/locate/);
@@ -81,12 +81,29 @@ test('search failure boilerplate cannot be the final answer path', () => {
   assert.match(audit, /裏付けが十分ではありません/);
 });
 
-test('search wait speech is deterministic and cannot hallucinate an answer while retrieval runs', () => {
-  assert.match(orchestrator, /SEARCH_FILLER_MODEL = 'deterministic-safe-filler'/);
-  assert.match(orchestrator, /SEARCH_FILLER_MIN_DELAY_MS = 1200/);
-  assert.match(orchestrator, /詳しく確認します。少し待ってください。/);
-  assert.doesNotMatch(orchestrator, /ai\.run\(SEARCH_FILLER_MODEL/);
+test('search progress is spoken by the lightweight model while high-accuracy retrieval runs', () => {
+  assert.match(orchestrator, /SEARCH_FILLER_MODEL = LIVE_VOICE_MODEL/);
+  assert.match(orchestrator, /SEARCH_FILLER_MIN_DELAY_MS = 650/);
+  assert.match(orchestrator, /今、\$\{topic\}について検索しています。少しお待ちください。/);
+  assert.match(orchestrator, /ai\?\.run/);
   assert.match(worker, /const fillerPromise = generateSearchFiller/);
+  assert.match(worker, /searchFillerGeneratedInParallel: true/);
+});
+
+test('typed text can simulate speech without auto-starting or playing audio', () => {
+  assert.match(index, /話したことにする/);
+  assert.match(index, /文字入力は「話したこと」として会話履歴に入ります/);
+  assert.match(liveClient, /type: 'text_message'/);
+  assert.match(liveClient, /if \(!desiredCall\) \{/);
+  assert.doesNotMatch(liveClient, /setTimeout\(\(\) => startCall\(true\)/);
+});
+
+test('call connection has a hard timeout and cannot stay stuck on connecting', () => {
+  assert.match(liveClient, /CALL_CONNECT_TIMEOUT_MS = 10000/);
+  assert.match(liveClient, /armCallConnectTimeout/);
+  assert.match(liveClient, /clearCallConnectTimeout/);
+  assert.match(liveClient, /接続が完了しませんでした/);
+  assert.match(worker, /callConnectTimeoutMs: 10000/);
 });
 
 test('Japanese server TTS normalizes technical terms and keeps speech clarity processing', () => {
