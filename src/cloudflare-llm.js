@@ -297,4 +297,4 @@ export async function answerWithCloudflareWebSearch(ai, question, history, syste
   };
 }
 
-export { readFinal, readDelta, modelInput, runNonStreamingCascade };
+export { readFinal, readDelta };
