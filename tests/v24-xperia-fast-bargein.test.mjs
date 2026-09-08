@@ -83,6 +83,6 @@ test('v24 defaults to concise precise replies and lower token budgets', () => {
   assert.match(production, /browserStreamingTtsStartsAtFirstSentence: true/);
 });
 
-test('v24 production entrypoint is selected', () => {
-  assert.match(wrangler, /"main":\s*"src\/worker-v24-production\.js"/);
+test('v24 remains available as a rollback entrypoint after v25', () => {
+  assert.match(wrangler, /worker-v24-production\.js/);
 });
