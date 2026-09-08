@@ -6,12 +6,15 @@ const source = await readFile(new URL('../src/worker.js', import.meta.url), 'utf
 const realtime = await readFile(new URL('../src/realtime-voice-client.js', import.meta.url), 'utf8');
 const fallback = await readFile(new URL('../src/voice-fallback-client.js', import.meta.url), 'utf8');
 const streaming = await readFile(new URL('../src/streaming-workers-ai.js', import.meta.url), 'utf8');
+const search = await readFile(new URL('../src/web-search.js', import.meta.url), 'utf8');
 const stt = await readFile(new URL('../src/finalizable-nova3.js', import.meta.url), 'utf8');
 const reranker = await readFile(new URL('../src/search-rerank.js', import.meta.url), 'utf8');
 
-test('voice uses one unified Qwen 3.8 27B runtime model', () => {
+test('voice uses Qwen live model and gpt-oss grounded model with fallback', () => {
   assert.match(streaming, /LIVE_VOICE_MODEL\s*=\s*'@cf\/qwen\/qwen3\.8-27b'/);
-  assert.match(streaming, /ai\.run\(LIVE_VOICE_MODEL/);
+  assert.match(streaming, /GROUNDING_VOICE_MODEL\s*=\s*'@cf\/openai\/gpt-oss-120b'/);
+  assert.match(streaming, /grounded\s*\?\s*GROUNDING_VOICE_MODEL/);
+  assert.match(streaming, /LIVE_VOICE_MODEL\]\.filter\(Boolean\)/);
   assert.match(streaming, /reasoning_effort:\s*null/);
   assert.match(streaming, /enable_thinking:\s*false/);
 });
@@ -32,13 +35,30 @@ test('casual path allows useful 2 to 4 sentence replies', () => {
   assert.match(source, /casualResponseSentences:\s*'2-4'/);
 });
 
-test('grounded questions search, rerank, and keep the same runtime model', () => {
+test('grounded questions search, rerank, and route through grounded runtime model', () => {
   assert.match(source, /function\s+groundedChatInput/);
   assert.match(source, /max_tokens:\s*440/);
   assert.match(source, /const\s+searchIntent\s*=\s*!screenIntent\s*&&\s*needsWebSearch\(transcript\)/);
   assert.match(source, /rerankSearchResults\(this\.env\.AI,\s*transcript,\s*rawResults,\s*5\)/);
   assert.match(source, /streamWorkersAIText\(this\.env\.AI,\s*LIVE_VOICE_MODEL,\s*input/);
+  assert.match(streaming, /isGroundedInput/);
+  assert.match(streaming, /GROUNDING_VOICE_MODEL/);
   assert.match(reranker, /@cf\/baai\/bge-reranker-base/);
+});
+
+test('short context-dependent follow-ups avoid contextless web search', () => {
+  assert.match(search, /function\s+looksContextDependentFollowup/);
+  assert.match(search, /どこ/);
+  assert.match(search, /大阪は/);
+  assert.match(search, /それなら/);
+  assert.match(search, /if \(looksContextDependentFollowup\(value\)\) return false/);
+});
+
+test('grounded answers do not refuse merely because search evidence is irrelevant', () => {
+  assert.match(streaming, /回答全体を拒否しない/);
+  assert.match(streaming, /目的、予算、対象商品、用途/);
+  assert.match(streaming, /検索責任をユーザーへ返す表現は禁止/);
+  assert.match(streaming, /最新価格、在庫、営業時間/);
 });
 
 test('search announces a short spoken wait phrase before retrieval', () => {
