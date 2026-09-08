@@ -38,8 +38,8 @@ test('v18 production entrypoint is phone consultation only and keyless', () => {
   assert.match(workerSource, /screenOverlay: false/);
   assert.doesNotMatch(workerSource + CLOUDFLARE_LIVE_CLIENT + indexSource + sttSource + llmSource + ttsSource, /GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/);
   assert.doesNotMatch(workerSource, /screen_request|requestScreen|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
-  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /screenToggle|screenVideo|overlay|\/api\/locate|screen_request/);
-  assert.doesNotMatch(indexSource, /画面共有|screenToggle|overlay|\/api\/locate|VISION_MODEL/);
+  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /screenToggle|screenVideo|drawArrow|\/api\/locate|screen_request/);
+  assert.doesNotMatch(indexSource, /画面共有|screenToggle|\/api\/locate|VISION_MODEL|<svg|<video/);
 });
 
 test('Japanese STT keeps high-confidence fast path and accurate reconciliation fallback', () => {
@@ -100,7 +100,7 @@ test('search wait speech is deterministic and cannot leak guessed facts before s
 test('v18 answer layer audits unsupported proper nouns against retrieved evidence', () => {
   assert.match(auditSource, /Web根拠監査担当/);
   assert.match(auditSource, /unsupportedNamedCandidates/);
-  assert.match(auditSource, /根拠にない店舗名・会社名・施設名/);
+  assert.match(auditSource, /根拠にない名前を絶対に残さない/);
   assert.match(auditSource, /sourceTitleRescue/);
   assert.match(workerSource, /searchAnswerAudit: true/);
   assert.match(workerSource, /auditPassed/);
