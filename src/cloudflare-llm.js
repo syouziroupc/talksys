@@ -64,11 +64,66 @@ async function openModel(ai, model, messages, options = {}) {
   );
   const runOptions = {};
   if (options.signal) runOptions.signal = options.signal;
-  if (options.sessionAffinity) runOptions.headers = { 'x-session-affinity': options.sessionAffinity };
+  if (options.sessionAffinity) runOptions.extraHeaders = { 'x-session-affinity': options.sessionAffinity };
   return ai.run(model, input, Object.keys(runOptions).length ? runOptions : undefined);
 }
 
-async function* streamResult(result) {
+async function readStreamChunk(reader, timeoutMs = 0) {
+  if (!(timeoutMs > 0)) return reader.read();
+  let timer;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Workers AI live stream first-token timeout')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function* streamResult(result, options = {}) {
+  const byteStream = result && (result instanceof ReadableStream || typeof result.getReader === 'function');
+  if (byteStream) {
+    const reader = result.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    let sawText = false;
+
+    const consumeLine = function* (raw) {
+      const line = String(raw || '').trim();
+      if (!line || line === 'data: [DONE]') return;
+      const body = line.startsWith('data:') ? line.slice(5).trim() : line;
+      if (!body || body === '[DONE]') return;
+      try {
+        const delta = readDelta(JSON.parse(body));
+        if (delta) {
+          sawText = true;
+          yield delta;
+        }
+      } catch {}
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await readStreamChunk(reader, sawText ? 0 : (options.firstTokenTimeoutMs ?? 4500));
+        if (done) break;
+        pending += decoder.decode(value, { stream: true });
+        const lines = pending.split(/
+?
+/);
+        pending = lines.pop() || '';
+        for (const line of lines) yield* consumeLine(line);
+      }
+      pending += decoder.decode();
+      if (pending.trim()) yield* consumeLine(pending);
+    } finally {
+      try { reader.releaseLock(); } catch {}
+    }
+    return;
+  }
+
   if (result && typeof result[Symbol.asyncIterator] === 'function') {
     for await (const event of result) {
       const delta = readDelta(event);
@@ -76,35 +131,7 @@ async function* streamResult(result) {
     }
     return;
   }
-  if (result instanceof ReadableStream) {
-    const reader = result.getReader();
-    const decoder = new TextDecoder();
-    let pending = '';
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      pending += decoder.decode(value, { stream: true });
-      const lines = pending.split('\n');
-      pending = lines.pop() || '';
-      for (const raw of lines) {
-        const line = raw.trim();
-        if (!line || line === 'data: [DONE]') continue;
-        const body = line.startsWith('data:') ? line.slice(5).trim() : line;
-        try {
-          const delta = readDelta(JSON.parse(body));
-          if (delta) yield delta;
-        } catch {}
-      }
-    }
-    if (pending.trim() && pending.trim() !== 'data: [DONE]') {
-      const body = pending.trim().startsWith('data:') ? pending.trim().slice(5).trim() : pending.trim();
-      try {
-        const delta = readDelta(JSON.parse(body));
-        if (delta) yield delta;
-      } catch {}
-    }
-    return;
-  }
+
   const final = readFinal(result);
   if (final) yield final;
 }
@@ -112,19 +139,35 @@ async function* streamResult(result) {
 async function* streamCascade(ai, models, messages, options = {}) {
   let lastError = null;
   for (const model of [...new Set(models.filter(Boolean))]) {
+    let yielded = false;
     try {
       const result = await openModel(ai, model, messages, { ...options, stream: true });
-      let yielded = false;
-      for await (const delta of streamResult(result)) {
-        yielded = true;
-        yield delta;
+      try {
+        for await (const delta of streamResult(result, { firstTokenTimeoutMs: options.firstTokenTimeoutMs ?? 4500 })) {
+          yielded = true;
+          yield delta;
+        }
+      } catch (error) {
+        lastError = error;
+        if (yielded) return;
       }
       if (yielded) return;
+
+      // Streaming transport can fail independently of inference. Never end a voice turn silently:
+      // retry the same fast model once as a bounded non-streaming request.
+      const fallback = await openModel(ai, model, messages, { ...options, stream: false });
+      const text = readFinal(fallback);
+      if (text) {
+        yield text;
+        return;
+      }
+      lastError = new Error(`Workers AI returned an empty response for ${model}`);
     } catch (error) {
       lastError = error;
     }
   }
   if (lastError) throw lastError;
+  throw new Error('No Workers AI conversation model produced text');
 }
 
 export function streamCloudflareLiveConversation(ai, messages, options = {}) {
@@ -297,4 +340,4 @@ export async function answerWithCloudflareWebSearch(ai, question, history, syste
   };
 }
 
-export { readFinal, readDelta };
+export { readFinal, readDelta, streamResult };

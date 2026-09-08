@@ -23,7 +23,7 @@ test('voice keeps fast live model and high-accuracy grounded cascade', () => {
 });
 
 test('v18 phone runtime has no screen overlay or screenshot routing', () => {
-  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.2'/);
+  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.3'/);
   assert.match(worker, /mode: 'phone-consultation-only'/);
   assert.doesNotMatch(worker, /requestScreen|screen_request|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
   assert.doesNotMatch(liveClient, /screenToggle|screenVideo|drawArrow|handleScreenRequest|api\/locate/);
@@ -35,7 +35,8 @@ test('each turn is self-contained and prior conversation cannot trigger search',
   assert.match(worker, /shouldDeepSearch\(transcript, \[\]\)/);
   assert.match(worker, /answerWithVerifiedWebSearch[\s\S]*?transcript,[\s\n]*\[\]/);
   assert.doesNotMatch(worker, /context\.messages\.slice/);
-  assert.match(liveClient, /crypto\.randomUUID/);
+  assert.match(liveClient, /talk-sys-voice-agent\/default/);
+  assert.doesNotMatch(liveClient, /crypto\.randomUUID/);
   assert.match(worker, /crossTurnContext: false/);
   assert.match(worker, /crossSessionContext: false/);
 });
@@ -133,4 +134,9 @@ test('health contract advertises precision-first verified two-pass search', () =
   assert.match(worker, /screenOverlay: false/);
   assert.match(worker, /crossTurnContext: false/);
   assert.match(worker, /typedSpeechVoiceOutput: true/);
+  assert.match(worker, /normalConversationLiveOnly: true/);
+  assert.match(worker, /casualFastPath: true/);
+  assert.match(worker, /searchPrecisionOnly: true/);
+  assert.match(cloudflareLlm, /result instanceof ReadableStream \|\| typeof result\.getReader === 'function'/);
+  assert.match(cloudflareLlm, /extraHeaders/);
 });

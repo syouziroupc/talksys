@@ -1,8 +1,7 @@
 export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   'use strict';
 
-  const AGENT_ID = (crypto.randomUUID?.() || ('session-' + Date.now() + '-' + Math.random().toString(16).slice(2))).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 96);
-  const AGENT_PATH = '/agents/talk-sys-voice-agent/' + AGENT_ID;
+  const AGENT_PATH = '/agents/talk-sys-voice-agent/default';
   const CHUNK_SAMPLES = 640; // 40 ms at 16 kHz
   const BARGE_THRESHOLD = 0.035;
   const BARGE_FRAMES = 3;

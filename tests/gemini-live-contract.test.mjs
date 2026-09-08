@@ -31,7 +31,7 @@ const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.
 
 test('v18 production entrypoint is phone consultation only and keyless', () => {
   assert.match(wranglerSource, /"main":\s*"src\/worker-v14\.js"/);
-  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v18\.2'/);
+  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v18\.3'/);
   assert.match(workerSource, /mode: 'phone-consultation-only'/);
   assert.match(workerSource, /providerApiKeysRequired: false/);
   assert.match(workerSource, /screenFunction: false/);
@@ -60,7 +60,8 @@ test('live, quality and grounded routes keep separate Cloudflare-hosted model ti
   assert.equal(GROUNDING_FALLBACK_MODEL, '@cf/openai/gpt-oss-120b');
   assert.equal(FALLBACK_CONVERSATION_MODEL, '@cf/qwen/qwen3.8-27b');
   assert.match(llmSource, /x-session-affinity/);
-  assert.match(workerSource, /needsQualityConversation/);
+  assert.match(workerSource, /normalConversationLiveOnly: true/);
+  assert.match(workerSource, /casualFastPath: true/);
   assert.match(workerSource, /historyLimit: 4/);
 });
 
@@ -137,8 +138,8 @@ test('assistant playback is never streamed back into STT unless human barge-in w
 });
 
 test('browser sessions are isolated and no prior conversation is reused', () => {
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /crypto\.randomUUID/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /talk-sys-voice-agent\/' \+ AGENT_ID/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /talk-sys-voice-agent\/default/);
+  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /crypto\.randomUUID/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /text_message/);
   assert.match(workerSource, /sharedTypedAndVoiceHistory: false/);
   assert.match(workerSource, /contextProvider: \(\) => \[\]/);
