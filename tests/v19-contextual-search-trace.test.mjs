@@ -35,25 +35,30 @@ test('v19 rejects raw conversational planner output and restores missing context
   assert.ok(plan.queries.every((q) => !/相談したい|かなぁ|なんでもいい/.test(q)));
 });
 
-test('production entrypoint uses v19 planner-first search instead of raw conversation seed retrieval', () => {
+test('v19 planner-first search remains available as rollback while v20 owns production', () => {
   const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
-  const worker = fs.readFileSync(new URL('../src/worker-v19.js', import.meta.url), 'utf8');
+  const workerV19 = fs.readFileSync(new URL('../src/worker-v19.js', import.meta.url), 'utf8');
+  const workerV20 = fs.readFileSync(new URL('../src/worker-v20.js', import.meta.url), 'utf8');
   const search = fs.readFileSync(new URL('../src/search-v19.js', import.meta.url), 'utf8');
-  assert.match(wrangler, /"main": "src\/worker-v19\.js"/);
-  assert.match(worker, /answerWithContextualVerifiedSearchV19/);
-  assert.match(worker, /cloudflare-live-v19\.0/);
+  assert.match(wrangler, /"main": "src\/worker-v20\.js"/);
+  assert.match(workerV20, /conversationOrchestrator: 'single-agent-v20'/);
+  assert.match(workerV20, /runWithTools/);
+  assert.match(workerV19, /answerWithContextualVerifiedSearchV19/);
+  assert.match(workerV19, /cloudflare-live-v19\.0/);
   assert.match(search, /await resolvePlan\(ai, question, history, options\)/);
   assert.match(search, /const search = await runSearch\(ai, plan, options\)/);
   assert.doesNotMatch(search, /seedQuestion[\s\S]{0,300}firstSearchPromise/);
 });
 
-test('general recommendation follow-ups use quality conversation rather than the web-search fallback', () => {
+test('v19 general recommendation workaround remains available only as rollback behavior', () => {
   const worker = fs.readFileSync(new URL('../src/worker-v19.js', import.meta.url), 'utf8');
+  const workerV20 = fs.readFileSync(new URL('../src/worker-v20.js', import.meta.url), 'utf8');
   assert.match(worker, /isGeneralRecommendationFollowup/);
   assert.match(worker, /quality-recommendation/);
   assert.match(worker, /streamBoundedQualityConversation/);
   assert.match(worker, /generalRecommendationRoute: 'quality-conversation-no-search'/);
   assert.match(worker, /おすすめ.*教えて/);
+  assert.doesNotMatch(workerV20, /isGeneralRecommendationFollowup/);
 });
 
 test('v19 never exposes the old empty-answer placeholder as its final search response', () => {
