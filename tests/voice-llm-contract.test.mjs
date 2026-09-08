@@ -23,7 +23,7 @@ test('voice keeps fast live model and high-accuracy grounded cascade', () => {
 });
 
 test('v18 phone runtime has no screen overlay or screenshot routing', () => {
-  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.3'/);
+  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.4'/);
   assert.match(worker, /mode: 'phone-consultation-only'/);
   assert.doesNotMatch(worker, /requestScreen|screen_request|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
   assert.doesNotMatch(liveClient, /screenToggle|screenVideo|drawArrow|handleScreenRequest|api\/locate/);

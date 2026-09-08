@@ -180,13 +180,45 @@ export function streamCloudflareGroundedConversation(ai, messages, options = {})
   return streamCascade(ai, [GROUNDING_CONVERSATION_MODEL, GROUNDING_FALLBACK_MODEL, QUALITY_CONVERSATION_MODEL, LIVE_CONVERSATION_MODEL], messages, options);
 }
 
+function timedSignal(parentSignal, timeoutMs) {
+  const ms = Math.max(0, Number(timeoutMs) || 0);
+  if (!(ms > 0) || typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return parentSignal;
+  const timeoutSignal = AbortSignal.timeout(ms);
+  if (!parentSignal) return timeoutSignal;
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([parentSignal, timeoutSignal]);
+  return parentSignal;
+}
+
+async function awaitWithTimeout(promise, timeoutMs, label = 'operation') {
+  const ms = Math.max(0, Number(timeoutMs) || 0);
+  if (!(ms > 0)) return promise;
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function runNonStreamingCascade(ai, models, messages, options = {}) {
   let lastError = null;
+  const perModelTimeoutMs = Math.max(0, Math.min(12000, Number(options.perModelTimeoutMs) || 0));
   for (const model of [...new Set(models.filter(Boolean))]) {
     try {
-      const result = await openModel(ai, model, messages, { ...options, stream: false });
+      const modelSignal = timedSignal(options.signal, perModelTimeoutMs);
+      const result = await awaitWithTimeout(
+        openModel(ai, model, messages, { ...options, signal: modelSignal, stream: false }),
+        perModelTimeoutMs ? perModelTimeoutMs + 150 : 0,
+        `Workers AI ${model}`,
+      );
       const text = readFinal(result);
       if (text) return { text, model };
+      lastError = new Error(`Workers AI returned an empty response for ${model}`);
     } catch (error) {
       lastError = error;
     }
@@ -275,44 +307,32 @@ function buildGroundedMessages(question, history, systemPrompt, resolvedQuestion
 }
 
 export async function answerWithCloudflareWebSearch(ai, question, history, systemPrompt, options = {}) {
+  const totalStarted = Date.now();
   const signal = options.signal;
-  const deepSearch = await runDeepSearch(ai, question, history, signal, { timeoutMs: 7600 });
+  const deepSearch = await runDeepSearch(ai, question, history, signal, { timeoutMs: 4400 });
   const ranked = deepSearch.results || [];
   const resolvedQuestion = deepSearch.plan?.resolvedQuestion || question;
   const searchContext = formatSearchContext(ranked);
   const evidence = searchContext || '今回の取得では直接のWeb根拠が取れなかった。現在価格・在庫・営業時間など変化する具体的事実は作らない。ただし質問への一般的な判断や購入チャネルの比較は必ず続けること。';
   const messages = buildGroundedMessages(question, history, systemPrompt, resolvedQuestion, evidence);
-  const models = [GROUNDING_CONVERSATION_MODEL, GROUNDING_FALLBACK_MODEL, QUALITY_CONVERSATION_MODEL, LIVE_CONVERSATION_MODEL];
 
-  let answer = await runNonStreamingCascade(ai, models, messages, {
-    signal,
-    maxTokens: 780,
-    temperature: 0.1,
-    sessionAffinity: options.sessionAffinity,
-  });
-
-  let repaired = false;
-  if (isEvasiveGroundedAnswer(answer.text)) {
-    const repairMessages = [
-      ...messages,
-      { role: 'assistant', content: answer.text || '(空の回答)' },
-      {
-        role: 'user',
-        content: 'この回答は検索失敗の説明に逃げていて会話として役に立ちません。質問に直接答え直してください。検索結果に候補名があれば候補として挙げ、変動する価格・在庫だけ未確認としてください。候補名がなくても購入チャネルや選び方を具体化してください。「情報が足りないので答えられない」で終わることは禁止です。',
-      },
-    ];
-    const repairedAnswer = await runNonStreamingCascade(ai, [GROUNDING_FALLBACK_MODEL, GROUNDING_CONVERSATION_MODEL, QUALITY_CONVERSATION_MODEL, LIVE_CONVERSATION_MODEL], repairMessages, {
+  const answerStarted = Date.now();
+  let answer;
+  try {
+    // Use one reliable high-capacity grounded attempt first. A slower model is only a bounded fallback.
+    answer = await runNonStreamingCascade(ai, [GROUNDING_FALLBACK_MODEL, GROUNDING_CONVERSATION_MODEL], messages, {
       signal,
-      maxTokens: 720,
-      temperature: 0.12,
+      maxTokens: 680,
+      temperature: 0.08,
+      perModelTimeoutMs: 3800,
       sessionAffinity: options.sessionAffinity,
     });
-    if (repairedAnswer.text && !isEvasiveGroundedAnswer(repairedAnswer.text)) {
-      answer = repairedAnswer;
-      repaired = true;
-    }
+  } catch {
+    answer = { text: '', model: null };
   }
+  const answerMs = Date.now() - answerStarted;
 
+  let repaired = false;
   if (isEvasiveGroundedAnswer(answer.text)) {
     const rescue = deterministicRescue(resolvedQuestion || question, ranked);
     if (rescue) {
@@ -322,8 +342,8 @@ export async function answerWithCloudflareWebSearch(ai, question, history, syste
   }
 
   return {
-    text: answer.text.trim() || '確認できた範囲から、まず実用的な選択肢を絞って答えます。',
-    provider: 'cloudflare-workers-ai-contextual-deep-search-v18',
+    text: String(answer.text || '').trim() || '確認できた範囲から、まず実用的な選択肢を絞って答えます。',
+    provider: 'cloudflare-workers-ai-bounded-contextual-search-v18',
     nativeSearch: false,
     model: answer.model,
     resolvedQuestion,
@@ -335,6 +355,11 @@ export async function answerWithCloudflareWebSearch(ai, question, history, syste
     evidenceUseful: Boolean(deepSearch.evidenceUseful),
     answerRepaired: repaired,
     sources: ranked.slice(0, 12),
+    timings: {
+      ...(deepSearch.timings || {}),
+      answerMs,
+      beforeAuditMs: Date.now() - totalStarted,
+    },
   };
 }
 

@@ -71,7 +71,7 @@ function sourceTitleRescue(question, sources) {
 
 async function auditAnswer(ai, question, resolvedQuestion, answer, sources, options = {}) {
   const evidence = formatSearchContext((sources || []).slice(0, 12)) || '(直接のWeb根拠なし)';
-  const models = [GROUNDING_FALLBACK_MODEL, GROUNDING_CONVERSATION_MODEL, QUALITY_CONVERSATION_MODEL];
+  const models = [GROUNDING_FALLBACK_MODEL];
   const result = await runNonStreamingCascade(ai, models, [
     {
       role: 'system',
@@ -83,42 +83,31 @@ async function auditAnswer(ai, question, resolvedQuestion, answer, sources, opti
     },
   ], {
     signal: options.signal,
-    maxTokens: 900,
+    maxTokens: 760,
     temperature: 0.01,
+    perModelTimeoutMs: 2500,
     sessionAffinity: options.sessionAffinity,
   });
   return parseAuditJson(result.text);
 }
 
 export async function answerWithVerifiedWebSearch(ai, question, history, systemPrompt, options = {}) {
+  const totalStarted = Date.now();
   const base = await answerWithCloudflareWebSearch(ai, question, history, systemPrompt, options);
   let text = String(base.text || '').trim();
   let audit = { ok: false, answer: '', unsupported: [], reason: 'not_run' };
 
+  const auditStarted = Date.now();
   try {
     audit = await auditAnswer(ai, question, base.resolvedQuestion || question, text, base.sources || [], options);
     if (audit.answer) text = audit.answer;
-  } catch {}
-
-  let unsupported = unsupportedNamedCandidates(text, base.sources || []);
-  if (unsupported.length) {
-    try {
-      const second = await auditAnswer(
-        ai,
-        question,
-        base.resolvedQuestion || question,
-        `${text}\n\n機械検査で根拠にない可能性が高い固有名詞: ${unsupported.join('、')}。これらを必ず削除して、検索根拠に書かれた固有名詞だけで答え直すこと。`,
-        base.sources || [],
-        options,
-      );
-      if (second.answer) {
-        text = second.answer;
-        audit = second;
-      }
-    } catch {}
-    unsupported = unsupportedNamedCandidates(text, base.sources || []);
+  } catch {
+    audit = { ok: false, answer: '', unsupported: [], reason: 'audit_budget_or_model_failure' };
   }
+  const auditMs = Date.now() - auditStarted;
 
+  // Mechanical evidence guard is the final authority. Do not spend another model round auditing an audit.
+  const unsupported = unsupportedNamedCandidates(text, base.sources || []);
   if (!text || BAD_SEARCH_BOILERPLATE_RE.test(text) || unsupported.length) {
     const rescue = sourceTitleRescue(base.resolvedQuestion || question, base.sources || []);
     if (rescue) text = rescue;
@@ -126,11 +115,16 @@ export async function answerWithVerifiedWebSearch(ai, question, history, systemP
 
   return {
     ...base,
-    text: text || '確認した情報を整理できなかったので、条件を保ったまま検索をやり直します。',
-    provider: 'cloudflare-workers-ai-verified-deep-search-v18',
-    auditPassed: audit.ok === true && unsupported.length === 0,
+    text: text || '確認できた情報を整理して、分かった範囲から答えます。',
+    provider: 'cloudflare-workers-ai-bounded-verified-search-v18',
+    auditPassed: unsupported.length === 0 && audit.ok === true,
     auditReason: audit.reason,
     unsupportedRemoved: [...new Set([...(audit.unsupported || []), ...unsupported])].slice(0, 12),
+    timings: {
+      ...(base.timings || {}),
+      auditMs,
+      totalSearchAnswerMs: Date.now() - totalStarted,
+    },
   };
 }
 

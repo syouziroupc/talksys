@@ -14,6 +14,10 @@ export const SEARCH_FILLER_MODEL = LIVE_VOICE_MODEL;
 export const SEARCH_MAX_QUERIES = 8;
 export const SEARCH_MAX_ROUNDS = 2;
 export const SEARCH_FILLER_MIN_DELAY_MS = 650;
+export const SEARCH_TOTAL_BUDGET_MS = 17000;
+export const SEARCH_PLANNER_BUDGET_MS = 2800;
+export const SEARCH_FETCH_BUDGET_MS = 4400;
+export const SEARCH_COVERAGE_BUDGET_MS = 2200;
 
 const CONTEXT_SEARCH_CUE_RE = /(どこ|どっち|どちら|どれ|おすすめ|買|購入|店|店舗|販売|価格|値段|在庫|営業時間|比較|評判|今|現在|最新|調べ|検索|本当|事実|仕様|法律|制度|ニュース)/i;
 const EXTERNAL_CONTEXT_RE = /(パソコン|PC|ノート|iPhone|Android|Windows|Mac|製品|商品|店|店舗|会社|企業|大学|病院|ホテル|飲食|法律|制度|ニュース|価格|在庫|営業時間|市|区|町|村|県|都|府|道|Amazon|楽天|Yahoo|Google|Microsoft|Apple|Cloudflare)/i;
@@ -152,7 +156,7 @@ async function runPlannerModel(ai, model, transcript, history, signal) {
 
 export async function planSearchQueries(ai, transcript, history, signal) {
   const fallbackQuestion = heuristicContextQuery(transcript, history) || cleanQuery(transcript);
-  const models = [...new Set([GROUNDING_VOICE_MODEL, GROUNDING_FALLBACK_MODEL].filter(Boolean))];
+  const models = [...new Set([GROUNDING_FALLBACK_MODEL, GROUNDING_VOICE_MODEL].filter(Boolean))];
   for (const model of models) {
     try {
       const planned = await runPlannerModel(ai, model, transcript, history, signal);
@@ -219,7 +223,7 @@ function evidenceSummary(results, limit = 18) {
 
 async function assessCoverage(ai, plan, results, signal) {
   if (!results?.length) return { sufficient: false, reason: 'no_results', queries: [] };
-  const models = [...new Set([GROUNDING_VOICE_MODEL, GROUNDING_FALLBACK_MODEL].filter(Boolean))];
+  const models = [...new Set([GROUNDING_FALLBACK_MODEL, GROUNDING_VOICE_MODEL].filter(Boolean))];
   for (const model of models) {
     try {
       const result = await ai.run(model, {
@@ -266,50 +270,145 @@ function shouldForceSecondPass(plan, resolvedQuestion) {
   return HIGH_VERIFICATION_RE.test(String(resolvedQuestion || ''));
 }
 
-export async function runDeepSearch(ai, transcript, history, signal, options = {}) {
-  const plan = await planSearchQueries(ai, transcript, history, signal);
-  const queries = plan.queries.length ? plan.queries : [plan.resolvedQuestion || transcript];
-  const timeoutMs = Math.max(3600, Math.min(10000, Number(options.timeoutMs) || 7600));
+function remainingBudget(startedAt, totalMs = SEARCH_TOTAL_BUDGET_MS) {
+  return Math.max(0, totalMs - (Date.now() - startedAt));
+}
 
-  const firstBatches = await Promise.all(
-    queries.map((query, index) => searchOne(query, timeoutMs, index < 3)),
-  );
+function phaseSignal(parentSignal, timeoutMs) {
+  const ms = Math.max(1, Number(timeoutMs) || 1);
+  if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return parentSignal;
+  const timeoutSignal = AbortSignal.timeout(ms);
+  if (!parentSignal) return timeoutSignal;
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([parentSignal, timeoutSignal]);
+  return parentSignal;
+}
+
+function fallbackPlan(transcript, history) {
+  const resolvedQuestion = heuristicContextQuery(transcript, history) || cleanQuery(transcript);
+  return {
+    resolvedQuestion,
+    queries: uniqueQueries([resolvedQuestion, ...buildDeterministicSearchQueries(resolvedQuestion, history)], SEARCH_MAX_QUERIES),
+    intent: HIGH_VERIFICATION_RE.test(resolvedQuestion) ? 'current_fact' : 'general_fact',
+    location: '',
+    mustInclude: [],
+    plannerModel: null,
+    planned: false,
+  };
+}
+
+export async function runDeepSearch(ai, transcript, history, signal, options = {}) {
+  const startedAt = Date.now();
+  const timings = {};
+  const configuredFetch = Number(options.timeoutMs) || SEARCH_FETCH_BUDGET_MS;
+  const fetchTimeoutMs = Math.max(2800, Math.min(SEARCH_FETCH_BUDGET_MS, configuredFetch));
+
+  const seedQuestion = heuristicContextQuery(transcript, history) || cleanQuery(transcript);
+  const seedQueries = uniqueQueries([
+    seedQuestion,
+    ...buildDeterministicSearchQueries(seedQuestion || transcript, history),
+  ], 4);
+  if (!seedQueries.length) seedQueries.push(cleanQuery(transcript));
+
+  const plannerPromise = (async () => {
+    const t = Date.now();
+    try {
+      const budget = Math.min(SEARCH_PLANNER_BUDGET_MS, Math.max(500, remainingBudget(startedAt)));
+      return await planSearchQueries(ai, transcript, history, phaseSignal(signal, budget));
+    } catch {
+      return fallbackPlan(transcript, history);
+    } finally {
+      timings.plannerMs = Date.now() - t;
+    }
+  })();
+
+  const firstSearchPromise = (async () => {
+    const t = Date.now();
+    try {
+      return await Promise.all(seedQueries.map((query, index) => searchOne(query, fetchTimeoutMs, index < 2)));
+    } finally {
+      timings.firstSearchMs = Date.now() - t;
+    }
+  })();
+
+  // High-model query planning never blocks the first deterministic retrieval pass.
+  const [planRaw, firstBatches] = await Promise.all([plannerPromise, firstSearchPromise]);
+  const plan = planRaw || fallbackPlan(transcript, history);
+  const allQueries = uniqueQueries([...seedQueries, ...(plan.queries || []), plan.resolvedQuestion], SEARCH_MAX_QUERIES);
+  plan.queries = allQueries;
+
   let merged = dedupeResults(firstBatches.flat(), 64);
-  let prelim = await rerankSearchResults(ai, plan.resolvedQuestion || transcript, merged, 12);
-  let coverage = await assessCoverage(ai, plan, prelim, signal);
+  const seedKeys = new Set(seedQueries.map((item) => cleanQuery(item).toLowerCase()));
+  const supplementalQueries = allQueries.filter((item) => !seedKeys.has(cleanQuery(item).toLowerCase())).slice(0, 4);
+  const localPurchase = looksLocalPurchase(plan.resolvedQuestion || transcript, plan);
+  const localQueries = localPurchase ? uniqueQueries([
+    ...buildDeterministicSearchQueries(plan.resolvedQuestion || transcript, history),
+    plan.location ? `${plan.location} パソコン 店舗` : '',
+  ], 2) : [];
+
+  const supplementalStarted = Date.now();
+  const [supplementalBatches, localBatches] = await Promise.all([
+    supplementalQueries.length && remainingBudget(startedAt) > 2500
+      ? Promise.all(supplementalQueries.map((query, index) => searchOne(query, fetchTimeoutMs, index < 2)))
+      : Promise.resolve([]),
+    localQueries.length
+      ? Promise.all(localQueries.map((query) => searchOpenStreetMapLocal(query, { timeoutMs: Math.min(fetchTimeoutMs, 3500) }).catch(() => [])))
+      : Promise.resolve([]),
+  ]);
+  timings.supplementalSearchMs = Date.now() - supplementalStarted;
+  merged = dedupeResults([...merged, ...supplementalBatches.flat(), ...localBatches.flat()], 84);
+
+  const rankQuestion = plan.resolvedQuestion || transcript;
+  const rerankStarted = Date.now();
+  let prelim = await rerankSearchResults(ai, rankQuestion, merged, 12, {
+    signal: phaseSignal(signal, Math.min(1800, Math.max(500, remainingBudget(startedAt)))),
+    timeoutMs: 1800,
+  });
+  timings.firstRerankMs = Date.now() - rerankStarted;
+
+  const coverageStarted = Date.now();
+  let coverage;
+  if (remainingBudget(startedAt) > 800) {
+    try {
+      const coverageBudget = Math.min(SEARCH_COVERAGE_BUDGET_MS, Math.max(700, remainingBudget(startedAt)));
+      coverage = await assessCoverage(ai, plan, prelim, phaseSignal(signal, coverageBudget));
+    } catch {
+      coverage = { sufficient: hasUsefulSearchEvidence(prelim, 6), reason: 'coverage_budget_fallback', queries: [] };
+    }
+  } else {
+    coverage = { sufficient: hasUsefulSearchEvidence(prelim, 6), reason: 'coverage_skipped_for_budget', queries: [] };
+  }
+  timings.coverageMs = Date.now() - coverageStarted;
+
   let recovered = false;
   let rounds = 1;
+  const needsRecovery = !coverage.sufficient
+    || (shouldForceSecondPass(plan, rankQuestion) && !hasUsefulSearchEvidence(prelim, 6));
 
-  if (SEARCH_MAX_ROUNDS > 1 && (!coverage.sufficient || shouldForceSecondPass(plan, plan.resolvedQuestion))) {
+  if (SEARCH_MAX_ROUNDS > 1 && needsRecovery && remainingBudget(startedAt) > 3600) {
     const retryQueries = uniqueQueries([
       ...(coverage.queries || []),
       ...deterministicRecoveryQueries(plan, transcript, history),
-    ], 4).filter((query) => !(plan.queries || []).some((old) => old.toLowerCase() === query.toLowerCase()));
+    ], 3).filter((query) => !allQueries.some((old) => old.toLowerCase() === query.toLowerCase()));
 
     if (retryQueries.length) {
-      const retryBatches = await Promise.all(
-        retryQueries.map((query, index) => searchOne(query, timeoutMs, index < 2)),
-      );
-      merged = dedupeResults([...merged, ...retryBatches.flat()], 80);
+      const retryStarted = Date.now();
+      const retryTimeout = Math.min(fetchTimeoutMs, Math.max(2600, remainingBudget(startedAt) - 800));
+      const retryBatches = await Promise.all(retryQueries.map((query) => searchOne(query, retryTimeout, false)));
+      timings.recoverySearchMs = Date.now() - retryStarted;
+      merged = dedupeResults([...merged, ...retryBatches.flat()], 88);
       recovered = retryBatches.some((batch) => batch.length > 0);
       plan.queries = uniqueQueries([...(plan.queries || []), ...retryQueries], 12);
-      prelim = await rerankSearchResults(ai, plan.resolvedQuestion || transcript, merged, 14);
-      coverage = await assessCoverage(ai, plan, prelim, signal);
       rounds = 2;
     }
   }
 
-  if (looksLocalPurchase(plan.resolvedQuestion || transcript, plan)) {
-    const localQueries = uniqueQueries([
-      ...buildDeterministicSearchQueries(plan.resolvedQuestion || transcript, history),
-      plan.location ? `${plan.location} パソコン 店舗` : '',
-    ], 3);
-    const local = await Promise.all(localQueries.map((query) => searchOpenStreetMapLocal(query, { timeoutMs }).catch(() => [])));
-    merged = dedupeResults([...merged, ...local.flat()], 84);
-  }
-
-  const rankQuestion = plan.resolvedQuestion || transcript;
-  const results = await rerankSearchResults(ai, rankQuestion, merged, 12);
+  const finalRerankStarted = Date.now();
+  const results = await rerankSearchResults(ai, rankQuestion, merged, 12, {
+    signal: phaseSignal(signal, Math.min(1600, Math.max(400, remainingBudget(startedAt)))),
+    timeoutMs: 1600,
+  });
+  timings.finalRerankMs = Date.now() - finalRerankStarted;
+  timings.totalDeepSearchMs = Date.now() - startedAt;
 
   return {
     plan,
@@ -319,6 +418,7 @@ export async function runDeepSearch(ai, transcript, history, signal, options = {
     rounds,
     coverage,
     evidenceUseful: hasUsefulSearchEvidence(results, 4),
+    timings,
   };
 }
 

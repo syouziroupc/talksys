@@ -20,10 +20,18 @@ import {
   benchmarkVoiceModels,
 } from './cloudflare-llm.js';
 import { answerWithVerifiedWebSearch } from './search-answer-v18.js';
-import { generateSearchFiller, SEARCH_FILLER_MODEL, shouldDeepSearch } from './search-orchestrator.js';
+import {
+  generateSearchFiller,
+  SEARCH_FILLER_MODEL,
+  SEARCH_TOTAL_BUDGET_MS,
+  SEARCH_PLANNER_BUDGET_MS,
+  SEARCH_FETCH_BUDGET_MS,
+  SEARCH_COVERAGE_BUDGET_MS,
+  shouldDeepSearch,
+} from './search-orchestrator.js';
 import { cleanSpeechText, extractText, wrapAI } from './voice-helpers.js';
 
-const VOICE_REVISION = 'cloudflare-live-v18.3';
+const VOICE_REVISION = 'cloudflare-live-v18.4';
 
 const CASUAL_SYSTEM_PROMPT = `あなたはTalkSysという日本語の電話相談アシスタントです。
 相手と電話で自然に話しているように会話してください。発話の意図を直接受け止め、最初の一文から返答を始めてください。
@@ -159,6 +167,8 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     return this.trackAssistant((async function* () {
       try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'planning', searched: true })); } catch {}
 
+      let searchSettled = false;
+      let secondProgressTimer = null;
       const searchPromise = answerWithVerifiedWebSearch(
         self.env.AI,
         transcript,
@@ -168,8 +178,22 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
           signal: context.signal,
           sessionAffinity: sessionAffinity(context),
         },
-      );
+      ).finally(() => {
+        searchSettled = true;
+        if (secondProgressTimer) clearTimeout(secondProgressTimer);
+      });
       const fillerPromise = generateSearchFiller(self.env.AI, transcript, [], context.signal);
+      secondProgressTimer = setTimeout(() => {
+        if (searchSettled || context.signal?.aborted) return;
+        try {
+          context.connection.send(JSON.stringify({
+            type: 'search_status',
+            phase: 'searching',
+            searched: true,
+            waitPhrase: '候補を絞って情報を照合しています。もう少しお待ちください。',
+          }));
+        } catch {}
+      }, 8000);
 
       const first = await Promise.race([
         searchPromise.then((result) => ({ type: 'result', result })),
@@ -200,6 +224,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
           rounds: Number(result.rounds) || 1,
           evidenceUseful: Boolean(result.evidenceUseful),
           auditPassed: Boolean(result.auditPassed),
+          timings: result.timings || null,
           sources: Array.isArray(result.sources) ? result.sources.slice(0, 12).map((item) => ({ title: item.title, url: item.url })) : [],
         }));
       } catch {}
@@ -356,11 +381,18 @@ export default {
         qualityModelPaidAccessOptional: true,
         groundedHighModelPaidAccessOptional: true,
         modelBenchmarkEndpoint: '/api/voice-model-bench',
-        webSearch: 'contextual-8-query+two-pass+google+duckduckgo+bing+bing-rss+wikipedia+google-news+page-evidence+reranker+answer-audit',
+        webSearch: 'bounded-parallel-8-query+conditional-recovery+google+duckduckgo+bing+bing-rss+wikipedia+google-news+page-evidence+reranker+answer-audit',
         searchQueryPlanning: true,
         searchMultiQuery: true,
         searchMaxQueries: 8,
         searchMaxRounds: 2,
+        searchDeepResearchBudgetMs: SEARCH_TOTAL_BUDGET_MS,
+        searchPlannerBudgetMs: SEARCH_PLANNER_BUDGET_MS,
+        searchFetchBudgetMs: SEARCH_FETCH_BUDGET_MS,
+        searchCoverageBudgetMs: SEARCH_COVERAGE_BUDGET_MS,
+        searchAnswerModelBudgetMs: 3800,
+        searchAuditBudgetMs: 2500,
+        searchSecondProgressSpeechMs: 8000,
         searchWaitSpeech: true,
         searchFillerModel: SEARCH_FILLER_MODEL,
         searchFillerGeneratedInParallel: true,
