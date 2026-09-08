@@ -130,10 +130,15 @@ test('grounded answer layer repairs retrieval-failure boilerplate instead of ref
   assert.match(llmSource, /deterministicRescue/);
 });
 
-test('server TTS is Cloudflare-hosted Melo and device fallback is Japanese-only', () => {
+test('server TTS is normalized and playback is conditioned for clearer Japanese speech', () => {
   assert.equal(PRIMARY_TTS_MODEL, '@cf/myshell-ai/melotts');
   assert.match(ttsSource, /MeloJapaneseTTS/);
   assert.match(ttsSource, /normalizeJapaneseTtsText/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /createDynamicsCompressor\(\)/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /compressor\.threshold\.value = -24/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /compressor\.ratio\.value = 3/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /speechGain\.gain\.value = 1\.12/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT, /utterance\.rate = 0\.98/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /\^ja\(\?:-\|_\)/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /SpeechSynthesisUtterance/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /serverAudioThisTurn/);
