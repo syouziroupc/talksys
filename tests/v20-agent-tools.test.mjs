@@ -6,25 +6,27 @@ import { compactToolEvidence, resolveSearchSeed, rankEvidenceSourcesV20 } from '
 import { buildDeterministicSearchQueries } from '../src/search-fallbacks.js';
 
 const worker = fs.readFileSync(new URL('../src/worker-v20.js', import.meta.url), 'utf8');
+const liveClient = fs.readFileSync(new URL('../src/cloudflare-live-client-v20.js', import.meta.url), 'utf8');
+const bounded = fs.readFileSync(new URL('../src/bounded-conversation.js', import.meta.url), 'utf8');
 const searchTool = fs.readFileSync(new URL('../src/search-tool-v20.js', import.meta.url), 'utf8');
 const traceClient = fs.readFileSync(new URL('../src/search-trace-client.js', import.meta.url), 'utf8');
 const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
-test('v20.1 production entrypoint keeps one voice agent but removes tool inference from ordinary turns', () => {
+test('v20.2 production entrypoint keeps one voice agent but removes tool inference from ordinary turns', () => {
   assert.match(wrangler, /"main":\s*"src\/worker-v20\.js"/);
-  assert.match(worker, /cloudflare-agent-v20\.1-fast-search/);
+  assert.match(worker, /cloudflare-agent-v20\.2-audio-search/);
   assert.match(worker, /streamBoundedLiveConversation/);
   assert.match(worker, /streamBoundedQualityConversation/);
-  assert.match(worker, /instant-local-v20\.1/);
-  assert.match(worker, /live-fast-v20\.1/);
-  assert.match(worker, /deterministic-search-v20\.1/);
+  assert.match(worker, /instant-local-v20\.2/);
+  assert.match(worker, /live-fast-v20\.2/);
+  assert.match(worker, /deterministic-search-v20\.2/);
   assert.match(worker, /ordinaryConversationUsesToolInference: false/);
   assert.match(worker, /modelDecidesToolUse: false/);
   assert.doesNotMatch(worker, /runWithTools/);
   assert.doesNotMatch(worker, /maxRecursiveToolRuns/);
 });
 
-test('fresh and real-world local requests reliably route to search', () => {
+test('fresh, local, and named-business contact requests reliably route to search', () => {
   assert.equal(requiresFreshSearch('君がおすすめを教えてほしい'), false);
   assert.equal(requiresFreshSearch('YouTubeとネットだけならどんなパソコンがいい？'), false);
   assert.equal(requiresFreshSearch('今はちょっと疲れた'), false);
@@ -32,6 +34,8 @@ test('fresh and real-world local requests reliably route to search', () => {
   assert.equal(requiresFreshSearch('別府でどこで買える？'), true);
   assert.equal(requiresFreshSearch('その店は今日何時まで？'), true);
   assert.equal(requiresFreshSearch('最新ニュースを調べて'), true);
+  assert.equal(requiresFreshSearch('ドスパラ横浜駅前店の電話番号教えてよ'), true);
+  assert.equal(requiresFreshSearch('エディオン別府店の住所は？'), true);
   assert.equal(
     requiresFreshSearch('大分県別府市に住んでるんだけどなんかどこかで買えないかな いい場所を知ってたら教えてください'),
     true,
@@ -120,7 +124,7 @@ test('local store ranking rejects generic tourism and Wikipedia while keeping st
   assert.ok(ranked.every((item) => !/観光|Wikipedia/.test(`${item.title} ${item.url}`)));
 });
 
-test('v20.1 local search stays evidence-only, bounded to two queries, and adds OSM only for local commerce', () => {
+test('v20.2 local search stays evidence-only, bounded to two queries, and adds OSM only for local commerce', () => {
   assert.match(searchTool, /evidence-only-web-tool-v20\.1-fast-local/);
   assert.match(searchTool, /SEARCH_TOOL_V20_MAX_QUERIES = 2/);
   assert.match(searchTool, /buildDeterministicSearchQueries/);
@@ -153,17 +157,44 @@ test('v20.1 local search stays evidence-only, bounded to two queries, and adds O
   assert.ok(!('answer' in compact));
 });
 
+test('v20.2 microphone client has AEC, capture fallback, muted monitor and strict far-end echo guard', () => {
+  assert.match(worker, /CLOUDFLARE_LIVE_CLIENT_V20/);
+  assert.match(worker, /\/cloudflare-live\.js/);
+  assert.match(liveClient, /echoCancellation/);
+  assert.match(liveClient, /noiseSuppression/);
+  assert.match(liveClient, /autoGainControl/);
+  assert.match(liveClient, /createWorkletCapture/);
+  assert.match(liveClient, /createScriptProcessorCapture/);
+  assert.match(liveClient, /captureSilenceGain\.gain\.value = 0/);
+  assert.match(liveClient, /if \(assistantAudioActive\(\)\) return/);
+  assert.match(liveClient, /PLAYBACK_TAIL_GUARD_MS = 700/);
+  assert.doesNotMatch(liveClient, /workletNode\.connect\(audioContext\.destination\)/);
+});
+
+test('bounded model stream recovers instead of accepting a partial reply as complete', () => {
+  assert.match(bounded, /recoverContinuation/);
+  assert.match(bounded, /continuationMessages/);
+  assert.match(bounded, /looksComplete/);
+  assert.doesNotMatch(bounded, /if \(yielded\) return;\s*\n\s*}\s*\n\s*if \(yielded\) return;/);
+});
+
 test('search trace keeps a direct-event path plus websocket compatibility fallback', () => {
   assert.match(traceClient, /talksys-search-trace/);
   assert.match(traceClient, /talksys-model-route/);
   assert.match(traceClient, /TraceWebSocket/);
+  assert.match(liveClient, /talksys-search-trace/);
+  assert.match(liveClient, /talksys-model-route/);
 });
 
-test('v20.1 keeps the old phone transport and call-scoped memory runtime as its base', () => {
+test('v20.2 keeps the old phone transport and call-scoped memory runtime as its base', () => {
   assert.match(worker, /extends BaseTalkSysVoiceAgent/);
   assert.match(worker, /legacyV19Available: true/);
   assert.match(worker, /voiceBuiltinHistoryDisabled: true/);
   assert.match(worker, /fixedSearchWaitSpeech: true/);
+  assert.match(worker, /strictHalfDuplexEchoGuard: true/);
+  assert.match(worker, /midStreamContinuationRecovery: true/);
+  assert.match(worker, /namedBusinessContactSearch: true/);
   assert.match(worker, /少し調べますね/);
-  assert.match(worker, /\/api\/search-smoke/);
+  assert.match(worker, /\/api\/search-smoke-yokohama/);
+  assert.match(worker, /\/api\/search-smoke-contact/);
 });
