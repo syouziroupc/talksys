@@ -36,7 +36,7 @@ export const SEARCH_TRACE_CLIENT = String.raw`(() => {
     const value = String(message || '').trim();
     if (!value) return;
     const now = new Date();
-    entries.push(`${now.toLocaleTimeString('ja-JP', { hour12: false })}  ${value}`);
+    entries.push(now.toLocaleTimeString('ja-JP', { hour12: false }) + '  ' + value);
     while (entries.length > 12) entries.shift();
     log.textContent = entries.join('\n');
   }
@@ -47,16 +47,16 @@ export const SEARCH_TRACE_CLIENT = String.raw`(() => {
     stage.textContent = labelPhase(data.phase);
     if (data.resolvedQuestion) resolved.textContent = text(data.resolvedQuestion);
     if (Array.isArray(data.queries) && data.queries.length) {
-      queries.textContent = data.queries.slice(0, 8).map((q, i) => `${i + 1}. ${q}`).join('\n');
+      queries.textContent = data.queries.slice(0, 8).map((q, i) => String(i + 1) + '. ' + q).join('\n');
     }
     if (typeof data.evidenceCount === 'number') {
       const titles = Array.isArray(data.sources)
         ? data.sources.slice(0, 5).map((s) => String(s?.title || '').trim()).filter(Boolean)
         : [];
-      evidence.textContent = `根拠候補 ${data.evidenceCount}件` + (titles.length ? `\n${titles.join('\n')}` : '');
+      evidence.textContent = '根拠候補 ' + data.evidenceCount + '件' + (titles.length ? '\n' + titles.join('\n') : '');
     }
     if (Array.isArray(data.answerAttempts) && data.answerAttempts.length) {
-      const summary = data.answerAttempts.map((a) => `${a.route || '回答'}: ${a.ok ? '成功' : '切替'} ${Number(a.elapsedMs || 0)}ms`).join(' / ');
+      const summary = data.answerAttempts.map((a) => String(a.route || '回答') + ': ' + (a.ok ? '成功' : '切替') + ' ' + Number(a.elapsedMs || 0) + 'ms').join(' / ');
       addLog(summary);
     }
     if (data.auditPassed === true) addLog('根拠監査: 通過');
@@ -81,7 +81,7 @@ export const SEARCH_TRACE_CLIENT = String.raw`(() => {
         try {
           const data = JSON.parse(event.data);
           if (data?.type === 'search_trace') render(data);
-          if (data?.type === 'model_route' && seenSearch) addLog(`回答ルート: ${text(data.tier, '自動')}`);
+          if (data?.type === 'model_route' && seenSearch) addLog('回答ルート: ' + text(data.tier, '自動'));
         } catch {}
       });
     }
