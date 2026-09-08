@@ -74,16 +74,12 @@ source = replaceOnce(
 source = replaceOnce(
   source,
   `    micSettings = track.getSettings?.() || {};
-
-    const AudioCtor = window.AudioContext || window.webkitAudioContext;
 `,
   `    micSettings = track.getSettings?.() || {};
     track.onended = () => {
       micReady = false;
       if (desiredCall) setStatus('マイク接続を復旧しています…');
     };
-
-    const AudioCtor = window.AudioContext || window.webkitAudioContext;
 `,
   'track end monitor',
 );
