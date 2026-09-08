@@ -94,7 +94,7 @@ jobs:
           NODE
           fi
 
-      - name: Deploy to Cloudflare when repository credentials are configured
+      - name: Deploy through GitHub Actions when Cloudflare credentials are configured
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         uses: cloudflare/wrangler-action@v4
         with:
@@ -102,14 +102,37 @@ jobs:
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
 
-      - name: Verify production v22 grounding contract when deployment credentials are configured
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
+      - name: Report native Workers Builds expectation when Actions credentials are absent
+        if: ${{ env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' }}
         run: |
-          body="$(curl -fsS --max-time 30 "$PRODUCTION_URL/voice-health")" || {
-            echo "::error::Production /voice-health is unreachable."
-            exit 1
-          }
-          BODY="$body" EXPECTED="$EXPECTED_VOICE_REVISION" node <<'NODE'
+          echo "GitHub Actions Cloudflare credentials are absent."
+          echo "Expecting Cloudflare Workers Builds Git integration to deploy main."
+          echo "The job will fail unless production actually reaches the expected revision."
+
+      - name: Verify production is really v22
+        run: |
+          expected="$EXPECTED_VOICE_REVISION"
+          body=""
+          for attempt in $(seq 1 18); do
+            set +e
+            body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health")"
+            code=$?
+            set -e
+            if [ "$code" -eq 0 ]; then
+              current="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||''))")"
+              echo "Production voiceRevision: ${current:-missing}"
+              if [ "$current" = "$expected" ]; then
+                break
+              fi
+            fi
+            if [ "$attempt" -eq 18 ]; then
+              echo "::error::Production did not reach $expected. Deployment is NOT complete."
+              exit 1
+            fi
+            sleep 10
+          done
+
+          BODY="$body" EXPECTED="$expected" node <<'NODE'
           const d = JSON.parse(process.env.BODY || '{}');
           const expected = process.env.EXPECTED;
           console.log(JSON.stringify({
@@ -147,7 +170,3 @@ jobs:
           if (d.proactiveCallGreeting !== true) throw new Error('proactive call greeting is disabled');
           if (d.hiddenModelFailureRetry !== true || d.userFacingMidStreamRetryMessageRemoved !== true) throw new Error('hidden answer recovery contract failed');
           NODE
-
-      - name: Report external deployment requirement
-        if: ${{ env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' }}
-        run: echo "Repository Cloudflare credentials are not configured; validation succeeded but deployment must use the authorized production deployment path."
