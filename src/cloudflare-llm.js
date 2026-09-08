@@ -110,9 +110,7 @@ async function* streamResult(result, options = {}) {
         const { value, done } = await readStreamChunk(reader, sawText ? 0 : (options.firstTokenTimeoutMs ?? 4500));
         if (done) break;
         pending += decoder.decode(value, { stream: true });
-        const lines = pending.split(/
-?
-/);
+        const lines = pending.split(/\r?\n/);
         pending = lines.pop() || '';
         for (const line of lines) yield* consumeLine(line);
       }
