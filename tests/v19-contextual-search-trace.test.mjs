@@ -41,7 +41,7 @@ test('production entrypoint uses v19 planner-first search instead of raw convers
   const search = fs.readFileSync(new URL('../src/search-v19.js', import.meta.url), 'utf8');
   assert.match(wrangler, /"main": "src\/worker-v19\.js"/);
   assert.match(worker, /answerWithContextualVerifiedSearchV19/);
-  assert.match(worker, /cloudflare-live-v19\.1/);
+  assert.match(worker, /cloudflare-live-v19\.0/);
   assert.match(search, /await resolvePlan\(ai, question, history, options\)/);
   assert.match(search, /const search = await runSearch\(ai, plan, options\)/);
   assert.doesNotMatch(search, /seedQuestion[\s\S]{0,300}firstSearchPromise/);
