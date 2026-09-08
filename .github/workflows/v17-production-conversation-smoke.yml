@@ -1,0 +1,120 @@
+name: V17 production conversation smoke
+
+on:
+  push:
+    branches:
+      - test/v17-production-conversation
+    paths:
+      - '.github/workflows/v17-production-conversation-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Exercise isolated production voice-agent conversation
+        shell: bash
+        run: |
+          node <<'NODE'
+          const session = `smoke-v17-${Date.now()}`;
+          const ws = new WebSocket(`wss://talksys.syouziroupc.workers.dev/agents/talk-sys-voice-agent/${session}`);
+          const banned = /(ご提示いただいた|いただいた検索結果|情報源を提示|ページや情報があれば|改めてご提示|裏付けが十分ではありません|回答を差し上げることができません|確認できる範囲の選び方や比較なら続けられます)/;
+          const turns = [
+            'パソコンを3万円ぐらいで探しています。ネット閲覧と動画視聴が中心です。',
+            'どこで買えばいいかわからなくて...',
+            '調べてくれない？',
+            '例えば別府市内で買うならどこがいいのかな',
+          ];
+          let welcomed = false;
+          let pendingResolve = null;
+          let pendingReject = null;
+          let assistantText = '';
+          const replies = [];
+
+          function waitReply(text) {
+            return new Promise((resolve, reject) => {
+              assistantText = '';
+              pendingResolve = resolve;
+              pendingReject = reject;
+              ws.send(JSON.stringify({ type: 'text_message', text }));
+              setTimeout(() => {
+                if (pendingResolve === resolve) {
+                  pendingResolve = null;
+                  pendingReject = null;
+                  reject(new Error(`timeout waiting for reply to: ${text}`));
+                }
+              }, 55000);
+            });
+          }
+
+          ws.addEventListener('message', (event) => {
+            if (typeof event.data !== 'string') return;
+            let data;
+            try { data = JSON.parse(event.data); } catch { return; }
+            if (data.type === 'welcome') {
+              welcomed = true;
+              return;
+            }
+            if (data.type === 'transcript_start' && data.role === 'assistant') assistantText = '';
+            if (data.type === 'transcript_delta') assistantText += String(data.text || '');
+            if (data.type === 'transcript_end') {
+              const finalText = String(data.text || assistantText || '').trim();
+              if (pendingResolve && finalText) {
+                const resolve = pendingResolve;
+                pendingResolve = null;
+                pendingReject = null;
+                replies.push(finalText);
+                resolve(finalText);
+              }
+            }
+            if (data.type === 'transcript' && data.role === 'assistant' && data.text && pendingResolve) {
+              const finalText = String(data.text).trim();
+              const resolve = pendingResolve;
+              pendingResolve = null;
+              pendingReject = null;
+              replies.push(finalText);
+              resolve(finalText);
+            }
+            if (data.type === 'error' && pendingReject) {
+              const reject = pendingReject;
+              pendingResolve = null;
+              pendingReject = null;
+              reject(new Error(String(data.message || 'agent error')));
+            }
+          });
+
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('websocket open timeout')), 15000);
+            ws.addEventListener('open', () => {
+              ws.send(JSON.stringify({ type: 'hello', protocol_version: 1 }));
+              const poll = setInterval(() => {
+                if (!welcomed) return;
+                clearInterval(poll);
+                clearTimeout(timer);
+                resolve();
+              }, 50);
+            });
+            ws.addEventListener('error', () => reject(new Error('websocket connection error')), { once: true });
+          });
+
+          for (const turn of turns) {
+            const reply = await waitReply(turn);
+            console.log(`USER: ${turn}`);
+            console.log(`ASSISTANT: ${reply}`);
+            if (banned.test(reply)) throw new Error(`evasive production answer detected: ${reply}`);
+            if (reply.length < 18) throw new Error(`reply too thin: ${reply}`);
+          }
+
+          const final = replies.at(-1) || '';
+          if (!/(ヤマダ|エディオン|ベスト|家電量販店|中古|販売店|専門店|店舗|通販)/.test(final)) {
+            throw new Error(`local purchase answer lacks a concrete purchase channel/candidate: ${final}`);
+          }
+          ws.close();
+          console.log('V17_PRODUCTION_CONVERSATION_SMOKE=PASS');
+          NODE
