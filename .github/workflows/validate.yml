@@ -18,10 +18,14 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           node --check src/worker.js
+          node --check src/worker-v20.js
+          node --check src/search-tool-v20.js
+          node --check src/search-policy-v20.js
           node --check src/web-search.js
           node --check src/search-rerank.js
           node --check src/search-orchestrator.js
           node --check src/streaming-workers-ai.js
+          node --check tests/v20-agent-tools.test.mjs
           node --check tests/search-orchestrator.test.mjs
           node --check tests/streaming-workers-ai.test.mjs
           node --check tests/voice-llm-contract.test.mjs

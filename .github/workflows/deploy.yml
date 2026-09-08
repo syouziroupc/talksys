@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: cloudflare-live-v18.6
+      EXPECTED_VOICE_REVISION: cloudflare-agent-tools-v20.0
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -24,6 +24,9 @@ jobs:
         run: |
           node --check src/index.js
           node --check src/worker-v14.js
+          node --check src/worker-v19.js
+          node --check src/worker-v20.js
+          node --check src/search-tool-v20.js
           node --check src/cloudflare-live-client.js
           node --check src/cloudflare-japanese-stt.js
           node --check src/cloudflare-japanese-tts.js
@@ -39,7 +42,7 @@ jobs:
           node --check src/voice-helpers.js
           node --check desktop/main.cjs
 
-      - name: Run v18 tests
+      - name: Run tests
         run: npm test
 
       - name: Check Wrangler bundle
@@ -93,7 +96,7 @@ jobs:
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
 
-      - name: Verify production v18.6 call-memory contract when deployment credentials are configured
+      - name: Verify production v20 voice-agent contract when deployment credentials are configured
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
           body="$(curl -fsS --max-time 30 "$PRODUCTION_URL/voice-health")" || {
@@ -114,11 +117,19 @@ jobs:
             voiceBuiltinHistoryDisabled: d.voiceBuiltinHistoryDisabled,
             conversationContextMaxMessages: d.conversationContextMaxMessages,
             callerContextMaxMessages: d.callerContextMaxMessages,
-            searchSecondProgressSpeechMs: d.searchSecondProgressSpeechMs,
-            normalConversationLiveOnly: d.normalConversationLiveOnly,
-            qualityRouteForComplexConversation: d.qualityRouteForComplexConversation,
-            searchPrecisionOnly: d.searchPrecisionOnly,
             speechClarityProcessing: d.speechClarityProcessing,
+            conversationOrchestrator: d.conversationOrchestrator,
+            primaryConversationModel: d.primaryConversationModel,
+            toolCalling: d.toolCalling,
+            webSearchTool: d.webSearchTool,
+            webSearchToolRole: d.webSearchToolRole,
+            modelDecidesToolUse: d.modelDecidesToolUse,
+            mandatoryFreshSearchGuard: d.mandatoryFreshSearchGuard,
+            searchPlannerBeforeRetrieval: d.searchPlannerBeforeRetrieval,
+            searchAnswerCascade: d.searchAnswerCascade,
+            searchAuditModelCascade: d.searchAuditModelCascade,
+            fixedSearchWaitSpeech: d.fixedSearchWaitSpeech,
+            searchWaitPhrase: d.searchWaitPhrase,
           }));
           if (d.voiceRevision !== expected) throw new Error(`expected ${expected}, got ${d.voiceRevision}`);
           if (d.conversationPersistence !== 'call-session-with-trusted-caller-memory') throw new Error('unexpected conversation persistence mode');
@@ -130,9 +141,15 @@ jobs:
           if (d.voiceBuiltinHistoryDisabled !== true) throw new Error('shared voice history must be disabled');
           if (d.conversationContextMaxMessages !== 28) throw new Error('unexpected session context window');
           if (d.callerContextMaxMessages !== 20) throw new Error('unexpected caller context window');
-          if (d.searchSecondProgressSpeechMs !== 4200) throw new Error('unexpected search progress threshold');
-          if (d.normalConversationLiveOnly !== false || d.qualityRouteForComplexConversation !== true || d.searchPrecisionOnly !== true) throw new Error('conversation/search routing contract failed');
           if (d.speechClarityProcessing !== true) throw new Error('speech clarity processing is not enabled');
+          if (d.conversationOrchestrator !== 'single-agent-v20') throw new Error('v20 single-agent orchestrator is not active');
+          if (d.toolCalling !== 'cloudflare-embedded-function-calling') throw new Error('embedded function calling is not active');
+          if (d.webSearchToolRole !== 'evidence-only') throw new Error('web search tool must return evidence only');
+          if (d.modelDecidesToolUse !== true) throw new Error('conversation model must decide ordinary tool use');
+          if (d.mandatoryFreshSearchGuard !== true) throw new Error('fresh-fact search guard is disabled');
+          if (d.searchPlannerBeforeRetrieval !== false) throw new Error('legacy search planner must not own v20 retrieval');
+          if (d.searchAnswerCascade !== false || d.searchAuditModelCascade !== false) throw new Error('legacy search answer cascades must be disabled');
+          if (d.fixedSearchWaitSpeech !== true || d.searchWaitPhrase !== '少し調べますね。') throw new Error('search wait speech contract failed');
           NODE
 
       - name: Report external deployment requirement
