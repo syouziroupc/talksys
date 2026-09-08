@@ -23,12 +23,12 @@ import { answerWithVerifiedWebSearch } from './search-answer-v18.js';
 import { generateSearchFiller, SEARCH_FILLER_MODEL, shouldDeepSearch } from './search-orchestrator.js';
 import { cleanSpeechText, extractText, wrapAI } from './voice-helpers.js';
 
-const VOICE_REVISION = 'cloudflare-live-v18.1';
+const VOICE_REVISION = 'cloudflare-live-v18.2';
 
 const CASUAL_SYSTEM_PROMPT = `あなたはTalkSysという日本語の電話相談アシスタントです。
 相手と電話で自然に話しているように会話してください。発話の意図を直接受け止め、最初の一文から返答を始めてください。
 短い雑談や相槌は短く、相談・意見・説明は必要なだけ話してください。毎回同じ長さ、同じ型、同じ締め方にしないでください。
-直前の会話で共有された話題・人物・対象・ユーザーの立場を自然に引き継ぎ、「それ」「さっきの件」のような参照を文脈から扱ってください。
+以前の発話内容は参照せず、今回の発話だけを独立した質問として扱ってください。省略されていて対象が特定できない場合は、過去会話から補わず短く確認してください。
 相手の言葉を無意味に言い直さないでください。毎回質問で終わらせず、会話を続ける価値がある場合だけ自然な一言を返してください。
 冗談、驚き、迷い、軽い感情表現は文脈に合う範囲で自然に使えますが、過剰に演技しないでください。
 現在情報、価格、店舗、人物、法律、製品仕様、ニュースなど外部確認が必要な質問は別の検索経路で処理されます。この通常会話経路で、検索していない現在情報を推測して断定したり、「調べられない」と先回りして断らないでください。
@@ -76,9 +76,9 @@ function sessionAffinity(context) {
 }
 
 const VoiceAgentBase = withVoice(Agent, {
-  historyLimit: 48,
+  historyLimit: 4,
   audioFormat: 'mp3',
-  maxMessageCount: 1200,
+  maxMessageCount: 240,
   diagnostics: { browserConsole: false },
 });
 
@@ -99,7 +99,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       maxTurnMs: 30000,
       preRollFrames: 7,
       fastFinalConfidence: 0.88,
-      contextProvider: () => this.getConversationHistory(),
+      contextProvider: () => [],
     });
   }
 
@@ -152,14 +152,14 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       const searchPromise = answerWithVerifiedWebSearch(
         self.env.AI,
         transcript,
-        context.messages,
+        [],
         GROUNDED_SYSTEM_PROMPT,
         {
           signal: context.signal,
           sessionAffinity: sessionAffinity(context),
         },
       );
-      const fillerPromise = generateSearchFiller(self.env.AI, transcript, context.messages, context.signal);
+      const fillerPromise = generateSearchFiller(self.env.AI, transcript, [], context.signal);
 
       const first = await Promise.race([
         searchPromise.then((result) => ({ type: 'result', result })),
@@ -171,7 +171,6 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
         const filler = cleanSpeechText(first.text);
         if (filler && !context.signal?.aborted) {
           try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'searching', searched: true, waitPhrase: filler })); } catch {}
-          yield `${filler}\n`;
         }
         result = await searchPromise;
       } else {
@@ -202,12 +201,11 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
   async onTurn(transcript, context) {
     const affinity = sessionAffinity(context);
 
-    if (shouldDeepSearch(transcript, context.messages)) return this.searchResponse(transcript, context);
+    if (shouldDeepSearch(transcript, [])) return this.searchResponse(transcript, context);
 
     const quality = needsQualityConversation(transcript);
     const messages = [
       { role: 'system', content: quality ? QUALITY_SYSTEM_PROMPT : CASUAL_SYSTEM_PROMPT },
-      ...context.messages.slice(-(quality ? 18 : 16)).map((item) => ({ role: item.role, content: item.content })),
       { role: 'user', content: transcript },
     ];
 
@@ -328,8 +326,10 @@ export default {
         audioChunkMs: 40,
         serverTurnDetectionMs: 440,
         bargeIn: true,
-        conversationPersistence: 'durable-object-sqlite',
-        sharedTypedAndVoiceHistory: true,
+        conversationPersistence: 'isolated-page-session-no-context',
+        sharedTypedAndVoiceHistory: false,
+        crossTurnContext: false,
+        crossSessionContext: false,
         promptPrefixCaching: true,
         sessionAffinity: true,
         sttRealtime: REALTIME_STT_MODEL,
@@ -357,7 +357,8 @@ export default {
         searchFillerModel: SEARCH_FILLER_MODEL,
         searchFillerGeneratedInParallel: true,
         typedSpeechSimulation: true,
-        typedSpeechSilentWhenNotInCall: true,
+        typedSpeechSilentWhenNotInCall: false,
+        typedSpeechVoiceOutput: true,
         callConnectTimeoutMs: 10000,
         searchAnswerAudit: true,
         ttsPrimary: PRIMARY_TTS_MODEL,

@@ -1,7 +1,8 @@
 export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   'use strict';
 
-  const AGENT_PATH = '/agents/talk-sys-voice-agent/default';
+  const AGENT_ID = (crypto.randomUUID?.() || ('session-' + Date.now() + '-' + Math.random().toString(16).slice(2))).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 96);
+  const AGENT_PATH = '/agents/talk-sys-voice-agent/' + AGENT_ID;
   const CHUNK_SAMPLES = 640; // 40 ms at 16 kHz
   const BARGE_THRESHOLD = 0.035;
   const BARGE_FRAMES = 3;
@@ -43,6 +44,8 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   let lastAdded = '';
   let serverAudioThisTurn = false;
   let ttsFailedThisTurn = false;
+  let typedVoiceOutput = false;
+  let lastSearchWaitPhrase = '';
   let deviceSpeaking = false;
   let deviceGuardUntil = 0;
   let deviceUtterance = null;
@@ -92,7 +95,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       streamText = '';
       if (value) lastAdded = 'assistant:' + value;
     } else if (value) addMessage('assistant', value);
-    if (desiredCall && ttsFailedThisTurn && !serverAudioThisTurn && value) setTimeout(() => speakJapaneseFallback(value), 120);
+    if ((desiredCall || typedVoiceOutput) && ttsFailedThisTurn && !serverAudioThisTurn && value) setTimeout(() => speakJapaneseFallback(value), 120);
   }
 
   function setVoiceUi() {
@@ -150,7 +153,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
 
   function speakJapaneseFallback(text) {
     const value = String(text || '').replace(/https?:\/\/\S+/g, 'リンク').replace(/[*_#>\x60~]/g, '').replace(/\s+/g, ' ').trim();
-    if (!desiredCall || !value || serverAudioThisTurn || deviceSpeaking) return false;
+    if (!(desiredCall || typedVoiceOutput) || !value || serverAudioThisTurn || deviceSpeaking) return false;
     const selected = pickJapaneseVoice();
     if (!selected) {
       setStatus('サーバー音声に失敗しました。端末に日本語音声がありません。');
@@ -200,6 +203,14 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     if (interruptServer) sendJson({ type: 'interrupt' });
   }
 
+  async function ensurePlaybackAudio() {
+    const AudioCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtor) return false;
+    audioContext = audioContext || new AudioCtor({ sampleRate: 48000 });
+    if (audioContext.state !== 'running') await audioContext.resume().catch(() => {});
+    return audioContext.state === 'running';
+  }
+
   async function playNext() {
     if (playing || !playbackQueue.length || !audioContext) return;
     playing = true;
@@ -237,7 +248,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   }
 
   function queueAudio(buffer) {
-    if (!desiredCall) {
+    if (!(desiredCall || typedVoiceOutput)) {
       serverAudioThisTurn = true;
       ttsFailedThisTurn = false;
       return;
@@ -246,7 +257,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     ttsFailedThisTurn = false;
     if (deviceSpeaking || deviceUtterance) cancelDeviceSpeech(false);
     playbackQueue.push(buffer);
-    playNext();
+    void ensurePlaybackAudio().then(() => playNext());
   }
 
   const WORKLET = "class TalkSysCF18Capture extends AudioWorkletProcessor{constructor(){super();this.b=[];this.r=sampleRate/16000}process(inputs){const i=inputs[0];if(!i||!i[0])return true;const d=i[0];for(let n=0;n<d.length;n+=this.r){const a=Math.floor(n),f=n-a;this.b.push(a+1<d.length?d[a]*(1-f)+d[a+1]*f:d[a]||0)}while(this.b.length>=640){const x=new Float32Array(this.b.splice(0,640));this.port.postMessage(x,[x.buffer])}return true}}registerProcessor('talksys-cf18-capture',TalkSysCF18Capture);";
@@ -363,7 +374,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
           }
           setStatus(desiredCall ? '聞いています' : '');
         } else if (serverStatus === 'thinking') setStatus('考えています…');
-        else if (serverStatus === 'speaking') setStatus(desiredCall ? 'AIが話しています。途中でそのまま割り込めます。' : '文字で回答しています…');
+        else if (serverStatus === 'speaking') setStatus((desiredCall || typedVoiceOutput) ? 'AIが話しています…' : '文字で回答しています…');
         else if (serverStatus === 'idle') inCall = false;
         setVoiceUi();
         return;
@@ -379,9 +390,19 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       }
       if (data.type === 'playback_interrupt') { stopPlayback(false); return; }
       if (data.type === 'search_status') {
-        if (data.phase === 'planning') setStatus('検索内容を組み立てています…');
-        else if (data.phase === 'searching') setStatus('複数の情報源を確認しています…');
-        else setStatus('検索結果を検証して答えています…');
+        if (data.phase === 'planning') {
+          lastSearchWaitPhrase = '';
+          setStatus('検索内容を確認しています…');
+        } else if (data.phase === 'searching') {
+          const phrase = String(data.waitPhrase || '').trim();
+          setStatus(phrase || '複数の情報源を確認しています…');
+          if (phrase && phrase !== lastSearchWaitPhrase && (desiredCall || typedVoiceOutput)) {
+            lastSearchWaitPhrase = phrase;
+            setTimeout(() => speakJapaneseFallback(phrase), 20);
+          }
+        } else {
+          setStatus('検索結果を検証して答えています…');
+        }
         return;
       }
       if (data.type === 'completion_outcome' && data.code === 'model_error') setStatus('AI応答を再試行してください。');
@@ -447,12 +468,18 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
     const value = String(input.value || '').trim();
     if (!value) return false;
     input.value = '';
+    stopPlayback(true);
+    typedVoiceOutput = true;
+    serverAudioThisTurn = false;
+    ttsFailedThisTurn = false;
+    lastSearchWaitPhrase = '';
+    void ensurePlaybackAudio();
     addMessage('user', value);
     pendingText.push(value);
     manualStop = false;
     connectSocket();
     flushText();
-    setStatus(desiredCall ? '考えています…' : '発話として送信しました。文字で回答します…');
+    setStatus('発話として送信しました。音声と文字で返答します…');
     return false;
   }
 

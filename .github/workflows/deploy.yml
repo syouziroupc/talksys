@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: cloudflare-live-v18.1
+      EXPECTED_VOICE_REVISION: cloudflare-live-v18.2
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5

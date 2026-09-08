@@ -23,21 +23,21 @@ test('voice keeps fast live model and high-accuracy grounded cascade', () => {
 });
 
 test('v18 phone runtime has no screen overlay or screenshot routing', () => {
-  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.1'/);
+  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.2'/);
   assert.match(worker, /mode: 'phone-consultation-only'/);
   assert.doesNotMatch(worker, /requestScreen|screen_request|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
   assert.doesNotMatch(liveClient, /screenToggle|screenVideo|drawArrow|handleScreenRequest|api\/locate/);
   assert.doesNotMatch(index, /画面共有|PNG保存|VISION_MODEL|api\/locate/);
 });
 
-test('context-dependent follow-ups are reconstructed and routed to verified search', () => {
-  assert.match(search, /function\s+looksContextDependentFollowup/);
-  assert.match(orchestrator, /function shouldDeepSearch|export function shouldDeepSearch/);
-  assert.match(orchestrator, /looksContextDependentFollowup\(current\)/);
-  assert.match(orchestrator, /heuristicContextQuery/);
-  assert.match(orchestrator, /直前のuser\/assistant会話から対象だけ復元/);
-  assert.match(worker, /shouldDeepSearch\(transcript, context\.messages\)/);
-  assert.match(worker, /answerWithVerifiedWebSearch/);
+test('each turn is self-contained and prior conversation cannot trigger search', () => {
+  assert.match(worker, /contextProvider: \(\) => \[\]/);
+  assert.match(worker, /shouldDeepSearch\(transcript, \[\]\)/);
+  assert.match(worker, /answerWithVerifiedWebSearch[\s\S]*?transcript,[\s\n]*\[\]/);
+  assert.doesNotMatch(worker, /context\.messages\.slice/);
+  assert.match(liveClient, /crypto\.randomUUID/);
+  assert.match(worker, /crossTurnContext: false/);
+  assert.match(worker, /crossSessionContext: false/);
 });
 
 test('deep search plans up to eight queries and performs a second research pass when needed', () => {
@@ -81,20 +81,21 @@ test('search failure boilerplate cannot be the final answer path', () => {
   assert.match(audit, /裏付けが十分ではありません/);
 });
 
-test('search progress is spoken by the lightweight model while high-accuracy retrieval runs', () => {
+test('search progress is a one-shot spoken status and is not duplicated into the answer transcript', () => {
   assert.match(orchestrator, /SEARCH_FILLER_MODEL = LIVE_VOICE_MODEL/);
   assert.match(orchestrator, /SEARCH_FILLER_MIN_DELAY_MS = 650/);
-  assert.match(orchestrator, /今、\$\{topic\}について検索しています。少しお待ちください。/);
-  assert.match(orchestrator, /ai\?\.run/);
-  assert.match(worker, /const fillerPromise = generateSearchFiller/);
-  assert.match(worker, /searchFillerGeneratedInParallel: true/);
+  assert.match(worker, /waitPhrase: filler/);
+  assert.doesNotMatch(worker, /yield `\$\{filler\}\\n`/);
+  assert.match(liveClient, /lastSearchWaitPhrase/);
+  assert.match(liveClient, /speakJapaneseFallback\(phrase\)/);
 });
 
-test('typed text can simulate speech without auto-starting or playing audio', () => {
+test('typed text simulates speech and plays the reply without opening the microphone', () => {
   assert.match(index, /話したことにする/);
-  assert.match(index, /文字入力は「話したこと」として会話履歴に入ります/);
-  assert.match(liveClient, /type: 'text_message'/);
-  assert.match(liveClient, /if \(!desiredCall\) \{/);
+  assert.match(index, /返事は文字と音声で再生します/);
+  assert.match(liveClient, /typedVoiceOutput = true/);
+  assert.match(liveClient, /ensurePlaybackAudio/);
+  assert.match(liveClient, /desiredCall \|\| typedVoiceOutput/);
   assert.doesNotMatch(liveClient, /setTimeout\(\(\) => startCall\(true\)/);
 });
 
@@ -130,4 +131,6 @@ test('health contract advertises precision-first verified two-pass search', () =
   assert.match(worker, /verified-two-pass-grounded-search/);
   assert.match(worker, /screenFunction: false/);
   assert.match(worker, /screenOverlay: false/);
+  assert.match(worker, /crossTurnContext: false/);
+  assert.match(worker, /typedSpeechVoiceOutput: true/);
 });
