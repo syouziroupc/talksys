@@ -2,7 +2,8 @@ name: Patch v17 speech playback clarity once
 
 on:
   push:
-    branches: [fix/v17-five-whys-search]
+    branches:
+      - fix/v17-five-whys-search
     paths:
       - '.github/workflows/patch-v17-audio-once.yml'
 
@@ -19,39 +20,7 @@ jobs:
       - name: Improve speech playback clarity
         shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('src/cloudflare-live-client.js')
-          s = p.read_text()
-          old = """      source.buffer = decoded;
-      source.connect(audioContext.destination);
-      playbackSource = source;
-"""
-          new = """      source.buffer = decoded;
-      // Speech-first playback chain: modest compression evens out level differences
-      // without changing pitch, then a conservative gain lift improves audibility.
-      const compressor = audioContext.createDynamicsCompressor();
-      compressor.threshold.value = -24;
-      compressor.knee.value = 18;
-      compressor.ratio.value = 3;
-      compressor.attack.value = 0.006;
-      compressor.release.value = 0.18;
-      const speechGain = audioContext.createGain();
-      speechGain.gain.value = 1.12;
-      source.connect(compressor);
-      compressor.connect(speechGain);
-      speechGain.connect(audioContext.destination);
-      playbackSource = source;
-"""
-          if old not in s:
-              raise SystemExit('audio playback anchor not found')
-          s = s.replace(old, new, 1)
-          old_rate = "      utterance.rate = 1.04;"
-          if old_rate not in s:
-              raise SystemExit('device fallback rate anchor not found')
-          s = s.replace(old_rate, "      utterance.rate = 0.98;", 1)
-          p.write_text(s)
-          PY
+          python -c "from pathlib import Path; p=Path('src/cloudflare-live-client.js'); s=p.read_text(); old='      source.buffer = decoded;\\n      source.connect(audioContext.destination);\\n      playbackSource = source;\\n'; new='      source.buffer = decoded;\\n      // Speech-first playback chain: modest compression evens out level differences.\\n      const compressor = audioContext.createDynamicsCompressor();\\n      compressor.threshold.value = -24;\\n      compressor.knee.value = 18;\\n      compressor.ratio.value = 3;\\n      compressor.attack.value = 0.006;\\n      compressor.release.value = 0.18;\\n      const speechGain = audioContext.createGain();\\n      speechGain.gain.value = 1.12;\\n      source.connect(compressor);\\n      compressor.connect(speechGain);\\n      speechGain.connect(audioContext.destination);\\n      playbackSource = source;\\n'; assert old in s, 'audio playback anchor not found'; s=s.replace(old,new,1); old_rate='      utterance.rate = 1.04;'; assert old_rate in s, 'device fallback rate anchor not found'; s=s.replace(old_rate,'      utterance.rate = 0.98;',1); p.write_text(s)"
           node --check src/cloudflare-live-client.js
       - name: Commit patch
         shell: bash
