@@ -13,16 +13,18 @@ import {
   LIVE_CONVERSATION_MODEL,
   QUALITY_CONVERSATION_MODEL,
   GROUNDING_CONVERSATION_MODEL,
+  GROUNDING_FALLBACK_MODEL,
   FALLBACK_CONVERSATION_MODEL,
   streamCloudflareLiveConversation,
   streamCloudflareQualityConversation,
   answerWithCloudflareWebSearch,
   benchmarkVoiceModels,
 } from './cloudflare-llm.js';
+import { generateSearchFiller, SEARCH_FILLER_MODEL } from './search-orchestrator.js';
 import { needsWebSearch } from './web-search.js';
 import { cleanSpeechText, extractText, wrapAI } from './voice-helpers.js';
 
-const VOICE_REVISION = 'cloudflare-live-v15.0';
+const VOICE_REVISION = 'cloudflare-live-v16.0';
 
 const CASUAL_SYSTEM_PROMPT = `あなたはTalkSysという日本語のリアルタイム音声会話アシスタントです。
 相手と電話で自然に話しているように会話してください。発話の意図を直接受け止め、最初の一文から返答を始めてください。
@@ -39,9 +41,11 @@ const QUALITY_SYSTEM_PROMPT = `${CASUAL_SYSTEM_PROMPT}
 ただし講義調に長々と話さず、電話で聞いて理解できる自然なまとまりにしてください。`;
 
 const GROUNDED_SYSTEM_PROMPT = `あなたはTalkSysという日本語のリアルタイム音声アシスタントです。
-この回答は外部事実の確認が必要です。今回取得したWebページ本文と検索結果だけを根拠にし、モデルの記憶で固有名詞・数値・日付・価格・法律・仕様を補完しないでください。
-現在情報では新しい情報と公的・一次情報を優先してください。複数ソースが食い違う場合はその不確実性を伝え、確認できなければ推測せず「確認できない」と答えてください。
-回答は電話で自然に聞ける日本語にしてください。最初に結論を言い、その後に重要な根拠だけを必要な量で補足してください。URLそのものは読み上げないでください。`;
+この回答は外部事実の確認が必要です。現在の固有事実、数値、日付、価格、在庫、時刻、法律、現行仕様は今回取得したWebページ本文と検索結果を根拠にしてください。モデルの記憶で変化し得る現在情報を補完しないでください。
+現在情報では新しい情報と公的・一次情報を優先してください。複数ソースが食い違う場合はその不確実性を伝え、裏付けがない部分だけを未確認としてください。
+検索結果が質問とずれていたり不足していても、回答全体を拒否しないでください。購入先、おすすめ、比較、選び方、一般的な判断は、会話中の予算・用途・地域などと安定した一般知識・論理的比較を組み合わせて、役立つ結論まで答えてください。
+検索結果はシステムが取得した情報です。「いただいた検索結果」「ご提示いただいた情報」「別の情報源を提示してください」のように、検索責任をユーザーへ返さないでください。
+回答は電話で自然に聞ける日本語にしてください。最初に結論を言い、その後に重要な根拠だけを1〜3点補足してください。URLそのものは読み上げないでください。`;
 
 const SCREEN_SYSTEM_PROMPT = `あなたはTalkSysという日本語のPC操作支援アシスタントです。
 今回渡された[現在画面の確認結果]だけを根拠に画面について答えてください。画面情報に無いボタン名、文字、エラー、位置を作らないでください。
@@ -188,10 +192,9 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
   searchResponse(transcript, context) {
     const self = this;
     return this.trackAssistant((async function* () {
-      try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'searching', searched: true })); } catch {}
-      // The Voice pipeline can synthesize this sentence while retrieval continues.
-      yield 'ちょっと調べますね。';
-      const result = await answerWithCloudflareWebSearch(
+      try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'planning', searched: true })); } catch {}
+
+      const searchPromise = answerWithCloudflareWebSearch(
         self.env.AI,
         transcript,
         context.messages,
@@ -201,6 +204,25 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
           sessionAffinity: sessionAffinity(context),
         },
       );
+      const fillerPromise = generateSearchFiller(self.env.AI, transcript, context.messages, context.signal);
+
+      const first = await Promise.race([
+        searchPromise.then((result) => ({ type: 'result', result })),
+        fillerPromise.then((text) => ({ type: 'filler', text })).catch(() => ({ type: 'filler', text: '' })),
+      ]);
+
+      let result;
+      if (first.type === 'filler') {
+        const filler = cleanSpeechText(first.text);
+        if (filler && !context.signal?.aborted) {
+          try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'searching', searched: true, waitPhrase: filler })); } catch {}
+          yield filler;
+        }
+        result = await searchPromise;
+      } else {
+        result = first.result;
+      }
+
       try {
         context.connection.send(JSON.stringify({
           type: 'search_status',
@@ -209,11 +231,14 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
           provider: result.provider,
           model: result.model,
           nativeSearch: false,
+          planned: Boolean(result.planned),
+          resolvedQuestion: result.resolvedQuestion || transcript,
+          queries: Array.isArray(result.queries) ? result.queries.slice(0, 3) : [],
           sources: Array.isArray(result.sources) ? result.sources.map((item) => ({ title: item.title, url: item.url })) : [],
         }));
       } catch {}
-      yield String(result.text || '確認できませんでした。');
-    })(), context, 'grounded');
+      yield String(result.text || '今の検索では現在情報の裏付けが十分ではありませんでした。確認できる範囲の選び方や比較なら続けられます。');
+    })(), context, 'grounded-deep-search');
   }
 
   async onTurn(transcript, context) {
@@ -378,12 +403,18 @@ export default {
         llmLive: LIVE_CONVERSATION_MODEL,
         llmQuality: QUALITY_CONVERSATION_MODEL,
         llmGrounded: GROUNDING_CONVERSATION_MODEL,
+        llmGroundedFallback: GROUNDING_FALLBACK_MODEL,
         llmFallback: FALLBACK_CONVERSATION_MODEL,
-        llmRouting: 'live-qwen / quality-glm-flash-with-qwen-fallback / grounded-gpt-oss-with-fallbacks',
+        llmRouting: 'live-qwen / quality-glm-flash-with-qwen-fallback / grounded-deepseek-v4-pro-gpt-oss-glm-qwen-cascade',
         qualityModelPaidAccessOptional: true,
+        groundedHighModelPaidAccessOptional: true,
         modelBenchmarkEndpoint: '/api/voice-model-bench',
-        webSearch: 'google+duckduckgo+bing+wikipedia+google-news+page-evidence+reranker',
+        webSearch: 'contextual-multi-query+google+duckduckgo+bing+wikipedia+google-news+page-evidence+reranker',
+        searchQueryPlanning: true,
+        searchMultiQuery: true,
         searchWaitSpeech: true,
+        searchFillerModel: SEARCH_FILLER_MODEL,
+        searchFillerGeneratedInParallel: true,
         ttsPrimary: PRIMARY_TTS_MODEL,
         serverSideTts: true,
         browserSpeechSynthesisPrimary: false,
