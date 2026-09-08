@@ -29,3 +29,5 @@ jobs:
           git add src/worker-v14.js src/search-orchestrator.js tests/contextual-conversation-regression.test.mjs
           git commit -m "v18.5: isolate context keys and harden search filler"
           git push origin HEAD:fix/v18-4-bounded-precision-search
+
+# retry with conversationKey-scoped regression
