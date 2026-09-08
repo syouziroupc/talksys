@@ -10,7 +10,9 @@ export const SEARCH_TOOL_V23_REVISION = 'evidence-only-web-tool-v23-parallel-int
 
 const TRANSIT_RE = /(乗り換え|乗換|経路|行き方|電車|鉄道|何分|所要時間|運賃|料金|時刻表|直通|発車|到着)/i;
 const PC_RE = /(パソコン|\bPC\b|ＰＣ|Windows|MacBook|ThinkPad|Let'?s\s*note|レッツノート|CPU|GPU|Core\s*i[3579]|Ryzen|GeForce|Radeon|メモリ|RAM|SSD|NVMe|SATA|USB[- ]?C|Thunderbolt|Wi-?Fi|Bluetooth|BIOS|UEFI)/i;
-const LOCAL_RE = /(店頭|店舗|販売店|ショップ|買える|買いたい|購入|近く|周辺|どこで買|どこにある|営業時間|住所|電話番号)/i;
+const LOCAL_RE = /((?:お)?店(?:で|が|は|を|に|ある|ない|探|おすすめ)?|店頭|店舗|販売店|専門店|ショップ|買える|買いたい|購入|近く|周辺|どこで買|どこにある|営業時間|住所|電話番号)/i;
+const USED_RE = /(中古|リユース|再生品|整備済|リファービッシュ|used|secondhand)/i;
+const STORE_SIGNAL_RE = /(店舗|店頭|販売店|専門店|ショップ|販売|買取|中古|リユース|住所|営業時間|アクセス)/i;
 const DETAIL_RE = /(仕様|スペック|型番|製品情報|マニュアル|取扱説明書|電話番号|住所|営業時間|価格|値段|発売日|対応|要件)/i;
 const LISTICLE_RE = /(おすすめ\s*\d+選|ランキング|まとめ|選び方|比較.*\d+選)/i;
 const ROUTE_HOST_RE = /(tokyu\.co\.jp|jr.*\.co\.jp|odakyu\.jp|keio\.co\.jp|seiburailway\.jp|tobu\.co\.jp|keikyu\.co\.jp|tokyometro\.jp|jorudan\.co\.jp|navitime\.co\.jp|transit\.yahoo\.co\.jp|ekitan\.com)/i;
@@ -32,8 +34,6 @@ function stationNames(text) {
   const explicitPair = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)\s*(?:から|より|→|⇒|〜|～|-)\s*([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)/i);
   if (explicitPair?.[1] && explicitPair?.[2]) return [...new Set([explicitPair[1], explicitPair[2]])];
 
-  // Spoken Japanese normally omits 駅: 「鷺沼から用賀までの行き方」.
-  // Only profileFor() promotes this pair to transit when the utterance also contains route intent.
   const spokenPair = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?)(?:駅)?\s*(?:から|より|→|⇒|〜|～|-)\s*([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?)(?:駅)?\s*(?:まで|へ|に)(?=$|[のをがはで、。！？!?\s])/i);
   if (spokenPair?.[1] && spokenPair?.[2]) return [...new Set([spokenPair[1], spokenPair[2]])];
 
@@ -86,6 +86,7 @@ function profileFor(question) {
     transit,
     pc,
     local,
+    used: USED_RE.test(question),
     detail: DETAIL_RE.test(question),
     stations,
     location,
@@ -104,6 +105,17 @@ export function buildSearchQueriesV23(question) {
       `${from} ${to} 乗換 所要時間 運賃`,
       `${from} ${to} 直通 路線 停車駅`,
       `${from} ${to} 時刻表 乗換案内`,
+    ];
+  }
+
+  // Local purchase intent must win over generic PC-spec intent. Otherwise a request
+  // such as “横浜市で中古PCのお店” degenerates into manufacturer/comparison searches.
+  if (profile.local && profile.pc) {
+    const condition = profile.used ? '中古' : '';
+    return [
+      `${profile.location} ${condition} パソコン 店舗`.replace(/\s+/g, ' ').trim(),
+      `${profile.location} ${condition} PC 専門店 販売`.replace(/\s+/g, ' ').trim(),
+      `${profile.location} ${condition} パソコン ショップ 店頭`.replace(/\s+/g, ' ').trim(),
     ];
   }
 
@@ -126,7 +138,7 @@ export function buildSearchQueriesV23(question) {
     return [q, `${q} 公式 仕様`, `${q} 技術仕様`];
   }
 
-  if (profile.local) return [q, `${q} 公式`, `${profile.location} ${q}`];
+  if (profile.local) return [q, `${profile.location} 店舗 公式`, `${profile.location} ${q}`];
   if (profile.detail) return [q, `${q} 公式`, `${q} 詳細`];
   return [q, `${q} 公式`];
 }
@@ -174,8 +186,11 @@ export function sourceEligibleV23(item, question) {
   }
 
   if (profile.local && profile.location) {
+    const osm = item?.engine === 'openstreetmap-nominatim';
     const locationHit = textContainsEntity(text, profile.location);
-    if (!locationHit && item?.engine !== 'openstreetmap-nominatim') return false;
+    const storeHit = STORE_SIGNAL_RE.test(text);
+    if (!osm && (!locationHit || !storeHit)) return false;
+    if (profile.used && !osm && !USED_RE.test(text)) return false;
   }
 
   return true;
@@ -204,7 +219,7 @@ function scoreSource(item, index, question, profile) {
     if (/(所要時間|運賃|乗換|乗り換え|直通|時刻)/i.test(text)) score += 16;
   }
 
-  if (profile.pc) {
+  if (profile.pc && !profile.local) {
     if (PC_OFFICIAL_HOST_RE.test(host)) score += 34;
     for (const token of profile.pcTokens) if (textContainsEntity(text, token)) score += 28;
     if (/(仕様|スペック|CPU|メモリ|SSD|インターフェース|USB|無線|ディスプレイ|バッテリー|対応OS|最大|スロット|Thunderbolt|充電)/i.test(text)) score += 18;
@@ -212,9 +227,12 @@ function scoreSource(item, index, question, profile) {
   }
 
   if (profile.local) {
-    if (profile.location && textContainsEntity(text, profile.location)) score += 28;
-    if (item?.engine === 'openstreetmap-nominatim') score += 20;
-    if (/(店舗|店|ショップ|販売|営業時間|住所)/i.test(text)) score += 16;
+    if (profile.location && textContainsEntity(text, profile.location)) score += 42;
+    if (item?.engine === 'openstreetmap-nominatim') score += 30;
+    if (STORE_SIGNAL_RE.test(text)) score += 26;
+    if (profile.used && USED_RE.test(text)) score += 34;
+    if (PC_OFFICIAL_HOST_RE.test(host) && !/(店舗|店|ショップ)/i.test(title)) score -= 35;
+    if (LISTICLE_RE.test(title)) score -= 35;
   }
 
   return score;
@@ -232,7 +250,7 @@ function rankSources(items, question, profile) {
 
 async function searchOne(query, profile) {
   const timeoutMs = profile.transit || profile.pc || profile.detail ? 4200 : 3400;
-  const enrichPages = profile.transit || profile.pc || profile.detail;
+  const enrichPages = profile.transit || profile.pc || profile.detail || profile.local;
   const [primary, rss] = await Promise.all([
     webSearch(query, { limit: 9, timeoutMs, enrichPages }).catch(() => []),
     searchBingRss(query, { limit: 8, timeoutMs }).catch(() => []),
@@ -272,7 +290,7 @@ export async function collectGroundedEvidenceV23(query, history = [], options = 
 
   const tasks = queries.map((item) => searchOne(item, profile));
   if (profile.local && profile.location) {
-    const localQuery = clean(`${profile.location} ${profile.pc ? 'パソコン' : ''}`, 100);
+    const localQuery = clean(`${profile.location} ${profile.used ? '中古 ' : ''}${profile.pc ? 'パソコン' : ''} 店舗`, 120);
     tasks.push(searchOpenStreetMapLocal(localQuery, { timeoutMs: 3000 }).catch(() => []));
   }
 
