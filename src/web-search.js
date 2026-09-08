@@ -4,14 +4,29 @@ const CASUAL_RE = /^(おはよう|こんにちは|こんばんは|もしもし|�
 const FEELING_RE = /^(?:今日は|今日も|今は|なんか|ちょっと|かなり|すごく|めっちゃ|もう)?(?:ちょっと|かなり|すごく|めっちゃ)?(?:疲れた|つかれた|眠い|ねむい|腹減った|お腹すいた|暇だ|暇|しんどい|つらい|嬉しい|うれしい|悲しい|かなしい|楽しい|たのしい|元気だ|元気)[。！!…〜ーなぁなあ]*$/i;
 const PERSONAL_ADVICE_RE = /(?:俺|僕|私|自分|仕事|学校|大学|家族|友達|恋人|今日|最近).*(?:疲れ|つかれ|眠|しんど|つら|悩|困|忙|嬉|悲|どうしたら|どうすれば|どう思う)/i;
 const CONVERSATION_MEMORY_RE = /(さっき|先ほど|前に|前の話|この会話|今の話|今言った|前に言った|話した|言った|覚えて|覚えてる|覚えている|合言葉|私が|僕が|俺が)/i;
-const EXTERNAL_ENTITY_RE = /(?:Windows|Android|iPhone|Cloudflare|OpenAI|Google|Microsoft|Amazon|Meta|NVIDIA|AMD|Intel|CPU|GPU|Wi-?Fi|Linux|GitHub|日本|アメリカ|中国|政府|首相|大統領|会社|企業|大学|製品|モデル|法律|制度)/i;
-const CURRENT_RE = /(最新|現在|いま|今の|今日|昨日|明日|ニュース|価格|発売|誰|首相|大統領|法律|制度|予定|日程|営業時間|株価|為替)/i;
+const EXTERNAL_ENTITY_RE = /(?:Windows|Android|iPhone|iPad|MacBook|Chromebook|Cloudflare|OpenAI|Google|Microsoft|Amazon|楽天|Yahoo|Meta|NVIDIA|AMD|Intel|CPU|GPU|Wi-?Fi|Linux|GitHub|日本|アメリカ|中国|政府|首相|大統領|会社|企業|大学|製品|モデル|法律|制度)/i;
+const CURRENT_RE = /(最新|現在|いま|今の|今日|昨日|明日|ニュース|価格|値段|発売|誰|首相|大統領|法律|制度|予定|日程|営業時間|株価|為替|在庫|販売中|最安)/i;
+const EXPLICIT_SEARCH_RE = /(検索して|検索|調べて|調べる|ウェブで|ネットで|最新情報)/i;
+const FOLLOWUP_CUE_RE = /^(?:じゃあ|じゃ|それなら|なら|それ|これ|この場合|その場合|ちなみに|で、?|あと|他は|ほかは)?\s*(?:どこ|どっち|どちら|どれ|どう|どうかな|どう思う|何がいい|おすすめは|買うなら|買うのがいい|行くなら|使うなら|大阪は|東京は|福岡は|中古は|新品は|予算は|価格は|値段は)/i;
+const SHORT_ELLIPSIS_RE = /^(?:[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z0-9・ー]+)(?:は|なら|だと|って)?[？?。!！]*$/u;
+
+export function looksContextDependentFollowup(text) {
+  const value = String(text || '').trim();
+  if (!value || value.length > 32) return false;
+  if (EXPLICIT_SEARCH_RE.test(value) || CURRENT_RE.test(value)) return false;
+  if (EXTERNAL_ENTITY_RE.test(value) && value.length >= 8) return false;
+  if (FOLLOWUP_CUE_RE.test(value)) return true;
+  if (value.length <= 10 && SHORT_ELLIPSIS_RE.test(value) && !/(とは|って何|誰|いつ|どこ|なぜ|理由|意味|仕様)/i.test(value)) return true;
+  return false;
+}
 
 export function needsWebSearch(text) {
   const value = String(text || '').trim();
   if (!value || CASUAL_RE.test(value) || FEELING_RE.test(value)) return false;
-  if (CONVERSATION_MEMORY_RE.test(value) && !/(検索|調べ|最新|現在|ニュース|価格|仕様|法律|制度)/i.test(value)) return false;
-  if (PERSONAL_ADVICE_RE.test(value) && !EXTERNAL_ENTITY_RE.test(value)) return false;
+  if (CONVERSATION_MEMORY_RE.test(value) && !EXPLICIT_SEARCH_RE.test(value) && !CURRENT_RE.test(value)) return false;
+  if (PERSONAL_ADVICE_RE.test(value) && !EXTERNAL_ENTITY_RE.test(value) && !CURRENT_RE.test(value)) return false;
+  if (looksContextDependentFollowup(value)) return false;
+  if (EXPLICIT_SEARCH_RE.test(value) || CURRENT_RE.test(value)) return true;
   if (FACTUAL_RE.test(value) || KNOWLEDGE_QUESTION_RE.test(value)) return true;
   if (EXTERNAL_ENTITY_RE.test(value) && value.length >= 4) return true;
   return false;
@@ -203,11 +218,15 @@ export function parseRss(xml, engine = 'rss', limit = 8) {
   return out;
 }
 
-const SEARCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36 TalkSys/2.0';
+const SEARCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36 TalkSys/2.1';
 
 async function fetchText(url, timeoutMs, accept = 'text/html,application/xhtml+xml') {
   try {
-    const response = await fetch(url, { headers: { accept, 'accept-language': 'ja,en;q=0.7', 'user-agent': SEARCH_UA }, redirect: 'follow', signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetch(url, {
+      headers: { accept, 'accept-language': 'ja,en;q=0.7', 'user-agent': SEARCH_UA },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (!response.ok) return '';
     const type = response.headers.get('content-type') || '';
     if (!/(?:text|html|xml|json)/i.test(type)) return '';
@@ -261,8 +280,7 @@ function extractPageExcerpt(html) {
     paragraphs.push(text);
     if (paragraphs.join(' ').length >= 2600) break;
   }
-  const combined = [meta ? decodeEntities(meta[1]) : '', ...paragraphs].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
-  return combined.slice(0, 3200);
+  return [meta ? decodeEntities(meta[1]) : '', ...paragraphs].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().slice(0, 3200);
 }
 
 async function enrichResult(item, timeoutMs) {
@@ -276,7 +294,7 @@ async function enrichResult(item, timeoutMs) {
 function queryVariants(original) {
   const q = simplifySearchQuery(original);
   const values = [q];
-  if (CURRENT_RE.test(original)) values.push(`${q} 2026`);
+  if (CURRENT_RE.test(original)) values.push(`${q} ${new Date().getFullYear()}`);
   if (/(日本|政府|首相|法律|制度|省|庁|自治体|市|区|県)/i.test(original)) values.push(`${q} site:go.jp`);
   else values.push(`${q} 公式`);
   return [...new Set(values.map((item) => item.replace(/\s+/g, ' ').trim()).filter(Boolean))].slice(0, 3);
@@ -284,7 +302,7 @@ function queryVariants(original) {
 
 export async function webSearch(query, options = {}) {
   const original = String(query || '').trim().slice(0, 350);
-  if (!original) return [];
+  if (!original || looksContextDependentFollowup(original)) return [];
   const limit = Math.max(1, Math.min(12, Number(options.limit) || 6));
   const timeoutMs = Math.max(1000, Math.min(5000, Number(options.timeoutMs) || 3200));
   const perSourceTimeout = Math.max(900, Math.min(timeoutMs, 2300));
