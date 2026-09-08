@@ -29,37 +29,55 @@ import {
   SEARCH_COVERAGE_BUDGET_MS,
   shouldDeepSearch,
 } from './search-orchestrator.js';
+import {
+  SESSION_STORE_MAX_MESSAGES,
+  SESSION_CONTEXT_MAX_MESSAGES,
+  CALLER_MEMORY_MAX_MESSAGES,
+  beginCallSession,
+  ensureConnectionSession,
+  getSession,
+  getConversationHistory,
+  appendConversationTurn,
+  endCallSession,
+  callerMemorySlice,
+  normalizeCallerIdentity,
+  trustedCallerIdentity,
+  setTrustedCallerIdentity,
+} from './conversation-memory.js';
 import { cleanSpeechText, extractText, wrapAI } from './voice-helpers.js';
 
-const VOICE_REVISION = 'cloudflare-live-v18.5';
+const VOICE_REVISION = 'cloudflare-live-v18.6';
 
 const CASUAL_SYSTEM_PROMPT = `あなたはTalkSysという日本語の電話相談アシスタントです。
 相手と電話で自然に話しているように会話してください。発話の意図を直接受け止め、最初の一文から返答を始めてください。
+同じ通話・接続の会話履歴が渡された場合は必ずその文脈を使い、「それ」「さっきの」「調べて」「どこがいい？」などの省略を自然に解決してください。ユーザーが前の回答を訂正した場合は、その訂正を最優先してください。
+過去のassistant発言は会話文脈であって事実根拠ではありません。外部確認が必要な事実は検索経路に任せてください。
 短い雑談や相槌は短く、相談・意見・説明は必要なだけ話してください。毎回同じ長さ、同じ型、同じ締め方にしないでください。
-同じ接続の直近会話履歴が渡された場合は、その文脈を使って「それ」「さっきの」「調べて」「どこがいい？」などの省略を自然に解決してください。ただし過去のassistant発言は事実根拠ではありません。ユーザーの訂正や最新の発言を優先し、外部確認が必要な事実は検索経路に任せてください。
+電話で聞き取りやすいよう、一文を短めにし、一文に一つの要点を置いてください。長い従属節、括弧の連続、記号列、表形式、長い箇条書きは避けてください。
+結論がある場合は先に言い、その後に理由を1〜3点だけ補足してください。既に分かっている文脈を毎回言い直さないでください。
 相手の言葉を無意味に言い直さないでください。毎回質問で終わらせず、会話を続ける価値がある場合だけ自然な一言を返してください。
-冗談、驚き、迷い、軽い感情表現は文脈に合う範囲で自然に使えますが、過剰に演技しないでください。
-現在情報、価格、店舗、人物、法律、製品仕様、ニュースなど外部確認が必要な質問は別の検索経路で処理されます。この通常会話経路で、検索していない現在情報を推測して断定したり、「調べられない」と先回りして断らないでください。
+現在情報、価格、店舗、人物、法律、製品仕様、ニュースなど外部確認が必要な質問は別の検索経路で処理されます。この通常会話経路で、検索していない現在情報を推測して断定しないでください。
 電話相談専用です。画面共有、スクリーンショット解析、矢印オーバーレイの機能があるとは言わないでください。
-電話会話なのでMarkdown、長い箇条書き、URLの読み上げ、定型的な前置きは避けてください。`;
+Markdown、URLの読み上げ、定型的な前置きは避けてください。`;
 
 const QUALITY_SYSTEM_PROMPT = `${CASUAL_SYSTEM_PROMPT}
-今回は少し考える必要がある相談です。表面的な相槌だけで済ませず、論点を整理し、必要なら複数の見方を示してください。
-ただし講義調に長々と話さず、電話で聞いて理解できる自然なまとまりにしてください。`;
+今回は少し考える必要がある相談です。表面的な相槌だけで済ませず、論点を整理してください。
+ただし講義調に長々と話さず、電話で一度に聞いて理解できる長さにしてください。`;
 
 const GROUNDED_SYSTEM_PROMPT = `あなたはTalkSysという日本語の電話相談アシスタントです。
-今回は外部事実をWebで調査してから答えます。速度より正確さを優先してください。
+今回は外部事実をWebで調査してから答えます。正確さを優先しつつ、取得できた根拠から結論を先に答えてください。
 現在の固有事実、店舗名、会社名、施設名、数値、日付、価格、在庫、営業時間、法律、現行仕様は今回取得した検索結果とWebページ本文に根拠があるものだけ使ってください。
 検索根拠に出ていない店舗名・会社名・施設名を、モデルの記憶や類推で補わないでください。似た名前の店を作らないでください。
-検索結果が不足している場合も、検索前に断ったり、検索責任をユーザーへ返したりしないでください。システム側で複数検索と追加検索を行った後、確認できた部分を具体的に答えてください。
-購入先・おすすめ・比較では、確認済みの候補と、一般的な選び方を明確に分けてください。価格・在庫など当日変わる情報は確認できた場合だけ言ってください。
-回答は電話で自然に聞ける日本語にしてください。最初に結論を言い、その後に重要な根拠を1〜3点補足してください。URLそのものは読み上げないでください。`;
+検索結果が不足している場合も、検索前に断ったり、検索責任をユーザーへ返したりしないでください。確認できた部分を具体的に答えてください。
+購入先・おすすめ・比較では、確認済みの候補と一般的な選び方を明確に分けてください。価格・在庫など当日変わる情報は確認できた場合だけ言ってください。
+同じ通話の文脈とユーザーの訂正を必ず引き継いでください。過去のassistant発言は事実根拠として扱わないでください。
+回答は電話で自然に聞ける日本語にしてください。一文を短めにし、最初に結論、その後に重要な根拠を1〜3点だけ補足してください。URL、Markdown、長い列挙は読み上げないでください。`;
 
-const QUALITY_INTENT_RE = /(どう思う|どう考える|考えて|なぜ|理由|比較|どっち|どちら|相談|どうすれば|どうしたら|説明して|整理して|メリット|デメリット|可能性|戦略|設計|方針|判断|選ぶ|選択|改善|問題点|原因|将来|実現可能|おすすめ)/i;
+const QUALITY_INTENT_RE = /(どう思う|どう考える|考えて|なぜ|理由|比較|どっち|どちら|相談|どうすれば|どうしたら|説明して|整理して|メリット|デメリット|可能性|戦略|設計|方針|判断|選ぶ|選択|改善|問題点|原因|将来|実現可能)/i;
 
 function needsQualityConversation(text) {
   const value = String(text || '').trim();
-  return value.length >= 52 || QUALITY_INTENT_RE.test(value);
+  return value.length >= 72 || QUALITY_INTENT_RE.test(value);
 }
 
 function quickCasualReply(text) {
@@ -89,76 +107,117 @@ function looksLikeAssistantEcho(transcript, assistantText) {
   return overlap / grams.size >= 0.82;
 }
 
+function connectionFrom(value) {
+  return value?.connection || value || null;
+}
+
 function sessionAffinity(context) {
-  return `talksys-${String(context?.connection?.id || 'default').replace(/[^a-zA-Z0-9_.:-]/g, '').slice(0, 96)}`;
-}
-
-const CONTEXT_TTL_MS = 30 * 60 * 1000;
-const CONTEXT_MAX_MESSAGES = 8;
-
-function conversationKey(context) {
-  const id = String(context?.connection?.id || '').trim();
-  return id ? id.slice(0, 160) : '';
-}
-
-function compactHistory(messages) {
-  return (Array.isArray(messages) ? messages : [])
-    .filter((item) => item && (item.role === 'user' || item.role === 'assistant') && String(item.content || '').trim())
-    .slice(-CONTEXT_MAX_MESSAGES)
-    .map((item) => ({ role: item.role, content: String(item.content).slice(0, 1200) }));
+  const connection = connectionFrom(context);
+  const session = getSession(connection);
+  const source = session?.callerKey || session?.id || String(connection?.id || '');
+  const safe = String(source).replace(/[^a-zA-Z0-9_.:-]/g, '').slice(0, 96);
+  return safe ? `talksys-${safe}` : '';
 }
 
 const VoiceAgentBase = withVoice(Agent, {
-  historyLimit: 4,
+  // @cloudflare/voice has its own agent-wide SQLite history. TalkSys deliberately
+  // disables that store so users sharing the same Agent instance can never inherit it.
+  historyLimit: 0,
+  maxMessageCount: 0,
   audioFormat: 'mp3',
-  maxMessageCount: 240,
   diagnostics: { browserConsole: false },
 });
 
 export class TalkSysVoiceAgent extends VoiceAgentBase {
   tts = new CloudflareJapaneseTTS(this.env.AI);
-  currentAssistantText = '';
-  lastAssistantText = '';
-  assistantSpeechAt = 0;
-  conversationMemory = new Map();
+  voiceRuntime = new Map();
+  callerMemorySchemaReady = false;
 
-  getConversationHistory(context) {
-    const key = conversationKey(context);
+  runtimeFor(connection) {
+    const key = String(connection?.id || '');
+    if (!key) return { currentAssistantText: '', lastAssistantText: '', assistantSpeechAt: 0 };
+    let runtime = this.voiceRuntime.get(key);
+    if (!runtime) {
+      runtime = { currentAssistantText: '', lastAssistantText: '', assistantSpeechAt: 0 };
+      this.voiceRuntime.set(key, runtime);
+    }
+    return runtime;
+  }
+
+  clearRuntime(connection) {
+    const key = String(connection?.id || '');
+    if (key) this.voiceRuntime.delete(key);
+  }
+
+  ensureCallerMemorySchema() {
+    if (this.callerMemorySchemaReady) return;
+    this.sql`
+      CREATE TABLE IF NOT EXISTS talksys_caller_memory (
+        caller_key TEXT PRIMARY KEY,
+        messages_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `;
+    this.callerMemorySchemaReady = true;
+  }
+
+  loadCallerMemory(callerKey) {
+    const key = normalizeCallerIdentity(callerKey);
     if (!key) return [];
-    const entry = this.conversationMemory.get(key);
-    if (!entry) return [];
-    if (Date.now() - entry.updatedAt > CONTEXT_TTL_MS) {
-      this.conversationMemory.delete(key);
+    try {
+      this.ensureCallerMemorySchema();
+      const rows = this.sql`SELECT messages_json FROM talksys_caller_memory WHERE caller_key = ${key} LIMIT 1`;
+      const raw = rows?.[0]?.messages_json;
+      if (!raw) return [];
+      return callerMemorySlice(JSON.parse(raw));
+    } catch {
       return [];
     }
-    return compactHistory(entry.messages);
+  }
+
+  saveCallerMemory(callerKey, messages) {
+    const key = normalizeCallerIdentity(callerKey);
+    if (!key) return;
+    try {
+      this.ensureCallerMemorySchema();
+      const json = JSON.stringify(callerMemorySlice(messages));
+      const now = Date.now();
+      this.sql`
+        INSERT INTO talksys_caller_memory (caller_key, messages_json, updated_at)
+        VALUES (${key}, ${json}, ${now})
+        ON CONFLICT(caller_key) DO UPDATE SET
+          messages_json = excluded.messages_json,
+          updated_at = excluded.updated_at
+      `;
+    } catch {}
+  }
+
+  // Intended for a future authenticated telephony ingress. Do not bind identities
+  // from arbitrary browser parameters or untrusted client messages.
+  bindTrustedCallerIdentity(connection, identity) {
+    return setTrustedCallerIdentity(connection, identity);
+  }
+
+  getTalkSysHistory(value) {
+    return getConversationHistory(connectionFrom(value));
   }
 
   rememberConversationTurn(context, userText, assistantText) {
-    const user = String(userText || '').trim();
-    const assistant = cleanSpeechText(assistantText);
-    if (!user && !assistant) return;
-    const key = conversationKey(context);
-    if (!key) return;
-    const prior = this.getConversationHistory(context);
-    const messages = [...prior];
-    if (user) messages.push({ role: 'user', content: user.slice(0, 1200) });
-    if (assistant) messages.push({ role: 'assistant', content: assistant.slice(0, 1200) });
-    this.conversationMemory.set(key, { updatedAt: Date.now(), messages: compactHistory(messages) });
+    return appendConversationTurn(connectionFrom(context), userText, assistantText);
   }
 
-  createTranscriber() {
+  createTranscriber(connection) {
     return new CloudflareJapaneseSTT(this.env.AI, {
       language: 'ja',
       sampleRate: 16000,
-      endpointingMs: 320,
-      utteranceEndMs: 720,
-      silenceMs: 440,
+      endpointingMs: 300,
+      utteranceEndMs: 650,
+      silenceMs: 400,
       minSpeechMs: 140,
       maxTurnMs: 30000,
       preRollFrames: 7,
       fastFinalConfidence: 0.88,
-      contextProvider: () => [],
+      contextProvider: () => this.getTalkSysHistory(connection),
     });
   }
 
@@ -167,39 +226,56 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     return spoken || null;
   }
 
-  afterTranscribe(transcript) {
+  afterTranscribe(transcript, connection) {
     const text = String(transcript || '').trim();
     if (!text || /^[えーあーうーんんー\s。、]+$/u.test(text)) return null;
-    const assistant = this.currentAssistantText || this.lastAssistantText;
-    if (Date.now() - this.assistantSpeechAt < 14000 && looksLikeAssistantEcho(text, assistant)) return null;
+    const runtime = this.runtimeFor(connection);
+    const assistant = runtime.currentAssistantText || runtime.lastAssistantText;
+    if (Date.now() - runtime.assistantSpeechAt < 14000 && looksLikeAssistantEcho(text, assistant)) return null;
     return text;
   }
 
-  onCallStart() {
-    // No greeting: become ready to listen immediately.
+  onCallStart(connection) {
+    const callerKey = trustedCallerIdentity(connection);
+    const seed = callerKey ? this.loadCallerMemory(callerKey) : [];
+    beginCallSession(connection, seed);
+    this.clearRuntime(connection);
+  }
+
+  onCallEnd(connection) {
+    const session = endCallSession(connection);
+    if (session?.callerKey) this.saveCallerMemory(session.callerKey, session.messages);
+    this.clearRuntime(connection);
   }
 
   trackAssistant(iterable, context, tier, userText = '') {
     const self = this;
+    const connection = connectionFrom(context);
     return (async function* () {
-      self.currentAssistantText = '';
-      self.assistantSpeechAt = Date.now();
+      ensureConnectionSession(connection);
+      const runtime = self.runtimeFor(connection);
+      runtime.currentAssistantText = '';
+      runtime.assistantSpeechAt = Date.now();
       try {
-        context?.connection?.send(JSON.stringify({ type: 'model_route', tier }));
-      } catch {}
-      try {
+        try { connection?.send(JSON.stringify({ type: 'model_route', tier })); } catch {}
         for await (const delta of iterable) {
           const value = String(delta || '');
           if (!value) continue;
-          self.currentAssistantText += value;
+          runtime.currentAssistantText += value;
           yield value;
         }
+      } catch {
+        if (!runtime.currentAssistantText) {
+          const fallback = '応答が途中で止まりました。もう一度だけ話してください。';
+          runtime.currentAssistantText = fallback;
+          yield fallback;
+        }
       } finally {
-        const clean = cleanSpeechText(self.currentAssistantText);
-        if (clean) self.lastAssistantText = clean;
+        const clean = cleanSpeechText(runtime.currentAssistantText);
+        if (clean) runtime.lastAssistantText = clean;
         self.rememberConversationTurn(context, userText, clean);
-        self.currentAssistantText = '';
-        self.assistantSpeechAt = Date.now();
+        runtime.currentAssistantText = '';
+        runtime.assistantSpeechAt = Date.now();
       }
     })();
   }
@@ -232,10 +308,10 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
             type: 'search_status',
             phase: 'searching',
             searched: true,
-            waitPhrase: '候補を絞って情報を照合しています。もう少しお待ちください。',
+            waitPhrase: '情報を照合しています。もう少し待ってください。',
           }));
         } catch {}
-      }, 5500);
+      }, 4200);
 
       const first = await Promise.race([
         searchPromise.then((result) => ({ type: 'result', result })),
@@ -271,15 +347,16 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
         }));
       } catch {}
 
-      yield String(result.text || '確認できた範囲を先に答えます。');
-    })(), context, 'verified-deep-search-v18', transcript);
+      yield String(result.text || '確認できた範囲から答えます。');
+    })(), context, 'verified-context-search', transcript);
   }
 
   async onTurn(transcript, context) {
+    const connection = context?.connection;
+    ensureConnectionSession(connection);
     const affinity = sessionAffinity(context);
-    const history = this.getConversationHistory(context);
+    const history = this.getTalkSysHistory(connection);
 
-    // Precision-first work is isolated to web research. Context itself is shared across turns.
     if (shouldDeepSearch(transcript, history)) return this.searchResponse(transcript, context, history);
 
     const quick = quickCasualReply(transcript);
@@ -288,16 +365,34 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     }
 
     const messages = [
-      { role: 'system', content: CASUAL_SYSTEM_PROMPT },
+      { role: 'system', content: needsQualityConversation(transcript) ? QUALITY_SYSTEM_PROMPT : CASUAL_SYSTEM_PROMPT },
       ...history,
       { role: 'user', content: transcript },
     ];
 
+    if (needsQualityConversation(transcript)) {
+      return this.trackAssistant(
+        streamCloudflareQualityConversation(this.env.AI, messages, {
+          signal: context.signal,
+          maxTokens: 360,
+          openTimeoutMs: 2500,
+          firstTokenTimeoutMs: 2700,
+          fallbackTimeoutMs: 3000,
+          sessionAffinity: affinity,
+        }),
+        context,
+        'quality-bounded',
+        transcript,
+      );
+    }
+
     return this.trackAssistant(
       streamCloudflareLiveConversation(this.env.AI, messages, {
         signal: context.signal,
-        maxTokens: 320,
-        firstTokenTimeoutMs: 4500,
+        maxTokens: 260,
+        openTimeoutMs: 1900,
+        firstTokenTimeoutMs: 2300,
+        fallbackTimeoutMs: 2600,
         sessionAffinity: affinity,
       }),
       context,
@@ -364,7 +459,7 @@ async function voiceModelBench(request, env) {
 async function voiceSmoke(env) {
   try {
     const tts = new CloudflareJapaneseTTS(env.AI);
-    const audio = await tts.synthesize('これは日本語の音声テストです。');
+    const audio = await tts.synthesize('これは日本語の音声テストです。聞き取りやすさを確認します。');
     if (!audio || audio.byteLength < 100) throw new Error('empty audio');
     return new Response(audio, {
       headers: {
@@ -398,14 +493,20 @@ export default {
         providerApiKeysRequired: false,
         realtimeAudio: true,
         audioChunkMs: 40,
-        serverTurnDetectionMs: 440,
+        serverTurnDetectionMs: 400,
         bargeIn: true,
-        conversationPersistence: 'connection-scoped-short-term-context',
+        conversationPersistence: 'call-session-with-trusted-caller-memory',
+        sessionMemoryLifecycle: 'start_call-to-end_call',
+        sessionMemoryTimeBasedExpiry: false,
         sharedTypedAndVoiceHistory: true,
         crossTurnContext: true,
-        crossSessionContext: false,
-        conversationContextMaxMessages: CONTEXT_MAX_MESSAGES,
-        conversationContextTtlMs: CONTEXT_TTL_MS,
+        crossSessionContext: 'trusted-caller-only',
+        trustedCallerIdentityRequired: true,
+        callerIdentityPersistence: true,
+        voiceBuiltinHistoryDisabled: true,
+        conversationSessionStoredMessages: SESSION_STORE_MAX_MESSAGES,
+        conversationContextMaxMessages: SESSION_CONTEXT_MAX_MESSAGES,
+        callerContextMaxMessages: CALLER_MEMORY_MAX_MESSAGES,
         promptPrefixCaching: true,
         sessionAffinity: true,
         sttRealtime: REALTIME_STT_MODEL,
@@ -415,19 +516,19 @@ export default {
         sttHighConfidenceFastPath: true,
         sttFastFinalConfidence: 0.88,
         dualAsrReconciliation: true,
+        sttUsesConversationContext: true,
         llmLive: LIVE_CONVERSATION_MODEL,
         llmQuality: QUALITY_CONVERSATION_MODEL,
         llmGrounded: GROUNDING_CONVERSATION_MODEL,
         llmGroundedFallback: GROUNDING_FALLBACK_MODEL,
         llmFallback: FALLBACK_CONVERSATION_MODEL,
-        llmRouting: 'instant-local / contextual-live-fast / bounded-contextual-grounded-search',
-        normalConversationLiveOnly: true,
+        llmRouting: 'instant-local / bounded-live / bounded-quality / bounded-contextual-search',
+        normalConversationLiveOnly: false,
         casualFastPath: true,
+        qualityRouteForComplexConversation: true,
         searchPrecisionOnly: true,
-        qualityModelPaidAccessOptional: true,
-        groundedHighModelPaidAccessOptional: true,
         modelBenchmarkEndpoint: '/api/voice-model-bench',
-        webSearch: 'bounded-parallel-8-query+conditional-recovery+google+duckduckgo+bing+bing-rss+wikipedia+google-news+page-evidence+reranker+answer-audit',
+        webSearch: 'bounded-parallel-contextual-multiquery+conditional-recovery+page-evidence+reranker+answer-audit',
         searchQueryPlanning: true,
         searchMultiQuery: true,
         searchMaxQueries: 8,
@@ -436,14 +537,11 @@ export default {
         searchPlannerBudgetMs: SEARCH_PLANNER_BUDGET_MS,
         searchFetchBudgetMs: SEARCH_FETCH_BUDGET_MS,
         searchCoverageBudgetMs: SEARCH_COVERAGE_BUDGET_MS,
-        searchAnswerModelBudgetMs: 3800,
-        searchAuditBudgetMs: 2500,
-        searchSecondProgressSpeechMs: 5500,
+        searchSecondProgressSpeechMs: 4200,
         searchWaitSpeech: true,
         searchFillerModel: SEARCH_FILLER_MODEL,
         searchFillerGeneratedInParallel: true,
         typedSpeechSimulation: true,
-        typedSpeechSilentWhenNotInCall: false,
         typedSpeechVoiceOutput: true,
         callConnectTimeoutMs: 10000,
         searchAnswerAudit: true,
@@ -451,6 +549,7 @@ export default {
         serverSideTts: true,
         browserSpeechSynthesisPrimary: false,
         deviceJapaneseTtsFallback: true,
+        speechClarityProcessing: true,
         externalProviderKeys: [],
         screenFunction: false,
         screenOverlay: false,
