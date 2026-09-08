@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: cloudflare-agent-tools-v20.0
+      EXPECTED_VOICE_REVISION: cloudflare-agent-v21-mobile-transit-reliability
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -26,7 +26,10 @@ jobs:
           node --check src/worker-v14.js
           node --check src/worker-v19.js
           node --check src/worker-v20.js
+          node --check src/worker-v21.js
           node --check src/search-tool-v20.js
+          node --check src/search-v21.js
+          node --check src/cloudflare-live-client-v21.js
           node --check src/cloudflare-live-client.js
           node --check src/cloudflare-japanese-stt.js
           node --check src/cloudflare-japanese-tts.js
@@ -96,7 +99,7 @@ jobs:
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
 
-      - name: Verify production v20 voice-agent contract when deployment credentials are configured
+      - name: Verify production v21 voice-agent contract when deployment credentials are configured
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
           body="$(curl -fsS --max-time 30 "$PRODUCTION_URL/voice-health")" || {
@@ -130,6 +133,12 @@ jobs:
             searchAuditModelCascade: d.searchAuditModelCascade,
             fixedSearchWaitSpeech: d.fixedSearchWaitSpeech,
             searchWaitPhrase: d.searchWaitPhrase,
+            mobileAudioContextPrimedOnUserGesture: d.mobileAudioContextPrimedOnUserGesture,
+            proactiveCallGreeting: d.proactiveCallGreeting,
+            hiddenModelFailureRetry: d.hiddenModelFailureRetry,
+            userFacingMidStreamRetryMessageRemoved: d.userFacingMidStreamRetryMessageRemoved,
+            transitQueriesRequireFreshSearch: d.transitQueriesRequireFreshSearch,
+            stationAreaFollowupsUseConversationContext: d.stationAreaFollowupsUseConversationContext,
           }));
           if (d.voiceRevision !== expected) throw new Error(`expected ${expected}, got ${d.voiceRevision}`);
           if (d.conversationPersistence !== 'call-session-with-trusted-caller-memory') throw new Error('unexpected conversation persistence mode');
@@ -142,14 +151,19 @@ jobs:
           if (d.conversationContextMaxMessages !== 28) throw new Error('unexpected session context window');
           if (d.callerContextMaxMessages !== 20) throw new Error('unexpected caller context window');
           if (d.speechClarityProcessing !== true) throw new Error('speech clarity processing is not enabled');
-          if (d.conversationOrchestrator !== 'single-agent-v20') throw new Error('v20 single-agent orchestrator is not active');
-          if (d.toolCalling !== 'cloudflare-embedded-function-calling') throw new Error('embedded function calling is not active');
+          if (d.conversationOrchestrator !== 'tiered-fast-agent-v21') throw new Error('v21 tiered conversation orchestrator is not active');
+          if (d.toolCalling !== 'deterministic-search-router-v21') throw new Error('v21 deterministic search router is not active');
           if (d.webSearchToolRole !== 'evidence-only') throw new Error('web search tool must return evidence only');
-          if (d.modelDecidesToolUse !== true) throw new Error('conversation model must decide ordinary tool use');
+          if (d.modelDecidesToolUse !== false) throw new Error('ordinary tool inference must remain disabled');
           if (d.mandatoryFreshSearchGuard !== true) throw new Error('fresh-fact search guard is disabled');
-          if (d.searchPlannerBeforeRetrieval !== false) throw new Error('legacy search planner must not own v20 retrieval');
+          if (d.searchPlannerBeforeRetrieval !== false) throw new Error('legacy search planner must not own v21 retrieval');
           if (d.searchAnswerCascade !== false || d.searchAuditModelCascade !== false) throw new Error('legacy search answer cascades must be disabled');
           if (d.fixedSearchWaitSpeech !== true || d.searchWaitPhrase !== '少し調べますね。') throw new Error('search wait speech contract failed');
+          if (d.mobileAudioContextPrimedOnUserGesture !== true) throw new Error('mobile AudioContext priming is disabled');
+          if (d.proactiveCallGreeting !== true) throw new Error('proactive call greeting is disabled');
+          if (d.hiddenModelFailureRetry !== true || d.userFacingMidStreamRetryMessageRemoved !== true) throw new Error('hidden answer recovery contract failed');
+          if (d.transitQueriesRequireFreshSearch !== true) throw new Error('transit search guard is disabled');
+          if (d.stationAreaFollowupsUseConversationContext !== true) throw new Error('station-area contextual search is disabled');
           NODE
 
       - name: Report external deployment requirement
