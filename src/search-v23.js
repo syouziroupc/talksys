@@ -22,32 +22,34 @@ const POLITE_TAIL_RE = /(?:を)?(?:教えて(?:ください|ほしい|よ)?|知�
 const STOPWORDS = new Set(['について','まで','から','ので','です','ます','したい','知りたい','教えて','ください','どう','どんな','もの','こと','これ','それ','その']);
 
 function clean(value, max = 700) {
-  return String(value || '')
-    .replace(/[\r\n\t]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max);
+  return String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
 function stationNames(text) {
   const value = clean(text, 900);
   const explicitPair = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)\s*(?:から|より|→|⇒|〜|～|-)\s*([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)/i);
   if (explicitPair?.[1] && explicitPair?.[2]) return [...new Set([explicitPair[1], explicitPair[2]])];
-
   const spokenPair = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?)(?:駅)?\s*(?:から|より|→|⇒|〜|～|-)\s*([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?)(?:駅)?\s*(?:まで|へ|に)(?=$|[のをがはで、。！？!?\s])/i);
   if (spokenPair?.[1] && spokenPair?.[2]) return [...new Set([spokenPair[1], spokenPair[2]])];
-
-  const matches = [...value.matchAll(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)(?=(?:から|より|まで|へ|に|で|の|を|が|は|と|周辺|近く|、|。|！|？|!|\?|\s|$))/gi)]
-    .map((match) => match[1]);
+  const matches = [...value.matchAll(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)(?=(?:から|より|まで|へ|に|で|の|を|が|は|と|周辺|近く|、|。|！|？|!|\?|\s|$))/gi)].map((match) => match[1]);
   return [...new Set(matches)].slice(0, 4);
+}
+
+function granularAdministrativePlace(value) {
+  const text = clean(value, 80);
+  const cityAfterPrefecture = text.match(/(?:都|道|府|県)([^都道府県市区町村\s]{1,12}(?:市|区|町|村))$/);
+  if (cityAfterPrefecture?.[1]) return cityAfterPrefecture[1];
+  const wardAfterCity = text.match(/市([^市区町村\s]{1,12}区)$/);
+  if (wardAfterCity?.[1]) return wardAfterCity[1];
+  return text;
 }
 
 function locationName(text) {
   const value = clean(text, 900);
   const station = stationNames(value).at(-1);
   if (station) return station;
-  const matches = [...value.matchAll(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,20}(?:都|道|府|県|市|区|町|村))/g)];
-  return clean(matches.at(-1)?.[1] || '', 32);
+  const matches = [...value.matchAll(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}(?:都|道|府|県|市|区|町|村))/g)];
+  return granularAdministrativePlace(matches.at(-1)?.[1] || '');
 }
 
 function pcModelTokens(text) {
@@ -82,34 +84,17 @@ function profileFor(question) {
   const pc = PC_RE.test(question);
   const location = locationName(question);
   const local = !transit && Boolean(location) && LOCAL_RE.test(question);
-  return {
-    transit,
-    pc,
-    local,
-    used: USED_RE.test(question),
-    detail: DETAIL_RE.test(question),
-    stations,
-    location,
-    pcTokens: pcModelTokens(question),
-  };
+  return { transit, pc, local, used: USED_RE.test(question), detail: DETAIL_RE.test(question), stations, location, pcTokens: pcModelTokens(question) };
 }
 
 export function buildSearchQueriesV23(question) {
   const q = compactQuestion(question);
   const profile = profileFor(q);
   const year = new Date().getUTCFullYear();
-
   if (profile.transit) {
     const [from, to] = profile.stations;
-    return [
-      `${from} ${to} 乗換 所要時間 運賃`,
-      `${from} ${to} 直通 路線 停車駅`,
-      `${from} ${to} 時刻表 乗換案内`,
-    ];
+    return [`${from} ${to} 乗換 所要時間 運賃`, `${from} ${to} 直通 路線 停車駅`, `${from} ${to} 時刻表 乗換案内`];
   }
-
-  // Local purchase intent must win over generic PC-spec intent. Otherwise a request
-  // such as “横浜市で中古PCのお店” degenerates into manufacturer/comparison searches.
   if (profile.local && profile.pc) {
     const condition = profile.used ? '中古' : '';
     return [
@@ -118,48 +103,25 @@ export function buildSearchQueriesV23(question) {
       `${profile.location} ${condition} パソコン ショップ 店頭`.replace(/\s+/g, ' ').trim(),
     ];
   }
-
   if (profile.pc) {
     const model = profile.pcTokens.join(' ');
-    if (model) {
-      return [
-        `${model} 仕様 公式`,
-        `${model} マニュアル 仕様 対応`,
-        q,
-      ];
-    }
-    if (/(価格|値段|予算|万円|中古|新品|買|購入)/i.test(q)) {
-      return [
-        `${q} ${year}`,
-        `${q} 仕様 価格`,
-        `${q} 比較 ${year}`,
-      ];
-    }
+    if (model) return [`${model} 仕様 公式`, `${model} マニュアル 仕様 対応`, q];
+    if (/(価格|値段|予算|万円|中古|新品|買|購入)/i.test(q)) return [`${q} ${year}`, `${q} 仕様 価格`, `${q} 比較 ${year}`];
     return [q, `${q} 公式 仕様`, `${q} 技術仕様`];
   }
-
   if (profile.local) return [q, `${profile.location} 店舗 公式`, `${profile.location} ${q}`];
   if (profile.detail) return [q, `${q} 公式`, `${q} 詳細`];
   return [q, `${q} 公式`];
 }
 
 function tokenize(text) {
-  return clean(text, 1200)
-    .replace(/[、。！？!?（）()「」『』・/:：]/g, ' ')
-    .split(/\s+/)
+  return clean(text, 1200).replace(/[、。！？!?（）()「」『』・/:：]/g, ' ').split(/\s+/)
     .flatMap((part) => part.match(/[A-Za-z0-9][A-Za-z0-9+._-]{1,30}|[一-龠々ヶぁ-んァ-ヶー]{2,16}/g) || [])
-    .map((token) => token.toLowerCase())
-    .filter((token) => token.length >= 2 && !STOPWORDS.has(token));
+    .map((token) => token.toLowerCase()).filter((token) => token.length >= 2 && !STOPWORDS.has(token));
 }
 
-function sourceText(item) {
-  return clean(`${item?.title || ''} ${item?.excerpt || item?.snippet || ''}`, 3200);
-}
-
-function normalizedEntity(value) {
-  return clean(value, 80).replace(/駅$/u, '').replace(/[\s\-‐‑‒–—―ー_]/g, '').toLowerCase();
-}
-
+function sourceText(item) { return clean(`${item?.title || ''} ${item?.excerpt || item?.snippet || ''}`, 3200); }
+function normalizedEntity(value) { return clean(value, 80).replace(/駅$/u, '').replace(/[\s\-‐‑‒–—―ー_]/g, '').toLowerCase(); }
 function textContainsEntity(text, entity) {
   const haystack = clean(text, 3600).replace(/[\s\-‐‑‒–—―ー_]/g, '').toLowerCase();
   const needle = normalizedEntity(entity);
@@ -171,20 +133,13 @@ export function sourceEligibleV23(item, question) {
   const text = sourceText(item);
   const title = clean(item?.title, 240);
   const engine = String(item?.engine || '');
-
   if (!text) return false;
   if ((profile.transit || profile.pc || profile.local) && (LOW_SIGNAL_ENGINE_RE.test(engine) || /Wikipedia|ウィキペディア/i.test(title))) return false;
-
   if (profile.transit) {
     const endpoints = profile.stations.slice(0, 2);
     if (endpoints.length === 2 && !endpoints.every((station) => textContainsEntity(text, station))) return false;
   }
-
-  if (profile.pc && profile.pcTokens.length) {
-    const tokenHit = profile.pcTokens.some((token) => textContainsEntity(text, token));
-    if (!tokenHit) return false;
-  }
-
+  if (profile.pc && profile.pcTokens.length && !profile.pcTokens.some((token) => textContainsEntity(text, token))) return false;
   if (profile.local && profile.location) {
     const osm = item?.engine === 'openstreetmap-nominatim';
     const locationHit = textContainsEntity(text, profile.location);
@@ -192,7 +147,6 @@ export function sourceEligibleV23(item, question) {
     if (!osm && (!locationHit || !storeHit)) return false;
     if (profile.used && !osm && !USED_RE.test(text)) return false;
   }
-
   return true;
 }
 
@@ -203,29 +157,23 @@ function scoreSource(item, index, question, profile) {
   const title = clean(item?.title, 220);
   const url = String(item?.url || '');
   const terms = [...new Set(tokenize(question))].slice(0, 18);
-
   for (const term of terms) if (lower.includes(term)) score += 5;
   if (String(item?.excerpt || item?.snippet || '').length >= 180) score += 7;
   if (LISTICLE_RE.test(title)) score -= 28;
-
   let host = '';
   try { host = new URL(url).hostname.toLowerCase(); } catch {}
   if (/\.go\.jp$|\.lg\.jp$|\.ac\.jp$|\.gov$|\.edu$/.test(host)) score += 18;
-
   if (profile.transit) {
-    const stationHits = profile.stations.slice(0, 2).filter((station) => textContainsEntity(text, station)).length;
-    score += stationHits * 34;
+    score += profile.stations.slice(0, 2).filter((station) => textContainsEntity(text, station)).length * 34;
     if (ROUTE_HOST_RE.test(host)) score += 32;
     if (/(所要時間|運賃|乗換|乗り換え|直通|時刻)/i.test(text)) score += 16;
   }
-
   if (profile.pc && !profile.local) {
     if (PC_OFFICIAL_HOST_RE.test(host)) score += 34;
     for (const token of profile.pcTokens) if (textContainsEntity(text, token)) score += 28;
     if (/(仕様|スペック|CPU|メモリ|SSD|インターフェース|USB|無線|ディスプレイ|バッテリー|対応OS|最大|スロット|Thunderbolt|充電)/i.test(text)) score += 18;
     if (/知恵袋|まとめ|ランキング/i.test(title)) score -= 25;
   }
-
   if (profile.local) {
     if (profile.location && textContainsEntity(text, profile.location)) score += 42;
     if (item?.engine === 'openstreetmap-nominatim') score += 30;
@@ -234,18 +182,13 @@ function scoreSource(item, index, question, profile) {
     if (PC_OFFICIAL_HOST_RE.test(host) && !/(店舗|店|ショップ)/i.test(title)) score -= 35;
     if (LISTICLE_RE.test(title)) score -= 35;
   }
-
   return score;
 }
 
 function rankSources(items, question, profile) {
-  return (items || [])
-    .filter((item) => sourceEligibleV23(item, question))
+  return (items || []).filter((item) => sourceEligibleV23(item, question))
     .map((item, index) => ({ item, score: scoreSource(item, index, question, profile) }))
-    .sort((a, b) => b.score - a.score)
-    .filter(({ score }) => score >= 70)
-    .map(({ item }) => item)
-    .slice(0, 12);
+    .sort((a, b) => b.score - a.score).filter(({ score }) => score >= 70).map(({ item }) => item).slice(0, 12);
 }
 
 async function searchOne(query, profile) {
@@ -261,61 +204,24 @@ async function searchOne(query, profile) {
 export async function collectGroundedEvidenceV23(query, history = [], options = {}) {
   const started = Date.now();
   const resolvedQuestion = resolveGroundedQuestionV22(query, history);
-  if (!resolvedQuestion) {
-    return {
-      revision: SEARCH_TOOL_V23_REVISION,
-      resolvedQuestion: '',
-      queries: [],
-      sources: [],
-      evidence: '',
-      elapsedMs: 0,
-    };
-  }
-
+  if (!resolvedQuestion) return { revision: SEARCH_TOOL_V23_REVISION, resolvedQuestion: '', queries: [], sources: [], evidence: '', elapsedMs: 0 };
   const profile = profileFor(resolvedQuestion);
   const queries = [...new Set(buildSearchQueriesV23(resolvedQuestion).map((item) => clean(item, 190)).filter(Boolean))].slice(0, 3);
-  options.onProgress?.({
-    phase: 'planning',
-    revision: SEARCH_TOOL_V23_REVISION,
-    resolvedQuestion,
-    queries,
-    message: '質問の目的に合わせて検索語を展開',
-  });
-  options.onProgress?.({
-    phase: 'searching',
-    revision: SEARCH_TOOL_V23_REVISION,
-    resolvedQuestion,
-    queries,
-  });
-
+  options.onProgress?.({ phase: 'planning', revision: SEARCH_TOOL_V23_REVISION, resolvedQuestion, queries, message: '質問の目的に合わせて検索語を展開' });
+  options.onProgress?.({ phase: 'searching', revision: SEARCH_TOOL_V23_REVISION, resolvedQuestion, queries });
   const tasks = queries.map((item) => searchOne(item, profile));
   if (profile.local && profile.location) {
     const localQuery = clean(`${profile.location} ${profile.used ? '中古 ' : ''}${profile.pc ? 'パソコン' : ''} 店舗`, 120);
     tasks.push(searchOpenStreetMapLocal(localQuery, { timeoutMs: 3000 }).catch(() => []));
   }
-
   const batches = await Promise.all(tasks);
   const merged = dedupeSearchResults(batches.flat(), 70);
   const sources = rankSources(merged, resolvedQuestion, profile);
-  const result = {
-    revision: SEARCH_TOOL_V23_REVISION,
-    resolvedQuestion,
-    queries,
-    sources,
-    evidence: formatSearchContext(sources),
-    elapsedMs: Date.now() - started,
-  };
-
+  const result = { revision: SEARCH_TOOL_V23_REVISION, resolvedQuestion, queries, sources, evidence: formatSearchContext(sources), elapsedMs: Date.now() - started };
   options.onProgress?.({
-    phase: 'evidence_ready',
-    revision: SEARCH_TOOL_V23_REVISION,
-    resolvedQuestion,
-    queries,
-    evidenceCount: sources.length,
-    sources: sources.slice(0, 8).map((item) => ({ title: clean(item.title, 150), url: item.url })),
-    elapsedMs: result.elapsedMs,
-    message: '質問に直接使える根拠を選定',
+    phase: 'evidence_ready', revision: SEARCH_TOOL_V23_REVISION, resolvedQuestion, queries,
+    evidenceCount: sources.length, sources: sources.slice(0, 8).map((item) => ({ title: clean(item.title, 150), url: item.url })),
+    elapsedMs: result.elapsedMs, message: '質問に直接使える根拠を選定',
   });
-
   return result;
 }
