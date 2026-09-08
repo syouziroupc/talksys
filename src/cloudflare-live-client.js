@@ -165,7 +165,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       const utterance = new SpeechSynthesisUtterance(value);
       utterance.voice = selected;
       utterance.lang = selected.lang || 'ja-JP';
-      utterance.rate = 1.04;
+      utterance.rate = 0.98;
       utterance.pitch = 1;
       utterance.volume = 1;
       deviceUtterance = utterance;
@@ -213,7 +213,18 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       const decoded = await audioContext.decodeAudioData(bytes.slice(0));
       const source = audioContext.createBufferSource();
       source.buffer = decoded;
-      source.connect(audioContext.destination);
+      // Speech-first playback chain: modest compression evens out level differences.
+      const compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -24;
+      compressor.knee.value = 18;
+      compressor.ratio.value = 3;
+      compressor.attack.value = 0.006;
+      compressor.release.value = 0.18;
+      const speechGain = audioContext.createGain();
+      speechGain.gain.value = 1.12;
+      source.connect(compressor);
+      compressor.connect(speechGain);
+      speechGain.connect(audioContext.destination);
       playbackSource = source;
       source.onended = () => {
         if (playbackSource === source) playbackSource = null;

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SEARCH_FILLER_MODEL,
+  SEARCH_FILLER_MIN_DELAY_MS,
   heuristicContextQuery,
   planSearchQueries,
   generateSearchFiller,
@@ -28,7 +29,21 @@ test('heuristic context query carries recent user constraints into a short follo
   ];
   const query = heuristicContextQuery('それを今買うならどこがいい？', history);
   assert.match(query, /3万円/);
+  assert.match(query, /ノートパソコン/);
   assert.match(query, /それを今買うならどこがいい/);
+});
+
+test('heuristic context query can recover topic from assistant phrasing for terse search follow-up', () => {
+  const history = [
+    { role: 'assistant', content: '元気ですよ、ありがとうございます。パソコン、まだ迷っていますか？' },
+    { role: 'user', content: 'どこで買えばいいかわからなくて' },
+    { role: 'assistant', content: '今の検索では現在情報の裏付けが十分ではありませんでした。' },
+  ];
+  const query = heuristicContextQuery('調べてくれない？', history);
+  assert.match(query, /パソコン/);
+  assert.match(query, /どこで買えばいい/);
+  assert.match(query, /調べてくれない/);
+  assert.doesNotMatch(query, /裏付けが十分/);
 });
 
 test('high model resolves omitted context and preserves budget and use case', async () => {
@@ -81,16 +96,18 @@ test('planner falls back from primary grounded model to gpt-oss', async () => {
   assert.match(plan.resolvedQuestion, /大阪/);
 });
 
-test('filler model creates a short non-answer utterance', async () => {
+test('filler model creates a short non-answer utterance only after a useful wait threshold', async () => {
+  const started = Date.now();
   const ai = {
     async run(model, input) {
       assert.equal(model, SEARCH_FILLER_MODEL);
-      assert.equal(input.max_tokens, 28);
-      return { response: 'うーん、ちょっと確認してみますね。' };
+      assert.equal(input.max_tokens, 24);
+      return { response: 'うーん、見てみますね。' };
     },
   };
   const filler = await generateSearchFiller(ai, '今いくら？', []);
-  assert.equal(filler, 'うーん、ちょっと確認してみますね。');
+  assert.equal(filler, 'うーん、見てみますね。');
+  assert.ok(Date.now() - started >= SEARCH_FILLER_MIN_DELAY_MS - 40);
 });
 
 test('filler sanitizer rejects answer-like statements and keeps natural wait speech', () => {

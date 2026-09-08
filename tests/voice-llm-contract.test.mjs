@@ -8,6 +8,9 @@ const fallback = await readFile(new URL('../src/voice-fallback-client.js', impor
 const streaming = await readFile(new URL('../src/streaming-workers-ai.js', import.meta.url), 'utf8');
 const search = await readFile(new URL('../src/web-search.js', import.meta.url), 'utf8');
 const orchestrator = await readFile(new URL('../src/search-orchestrator.js', import.meta.url), 'utf8');
+const searchFallbacks = await readFile(new URL('../src/search-fallbacks.js', import.meta.url), 'utf8');
+const cloudflareLlm = await readFile(new URL('../src/cloudflare-llm.js', import.meta.url), 'utf8');
+const japaneseTts = await readFile(new URL('../src/cloudflare-japanese-tts.js', import.meta.url), 'utf8');
 const stt = await readFile(new URL('../src/finalizable-nova3.js', import.meta.url), 'utf8');
 const reranker = await readFile(new URL('../src/search-rerank.js', import.meta.url), 'utf8');
 
@@ -37,19 +40,21 @@ test('casual path allows useful 2 to 4 sentence replies', () => {
   assert.match(source, /casualResponseSentences:\s*'2-4'/);
 });
 
-test('grounded questions use contextual planning, multi-query retrieval, reranking, and high reasoning answer model', () => {
-  assert.match(source, /function\s+groundedChatInput/);
-  assert.match(source, /max_completion_tokens:\s*620/);
-  assert.match(source, /const\s+searchIntent\s*=\s*!screenIntent\s*&&\s*needsWebSearch\(transcript\)/);
-  assert.match(source, /runDeepSearch\(this\.env\.AI,\s*transcript,\s*context\.messages/);
-  assert.match(source, /streamWorkersAIText\(this\.env\.AI,\s*LIVE_VOICE_MODEL,\s*input/);
+test('grounded search has contextual planning, redundant retrieval, recovery, reranking and a high-reasoning answer gate', () => {
   assert.match(orchestrator, /planSearchQueries/);
-  assert.match(orchestrator, /Promise\.all\(searches\)/);
-  assert.match(orchestrator, /rerankSearchResults\(ai,\s*rankQuestion,\s*merged,\s*6\)/);
+  assert.match(orchestrator, /searchBingRss/);
+  assert.match(orchestrator, /recoveryQueries/);
+  assert.match(orchestrator, /searchOpenStreetMapLocal/);
+  assert.match(orchestrator, /rerankSearchResults\(ai,\s*rankQuestion,\s*merged,\s*8\)/);
+  assert.match(searchFallbacks, /buildDeterministicSearchQueries/);
+  assert.match(searchFallbacks, /format=rss/);
   assert.match(reranker, /@cf\/baai\/bge-reranker-base/);
+  assert.match(cloudflareLlm, /runNonStreamingCascade/);
+  assert.match(cloudflareLlm, /isEvasiveGroundedAnswer/);
+  assert.match(cloudflareLlm, /answerRepaired/);
 });
 
-test('short context-dependent follow-ups avoid contextless web search', () => {
+test('short context-dependent follow-ups avoid a contextless raw web query', () => {
   assert.match(search, /function\s+looksContextDependentFollowup/);
   assert.match(search, /どこ/);
   assert.match(search, /大阪は/);
@@ -59,31 +64,40 @@ test('short context-dependent follow-ups avoid contextless web search', () => {
 
 test('explicit searches can reconstruct omitted context before retrieval', () => {
   assert.match(orchestrator, /heuristicContextQuery/);
-  assert.match(orchestrator, /今回の質問を直前の会話から自己完結した検索課題に直し/);
+  assert.match(orchestrator, /直前のuser\/assistant会話から話題だけを復元/);
   assert.match(orchestrator, /予算、用途、地域、型番、日時/);
-  assert.match(source, /システムが解決した検索課題/);
+  assert.match(orchestrator, /assistantの過去回答を事実とはみなさない/);
 });
 
-test('grounded answers do not refuse merely because search evidence is irrelevant', () => {
+test('grounded answers are repaired instead of returning search-failure boilerplate', () => {
   assert.match(streaming, /回答全体を拒否しない/);
-  assert.match(streaming, /目的、予算、対象商品、用途/);
-  assert.match(streaming, /検索責任をユーザーへ返す表現は禁止/);
-  assert.match(streaming, /最新価格、在庫、営業時間/);
-  assert.match(source, /根拠が不足する部分だけを未確認とし、回答全体を拒否しない/);
+  assert.match(cloudflareLlm, /ご提示いただいた/);
+  assert.match(cloudflareLlm, /今の検索では.*裏付けが十分ではありません/);
+  assert.match(cloudflareLlm, /質問に直接答え直してください/);
+  assert.match(cloudflareLlm, /deterministicRescue/);
 });
 
-test('search uses small-model natural filler while high-quality search runs', () => {
+test('search uses delayed small-model filler only when retrieval is actually taking time', () => {
   assert.match(orchestrator, /SEARCH_FILLER_MODEL\s*=\s*'@cf\/meta\/llama-3\.2-3b-instruct'/);
+  assert.match(orchestrator, /SEARCH_FILLER_MIN_DELAY_MS\s*=\s*650/);
   assert.match(orchestrator, /generateSearchFiller/);
-  assert.match(orchestrator, /えーと、ちょっと見てみますね/);
-  assert.match(orchestrator, /うーん、少し確認しますね/);
+  assert.match(orchestrator, /えーと…/);
+  assert.match(orchestrator, /うーん、見てみますね/);
   assert.match(source, /generateSearchFiller\(this\.env\.AI/);
   assert.match(source, /if \(!searchPending \|\| context\.signal\?\.aborted\) return/);
   assert.match(source, /transient:\s*true/);
   assert.match(source, /searchFillerSpeech:\s*true/);
 });
 
-test('LLM response is streamed into early speech chunks', () => {
+test('Japanese server TTS normalizes technical terms before synthesis', () => {
+  assert.match(japaneseTts, /normalizeJapaneseTtsText/);
+  assert.match(japaneseTts, /パソコン/);
+  assert.match(japaneseTts, /エスエスディー/);
+  assert.match(japaneseTts, /ギガバイト/);
+  assert.match(japaneseTts, /melotts-ja-normalized/);
+});
+
+test('LLM response is streamed into early speech chunks on the legacy realtime path', () => {
   assert.match(source, /assistant_stream_start/);
   assert.match(source, /assistant_speech_chunk/);
   assert.match(source, /assistant_stream_end/);
@@ -107,7 +121,7 @@ test('grounded prompt protects current facts and screen claims without disabling
   assert.match(source, /現在画面を断定できるのは/);
 });
 
-test('cloud TTS is skipped and device ja-JP streams chunks', () => {
+test('cloud TTS is skipped and device ja-JP streams chunks on legacy path', () => {
   assert.match(source, /beforeSynthesize\(\)\s*\{\s*return null;/);
   assert.match(source, /cloudTtsDisabled:\s*true/);
   assert.match(source, /ttsPrimary:\s*'device-ja-JP-streamed-chunks'/);
@@ -136,7 +150,7 @@ test('voice mirrors finalized assistant text in complete transcript format', () 
   assert.match(source, /text:\s*reply/);
 });
 
-test('voice health exposes v16 deep search architecture', () => {
+test('legacy health contract still exposes v16 architecture while v17 hotfix is additive', () => {
   assert.match(source, /VOICE_REVISION\s*=\s*'cloudflare-live-v16\.0'/);
   assert.match(source, /webSearchPolicy:\s*'contextual-multi-query-high-reasoning'/);
   assert.match(source, /groundedLlmModel:\s*GROUNDING_VOICE_MODEL/);
