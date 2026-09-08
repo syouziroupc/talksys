@@ -2,161 +2,115 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const source = await readFile(new URL('../src/worker.js', import.meta.url), 'utf8');
-const realtime = await readFile(new URL('../src/realtime-voice-client.js', import.meta.url), 'utf8');
-const fallback = await readFile(new URL('../src/voice-fallback-client.js', import.meta.url), 'utf8');
+const worker = await readFile(new URL('../src/worker-v14.js', import.meta.url), 'utf8');
+const liveClient = await readFile(new URL('../src/cloudflare-live-client.js', import.meta.url), 'utf8');
 const streaming = await readFile(new URL('../src/streaming-workers-ai.js', import.meta.url), 'utf8');
 const search = await readFile(new URL('../src/web-search.js', import.meta.url), 'utf8');
 const orchestrator = await readFile(new URL('../src/search-orchestrator.js', import.meta.url), 'utf8');
+const audit = await readFile(new URL('../src/search-answer-v18.js', import.meta.url), 'utf8');
 const searchFallbacks = await readFile(new URL('../src/search-fallbacks.js', import.meta.url), 'utf8');
 const cloudflareLlm = await readFile(new URL('../src/cloudflare-llm.js', import.meta.url), 'utf8');
 const japaneseTts = await readFile(new URL('../src/cloudflare-japanese-tts.js', import.meta.url), 'utf8');
-const stt = await readFile(new URL('../src/finalizable-nova3.js', import.meta.url), 'utf8');
 const reranker = await readFile(new URL('../src/search-rerank.js', import.meta.url), 'utf8');
+const index = await readFile(new URL('../src/index.js', import.meta.url), 'utf8');
 
-test('voice uses fast live model and DeepSeek V4 Pro grounded model with two-stage fallback', () => {
+test('voice keeps fast live model and high-accuracy grounded cascade', () => {
   assert.match(streaming, /LIVE_VOICE_MODEL\s*=\s*'@cf\/qwen\/qwen3\.8-27b'/);
   assert.match(streaming, /GROUNDING_VOICE_MODEL\s*=\s*'@cf\/deepseek-ai\/deepseek-v4-pro-0813'/);
   assert.match(streaming, /GROUNDING_FALLBACK_MODEL\s*=\s*'@cf\/openai\/gpt-oss-120b'/);
-  assert.match(streaming, /grounded\s*\?\s*GROUNDING_VOICE_MODEL/);
-  assert.match(streaming, /grounded \? GROUNDING_FALLBACK_MODEL : null/);
   assert.match(streaming, /reasoning_effort:\s*null/);
   assert.match(streaming, /enable_thinking:\s*false/);
 });
 
-test('final Japanese transcription uses Whisper large v3 turbo accuracy settings', () => {
-  assert.match(stt, /FINAL_STT_MODEL\s*=\s*'@cf\/openai\/whisper-large-v3-turbo'/);
-  assert.match(stt, /language:\s*this\.config\.language/);
-  assert.match(stt, /vad_filter:\s*true/);
-  assert.match(stt, /beam_size:\s*this\.config\.beamSize/);
-  assert.match(stt, /condition_on_previous_text:\s*false/);
-  assert.match(stt, /initial_prompt:\s*this\.config\.initialPrompt/);
-  assert.match(source, /sttModel:\s*FINAL_STT_MODEL/);
+test('v18 phone runtime has no screen overlay or screenshot routing', () => {
+  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.0'/);
+  assert.match(worker, /mode: 'phone-consultation-only'/);
+  assert.doesNotMatch(worker, /requestScreen|screen_request|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
+  assert.doesNotMatch(liveClient, /screenToggle|screenVideo|drawArrow|handleScreenRequest|api\/locate/);
+  assert.doesNotMatch(index, /画面共有|PNG保存|VISION_MODEL|api\/locate/);
 });
 
-test('casual path allows useful 2 to 4 sentence replies', () => {
-  assert.match(source, /原則2〜4文/);
-  assert.match(source, /max_tokens:\s*240/);
-  assert.match(source, /casualResponseSentences:\s*'2-4'/);
+test('context-dependent follow-ups are reconstructed and routed to verified search', () => {
+  assert.match(search, /function\s+looksContextDependentFollowup/);
+  assert.match(orchestrator, /function shouldDeepSearch|export function shouldDeepSearch/);
+  assert.match(orchestrator, /looksContextDependentFollowup\(current\)/);
+  assert.match(orchestrator, /heuristicContextQuery/);
+  assert.match(orchestrator, /直前のuser\/assistant会話から対象だけ復元/);
+  assert.match(worker, /shouldDeepSearch\(transcript, context\.messages\)/);
+  assert.match(worker, /answerWithVerifiedWebSearch/);
 });
 
-test('grounded search has contextual planning, redundant retrieval, recovery, reranking and a high-reasoning answer gate', () => {
-  assert.match(orchestrator, /planSearchQueries/);
+test('deep search plans up to eight queries and performs a second research pass when needed', () => {
+  assert.match(orchestrator, /SEARCH_MAX_QUERIES = 8/);
+  assert.match(orchestrator, /SEARCH_MAX_ROUNDS = 2/);
+  assert.match(orchestrator, /6〜8本/);
+  assert.match(orchestrator, /assessCoverage/);
+  assert.match(orchestrator, /shouldForceSecondPass/);
+  assert.match(orchestrator, /retryQueries/);
   assert.match(orchestrator, /searchBingRss/);
-  assert.match(orchestrator, /recoveryQueries/);
   assert.match(orchestrator, /searchOpenStreetMapLocal/);
-  assert.match(orchestrator, /rerankSearchResults\(ai,\s*rankQuestion,\s*merged,\s*8\)/);
   assert.match(searchFallbacks, /buildDeterministicSearchQueries/);
   assert.match(searchFallbacks, /format=rss/);
   assert.match(reranker, /@cf\/baai\/bge-reranker-base/);
   assert.match(cloudflareLlm, /runNonStreamingCascade/);
+});
+
+test('search query planner preserves user constraints and diversifies query intent', () => {
+  assert.match(orchestrator, /予算、用途、地域、型番、日時、数量、条件/);
+  assert.match(orchestrator, /広い探索1本/);
+  assert.match(orchestrator, /一次情報\/公式1〜2本/);
+  assert.match(orchestrator, /独立した確認1本/);
+  assert.match(orchestrator, /比較\/評判1本/);
+  assert.match(orchestrator, /存在確認と価格\/在庫確認を別クエリ/);
+});
+
+test('grounded answers receive a separate evidence audit for named businesses and current facts', () => {
+  assert.match(audit, /Web根拠監査担当/);
+  assert.match(audit, /店舗名、会社名、施設名、製品名、価格、在庫、営業時間/);
+  assert.match(audit, /unsupportedNamedCandidates/);
+  assert.match(audit, /sourceTitleRescue/);
+  assert.match(audit, /answerWithVerifiedWebSearch/);
+  assert.match(worker, /searchAnswerAudit: true/);
+});
+
+test('search failure boilerplate cannot be the final answer path', () => {
   assert.match(cloudflareLlm, /isEvasiveGroundedAnswer/);
-  assert.match(cloudflareLlm, /answerRepaired/);
-});
-
-test('short context-dependent follow-ups avoid a contextless raw web query', () => {
-  assert.match(search, /function\s+looksContextDependentFollowup/);
-  assert.match(search, /どこ/);
-  assert.match(search, /大阪は/);
-  assert.match(search, /それなら/);
-  assert.match(search, /if \(looksContextDependentFollowup\(value\)\) return false/);
-});
-
-test('explicit searches can reconstruct omitted context before retrieval', () => {
-  assert.match(orchestrator, /heuristicContextQuery/);
-  assert.match(orchestrator, /直前のuser\/assistant会話から話題だけを復元/);
-  assert.match(orchestrator, /予算、用途、地域、型番、日時/);
-  assert.match(orchestrator, /assistantの過去回答を事実とはみなさない/);
-});
-
-test('grounded answers are repaired instead of returning search-failure boilerplate', () => {
-  assert.match(streaming, /回答全体を拒否しない/);
-  assert.match(cloudflareLlm, /ご提示いただいた/);
-  assert.match(cloudflareLlm, /今の検索では.*裏付けが十分ではありません/);
   assert.match(cloudflareLlm, /質問に直接答え直してください/);
-  assert.match(cloudflareLlm, /deterministicRescue/);
+  assert.match(audit, /BAD_SEARCH_BOILERPLATE_RE/);
+  assert.match(audit, /ご提示いただいた/);
+  assert.match(audit, /裏付けが十分ではありません/);
 });
 
-test('search uses delayed small-model filler only when retrieval is actually taking time', () => {
-  assert.match(orchestrator, /SEARCH_FILLER_MODEL\s*=\s*'@cf\/meta\/llama-3\.2-3b-instruct'/);
-  assert.match(orchestrator, /SEARCH_FILLER_MIN_DELAY_MS\s*=\s*650/);
-  assert.match(orchestrator, /generateSearchFiller/);
-  assert.match(orchestrator, /えーと…/);
-  assert.match(orchestrator, /うーん、見てみますね/);
-  assert.match(source, /generateSearchFiller\(this\.env\.AI/);
-  assert.match(source, /if \(!searchPending \|\| context\.signal\?\.aborted\) return/);
-  assert.match(source, /transient:\s*true/);
-  assert.match(source, /searchFillerSpeech:\s*true/);
+test('search wait speech is deterministic and cannot hallucinate an answer while retrieval runs', () => {
+  assert.match(orchestrator, /SEARCH_FILLER_MODEL = 'deterministic-safe-filler'/);
+  assert.match(orchestrator, /SEARCH_FILLER_MIN_DELAY_MS = 1200/);
+  assert.match(orchestrator, /詳しく確認します。少し待ってください。/);
+  assert.doesNotMatch(orchestrator, /ai\.run\(SEARCH_FILLER_MODEL/);
+  assert.match(worker, /const fillerPromise = generateSearchFiller/);
 });
 
-test('Japanese server TTS normalizes technical terms before synthesis', () => {
+test('Japanese server TTS normalizes technical terms and keeps speech clarity processing', () => {
   assert.match(japaneseTts, /normalizeJapaneseTtsText/);
   assert.match(japaneseTts, /パソコン/);
   assert.match(japaneseTts, /エスエスディー/);
   assert.match(japaneseTts, /ギガバイト/);
-  assert.match(japaneseTts, /melotts-ja-normalized/);
+  assert.match(liveClient, /createDynamicsCompressor/);
+  assert.match(liveClient, /speechGain\.gain\.value = 1\.12/);
+  assert.match(liveClient, /utterance\.rate = 0\.98/);
 });
 
-test('LLM response is streamed into early speech chunks on the legacy realtime path', () => {
-  assert.match(source, /assistant_stream_start/);
-  assert.match(source, /assistant_speech_chunk/);
-  assert.match(source, /assistant_stream_end/);
-  assert.match(source, /llmStreaming:\s*true/);
-  assert.match(source, /incrementalSpeechChunks:\s*true/);
-  assert.match(fallback, /talksys:assistant-speech-chunk/);
+test('40ms capture and safe barge-in remain enabled', () => {
+  assert.match(liveClient, /CHUNK_SAMPLES = 640/);
+  assert.match(liveClient, /BARGE_FRAMES = 3/);
+  assert.match(liveClient, /Never send the assistant's own audio to STT/);
+  assert.match(worker, /bargeIn: true/);
 });
 
-test('typed chat is routed to the same voice agent instance', () => {
-  assert.match(fallback, /agents\/talk-sys-voice-agent\/default/);
-  assert.match(fallback, /type:\s*'text_message'/);
-  assert.match(fallback, /form\.addEventListener\('submit',[\s\S]*true\)/);
-  assert.match(fallback, /stopImmediatePropagation\(\)/);
-});
-
-test('grounded prompt protects current facts and screen claims without disabling useful recommendations', () => {
-  assert.match(source, /現在の固有事実、数値、日付、価格、在庫、時刻、仕様/);
-  assert.match(source, /検索結果が1件しかない場合や結果同士が食い違う場合/);
-  assert.match(source, /購入先、おすすめ、比較、選び方/);
-  assert.match(source, /実際に行っていないPC操作/);
-  assert.match(source, /現在画面を断定できるのは/);
-});
-
-test('cloud TTS is skipped and device ja-JP streams chunks on legacy path', () => {
-  assert.match(source, /beforeSynthesize\(\)\s*\{\s*return null;/);
-  assert.match(source, /cloudTtsDisabled:\s*true/);
-  assert.match(source, /ttsPrimary:\s*'device-ja-JP-streamed-chunks'/);
-  assert.match(fallback, /speechSynthesis\.speak\(makeUtterance\(text, generation\)\)/);
-});
-
-test('40ms capture and safe barge-in are enabled', () => {
-  assert.match(realtime, /CHUNK_SAMPLES\s*=\s*640/);
-  assert.match(realtime, /SILENCE_MS\s*=\s*520/);
-  assert.match(realtime, /TTS_BARGE_FRAMES\s*=\s*4/);
-  assert.match(realtime, /function\s+processBargeIn/);
-  assert.match(realtime, /talksys:barge-in/);
-  assert.match(source, /halfDuplexDuringDeviceTts:\s*false/);
-  assert.match(source, /bargeIn:\s*true/);
-});
-
-test('assistant echo is filtered after barge-in', () => {
-  assert.match(source, /function\s+looksLikeAssistantEcho/);
-  assert.match(source, /echoTranscriptFilter:\s*true/);
-  assert.match(source, /looksLikeAssistantEcho\(text,\s*recentAssistant\)/);
-});
-
-test('voice mirrors finalized assistant text in complete transcript format', () => {
-  assert.match(source, /type:\s*'transcript'/);
-  assert.match(source, /role:\s*'assistant'/);
-  assert.match(source, /text:\s*reply/);
-});
-
-test('legacy health contract still exposes v16 architecture while v17 hotfix is additive', () => {
-  assert.match(source, /VOICE_REVISION\s*=\s*'cloudflare-live-v16\.0'/);
-  assert.match(source, /webSearchPolicy:\s*'contextual-multi-query-high-reasoning'/);
-  assert.match(source, /groundedLlmModel:\s*GROUNDING_VOICE_MODEL/);
-  assert.match(source, /groundedLlmFallback:\s*GROUNDING_FALLBACK_MODEL/);
-  assert.match(source, /searchQueryPlanner:\s*GROUNDING_VOICE_MODEL/);
-  assert.match(source, /searchFillerModel:\s*SEARCH_FILLER_MODEL/);
-  assert.match(source, /searchReranker:\s*SEARCH_RERANK_MODEL/);
-  assert.match(source, /geminiLivePreferredWhenConfigured:\s*true/);
+test('health contract advertises precision-first verified two-pass search', () => {
+  assert.match(worker, /searchMaxQueries: 8/);
+  assert.match(worker, /searchMaxRounds: 2/);
+  assert.match(worker, /searchAnswerAudit: true/);
+  assert.match(worker, /verified-two-pass-grounded-search/);
+  assert.match(worker, /screenFunction: false/);
+  assert.match(worker, /screenOverlay: false/);
 });
