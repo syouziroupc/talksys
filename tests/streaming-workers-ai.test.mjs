@@ -1,8 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { streamWorkersAIText, readDelta, splitSpeechChunks, LIVE_VOICE_MODEL, liveModelInput } from '../src/streaming-workers-ai.js';
+import {
+  streamWorkersAIText,
+  readDelta,
+  splitSpeechChunks,
+  LIVE_VOICE_MODEL,
+  GROUNDING_VOICE_MODEL,
+  GROUNDING_FALLBACK_MODEL,
+  liveModelInput,
+  isGroundedInput,
+  withGroundedAnswerPolicy,
+} from '../src/streaming-workers-ai.js';
 
-test('live voice uses one Qwen 3.8 27B model', () => {
+test('live voice uses Qwen 3.8 27B with thinking disabled', () => {
   assert.equal(LIVE_VOICE_MODEL, '@cf/qwen/qwen3.8-27b');
   const input = liveModelInput({ messages: [], max_tokens: 220, temperature: 0.3 });
   assert.equal(input.stream, true);
@@ -25,18 +35,51 @@ test('splitSpeechChunks emits completed Japanese sentences early', () => {
   assert.deepEqual(final.chunks, ['次の文は途中']);
 });
 
-test('streamWorkersAIText ignores logical tier and streams the unified live model', async () => {
+test('grounded marker is detected and policy forbids user-supplied-search phrasing', () => {
+  const input = {
+    messages: [
+      { role: 'system', content: '検索結果だけを根拠にする。' },
+      { role: 'user', content: '大分から大阪への便はある？\n\n[ウェブ検索結果]\n[1] 時刻表' },
+    ],
+  };
+  assert.equal(isGroundedInput(input), true);
+  const prepared = withGroundedAnswerPolicy(input);
+  assert.match(prepared.messages[0].content, /検索責任をユーザーへ返す表現は禁止/);
+  assert.match(prepared.messages[0].content, /一段階で導ける結論/);
+});
+
+test('grounded policy allows useful advice when retrieved evidence is irrelevant', () => {
+  const input = {
+    messages: [
+      { role: 'system', content: 'grounded' },
+      { role: 'assistant', content: '3万円くらいならネット閲覧と動画視聴向けのノートPCを考えましょう。' },
+      { role: 'user', content: 'どこで買うのがいいかな\n\n[ウェブ検索結果]\n有効な検索結果なし。外部事実は推測しないこと。' },
+    ],
+  };
+  const prepared = withGroundedAnswerPolicy(input);
+  const policy = prepared.messages[0].content;
+  assert.match(policy, /回答全体を拒否しない/);
+  assert.match(policy, /目的、予算、対象商品、用途/);
+  assert.match(policy, /購入チャネル/);
+  assert.match(policy, /最新価格、在庫、営業時間/);
+});
+
+test('search-grounded voice routes to DeepSeek V4 Pro instead of the live model', async () => {
+  assert.equal(GROUNDING_VOICE_MODEL, '@cf/deepseek-ai/deepseek-v4-pro-0813');
   const encoder = new TextEncoder();
   const chunks = [
-    'data: {"choices":[{"delta":{"content":"最初の答えです。"}}]}\n\n',
-    'data: {"choices":[{"delta":{"content":"続きも説明します。"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"あります。"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"時刻表でも確認できます。"}}]}\n\n',
     'data: [DONE]\n\n',
   ];
+  const called = [];
   const ai = {
     async run(model, input) {
-      assert.equal(model, LIVE_VOICE_MODEL);
+      called.push(model);
+      assert.equal(model, GROUNDING_VOICE_MODEL);
       assert.equal(input.stream, true);
-      assert.equal(input.chat_template_kwargs.enable_thinking, false);
+      assert.ok(input.max_completion_tokens >= 400);
+      assert.match(input.messages[0].content, /ユーザーが提示した資料ではない/);
       return new ReadableStream({
         start(controller) {
           for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
@@ -46,12 +89,73 @@ test('streamWorkersAIText ignores logical tier and streams the unified live mode
     },
   };
   const spoken = [];
-  const text = await streamWorkersAIText(ai, '@cf/openai/gpt-oss-120b', { messages: [] }, {
+  const text = await streamWorkersAIText(ai, LIVE_VOICE_MODEL, {
+    max_completion_tokens: 520,
+    messages: [
+      { role: 'system', content: 'grounded' },
+      { role: 'user', content: '[ウェブ検索結果]\n時刻表' },
+    ],
+  }, {
     onSpeechChunk(chunk, sequence) { spoken.push({ chunk, sequence }); },
   });
-  assert.equal(text, '最初の答えです。続きも説明します。');
+  assert.deepEqual(called, [GROUNDING_VOICE_MODEL]);
+  assert.equal(text, 'あります。時刻表でも確認できます。');
   assert.deepEqual(spoken, [
-    { chunk: '最初の答えです。', sequence: 0 },
-    { chunk: '続きも説明します。', sequence: 1 },
+    { chunk: 'あります。', sequence: 0 },
+    { chunk: '時刻表でも確認できます。', sequence: 1 },
   ]);
+});
+
+test('DeepSeek opening failure falls back to gpt-oss grounded model', async () => {
+  assert.equal(GROUNDING_FALLBACK_MODEL, '@cf/openai/gpt-oss-120b');
+  const encoder = new TextEncoder();
+  const called = [];
+  const ai = {
+    async run(model) {
+      called.push(model);
+      if (model === GROUNDING_VOICE_MODEL) throw new Error('primary grounded unavailable');
+      assert.equal(model, GROUNDING_FALLBACK_MODEL);
+      return new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"代替回答です。"}}]}\n\n'));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+    },
+  };
+  const text = await streamWorkersAIText(ai, LIVE_VOICE_MODEL, {
+    messages: [
+      { role: 'system', content: 'grounded' },
+      { role: 'user', content: '[ウェブ検索結果]\n根拠' },
+    ],
+  });
+  assert.deepEqual(called, [GROUNDING_VOICE_MODEL, GROUNDING_FALLBACK_MODEL]);
+  assert.equal(text, '代替回答です。');
+});
+
+test('both grounded models failing falls back to live model', async () => {
+  const encoder = new TextEncoder();
+  const called = [];
+  const ai = {
+    async run(model) {
+      called.push(model);
+      if (model === GROUNDING_VOICE_MODEL || model === GROUNDING_FALLBACK_MODEL) throw new Error('grounding unavailable');
+      return new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"最終フォールバックです。"}}]}\n\n'));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+    },
+  };
+  const text = await streamWorkersAIText(ai, LIVE_VOICE_MODEL, {
+    messages: [
+      { role: 'system', content: 'grounded' },
+      { role: 'user', content: '[ウェブ検索結果]\n根拠' },
+    ],
+  });
+  assert.deepEqual(called, [GROUNDING_VOICE_MODEL, GROUNDING_FALLBACK_MODEL, LIVE_VOICE_MODEL]);
+  assert.equal(text, '最終フォールバックです。');
 });

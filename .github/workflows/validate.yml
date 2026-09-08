@@ -1,0 +1,33 @@
+name: Validate TalkSys
+
+on:
+  pull_request:
+  push:
+    branches: [main, fix/search-grounding-v16]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check src/worker.js
+          node --check src/web-search.js
+          node --check src/search-rerank.js
+          node --check src/search-orchestrator.js
+          node --check src/streaming-workers-ai.js
+          node --check tests/search-orchestrator.test.mjs
+          node --check tests/streaming-workers-ai.test.mjs
+          node --check tests/voice-llm-contract.test.mjs
+
+      - name: Run full test suite
+        run: npm test
+
+      - name: Check Wrangler bundle
+        run: npx wrangler deploy --dry-run

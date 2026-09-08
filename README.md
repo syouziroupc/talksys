@@ -44,9 +44,11 @@ Workers AIの`x-session-affinity`を会話セッション単位で付与し、�
 - typed chat / voiceは同じAgent WebSocketを共有
 - 普通の会話は検索しない
 - 外部事実が必要な質問だけWeb検索
+- 「どこで買うのがいいかな」「大阪は？」「それならどっち？」のように検索対象を直前会話へ依存する短いフォローアップは、文脈を失った単独Web検索へ送らず、会話履歴を使って回答する
+- 検索結果が質問と明らかにずれた場合も、それだけを理由に回答不能にはせず、会話履歴から一般的な助言を続ける。ただし最新価格・在庫・営業時間など未確認の現在情報は断定しない
 - Google HTML / DuckDuckGo HTML / Bing HTML / 日本語Wikipedia / Google News RSS
 - 取得ページ本文のevidence抽出
-- `@cf/baai/bge-reranker-base` によるreranking
+- `@cf/baai/bge-reranker-base` によるreranking。snippetだけでなく取得本文excerptも評価対象にする
 - 検索中は先に短い待ち発話を返してTTSを開始
 
 ## Web版の主なroute

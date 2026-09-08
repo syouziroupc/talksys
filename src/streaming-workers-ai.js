@@ -1,4 +1,9 @@
 export const LIVE_VOICE_MODEL = '@cf/qwen/qwen3.8-27b';
+export const GROUNDING_VOICE_MODEL = '@cf/deepseek-ai/deepseek-v4-pro-0813';
+export const GROUNDING_FALLBACK_MODEL = '@cf/openai/gpt-oss-120b';
+
+const GROUNDED_MARKER_RE = /\[(?:ウェブ検索結果|Web検索で取得した根拠)\]/i;
+const GROUNDED_ANSWER_POLICY = `\n追加ルール:\n- 検索結果はシステムが取得した根拠であり、ユーザーが提示した資料ではない。「いただいた検索結果」「ご提示いただいた情報」「具体的な情報源を提示して」のように、検索責任をユーザーへ返す表現は禁止。\n- 質問にまず直接答える。検索結果に時刻表、経路、公式案内、製品仕様など質問と同義の事実があれば、質問文との完全一致を要求しない。根拠から一段階で導ける結論は答えてよい。\n- 検索結果の一部だけが不足していても、確認できた範囲は具体的に答える。証拠が本当に足りない部分だけを不明とする。\n- 検索結果が今回の質問と明らかに無関係、または検索語が会話文脈を落としている場合、その検索失敗を理由に回答全体を拒否しない。直前の会話にある目的、予算、対象商品、用途などを使い、一般的な助言・選び方・比較軸はそのまま答える。\n- 検索で裏取りできていない最新価格、在庫、営業時間、販売中かどうか、特定店舗が現在最安かどうかは断定しない。必要なら「最新の在庫までは確認できていない」と限定して述べる。\n- 購入先を聞かれた場合、検索結果に有効な販売店情報がなくても、会話文脈から適切な購入チャネルを答えてよい。例: 新品通販、家電量販店、中古PC専門店、メーカー直販。具体的な店名を挙げる場合だけ、検索根拠がある店を優先する。\n- 証拠が不足する場合でも「今の検索では裏を取れなかった」と一言添える程度にし、その後に役立つ回答を続ける。回答不能だけで終わらない。`;
 
 function readDelta(payload) {
   if (!payload || typeof payload !== 'object') return '';
@@ -70,10 +75,62 @@ function liveModelInput(input) {
   };
 }
 
-export async function streamWorkersAIText(ai, _model, input, options = {}) {
+function isGroundedInput(input) {
+  return Array.isArray(input?.messages) && input.messages.some((message) => GROUNDED_MARKER_RE.test(String(message?.content || '')));
+}
+
+function withGroundedAnswerPolicy(input) {
+  if (!isGroundedInput(input) || !Array.isArray(input?.messages)) return input;
+  let amended = false;
+  const messages = input.messages.map((message) => {
+    if (!amended && message?.role === 'system') {
+      amended = true;
+      return { ...message, content: `${String(message.content || '')}${GROUNDED_ANSWER_POLICY}` };
+    }
+    return message;
+  });
+  if (!amended) messages.unshift({ role: 'system', content: GROUNDED_ANSWER_POLICY.trim() });
+  return { ...input, messages };
+}
+
+function modelStreamInput(model, input) {
+  const prepared = withGroundedAnswerPolicy(input);
+  if (model === LIVE_VOICE_MODEL) return liveModelInput(prepared);
+  return {
+    ...prepared,
+    max_completion_tokens: Number(prepared?.max_completion_tokens || prepared?.max_tokens || 520),
+    max_tokens: undefined,
+    stream: true,
+  };
+}
+
+async function openStream(ai, requestedModel, input, signal) {
+  const grounded = isGroundedInput(input);
+  const preferred = grounded ? GROUNDING_VOICE_MODEL : (requestedModel || LIVE_VOICE_MODEL);
+  const candidates = [...new Set([
+    preferred,
+    grounded ? GROUNDING_FALLBACK_MODEL : null,
+    requestedModel,
+    LIVE_VOICE_MODEL,
+  ].filter(Boolean))];
+  let lastError;
+  for (const model of candidates) {
+    try {
+      const stream = await ai.run(model, modelStreamInput(model, input), signal ? { signal } : undefined);
+      if (!(stream instanceof ReadableStream)) throw new Error('Workers AI did not return a readable stream');
+      return { model, stream };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('No Workers AI streaming model was available');
+}
+
+export async function streamWorkersAIText(ai, requestedModel, input, options = {}) {
   const signal = options.signal;
-  const stream = await ai.run(LIVE_VOICE_MODEL, liveModelInput(input), signal ? { signal } : undefined);
-  if (!(stream instanceof ReadableStream)) throw new Error('Workers AI did not return a readable stream');
+  const opened = await openStream(ai, requestedModel, input, signal);
+  const stream = opened.stream;
+  options.onModel?.(opened.model);
 
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -127,4 +184,4 @@ export async function streamWorkersAIText(ai, _model, input, options = {}) {
   return full.trim();
 }
 
-export { readDelta, splitSpeechChunks, liveModelInput };
+export { readDelta, splitSpeechChunks, liveModelInput, modelStreamInput, isGroundedInput, withGroundedAnswerPolicy };

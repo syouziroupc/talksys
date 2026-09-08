@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { needsWebSearch, simplifySearchQuery, parseRss, parseBingHtml, relevanceScore, formatSearchContext } from '../src/web-search.js';
+import {
+  needsWebSearch,
+  looksContextDependentFollowup,
+  simplifySearchQuery,
+  parseRss,
+  parseBingHtml,
+  relevanceScore,
+  formatSearchContext,
+} from '../src/web-search.js';
 
 test('casual Japanese chat, personal advice, and conversation memory skip web search', () => {
   assert.equal(needsWebSearch('こんにちは'), false);
@@ -11,10 +19,21 @@ test('casual Japanese chat, personal advice, and conversation memory skip web se
   assert.equal(needsWebSearch('それどう思う？'), false);
 });
 
-test('current and factual Japanese questions request web search', () => {
+test('short context-dependent follow-ups do not launch contextless searches', () => {
+  assert.equal(looksContextDependentFollowup('どこで買うのがいいかな'), true);
+  assert.equal(looksContextDependentFollowup('大阪は？'), true);
+  assert.equal(looksContextDependentFollowup('それならどっち？'), true);
+  assert.equal(needsWebSearch('どこで買うのがいいかな'), false);
+  assert.equal(needsWebSearch('大阪は？'), false);
+  assert.equal(needsWebSearch('それならどっち？'), false);
+});
+
+test('explicit or self-contained current questions still request web search', () => {
   assert.equal(needsWebSearch('今日のニュースを教えて'), true);
   assert.equal(needsWebSearch('現在の総理大臣は誰'), true);
   assert.equal(needsWebSearch('この商品の今の価格を調べて'), true);
+  assert.equal(needsWebSearch('3万円のノートパソコンで今買えるおすすめを検索して'), true);
+  assert.equal(needsWebSearch('iPhone 17はどこで買うのがいい？'), true);
 });
 
 test('ordinary knowledge questions default to web search', () => {

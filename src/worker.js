@@ -5,9 +5,19 @@ import { REALTIME_VOICE_CLIENT } from './realtime-voice-client.js';
 import { VOICE_MARKER_BRIDGE } from './voice-marker-bridge.js';
 import { VOICE_FALLBACK_CLIENT } from './voice-fallback-client.js';
 import { FinalizableNova3STT, FINAL_STT_MODEL } from './finalizable-nova3.js';
-import { needsWebSearch, webSearch, formatSearchContext } from './web-search.js';
-import { rerankSearchResults, SEARCH_RERANK_MODEL } from './search-rerank.js';
-import { streamWorkersAIText, LIVE_VOICE_MODEL } from './streaming-workers-ai.js';
+import { needsWebSearch, formatSearchContext } from './web-search.js';
+import { SEARCH_RERANK_MODEL } from './search-rerank.js';
+import {
+  streamWorkersAIText,
+  LIVE_VOICE_MODEL,
+  GROUNDING_VOICE_MODEL,
+  GROUNDING_FALLBACK_MODEL,
+} from './streaming-workers-ai.js';
+import {
+  runDeepSearch,
+  generateSearchFiller,
+  SEARCH_FILLER_MODEL,
+} from './search-orchestrator.js';
 import {
   TEXT_MODEL,
   extractText,
@@ -17,16 +27,18 @@ import {
   wrapAI,
 } from './voice-helpers.js';
 
-const VOICE_REVISION = 'accurate-grounded-v12';
+const VOICE_REVISION = 'cloudflare-live-v16.0';
 
 const CASUAL_SYSTEM_PROMPT = `日本語の自然な会話相手として答える。電話会話なので冗長にはしないが、質問・相談・雑談には原則2〜4文で答え、要点だけの一言で終わらせない。まず直接答え、その後に理由・補足・具体例のいずれかを1つ加え、会話を続ける意味があるときだけ短い質問を1つ返す。挨拶、相槌、Yes/Noだけで十分な発話は短くてよい。雑談をPC操作の話にしない。外部の事実・製品・人物・制度・技術仕様などについて検索結果が無い状態では、記憶だけで具体的な数字や現在情報を断定しない。分からない場合は作らず、確認が必要だと短く伝える。定型的な前置き、Markdown、URL読み上げは避ける。`;
 
 const GROUNDED_SYSTEM_PROMPT = `あなたはTalkSysという日本語の音声アシスタントです。電話会話として自然に、通常2〜4文で必要な情報を省略しすぎず答えてください。
 絶対ルール:
-- [ウェブ検索結果] がある外部事実は、その結果だけを根拠として答える。モデルの記憶で固有名詞、数値、日付、仕様を補完しない。
+- [ウェブ検索結果] に含まれる現在の固有事実、数値、日付、価格、在庫、時刻、仕様は検索根拠を優先し、モデルの記憶で勝手に補完しない。
 - 同じ事実を複数の検索結果で確認できる場合は一致を優先する。検索結果が1件しかない場合や結果同士が食い違う場合は、断定を弱めて不確実性を明示する。
-- 現在情報では新しい情報と公的・一次情報を優先する。検索結果に答えが無い場合は推測せず「確認できない」と伝える。
-- 過去のassistant発言は事実の証拠にしない。
+- 現在情報では新しい情報と公的・一次情報を優先する。根拠が不足する部分だけを未確認とし、回答全体を拒否しない。
+- 購入先、おすすめ、比較、選び方などの判断では、検索で確認できた現在情報と、会話中の予算・用途・地域などを組み合わせて実用的な結論を出す。安定した一般知識や論理的な比較は使ってよい。
+- 検索結果が外れていても「ご提示いただいた検索結果」「情報源を提示して」とユーザーへ責任を返さない。今の検索で確認できなかった点を短く限定し、分かる範囲の助言を続ける。
+- 過去のassistant発言は外部事実の証拠にしない。ただし会話上の対象や条件を復元するためには利用してよい。
 - 実際に行っていないPC操作を「開いた」「押した」「変更した」と言わない。
 - 現在画面を断定できるのは [システムが取得した現在画面の情報] が今回の入力にある場合だけ。画面情報に無いボタン名、エラー、配置を作らない。
 - 曖昧な場合は捏造するより短い確認質問をする。
@@ -63,9 +75,9 @@ function casualChatInput(messages) {
 function groundedChatInput(messages) {
   return {
     messages,
-    max_tokens: 440,
-    temperature: 0.12,
-    top_p: 0.88,
+    max_completion_tokens: 620,
+    temperature: 0.1,
+    top_p: 0.9,
   };
 }
 
@@ -116,12 +128,12 @@ function formatScreenContext(screen) {
   return `画面確認結果: 指定対象は特定できませんでした。補足: ${String(result.note || '').slice(0, 300)}`;
 }
 
-function announceSearchWait(connection) {
+function announceSearchWait(connection, text = 'えーと、ちょっと見てみますね。') {
   const streamId = `search-wait-${crypto.randomUUID()}`;
-  const text = 'ちょっと調べますね。';
+  const spoken = cleanSpeechText(text) || 'えーと、ちょっと見てみますね。';
   try { connection.send(JSON.stringify({ type: 'assistant_stream_start', streamId, transient: true })); } catch {}
-  try { connection.send(JSON.stringify({ type: 'assistant_speech_chunk', streamId, sequence: 0, text, transient: true })); } catch {}
-  try { connection.send(JSON.stringify({ type: 'assistant_stream_end', streamId, text, transient: true })); } catch {}
+  try { connection.send(JSON.stringify({ type: 'assistant_speech_chunk', streamId, sequence: 0, text: spoken, transient: true })); } catch {}
+  try { connection.send(JSON.stringify({ type: 'assistant_stream_end', streamId, text: spoken, transient: true })); } catch {}
 }
 
 const VoiceAgentBase = withVoice(Agent, {
@@ -203,6 +215,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     const searchIntent = !screenIntent && needsWebSearch(transcript);
     let screenContext = '';
     let searchContext = '';
+    let resolvedSearchQuestion = '';
 
     if (screenIntent) {
       try {
@@ -215,26 +228,49 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
         screenContext = '';
       }
     } else if (searchIntent) {
-      announceSearchWait(context.connection);
-      try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'searching', searched: true, waitPhrase: 'ちょっと調べますね。' })); } catch {}
-      const rawResults = await webSearch(transcript, { limit: 8, timeoutMs: 2600 });
-      const results = await rerankSearchResults(this.env.AI, transcript, rawResults, 5);
-      searchContext = formatSearchContext(results) || '有効な検索結果なし。外部事実は推測しないこと。';
+      let searchPending = true;
+      const fillerTask = generateSearchFiller(this.env.AI, transcript, context.messages, context.signal)
+        .then((text) => {
+          if (!searchPending || context.signal?.aborted) return;
+          announceSearchWait(context.connection, text);
+          try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'searching', searched: true, waitPhrase: text, fillerModel: SEARCH_FILLER_MODEL })); } catch {}
+        })
+        .catch(() => {});
+
+      try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'planning', searched: true })); } catch {}
       try {
-        context.connection.send(JSON.stringify({
-          type: 'search_status',
-          phase: 'done',
-          searched: true,
-          resultCount: results.length,
-          reranked: rawResults.length > 1,
-          sources: results.slice(0, 3).map((item) => ({ title: item.title, url: item.url, engine: item.engine || '' })),
-        }));
-      } catch {}
+        const deepSearch = await runDeepSearch(this.env.AI, transcript, context.messages, context.signal, { timeoutMs: 3800 });
+        searchPending = false;
+        resolvedSearchQuestion = deepSearch.plan?.resolvedQuestion || transcript;
+        const results = deepSearch.results || [];
+        searchContext = formatSearchContext(results) || '有効な検索結果なし。現在情報は断定せず、会話文脈から一般的な助言を続けること。';
+        try {
+          context.connection.send(JSON.stringify({
+            type: 'search_status',
+            phase: 'done',
+            searched: true,
+            resultCount: results.length,
+            reranked: deepSearch.rawResults.length > 1,
+            planned: Boolean(deepSearch.plan?.planned),
+            queries: (deepSearch.plan?.queries || []).slice(0, 3),
+            sources: results.slice(0, 4).map((item) => ({ title: item.title, url: item.url, engine: item.engine || '' })),
+          }));
+        } catch {}
+      } catch {
+        searchPending = false;
+        resolvedSearchQuestion = transcript;
+        searchContext = '検索処理で十分な根拠を取得できなかった。現在価格・在庫・時刻などは断定せず、会話文脈から一般的な助言や次の確認方法を答えること。';
+        try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'error', searched: true })); } catch {}
+      }
+      void fillerTask;
     }
 
     let userContent = transcript;
     if (screenContext) userContent += `\n\n[システムが取得した現在画面の情報]\n${screenContext}`;
-    if (searchIntent) userContent += `\n\n[ウェブ検索結果]\n${searchContext}`;
+    if (searchIntent) {
+      if (resolvedSearchQuestion) userContent += `\n\n[システムが解決した検索課題]\n${resolvedSearchQuestion}`;
+      userContent += `\n\n[ウェブ検索結果]\n${searchContext}`;
+    }
 
     const prompt = searchIntent || screenIntent ? GROUNDED_SYSTEM_PROMPT : CASUAL_SYSTEM_PROMPT;
     const input = (searchIntent || screenIntent ? groundedChatInput : casualChatInput)([
@@ -350,9 +386,15 @@ export default {
     if (url.pathname === '/api/web-search' && request.method === 'GET') {
       const query = String(url.searchParams.get('q') || '').trim();
       if (!query) return Response.json({ ok: false, error: 'q is required' }, { status: 400 });
-      const rawResults = await webSearch(query, { limit: 8, timeoutMs: 2800 });
-      const results = await rerankSearchResults(env.AI, query, rawResults, 5);
-      return Response.json({ ok: true, query, reranked: rawResults.length > 1, results }, { headers: { 'cache-control': 'no-store' } });
+      const deepSearch = await runDeepSearch(env.AI, query, [], undefined, { timeoutMs: 4000 });
+      return Response.json({
+        ok: true,
+        query,
+        resolvedQuestion: deepSearch.plan?.resolvedQuestion || query,
+        queries: deepSearch.plan?.queries || [query],
+        reranked: deepSearch.rawResults.length > 1,
+        results: deepSearch.results,
+      }, { headers: { 'cache-control': 'no-store' } });
     }
     if (url.pathname === '/voice-health') {
       return Response.json({
@@ -368,14 +410,20 @@ export default {
         sttBeamSize: 5,
         sttConditionOnPreviousText: false,
         liveLlmModel: LIVE_VOICE_MODEL,
+        groundedLlmModel: GROUNDING_VOICE_MODEL,
+        groundedLlmFallback: GROUNDING_FALLBACK_MODEL,
         llmStreaming: true,
         incrementalSpeechChunks: true,
         casualResponseSentences: '2-4',
         llmTransport: 'env.AI.run-stream',
         casualConversation: true,
         webSearch: true,
-        webSearchPolicy: 'knowledge-questions-default-search',
-        webSearchEngine: 'wikipedia+bing-html+google-news',
+        webSearchPolicy: 'contextual-multi-query-high-reasoning',
+        webSearchEngine: 'google+duckduckgo+bing+wikipedia+google-news',
+        searchQueryPlanner: GROUNDING_VOICE_MODEL,
+        searchFillerModel: SEARCH_FILLER_MODEL,
+        searchFillerSpeech: true,
+        searchMultiQuery: true,
         searchRelevanceFilter: true,
         searchReranker: SEARCH_RERANK_MODEL,
         searchWaitSpeech: true,

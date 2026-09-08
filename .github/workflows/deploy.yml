@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: cloudflare-live-v15.0
+      EXPECTED_VOICE_REVISION: cloudflare-live-v16.0
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -31,6 +31,8 @@ jobs:
           node --check src/worker.js
           node --check src/web-search.js
           node --check src/search-rerank.js
+          node --check src/search-orchestrator.js
+          node --check src/streaming-workers-ai.js
           node --check src/voice-helpers.js
           node --check desktop/main.cjs
           node --check desktop/preload.cjs
@@ -47,7 +49,7 @@ jobs:
           NODE
           node --check /tmp/talksys-browser.js
 
-      - name: Run v15 architecture and Worker API tests
+      - name: Run v16 architecture and Worker API tests
         run: npm test
 
       - name: Check Wrangler bundle
@@ -134,6 +136,6 @@ jobs:
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "::error::Production is stale and deployment is blocked because CLOUDFLARE_API_TOKEN and/or CLOUDFLARE_ACCOUNT_ID are not configured in GitHub Actions secrets."
           else
-            echo "::error::Deployment completed or was attempted, but production revision does not match the expected v15 revision."
+            echo "::error::Deployment completed or was attempted, but production revision does not match the expected v16 revision."
           fi
           exit 1
