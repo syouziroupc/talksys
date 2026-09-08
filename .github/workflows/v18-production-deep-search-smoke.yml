@@ -1,0 +1,125 @@
+name: V18 production deep-search smoke
+
+on:
+  push:
+    branches: [test/v18-production-deep-search]
+    paths:
+      - '.github/workflows/v18-production-deep-search-smoke.yml'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Exercise isolated production phone-search conversation
+        shell: bash
+        run: |
+          node <<'NODE'
+          const session = `smoke-v18-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          const ws = new WebSocket(`wss://talksys.syouziroupc.workers.dev/agents/talk-sys-voice-agent/${session}`);
+          const banned = /(ご提示いただいた|いただいた検索結果|情報源を提示|ページや情報があれば|改めてご提示|裏付けが十分ではありません|回答を差し上げることができません|確認できる範囲の選び方や比較なら続けられます)/i;
+          const forbiddenHallucination = /(パソコン工房\s*別府店)/i;
+          const turns = [
+            { text: 'パソコンを3万円ぐらいで探しています。ネット閲覧と動画視聴が中心です。', requireSearch: false },
+            { text: 'どこで買えばいいかわからなくて...', requireSearch: true },
+            { text: '調べてくれない？', requireSearch: true },
+            { text: '例えば別府市内で買うならどこがいいのかな', requireSearch: true, requireTwoPass: true, local: true },
+          ];
+
+          let welcomed = false;
+          let pending = null;
+          let assistantText = '';
+          let currentStatuses = [];
+          const records = [];
+
+          function waitReply(turn) {
+            return new Promise((resolve, reject) => {
+              assistantText = '';
+              currentStatuses = [];
+              const timer = setTimeout(() => {
+                if (pending?.resolve === resolve) pending = null;
+                reject(new Error(`timeout waiting for: ${turn.text}`));
+              }, 100000);
+              pending = { resolve, reject, timer, turn };
+              ws.send(JSON.stringify({ type: 'text_message', text: turn.text }));
+            });
+          }
+
+          function finish(finalText) {
+            if (!pending) return;
+            const value = String(finalText || assistantText || '').trim();
+            if (!value) return;
+            const item = pending;
+            clearTimeout(item.timer);
+            pending = null;
+            item.resolve({ text: value, statuses: currentStatuses.slice() });
+          }
+
+          ws.addEventListener('message', (event) => {
+            if (typeof event.data !== 'string') return;
+            let data;
+            try { data = JSON.parse(event.data); } catch { return; }
+            if (data.type === 'welcome') { welcomed = true; return; }
+            if (data.type === 'search_status') {
+              currentStatuses.push(data);
+              console.log('SEARCH_STATUS:', JSON.stringify(data));
+              return;
+            }
+            if (data.type === 'transcript_start' && data.role === 'assistant') assistantText = '';
+            if (data.type === 'transcript_delta') assistantText += String(data.text || '');
+            if (data.type === 'transcript_end') finish(data.text);
+            if (data.type === 'transcript' && data.role === 'assistant' && data.text) finish(data.text);
+            if (data.type === 'error' && pending) {
+              const item = pending;
+              clearTimeout(item.timer);
+              pending = null;
+              item.reject(new Error(String(data.message || 'agent error')));
+            }
+          });
+
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('websocket welcome timeout')), 20000);
+            ws.addEventListener('open', () => {
+              ws.send(JSON.stringify({ type: 'hello', protocol_version: 1 }));
+              const poll = setInterval(() => {
+                if (!welcomed) return;
+                clearInterval(poll);
+                clearTimeout(timer);
+                resolve();
+              }, 50);
+            }, { once: true });
+            ws.addEventListener('error', () => reject(new Error('websocket connection error')), { once: true });
+          });
+
+          for (const turn of turns) {
+            const reply = await waitReply(turn);
+            const done = reply.statuses.filter((x) => x.phase === 'done').at(-1) || null;
+            console.log('\nUSER:', turn.text);
+            console.log('ASSISTANT:', reply.text);
+            console.log('FINAL_SEARCH_META:', JSON.stringify(done));
+
+            if (banned.test(reply.text)) throw new Error(`evasive answer: ${reply.text}`);
+            if (forbiddenHallucination.test(reply.text)) throw new Error(`known hallucinated store returned: ${reply.text}`);
+            if (reply.text.length < 18) throw new Error(`answer too thin: ${reply.text}`);
+
+            if (turn.requireSearch) {
+              if (!done) throw new Error(`no completed search status for: ${turn.text}`);
+              if (!Array.isArray(done.queries) || done.queries.length < 4) throw new Error(`too few contextual queries: ${JSON.stringify(done)}`);
+              if (!Array.isArray(done.sources) || done.sources.length < 1) throw new Error(`no retrieved sources: ${JSON.stringify(done)}`);
+              if (!done.resolvedQuestion || String(done.resolvedQuestion).length < 5) throw new Error(`missing resolved question: ${JSON.stringify(done)}`);
+            }
+            if (turn.requireTwoPass && Number(done?.rounds) !== 2) throw new Error(`expected two-pass search: ${JSON.stringify(done)}`);
+            if (turn.local) {
+              if (!/別府/.test(String(done?.resolvedQuestion || ''))) throw new Error(`local context lost: ${JSON.stringify(done)}`);
+              if (!done.queries.some((q) => /別府/.test(String(q)))) throw new Error(`no Beppu query generated: ${JSON.stringify(done.queries)}`);
+            }
+            records.push({ turn: turn.text, answer: reply.text, search: done });
+          }
+
+          ws.close();
+          console.log('\nV18_PRODUCTION_DEEP_SEARCH_SMOKE=PASS');
+          console.log(JSON.stringify(records, null, 2));
+          NODE
