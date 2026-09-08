@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { heuristicContextQuery, shouldDeepSearch, sanitizeFiller } from '../src/search-orchestrator.js';
+import { normalizeJapaneseTtsText } from '../src/cloudflare-japanese-tts.js';
 import {
   beginCallSession,
   appendConversationTurn,
@@ -16,7 +17,6 @@ const worker = await readFile(new URL('../src/worker-v14.js', import.meta.url), 
 const client = await readFile(new URL('../src/cloudflare-live-client.js', import.meta.url), 'utf8');
 const orchestrator = await readFile(new URL('../src/search-orchestrator.js', import.meta.url), 'utf8');
 const bounded = await readFile(new URL('../src/bounded-conversation.js', import.meta.url), 'utf8');
-const tts = await readFile(new URL('../src/cloudflare-japanese-tts.js', import.meta.url), 'utf8');
 
 const history = [
   { role: 'user', content: '東京から前橋まで行かないとなんだけど、どうやって行こうか悩んでる' },
@@ -67,6 +67,19 @@ test('call session starts fresh, keeps context during the call, and is erased on
   assert.deepEqual(getConversationHistory(connection), []);
 });
 
+test('two simultaneous callers never share ephemeral conversation memory', () => {
+  const a = fakeConnection('caller-a');
+  const b = fakeConnection('caller-b');
+  beginCallSession(a);
+  beginCallSession(b);
+  appendConversationTurn(a, 'Aだけの相談です', 'Aとして覚えます。');
+  appendConversationTurn(b, 'Bだけの相談です', 'Bとして覚えます。');
+  assert.match(getConversationHistory(a)[0].content, /Aだけ/);
+  assert.doesNotMatch(getConversationHistory(a).map((x) => x.content).join(' '), /Bだけ/);
+  assert.match(getConversationHistory(b)[0].content, /Bだけ/);
+  assert.doesNotMatch(getConversationHistory(b).map((x) => x.content).join(' '), /Aだけ/);
+});
+
 test('persistent caller identity only activates after server-side trusted binding', () => {
   const connection = fakeConnection('phone-call');
   assert.equal(trustedCallerIdentity(connection), '');
@@ -102,10 +115,13 @@ test('normal replies have hard startup bounds while complex non-search turns can
   assert.match(bounded, /QUALITY_CONVERSATION_MODEL, LIVE_CONVERSATION_MODEL/);
 });
 
-test('reply audio is normalized and playback is tuned for speech intelligibility', () => {
-  assert.match(tts, /Windows\\s\*11/);
-  assert.match(tts, /Gbps/);
-  assert.match(tts, /Mbps/);
+test('reply audio normalizes technical Japanese and playback is tuned for intelligibility', () => {
+  const spoken = normalizeJapaneseTtsText('Windows 11、SSD 256GB、1Gbps、100Mbps');
+  assert.match(spoken, /ウィンドウズ イレブン/);
+  assert.match(spoken, /エスエスディー/);
+  assert.match(spoken, /256ギガバイト/);
+  assert.match(spoken, /1ギガビーピーエス/);
+  assert.match(spoken, /100メガビーピーエス/);
   assert.match(client, /utterance\.rate = 0\.95/);
   assert.match(client, /highpass\.frequency\.value = 90/);
   assert.match(client, /presence\.frequency\.value = 2800/);
