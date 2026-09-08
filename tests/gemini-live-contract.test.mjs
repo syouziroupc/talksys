@@ -19,27 +19,33 @@ import {
 import { SEARCH_FILLER_MODEL, SEARCH_MAX_QUERIES, SEARCH_MAX_ROUNDS } from '../src/search-orchestrator.js';
 
 const workerSource = fs.readFileSync(new URL('../src/worker-v14.js', import.meta.url), 'utf8');
-const indexSource = fs.readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
+const productionWorkerSource = fs.readFileSync(new URL('../src/worker-v19.js', import.meta.url), 'utf8');
+const indexSource = fs.readFileSync(new URL('../src/index-v19.js', import.meta.url), 'utf8');
 const sttSource = fs.readFileSync(new URL('../src/cloudflare-japanese-stt.js', import.meta.url), 'utf8');
 const llmSource = fs.readFileSync(new URL('../src/cloudflare-llm.js', import.meta.url), 'utf8');
 const boundedSource = fs.readFileSync(new URL('../src/bounded-conversation.js', import.meta.url), 'utf8');
 const memorySource = fs.readFileSync(new URL('../src/conversation-memory.js', import.meta.url), 'utf8');
 const searchSource = fs.readFileSync(new URL('../src/search-orchestrator.js', import.meta.url), 'utf8');
+const searchV19Source = fs.readFileSync(new URL('../src/search-v19.js', import.meta.url), 'utf8');
 const auditSource = fs.readFileSync(new URL('../src/search-answer-v18.js', import.meta.url), 'utf8');
 const fallbackSource = fs.readFileSync(new URL('../src/search-fallbacks.js', import.meta.url), 'utf8');
 const webSource = fs.readFileSync(new URL('../src/web-search.js', import.meta.url), 'utf8');
 const ttsSource = fs.readFileSync(new URL('../src/cloudflare-japanese-tts.js', import.meta.url), 'utf8');
 const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
-test('v18.6 production entrypoint is phone consultation only and keyless', () => {
-  assert.match(wranglerSource, /"main":\s*"src\/worker-v14\.js"/);
-  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v18\.6'/);
+test('v19 production entrypoint wraps the validated phone runtime and stays keyless', () => {
+  assert.match(wranglerSource, /"main":\s*"src\/worker-v19\.js"/);
+  assert.match(productionWorkerSource, /VOICE_REVISION = 'cloudflare-live-v19\.0'/);
+  assert.match(productionWorkerSource, /extends BaseTalkSysVoiceAgent/);
+  assert.match(productionWorkerSource, /searchPlannerBeforeRetrieval: true/);
+  assert.match(productionWorkerSource, /searchRawConversationSeedDisabled: true/);
+  assert.match(productionWorkerSource, /searchProcessTraceExposesPrivateReasoning: false/);
   assert.match(workerSource, /mode: 'phone-consultation-only'/);
   assert.match(workerSource, /providerApiKeysRequired: false/);
   assert.match(workerSource, /screenFunction: false/);
   assert.match(workerSource, /screenOverlay: false/);
-  assert.doesNotMatch(workerSource + CLOUDFLARE_LIVE_CLIENT + indexSource + sttSource + llmSource + ttsSource, /GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/);
-  assert.doesNotMatch(workerSource, /screen_request|requestScreen|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
+  assert.doesNotMatch(workerSource + productionWorkerSource + CLOUDFLARE_LIVE_CLIENT + indexSource + sttSource + llmSource + ttsSource, /GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/);
+  assert.doesNotMatch(workerSource + productionWorkerSource, /screen_request|requestScreen|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
   assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /screenToggle|screenVideo|drawArrow|\/api\/locate|screen_request/);
 });
 
@@ -75,20 +81,18 @@ test('live Qwen route disables thinking and bounded conversation enforces startu
   assert.match(workerSource, /openTimeoutMs: 1900/);
 });
 
-test('factual search uses current conversation context, up to eight queries and recovery coverage', () => {
+test('factual search plans from conversation context before v19 retrieval and retains recovery coverage', () => {
   assert.equal(SEARCH_MAX_QUERIES, 8);
   assert.equal(SEARCH_MAX_ROUNDS, 2);
   for (const required of ['google-html', 'duckduckgo-html', 'bing-html', 'wikipedia-ja', 'google-news']) assert.match(webSource, new RegExp(required));
   assert.match(searchSource, /6〜8本/);
-  assert.match(searchSource, /assessCoverage/);
-  assert.match(searchSource, /shouldForceSecondPass/);
-  assert.match(searchSource, /searchBingRss/);
-  assert.match(searchSource, /searchOpenStreetMapLocal/);
-  assert.match(searchSource, /rerankSearchResults/);
+  assert.match(searchV19Source, /const plan = await resolvePlan\(ai, question, history, options\)/);
+  assert.match(searchV19Source, /const search = await runSearch\(ai, plan, options\)/);
+  assert.match(searchV19Source, /rerankSearchResults/);
   assert.match(fallbackSource, /format=rss/);
   assert.match(workerSource, /shouldDeepSearch\(transcript, history\)/);
-  assert.match(workerSource, /answerWithVerifiedWebSearch/);
-  assert.match(workerSource, /verified-context-search/);
+  assert.match(productionWorkerSource, /answerWithContextualVerifiedSearchV19/);
+  assert.match(productionWorkerSource, /verified-context-search-v19/);
 });
 
 test('search wait speech is contextual and cannot fall back to unknown-search nonsense', () => {
@@ -96,8 +100,8 @@ test('search wait speech is contextual and cannot fall back to unknown-search no
   assert.match(searchSource, /回答・推測・店名の新規生成は禁止/);
   assert.match(searchSource, /前の話を踏まえて確認しています/);
   assert.match(searchSource, /検索内容(?:が)?不明/);
-  assert.match(workerSource, /Promise\.race/);
-  assert.match(workerSource, /searchFillerGeneratedInParallel: true/);
+  assert.match(productionWorkerSource, /Promise\.race/);
+  assert.match(productionWorkerSource, /前の話を踏まえて確認しています/);
   assert.match(CLOUDFLARE_LIVE_CLIENT, /前の話を踏まえて確認しています/);
 });
 
@@ -117,8 +121,8 @@ test('answer layer audits unsupported proper nouns against retrieved evidence', 
   assert.match(auditSource, /unsupportedNamedCandidates/);
   assert.match(auditSource, /根拠にない名前を絶対に残さない/);
   assert.match(auditSource, /sourceTitleRescue/);
-  assert.match(workerSource, /searchAnswerAudit: true/);
-  assert.match(workerSource, /auditPassed/);
+  assert.match(searchV19Source, /unsupportedNamedCandidates/);
+  assert.match(searchV19Source, /auditAnswer/);
 });
 
 test('server TTS and browser playback are tuned for clearer Japanese speech', () => {
