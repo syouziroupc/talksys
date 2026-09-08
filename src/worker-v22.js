@@ -3,6 +3,8 @@ import {
   streamBoundedLiveConversation,
   streamBoundedQualityConversation,
 } from './bounded-conversation.js';
+import { ensureConnectionSession } from './conversation-memory.js';
+import { cleanSpeechText } from './voice-helpers.js';
 import {
   groundingDecisionV22,
   requiresGroundingSearchV22,
@@ -65,6 +67,22 @@ function normalMessages(history, transcript, quality = false) {
   ];
 }
 
+function safeRetryMessages(history, userText, partial = '') {
+  const messages = [
+    { role: 'system', content: NON_GROUNDED_SYSTEM_PROMPT },
+    ...(Array.isArray(history) ? history.slice(-14) : []),
+    { role: 'user', content: String(userText || '').trim() },
+  ];
+  if (partial) {
+    messages.push({ role: 'assistant', content: partial });
+    messages.push({
+      role: 'user',
+      content: '直前の回答は途中まで届いています。外部事実を追加せず、内容を繰り返さずに自然な続きだけ返してください。',
+    });
+  }
+  return messages;
+}
+
 function evidenceMessages(history, transcript, result) {
   const sources = Array.isArray(result.sources) ? result.sources.slice(0, 10) : [];
   const compact = sources.map((item, index) => {
@@ -86,6 +104,69 @@ function evidenceMessages(history, transcript, result) {
 }
 
 export class TalkSysVoiceAgent extends TalkSysVoiceAgentV21 {
+  trackAssistant(iterable, context, tier, userText = '') {
+    const self = this;
+    const connection = connectionFrom(context);
+    return (async function* () {
+      ensureConnectionSession(connection);
+      const runtime = self.runtimeFor(connection);
+      runtime.currentAssistantText = '';
+      runtime.assistantSpeechAt = Date.now();
+      let failed = false;
+
+      try {
+        send(connection, { type: 'model_route', tier });
+        for await (const delta of iterable) {
+          const value = String(delta || '');
+          if (!value) continue;
+          runtime.currentAssistantText += value;
+          yield value;
+        }
+      } catch {
+        failed = true;
+      }
+
+      if (failed && !String(tier || '').includes('search')) {
+        const partial = cleanSpeechText(runtime.currentAssistantText);
+        try {
+          const history = self.getTalkSysHistory(connection);
+          const retry = streamBoundedQualityConversation(
+            self.env.AI,
+            safeRetryMessages(history, userText, partial),
+            {
+              signal: context?.signal,
+              maxTokens: partial ? 160 : 280,
+              openTimeoutMs: 3000,
+              firstTokenTimeoutMs: 3300,
+              fallbackTimeoutMs: 4000,
+              sessionAffinity: sessionAffinity(context),
+            },
+          );
+          for await (const delta of retry) {
+            const value = String(delta || '');
+            if (!value) continue;
+            runtime.currentAssistantText += value;
+            yield value;
+          }
+        } catch {}
+      }
+
+      if (!runtime.currentAssistantText) {
+        const safeFailure = String(tier || '').includes('search')
+          ? '確認できる根拠が揃わなかったため、推測で案内することは避けます。'
+          : '現在この回答を生成できません。';
+        runtime.currentAssistantText = safeFailure;
+        yield safeFailure;
+      }
+
+      const clean = cleanSpeechText(runtime.currentAssistantText);
+      if (clean) runtime.lastAssistantText = clean;
+      self.rememberConversationTurn(context, userText, clean);
+      runtime.currentAssistantText = '';
+      runtime.assistantSpeechAt = Date.now();
+    })();
+  }
+
   async collectSearchEvidence(query, transcript, history, context) {
     const connection = connectionFrom(context);
     const started = Date.now();
@@ -262,6 +343,7 @@ export default {
         groundingByDefault: true,
         factualQuestionsSearchByDefault: true,
         nonSearchRouteExternalFactAssertionsForbidden: true,
+        retryRouteExternalFactAssertionsForbidden: true,
         evidenceOnlyExternalFacts: true,
         insufficientEvidenceStopsAssertion: true,
         contextualFollowupGrounding: true,
