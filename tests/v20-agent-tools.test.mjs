@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { requiresFreshSearch } from '../src/search-policy-v20.js';
-import { compactToolEvidence } from '../src/search-tool-v20.js';
+import { compactToolEvidence, resolveSearchSeed } from '../src/search-tool-v20.js';
 
 const worker = fs.readFileSync(new URL('../src/worker-v20.js', import.meta.url), 'utf8');
 const searchTool = fs.readFileSync(new URL('../src/search-tool-v20.js', import.meta.url), 'utf8');
@@ -33,8 +33,36 @@ test('fresh or location-sensitive facts have a narrow mandatory search safety gu
   assert.equal(requiresFreshSearch('最新ニュースを調べて'), true);
 });
 
+test('mandatory search restores arbitrary non-PC subjects from recent user context', () => {
+  const history = [
+    { role: 'user', content: 'AirPods Pro 4がほしい' },
+    { role: 'assistant', content: '用途を確認します。' },
+  ];
+  const seed = resolveSearchSeed('どこで買える？', history);
+  assert.match(seed, /AirPods Pro 4/);
+  assert.match(seed, /どこで買える/);
+});
+
+test('short location-dependent follow-up carries the previous user location without assistant text', () => {
+  const history = [
+    { role: 'user', content: '福岡市に旅行する予定' },
+    { role: 'assistant', content: '架空の店名を混ぜないでください' },
+    { role: 'user', content: 'ホテルを探したい' },
+  ];
+  const seed = resolveSearchSeed('安いのある？', history);
+  assert.match(seed, /福岡市/);
+  assert.match(seed, /ホテルを探したい/);
+  assert.doesNotMatch(seed, /架空の店名/);
+});
+
+test('self-contained search questions are not polluted by unrelated old context', () => {
+  const history = [{ role: 'user', content: '昨日はパソコンの話をしていた' }];
+  assert.equal(resolveSearchSeed('東京駅の営業時間を調べて', history), '東京駅の営業時間を調べて');
+});
+
 test('v20 search tool returns evidence rather than a separately generated answer', () => {
   assert.match(searchTool, /collectWebEvidenceV20/);
+  assert.match(searchTool, /resolveSearchSeed/);
   assert.match(searchTool, /webSearch/);
   assert.match(searchTool, /searchBingRss/);
   assert.match(searchTool, /formatSearchContext/);
