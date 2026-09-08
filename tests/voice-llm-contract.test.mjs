@@ -13,6 +13,7 @@ const cloudflareLlm = await readFile(new URL('../src/cloudflare-llm.js', import.
 const japaneseTts = await readFile(new URL('../src/cloudflare-japanese-tts.js', import.meta.url), 'utf8');
 const reranker = await readFile(new URL('../src/search-rerank.js', import.meta.url), 'utf8');
 const index = await readFile(new URL('../src/index.js', import.meta.url), 'utf8');
+const memory = await readFile(new URL('../src/conversation-memory.js', import.meta.url), 'utf8');
 
 test('voice keeps fast live model and high-accuracy grounded cascade', () => {
   assert.match(streaming, /LIVE_VOICE_MODEL\s*=\s*'@cf\/qwen\/qwen3\.8-27b'/);
@@ -22,25 +23,33 @@ test('voice keeps fast live model and high-accuracy grounded cascade', () => {
   assert.match(streaming, /enable_thinking:\s*false/);
 });
 
-test('v18 phone runtime has no screen overlay or screenshot routing', () => {
-  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.5'/);
+test('v18.6 phone runtime has no screen overlay or screenshot routing', () => {
+  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.6'/);
   assert.match(worker, /mode: 'phone-consultation-only'/);
   assert.doesNotMatch(worker, /requestScreen|screen_request|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
   assert.doesNotMatch(liveClient, /screenToggle|screenVideo|drawArrow|handleScreenRequest|api\/locate/);
   assert.doesNotMatch(index, /画面共有|PNG保存|VISION_MODEL|api\/locate/);
 });
 
-test('recent conversation context is connection-scoped and feeds both search and normal chat', () => {
-  assert.match(worker, /conversationMemory = new Map/);
-  assert.match(worker, /getConversationHistory\(context\)/);
-  assert.match(worker, /CONTEXT_MAX_MESSAGES = 8/);
-  assert.match(worker, /CONTEXT_TTL_MS = 30 \* 60 \* 1000/);
+test('conversation memory follows call lifecycle and only trusted caller identity can persist across calls', () => {
+  assert.match(worker, /historyLimit: 0/);
+  assert.match(worker, /maxMessageCount: 0/);
+  assert.match(worker, /onCallStart\(connection\)/);
+  assert.match(worker, /beginCallSession\(connection, seed\)/);
+  assert.match(worker, /onCallEnd\(connection\)/);
+  assert.match(worker, /endCallSession\(connection\)/);
+  assert.match(worker, /talksys_caller_memory/);
+  assert.match(worker, /contextProvider: \(\) => this\.getTalkSysHistory\(connection\)/);
+  assert.match(memory, /talksysTrustedCaller/);
+  assert.match(memory, /trusted\.trusted !== true/);
+  assert.match(worker, /crossSessionContext: 'trusted-caller-only'/);
+  assert.match(worker, /sessionMemoryTimeBasedExpiry: false/);
+  assert.doesNotMatch(worker, /CONTEXT_TTL_MS|conversationMemory = new Map/);
   assert.match(worker, /shouldDeepSearch\(transcript, history\)/);
   assert.match(worker, /answerWithVerifiedWebSearch[\s\S]*?transcript,[\s\n]*history/);
   assert.match(worker, /generateSearchFiller\(self\.env\.AI, transcript, history/);
   assert.match(worker, /\.\.\.history,[\s\n]*\{ role: 'user', content: transcript \}/);
   assert.match(worker, /crossTurnContext: true/);
-  assert.match(worker, /crossSessionContext: false/);
   assert.match(liveClient, /talk-sys-voice-agent\/default/);
 });
 
@@ -120,8 +129,8 @@ test('Japanese server TTS normalizes technical terms and keeps speech clarity pr
   assert.match(japaneseTts, /エスエスディー/);
   assert.match(japaneseTts, /ギガバイト/);
   assert.match(liveClient, /createDynamicsCompressor/);
-  assert.match(liveClient, /speechGain\.gain\.value = 1\.12/);
-  assert.match(liveClient, /utterance\.rate = 0\.98/);
+  assert.match(liveClient, /speechGain\.gain\.value = 1\.08/);
+  assert.match(liveClient, /utterance\.rate = 0\.95/);
 });
 
 test('40ms capture and safe barge-in remain enabled', () => {
@@ -131,16 +140,18 @@ test('40ms capture and safe barge-in remain enabled', () => {
   assert.match(worker, /bargeIn: true/);
 });
 
-test('health contract advertises precision-first verified two-pass search', () => {
+test('health contract advertises bounded tiered conversation and verified two-pass search', () => {
   assert.match(worker, /searchMaxQueries: 8/);
   assert.match(worker, /searchMaxRounds: 2/);
   assert.match(worker, /searchAnswerAudit: true/);
-  assert.match(worker, /bounded-contextual-grounded-search/);
+  assert.match(worker, /bounded-live \/ bounded-quality \/ bounded-contextual-search/);
   assert.match(worker, /screenFunction: false/);
   assert.match(worker, /screenOverlay: false/);
   assert.match(worker, /crossTurnContext: true/);
+  assert.match(worker, /crossSessionContext: 'trusted-caller-only'/);
   assert.match(worker, /typedSpeechVoiceOutput: true/);
-  assert.match(worker, /normalConversationLiveOnly: true/);
+  assert.match(worker, /normalConversationLiveOnly: false/);
+  assert.match(worker, /qualityRouteForComplexConversation: true/);
   assert.match(worker, /casualFastPath: true/);
   assert.match(worker, /searchPrecisionOnly: true/);
   assert.match(cloudflareLlm, /result instanceof ReadableStream \|\| typeof result\.getReader === 'function'/);
