@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "talksys",
-  "main": "src/worker-v19.js",
+  "main": "src/worker-v20.js",
   "compatibility_date": "2026-08-30",
   "compatibility_flags": ["nodejs_compat"],
   "ai": {
