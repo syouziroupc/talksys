@@ -1,300 +1,197 @@
-import { extractText } from './voice-helpers.js';
-import { formatSearchContext } from './web-search.js';
 import { runDeepSearch } from './search-orchestrator.js';
+import { formatSearchContext } from './web-search.js';
 
 export const LIVE_CONVERSATION_MODEL = '@cf/qwen/qwen3.8-27b';
 export const QUALITY_CONVERSATION_MODEL = '@cf/zai-org/glm-5.3-flash';
 export const GROUNDING_CONVERSATION_MODEL = '@cf/deepseek-ai/deepseek-v4-pro-0813';
 export const GROUNDING_FALLBACK_MODEL = '@cf/openai/gpt-oss-120b';
-
-// Compatibility aliases used by health checks and older code paths.
-export const PRIMARY_CONVERSATION_MODEL = GROUNDING_CONVERSATION_MODEL;
 export const FALLBACK_CONVERSATION_MODEL = LIVE_CONVERSATION_MODEL;
 
+function isOpenAICompatible(model) {
+  return model === LIVE_CONVERSATION_MODEL
+    || model === QUALITY_CONVERSATION_MODEL
+    || model === GROUNDING_CONVERSATION_MODEL
+    || model === GROUNDING_FALLBACK_MODEL;
+}
+
+function readFinal(result) {
+  if (typeof result === 'string') return result.trim();
+  if (!result) return '';
+  if (typeof result.response === 'string') return result.response.trim();
+  if (typeof result.result === 'string') return result.result.trim();
+  if (typeof result.text === 'string') return result.text.trim();
+  const choice = result.choices?.[0];
+  if (typeof choice?.message?.content === 'string') return choice.message.content.trim();
+  if (typeof choice?.text === 'string') return choice.text.trim();
+  return '';
+}
+
 function readDelta(payload) {
-  if (!payload || typeof payload !== 'object') return '';
-  const candidates = [
-    payload?.choices?.[0]?.delta?.content,
-    payload?.choices?.[0]?.message?.content,
-    payload?.delta,
-    payload?.response,
-    payload?.output_text,
-    payload?.text,
-  ];
-  for (const value of candidates) {
-    if (typeof value === 'string' && value) return value;
-    if (Array.isArray(value)) {
-      const joined = value.map((part) => typeof part === 'string' ? part : (part?.text || part?.content || '')).join('');
-      if (joined) return joined;
-    }
+  if (!payload) return '';
+  if (typeof payload.response === 'string') return payload.response;
+  if (typeof payload.text === 'string') return payload.text;
+  const choice = payload.choices?.[0];
+  const content = choice?.delta?.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((item) => typeof item === 'string' ? item : (item?.text || '')).join('');
   }
+  if (typeof choice?.text === 'string') return choice.text;
   return '';
 }
 
-function readFinal(value, depth = 0) {
-  if (depth > 8 || value == null) return '';
-  if (typeof value === 'string') return value.trim();
-  if (Array.isArray(value)) return value.map((item) => readFinal(item, depth + 1)).filter(Boolean).join('').trim();
-  if (typeof value !== 'object') return '';
-  const candidates = [
-    value.response,
-    value.choices?.[0]?.message?.content,
-    value.output_text,
-    value.text,
-    value.content,
-    value.result,
-    value.output,
-  ];
-  for (const candidate of candidates) {
-    if (candidate === value) continue;
-    const text = readFinal(candidate, depth + 1);
-    if (text) return text;
-  }
-  return '';
-}
-
-async function* parseSse(stream, signal, metrics) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let full = '';
-
-  const consumeLine = function* (line) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('data:')) return;
-    const data = trimmed.slice(5).trim();
-    if (!data || data === '[DONE]') return;
-    let payload;
-    try { payload = JSON.parse(data); } catch { return; }
-    const next = readDelta(payload);
-    if (!next) return;
-    const delta = full && next.startsWith(full) ? next.slice(full.length) : next;
-    if (!delta || (full && full.endsWith(delta))) return;
-    full += delta;
-    if (metrics && metrics.firstTokenAt == null) metrics.firstTokenAt = Date.now();
-    yield delta;
-  };
-
-  try {
-    while (true) {
-      if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() || '';
-      for (const line of lines) yield* consumeLine(line);
-    }
-    buffer += decoder.decode();
-    if (buffer.trim()) yield* consumeLine(buffer);
-  } finally {
-    try { reader.releaseLock(); } catch {}
-  }
-}
-
-function modelInput(model, messages, maxTokens, temperature = 0.3, stream = true) {
-  const common = {
+export function modelInput(model, messages, maxTokens = 320, temperature = 0.2, stream = true) {
+  const base = {
     messages,
-    temperature,
-    top_p: 0.9,
     stream,
-  };
-
-  if (model === LIVE_CONVERSATION_MODEL) {
-    return {
-      ...common,
-      max_completion_tokens: maxTokens,
-      reasoning_effort: null,
-      chat_template_kwargs: {
-        enable_thinking: false,
-        clear_thinking: true,
-      },
-    };
-  }
-
-  if (model === QUALITY_CONVERSATION_MODEL) {
-    return {
-      ...common,
-      max_completion_tokens: maxTokens,
-      reasoning_effort: null,
-    };
-  }
-
-  return {
-    ...common,
     max_completion_tokens: maxTokens,
+    temperature,
   };
-}
-
-function runOptions(signal, sessionAffinity) {
-  const options = {};
-  if (signal) options.signal = signal;
-  if (sessionAffinity) {
-    options.extraHeaders = {
-      'x-session-affinity': String(sessionAffinity).slice(0, 128),
-    };
+  if (model === LIVE_CONVERSATION_MODEL) {
+    base.reasoning_effort = null;
+    base.chat_template_kwargs = { enable_thinking: false, clear_thinking: true };
   }
-  return Object.keys(options).length ? options : undefined;
+  return base;
 }
 
-async function openModelStream(ai, model, messages, maxTokens, options = {}) {
-  return ai.run(
+async function openModel(ai, model, messages, options = {}) {
+  const input = modelInput(
     model,
-    modelInput(model, messages, maxTokens, options.temperature, true),
-    runOptions(options.signal, options.sessionAffinity),
+    messages,
+    options.maxTokens ?? 320,
+    options.temperature ?? 0.2,
+    options.stream !== false,
   );
+  const runOptions = {};
+  if (options.signal) runOptions.signal = options.signal;
+  if (options.sessionAffinity) runOptions.headers = { 'x-session-affinity': options.sessionAffinity };
+  return ai.run(model, input, Object.keys(runOptions).length ? runOptions : undefined);
 }
 
-async function* streamModelCascade(ai, models, messages, options = {}) {
-  const maxTokens = options.maxTokens || 420;
-  let result;
-  let chosenModel = '';
-  let lastError;
-
-  for (const model of models) {
-    try {
-      result = await openModelStream(ai, model, messages, maxTokens, options);
-      chosenModel = model;
-      break;
-    } catch (error) {
-      lastError = error;
+async function* streamResult(result) {
+  if (result && typeof result[Symbol.asyncIterator] === 'function') {
+    for await (const event of result) {
+      const delta = readDelta(event);
+      if (delta) yield delta;
     }
-  }
-  if (!chosenModel) throw lastError || new Error('No Cloudflare conversation model was available');
-
-  options.onModel?.(chosenModel);
-
-  if (!(result instanceof ReadableStream)) {
-    const text = readFinal(result) || extractText(result);
-    if (text) yield text;
     return;
   }
-
-  yield* parseSse(result, options.signal);
+  if (result instanceof ReadableStream) {
+    const reader = result.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, { stream: true });
+      const lines = pending.split('\n');
+      pending = lines.pop() || '';
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line || line === 'data: [DONE]') continue;
+        const body = line.startsWith('data:') ? line.slice(5).trim() : line;
+        try {
+          const delta = readDelta(JSON.parse(body));
+          if (delta) yield delta;
+        } catch {}
+      }
+    }
+    if (pending.trim() && pending.trim() !== 'data: [DONE]') {
+      const body = pending.trim().startsWith('data:') ? pending.trim().slice(5).trim() : pending.trim();
+      try {
+        const delta = readDelta(JSON.parse(body));
+        if (delta) yield delta;
+      } catch {}
+    }
+    return;
+  }
+  const final = readFinal(result);
+  if (final) yield final;
 }
 
-async function runNonStreamingCascade(ai, models, messages, options = {}) {
-  const maxTokens = options.maxTokens || 720;
-  let lastError;
-  for (const model of models) {
+async function* streamCascade(ai, models, messages, options = {}) {
+  let lastError = null;
+  for (const model of [...new Set(models.filter(Boolean))]) {
     try {
-      const result = await ai.run(
-        model,
-        modelInput(model, messages, maxTokens, options.temperature ?? 0.12, false),
-        runOptions(options.signal, options.sessionAffinity),
-      );
-      const text = readFinal(result) || extractText(result);
-      if (text) return { text: text.trim(), model };
+      const result = await openModel(ai, model, messages, { ...options, stream: true });
+      let yielded = false;
+      for await (const delta of streamResult(result)) {
+        yielded = true;
+        yield delta;
+      }
+      if (yielded) return;
     } catch (error) {
       lastError = error;
     }
   }
   if (lastError) throw lastError;
-  return { text: '', model: '' };
 }
 
 export function streamCloudflareLiveConversation(ai, messages, options = {}) {
-  return streamModelCascade(ai, [LIVE_CONVERSATION_MODEL], messages, {
-    ...options,
-    maxTokens: options.maxTokens || 320,
-    temperature: options.temperature ?? 0.38,
-  });
+  return streamCascade(ai, [LIVE_CONVERSATION_MODEL], messages, options);
 }
 
 export function streamCloudflareQualityConversation(ai, messages, options = {}) {
-  return streamModelCascade(ai, [QUALITY_CONVERSATION_MODEL, LIVE_CONVERSATION_MODEL], messages, {
-    ...options,
-    maxTokens: options.maxTokens || 440,
-    temperature: options.temperature ?? 0.34,
-  });
+  return streamCascade(ai, [QUALITY_CONVERSATION_MODEL, LIVE_CONVERSATION_MODEL], messages, options);
 }
 
 export function streamCloudflareGroundedConversation(ai, messages, options = {}) {
-  return streamModelCascade(
-    ai,
-    [GROUNDING_CONVERSATION_MODEL, GROUNDING_FALLBACK_MODEL, QUALITY_CONVERSATION_MODEL, LIVE_CONVERSATION_MODEL],
-    messages,
-    {
-      ...options,
-      maxTokens: options.maxTokens || 680,
-      temperature: options.temperature ?? 0.12,
-    },
-  );
+  return streamCascade(ai, [GROUNDING_CONVERSATION_MODEL, GROUNDING_FALLBACK_MODEL, QUALITY_CONVERSATION_MODEL, LIVE_CONVERSATION_MODEL], messages, options);
 }
 
-// Legacy default remains the highest-accuracy path. Voice turns select an explicit tier.
-export function streamCloudflareConversation(ai, messages, options = {}) {
-  const tier = options.tier || 'grounded';
-  if (tier === 'live') return streamCloudflareLiveConversation(ai, messages, options);
-  if (tier === 'quality') return streamCloudflareQualityConversation(ai, messages, options);
-  return streamCloudflareGroundedConversation(ai, messages, options);
-}
-
-async function benchmarkOne(ai, model, prompt, sessionAffinity) {
-  const startedAt = Date.now();
-  const metrics = { firstTokenAt: null };
-  try {
-    const result = await openModelStream(
-      ai,
-      model,
-      [
-        {
-          role: 'system',
-          content: '日本語の自然な電話会話として、結論を最初に言い、その後に短い理由を添えてください。Markdownは使わない。',
-        },
-        { role: 'user', content: prompt },
-      ],
-      180,
-      { temperature: 0.25, sessionAffinity },
-    );
-
-    let text = '';
-    if (result instanceof ReadableStream) {
-      for await (const delta of parseSse(result, undefined, metrics)) text += delta;
-    } else {
-      metrics.firstTokenAt = Date.now();
-      text = readFinal(result) || extractText(result);
+export async function runNonStreamingCascade(ai, models, messages, options = {}) {
+  let lastError = null;
+  for (const model of [...new Set(models.filter(Boolean))]) {
+    try {
+      const result = await openModel(ai, model, messages, { ...options, stream: false });
+      const text = readFinal(result);
+      if (text) return { text, model };
+    } catch (error) {
+      lastError = error;
     }
-    const endedAt = Date.now();
-    return {
-      model,
-      ok: Boolean(text.trim()),
-      ttftMs: metrics.firstTokenAt == null ? null : metrics.firstTokenAt - startedAt,
-      totalMs: endedAt - startedAt,
-      sample: text.trim().slice(0, 220),
-    };
-  } catch (error) {
-    return {
-      model,
-      ok: false,
-      ttftMs: null,
-      totalMs: Date.now() - startedAt,
-      error: String(error?.message || error).slice(0, 300),
-    };
   }
+  if (lastError) throw lastError;
+  return { text: '', model: null };
 }
+
+const BENCH_PROMPTS = [
+  'ユーザーが「明日の予定を整理したい」と言いました。自然な日本語で2文だけ返してください。',
+  '3万円前後の中古ノートPCを買う人への注意点を、電話で話すように3文以内で答えてください。',
+  '相手が「今日はちょっと疲れた」と言いました。過剰に励まさず自然な会話を返してください。',
+];
 
 export async function benchmarkVoiceModels(ai, options = {}) {
-  const prompt = String(options.prompt || '友人から「仕事を続けるか転職するか迷っている」と相談された。電話で自然に返事をして。').slice(0, 500);
-  const sessionAffinity = options.sessionAffinity || `talksys-bench-${crypto.randomUUID()}`;
-  const models = [LIVE_CONVERSATION_MODEL, QUALITY_CONVERSATION_MODEL];
-  const results = [];
-  for (const model of models) results.push(await benchmarkOne(ai, model, prompt, sessionAffinity));
-  return {
-    prompt,
-    results,
-    recommendedByLatency: results.filter((item) => item.ok && item.ttftMs != null).sort((a, b) => a.ttftMs - b.ttftMs)[0]?.model || null,
-  };
+  const prompt = String(options.prompt || '').trim() || BENCH_PROMPTS[0];
+  const models = [LIVE_CONVERSATION_MODEL, QUALITY_CONVERSATION_MODEL, GROUNDING_CONVERSATION_MODEL, GROUNDING_FALLBACK_MODEL];
+  const out = [];
+  for (const model of models) {
+    const started = Date.now();
+    try {
+      const response = await runNonStreamingCascade(ai, [model], [
+        { role: 'system', content: '電話で自然に聞ける日本語で簡潔に答える。' },
+        { role: 'user', content: prompt },
+      ], {
+        maxTokens: 220,
+        temperature: 0.15,
+        sessionAffinity: options.sessionAffinity,
+      });
+      out.push({ model, ok: Boolean(response.text), elapsedMs: Date.now() - started, text: response.text });
+    } catch (error) {
+      out.push({ model, ok: false, elapsedMs: Date.now() - started, error: String(error?.message || error).slice(0, 400) });
+    }
+  }
+  return { prompt, results: out };
 }
 
-const EVASIVE_SEARCH_RE = /(ご提示いただいた|いただいた検索結果|情報源を提示|ページや情報があれば|改めてご提示|根拠に基づいた回答を.*できません|回答を差し上げることができません|現時点では.*答え.*できません|今の検索では.*裏付けが十分ではありません|確認できる範囲の選び方や比較なら続けられます)/i;
-const SHOPPING_INTENT_RE = /(どこで買|買うなら|購入先|販売店|店舗|店で買|おすすめ.*店|家電量販店|中古.*店)/i;
+const EVASIVE_RE = /(ご提示いただいた検索結果|いただいた検索結果|ご提示いただいた情報|ページや情報があれば|具体的な情報源を提示|別の情報源を提示|改めてご提示|回答を差し上げることができません|根拠に基づいた回答.*できません|現時点では.*答え.*できません)/i;
+const WEAK_ONLY_RE = /(今の検索では|今回の検索では|検索結果では).{0,35}(裏付け|確認|情報).{0,35}(十分では|できません|ありません)/i;
+const SHOPPING_INTENT_RE = /(どこで買|買うなら|購入先|販売店|店舗|店で|おすすめ.*店|どこがいい)/i;
 
 export function isEvasiveGroundedAnswer(text) {
-  const value = String(text || '').trim();
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
   if (!value) return true;
-  if (EVASIVE_SEARCH_RE.test(value)) return true;
-  if (value.length < 24 && /(不明|わかりません|確認できません|情報がありません)/.test(value)) return true;
+  if (EVASIVE_RE.test(value)) return true;
+  if (WEAK_ONLY_RE.test(value) && value.length < 240) return true;
   return false;
 }
 
@@ -331,7 +228,7 @@ function buildGroundedMessages(question, history, systemPrompt, resolvedQuestion
     ...history.slice(-18).map((item) => ({ role: item.role, content: item.content })),
     {
       role: 'user',
-      content: `${question}\n\n[システムが会話文脈から解決した検索課題]\n${resolvedQuestion}\n\n[Web検索で取得した根拠]\n${evidence}\n\n回答ルール:\n- まず質問そのものに具体的に答える。検索の成否の説明から始めない。\n- 現在の価格、在庫、日時、時刻表、法律、人物、製品の現行仕様など変化し得る事実は上の検索根拠から確認できた範囲だけ答える。\n- 購入先、おすすめ、比較、選び方では、検索結果のタイトルに実在候補が出ていれば候補名として使ってよい。価格・在庫は別途確認扱いにする。\n- 会話中の予算・用途・地域などと安定した一般知識・論理的比較を使って役立つ結論まで答える。\n- 検索が不十分でも回答全体を拒否しない。未確認なのは変化し得る具体的事実だけに限定する。\n- 「いただいた検索結果」「ご提示いただいた情報」「別の情報源を提示して」など、検索責任をユーザーへ返す表現は禁止。\n- 「今の検索では裏付けが十分ではない」だけで回答を終えるのは禁止。\n- 電話で自然に聞ける日本語で、短い文を使い、まず結論、その後に重要な根拠を1〜3点だけ補足する。URLは読み上げない。`,
+      content: `${question}\n\n[システムが会話文脈から解決した検索課題]\n${resolvedQuestion}\n\n[Web検索で取得した根拠]\n${evidence}\n\n回答ルール:\n- まず質問そのものに具体的に答える。検索の成否の説明から始めない。\n- 現在の価格、在庫、日時、時刻表、法律、人物、製品の現行仕様など変化し得る事実は上の検索根拠から確認できた範囲だけ答える。\n- 購入先、おすすめ、比較、選び方では、検索結果のタイトルに実在候補が出ていれば候補名として使ってよい。ただし表記を勝手に短縮・改名しない。\n- 会話中の予算・用途・地域などと安定した一般知識・論理的比較を使って役立つ結論まで答える。\n- 検索が不十分でも回答全体を拒否しない。未確認なのは変化し得る具体的事実だけに限定する。\n- 「いただいた検索結果」「ご提示いただいた情報」「別の情報源を提示して」など、検索責任をユーザーへ返す表現は禁止。\n- 「今の検索では裏付けが十分ではない」だけで回答を終えるのは禁止。\n- 電話で自然に聞ける日本語で、短い文を使い、まず結論、その後に重要な根拠を1〜3点だけ補足する。URLは読み上げない。`,
     },
   ];
 }
@@ -366,7 +263,7 @@ export async function answerWithCloudflareWebSearch(ai, question, history, syste
     const repairedAnswer = await runNonStreamingCascade(ai, [GROUNDING_FALLBACK_MODEL, GROUNDING_CONVERSATION_MODEL, QUALITY_CONVERSATION_MODEL, LIVE_CONVERSATION_MODEL], repairMessages, {
       signal,
       maxTokens: 720,
-      temperature: 0.16,
+      temperature: 0.12,
       sessionAffinity: options.sessionAffinity,
     });
     if (repairedAnswer.text && !isEvasiveGroundedAnswer(repairedAnswer.text)) {
@@ -385,16 +282,18 @@ export async function answerWithCloudflareWebSearch(ai, question, history, syste
 
   return {
     text: answer.text.trim() || '確認できた範囲から、まず実用的な選択肢を絞って答えます。',
-    provider: 'cloudflare-workers-ai-contextual-deep-search-v17',
+    provider: 'cloudflare-workers-ai-contextual-deep-search-v18',
     nativeSearch: false,
     model: answer.model,
     resolvedQuestion,
     queries: deepSearch.plan?.queries || [question],
     planned: Boolean(deepSearch.plan?.planned),
     recovered: Boolean(deepSearch.recovered),
+    rounds: Number(deepSearch.rounds) || 1,
+    coverage: deepSearch.coverage || null,
     evidenceUseful: Boolean(deepSearch.evidenceUseful),
     answerRepaired: repaired,
-    sources: ranked.slice(0, 8),
+    sources: ranked.slice(0, 12),
   };
 }
 
