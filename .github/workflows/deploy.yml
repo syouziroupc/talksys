@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: cloudflare-agent-v24-xperia-fast-bargein
+      EXPECTED_VOICE_REVISION: cloudflare-agent-v25-glm-mobile-audio
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -22,13 +22,14 @@ jobs:
 
       - name: Check JavaScript syntax
         run: |
+          node --check src/worker-v25-production.js
+          node --check src/worker-v25.js
+          node --check src/glm-conversation-v25.js
+          node --check src/cloudflare-live-client-v25.js
           node --check src/worker-v24-production.js
           node --check src/worker-v24.js
           node --check src/cloudflare-live-client-v24.js
-          node --check src/worker-v23-production.js
-          node --check src/worker-v23.js
           node --check src/search-v23.js
-          node --check src/cloudflare-live-client-v23-final.js
           node --check src/search-v22.js
           node --check src/grounding-policy-v22.js
           node --check src/bounded-conversation.js
@@ -67,9 +68,9 @@ jobs:
         run: |
           echo "Repository Cloudflare credentials are absent."
           echo "Production must be deployed through the authorized external production path."
-          echo "This job will fail unless production actually reaches v24."
+          echo "This job will fail unless production actually reaches v25."
 
-      - name: Verify production v24 contract
+      - name: Verify production v25 contract
         run: |
           expected="$EXPECTED_VOICE_REVISION"
           body=""
@@ -96,40 +97,44 @@ jobs:
           console.log(JSON.stringify({
             voiceRevision: d.voiceRevision,
             conversationOrchestrator: d.conversationOrchestrator,
-            conciseRepliesByDefault: d.conciseRepliesByDefault,
-            pcDecisionDetailOnly: d.pcDecisionDetailOnly,
-            browserStreamingTts: d.browserStreamingTts,
-            browserStreamingTtsStartsAtFirstSentence: d.browserStreamingTtsStartsAtFirstSentence,
-            preListeningMicFrames: d.preListeningMicFrames,
-            startCallPendingGuard: d.startCallPendingGuard,
-            voiceBargeIn: d.voiceBargeIn,
-            hardStopOnUserTranscript: d.hardStopOnUserTranscript,
-            xperiaHandshakeFix: d.xperiaHandshakeFix,
-            contextualSearchSubjectOnlyCarryover: d.contextualSearchSubjectOnlyCarryover,
+            conversationModel: d.conversationModel,
+            glmOnlyConversation: d.glmOnlyConversation,
+            glmReasoningEffort: d.glmReasoningEffort,
+            mobileAudioPipelineV25: d.mobileAudioPipelineV25,
+            dedicatedCaptureAudioContext: d.dedicatedCaptureAudioContext,
+            androidScriptProcessorPreferred: d.androidScriptProcessorPreferred,
+            androidCallStartsAfterFirstMicFrame: d.androidCallStartsAfterFirstMicFrame,
+            nativeMobileCaptureSampleRate: d.nativeMobileCaptureSampleRate,
+            microphoneDiagnostics: d.microphoneDiagnostics,
           }));
           if (d.voiceRevision !== expected) throw new Error(`expected ${expected}, got ${d.voiceRevision}`);
-          if (d.conversationOrchestrator !== 'precise-fast-conversation-agent-v24') throw new Error('v24 orchestrator is not active');
+          if (d.conversationModel !== '@cf/zai-org/glm-5.3-flash') throw new Error('GLM-5.3 Flash is not the active conversation model');
+          if (d.conversationModelFallback !== '@cf/zai-org/glm-5.3-flash') throw new Error('non-GLM conversation fallback is still configured');
+          if (d.glmReasoningEffort !== 'low') throw new Error('GLM low reasoning is not active');
           const required = [
-            'conciseRepliesByDefault','pcDecisionDetailOnly','browserStreamingTts','browserStreamingTtsStartsAtFirstSentence',
-            'preListeningMicFrames','startCallPendingGuard','voiceBargeIn','hardStopOnUserTranscript','xperiaHandshakeFix',
-            'contextualSearchSubjectOnlyCarryover','microphoneConstraintFallback','microphoneFrameWatchdog','microphoneAutoRecovery',
-            'workletToScriptProcessorAutoFallback'
+            'glmOnlyConversation','conciseRepliesByDefault','mobileAudioPipelineV25','dedicatedCaptureAudioContext',
+            'androidScriptProcessorPreferred','androidCallStartsAfterFirstMicFrame','nativeMobileCaptureSampleRate','microphoneDiagnostics',
+            'browserStreamingTts','browserStreamingTtsStartsAtFirstSentence','preListeningMicFrames','voiceBargeIn',
+            'contextualSearchSubjectOnlyCarryover'
           ];
           for (const key of required) if (d[key] !== true) throw new Error(`${key} is not true`);
           NODE
 
-      - name: Verify live v24 client
+      - name: Verify live v25 client
         run: |
           script="$(curl -fsS --max-time 20 "$PRODUCTION_URL/cloudflare-live.js")"
+          grep -F "captureAudioContext" <<< "$script"
+          grep -F "IS_ANDROID" <<< "$script"
+          grep -F "micFrameCount < 1" <<< "$script"
+          grep -F "__talksysVoiceDebug" <<< "$script"
+          grep -F "talksys-mic-stalled" <<< "$script"
           grep -F "callStartPending" <<< "$script"
-          grep -F "inCall || callStartPending" <<< "$script"
-          grep -F "BARGE_IN_THRESHOLD" <<< "$script"
           grep -F "talksys-barge-in" <<< "$script"
           grep -F "queueCompletedStreamSpeech(streamText, false)" <<< "$script"
 
       - name: Verify contextual search regression
         run: |
-          body="$(curl -fsS --max-time 35 "$PRODUCTION_URL/api/search-smoke-v24-context")"
+          body="$(curl -fsS --max-time 35 "$PRODUCTION_URL/api/search-smoke-v25-context")"
           echo "$body"
           BODY="$body" node <<'NODE'
           const d = JSON.parse(process.env.BODY || '{}');
