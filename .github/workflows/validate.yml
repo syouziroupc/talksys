@@ -20,6 +20,7 @@ jobs:
           node --check src/worker.js
           node --check src/worker-v20.js
           node --check src/search-tool-v20.js
+          node --check src/search-policy-v20.js
           node --check src/web-search.js
           node --check src/search-rerank.js
           node --check src/search-orchestrator.js
