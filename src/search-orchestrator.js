@@ -455,7 +455,7 @@ function sanitizeProgressTopic(value) {
 function fallbackProgressTopic(transcript, history) {
   const current = cleanQuery(transcript);
   const contextual = heuristicContextQuery(transcript, history);
-  const source = looksContextDependentFollowup(current) ? contextual : current;
+  const source = (looksContextDependentFollowup(current) || GENERIC_RESEARCH_COMMAND_RE.test(current)) ? contextual : current;
   return sanitizeProgressTopic(source || current || 'ご相談の内容') || 'ご相談の内容';
 }
 
@@ -514,7 +514,9 @@ export async function generateSearchFiller(ai, transcript, history, signal) {
   await wait(SEARCH_FILLER_MIN_DELAY_MS, signal).catch(() => null);
 
   const topic = sanitizeProgressTopic(extractText(result));
-  if (!topic && contextualCommand) return '前の話を踏まえて確認しています。少し待ってください。';
+  if (contextualCommand && (!topic || /調べ|検索内容|質問内容|内容不明|不明/.test(topic))) {
+    return '前の話を踏まえて確認しています。少し待ってください。';
+  }
   const chosen = topic || fallback;
   const phrase = `今、${chosen}について検索しています。少しお待ちください。`;
   return sanitizeFiller(phrase) || (contextualCommand

@@ -32,6 +32,7 @@ test('search planner explicitly forbids dictionary-meta search and prioritizes c
 test('search filler rejects unknown-topic nonsense and has contextual bridge fallback', () => {
   assert.equal(sanitizeFiller('前の話を踏まえて確認しています。少し待ってください。'), '前の話を踏まえて確認しています。少し待ってください。');
   assert.match(orchestrator, /BAD_PROGRESS_TOPIC_RE/);
+  assert.match(orchestrator, /contextualCommand && \(!topic \|\| \/調べ/);
   assert.match(orchestrator, /検索内容(?:が)?不明/);
   assert.match(orchestrator, /Promise\.race\(\[/);
 });
@@ -39,6 +40,9 @@ test('search filler rejects unknown-topic nonsense and has contextual bridge fal
 test('normal conversation keeps recent history and audio has a silent-failure fallback', () => {
   assert.match(worker, /\.\.\.history/);
   assert.match(worker, /rememberConversationTurn/);
+  assert.match(worker, /function conversationKey\(context\) \{[\s\S]*?const id = String\(context\?\.connection\?\.id \|\| ''\)\.trim\(\);[\s\S]*?return id \? id\.slice\(0, 160\) : '';/);
+  assert.match(worker, /getConversationHistory\(context\)[\s\S]*?if \(!key\) return \[\];/);
+  assert.match(worker, /rememberConversationTurn\(context, userText, assistantText\)[\s\S]*?if \(!key\) return;/);
   assert.match(client, /ttsFallbackTimer/);
   assert.match(client, /const delay = ttsFailedThisTurn \? 120 : 650/);
   assert.match(client, /speakJapaneseFallback\(value\)/);

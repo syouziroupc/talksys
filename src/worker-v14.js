@@ -97,7 +97,8 @@ const CONTEXT_TTL_MS = 30 * 60 * 1000;
 const CONTEXT_MAX_MESSAGES = 8;
 
 function conversationKey(context) {
-  return String(context?.connection?.id || 'default').slice(0, 160);
+  const id = String(context?.connection?.id || '').trim();
+  return id ? id.slice(0, 160) : '';
 }
 
 function compactHistory(messages) {
@@ -123,6 +124,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
 
   getConversationHistory(context) {
     const key = conversationKey(context);
+    if (!key) return [];
     const entry = this.conversationMemory.get(key);
     if (!entry) return [];
     if (Date.now() - entry.updatedAt > CONTEXT_TTL_MS) {
@@ -137,6 +139,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     const assistant = cleanSpeechText(assistantText);
     if (!user && !assistant) return;
     const key = conversationKey(context);
+    if (!key) return;
     const prior = this.getConversationHistory(context);
     const messages = [...prior];
     if (user) messages.push({ role: 'user', content: user.slice(0, 1200) });
