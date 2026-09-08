@@ -41,10 +41,19 @@ test('production entrypoint uses v19 planner-first search instead of raw convers
   const search = fs.readFileSync(new URL('../src/search-v19.js', import.meta.url), 'utf8');
   assert.match(wrangler, /"main": "src\/worker-v19\.js"/);
   assert.match(worker, /answerWithContextualVerifiedSearchV19/);
-  assert.match(worker, /cloudflare-live-v19\.0/);
+  assert.match(worker, /cloudflare-live-v19\.1/);
   assert.match(search, /await resolvePlan\(ai, question, history, options\)/);
   assert.match(search, /const search = await runSearch\(ai, plan, options\)/);
   assert.doesNotMatch(search, /seedQuestion[\s\S]{0,300}firstSearchPromise/);
+});
+
+test('general recommendation follow-ups use quality conversation rather than the web-search fallback', () => {
+  const worker = fs.readFileSync(new URL('../src/worker-v19.js', import.meta.url), 'utf8');
+  assert.match(worker, /isGeneralRecommendationFollowup/);
+  assert.match(worker, /quality-recommendation/);
+  assert.match(worker, /streamBoundedQualityConversation/);
+  assert.match(worker, /generalRecommendationRoute: 'quality-conversation-no-search'/);
+  assert.match(worker, /おすすめ.*教えて/);
 });
 
 test('v19 never exposes the old empty-answer placeholder as its final search response', () => {
