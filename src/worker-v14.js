@@ -15,10 +15,12 @@ import {
   GROUNDING_CONVERSATION_MODEL,
   GROUNDING_FALLBACK_MODEL,
   FALLBACK_CONVERSATION_MODEL,
-  streamCloudflareLiveConversation,
-  streamCloudflareQualityConversation,
   benchmarkVoiceModels,
 } from './cloudflare-llm.js';
+import {
+  streamBoundedLiveConversation,
+  streamBoundedQualityConversation,
+} from './bounded-conversation.js';
 import { answerWithVerifiedWebSearch } from './search-answer-v18.js';
 import {
   generateSearchFiller,
@@ -364,15 +366,16 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       return this.trackAssistant((async function* () { yield quick; })(), context, 'instant-local', transcript);
     }
 
+    const quality = needsQualityConversation(transcript);
     const messages = [
-      { role: 'system', content: needsQualityConversation(transcript) ? QUALITY_SYSTEM_PROMPT : CASUAL_SYSTEM_PROMPT },
+      { role: 'system', content: quality ? QUALITY_SYSTEM_PROMPT : CASUAL_SYSTEM_PROMPT },
       ...history,
       { role: 'user', content: transcript },
     ];
 
-    if (needsQualityConversation(transcript)) {
+    if (quality) {
       return this.trackAssistant(
-        streamCloudflareQualityConversation(this.env.AI, messages, {
+        streamBoundedQualityConversation(this.env.AI, messages, {
           signal: context.signal,
           maxTokens: 360,
           openTimeoutMs: 2500,
@@ -387,7 +390,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     }
 
     return this.trackAssistant(
-      streamCloudflareLiveConversation(this.env.AI, messages, {
+      streamBoundedLiveConversation(this.env.AI, messages, {
         signal: context.signal,
         maxTokens: 260,
         openTimeoutMs: 1900,
