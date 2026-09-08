@@ -49,7 +49,7 @@ export default {
       return serveScript(CLOUDFLARE_LIVE_CLIENT_V23_FINAL);
     }
     if (request.method === 'GET' && url.pathname === '/api/search-smoke-v23-transit') {
-      return searchSmoke('鷺沼駅から用賀駅までの行き方を知りたい');
+      return searchSmoke('鷺沼から用賀までの行き方を知りたい');
     }
     if (request.method === 'GET' && url.pathname === '/api/search-smoke-v23-pc') {
       return searchSmoke('CF-SV8のUSB-C充電対応と主要仕様を詳しく知りたい');
