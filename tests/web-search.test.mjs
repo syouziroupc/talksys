@@ -36,6 +36,11 @@ test('explicit or self-contained current questions still request web search', ()
   assert.equal(needsWebSearch('iPhone 17はどこで買うのがいい？'), true);
 });
 
+test('travel route questions search instead of guessing from model memory', () => {
+  assert.equal(needsWebSearch('東京から前橋まで行きたいんだけど、どうやって行こうか悩んでる'), true);
+  assert.equal(needsWebSearch('新宿から松本まで電車でどう行けばいい？'), true);
+});
+
 test('ordinary knowledge questions default to web search', () => {
   assert.equal(needsWebSearch('HIFUってどういうもの？'), true);
   assert.equal(needsWebSearch('キャビテーションとHIFUの違いは'), true);

@@ -17,7 +17,7 @@ function entryScore(entry) {
   return Number.isFinite(n) ? n : null;
 }
 
-export async function rerankSearchResults(ai, query, results, limit = 3) {
+export async function rerankSearchResults(ai, query, results, limit = 3, options = {}) {
   const input = Array.isArray(results) ? results.filter(Boolean).slice(0, 24) : [];
   const outputLimit = Math.max(1, Math.min(6, Number(limit) || 3));
   if (!ai || typeof ai.run !== 'function' || input.length < 2) return input.slice(0, outputLimit);
@@ -30,11 +30,16 @@ export async function rerankSearchResults(ai, query, results, limit = 3) {
         String(item.excerpt || '').slice(0, 1800),
       ].filter(Boolean).join('\n'),
     }));
+    const timeoutMs = Math.max(500, Math.min(4000, Number(options.timeoutMs) || 1800));
+    const timeoutSignal = typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : null;
+    const signal = options.signal && timeoutSignal && typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([options.signal, timeoutSignal])
+      : (options.signal || timeoutSignal);
     const response = await ai.run(SEARCH_RERANK_MODEL, {
       query: String(query || '').slice(0, 700),
       contexts,
       top_k: Math.min(input.length, Math.max(outputLimit, 8)),
-    });
+    }, signal ? { signal } : undefined);
     const rankedEntries = extractRankedEntries(response);
     if (!rankedEntries.length) return input.slice(0, outputLimit);
 

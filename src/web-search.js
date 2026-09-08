@@ -7,6 +7,7 @@ const CONVERSATION_MEMORY_RE = /(さっき|先ほど|前に|前の話|この会�
 const EXTERNAL_ENTITY_RE = /(?:Windows|Android|iPhone|iPad|MacBook|Chromebook|Cloudflare|OpenAI|Google|Microsoft|Amazon|楽天|Yahoo|Meta|NVIDIA|AMD|Intel|CPU|GPU|Wi-?Fi|Linux|GitHub|日本|アメリカ|中国|政府|首相|大統領|会社|企業|大学|製品|モデル|法律|制度)/i;
 const CURRENT_RE = /(最新|現在|いま|今の|今日|昨日|明日|ニュース|価格|値段|発売|誰|首相|大統領|法律|制度|予定|日程|営業時間|株価|為替|在庫|販売中|最安)/i;
 const EXPLICIT_SEARCH_RE = /(検索して|検索|調べて|調べる|ウェブで|ネットで|最新情報)/i;
+const ROUTE_QUERY_RE = /(?:から.{1,48}(?:まで|へ).{0,36}(?:行|行き|アクセス|交通|電車|列車|新幹線|特急|乗り換え|経路|どうやって)|(?:行き方|経路|乗り換え|どうやって|どう行けば).{0,32}(?:行|行く|行け|着))/i;
 const FOLLOWUP_CUE_RE = /^(?:じゃあ|じゃ|それなら|なら|それ|これ|この場合|その場合|ちなみに|で、?|あと|他は|ほかは)?\s*(?:どこ|どっち|どちら|どれ|どう|どうかな|どう思う|何がいい|おすすめは|買うなら|買うのがいい|行くなら|使うなら|大阪は|東京は|福岡は|中古は|新品は|予算は|価格は|値段は)/i;
 const SHORT_ELLIPSIS_RE = /^(?:[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z0-9・ー]+)(?:は|なら|だと|って)?[？?。!！]*$/u;
 
@@ -26,7 +27,7 @@ export function needsWebSearch(text) {
   if (CONVERSATION_MEMORY_RE.test(value) && !EXPLICIT_SEARCH_RE.test(value) && !CURRENT_RE.test(value)) return false;
   if (PERSONAL_ADVICE_RE.test(value) && !EXTERNAL_ENTITY_RE.test(value) && !CURRENT_RE.test(value)) return false;
   if (looksContextDependentFollowup(value)) return false;
-  if (EXPLICIT_SEARCH_RE.test(value) || CURRENT_RE.test(value)) return true;
+  if (EXPLICIT_SEARCH_RE.test(value) || CURRENT_RE.test(value) || ROUTE_QUERY_RE.test(value)) return true;
   if (FACTUAL_RE.test(value) || KNOWLEDGE_QUESTION_RE.test(value)) return true;
   if (EXTERNAL_ENTITY_RE.test(value) && value.length >= 4) return true;
   return false;
