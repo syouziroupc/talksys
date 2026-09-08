@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: cloudflare-agent-v22-grounding-by-default
+      EXPECTED_VOICE_REVISION: cloudflare-agent-v23-mobile-search-pc-quality
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -22,31 +22,19 @@ jobs:
 
       - name: Check JavaScript syntax
         run: |
-          node --check src/index.js
-          node --check src/worker-v14.js
-          node --check src/worker-v19.js
-          node --check src/worker-v20.js
-          node --check src/worker-v21.js
+          node --check src/worker-v23-production.js
+          node --check src/worker-v23.js
+          node --check src/search-v23.js
+          node --check src/cloudflare-live-client-v23.js
+          node --check src/cloudflare-live-client-v23-final.js
+          node --check src/search-trace-client-v23.js
           node --check src/worker-v22.js
-          node --check src/search-tool-v20.js
-          node --check src/search-v21.js
           node --check src/search-v22.js
           node --check src/grounding-policy-v22.js
-          node --check src/cloudflare-live-client-v21.js
-          node --check src/cloudflare-live-client.js
-          node --check src/cloudflare-japanese-stt.js
-          node --check src/cloudflare-japanese-tts.js
-          node --check src/cloudflare-llm.js
           node --check src/bounded-conversation.js
           node --check src/conversation-memory.js
-          node --check src/search-answer-v18.js
           node --check src/web-search.js
-          node --check src/search-rerank.js
-          node --check src/search-orchestrator.js
           node --check src/search-fallbacks.js
-          node --check src/streaming-workers-ai.js
-          node --check src/voice-helpers.js
-          node --check desktop/main.cjs
 
       - name: Run tests
         run: npm test
@@ -54,44 +42,16 @@ jobs:
       - name: Check Wrangler bundle
         run: npx wrangler deploy --dry-run
 
-      - name: Install screenshot fonts
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq fonts-noto-cjk fonts-noto-color-emoji
-
-      - name: Render phone consultation UI screenshots
-        run: |
-          node <<'NODE'
-          const fs = require('fs');
-          const source = fs.readFileSync('src/index.js', 'utf8');
-          const match = source.match(/const HTML = `([\s\S]*?)`;\n\nfunction json/);
-          if (!match) throw new Error('HTML template not found');
-          fs.writeFileSync('/tmp/talksys.html', match[1]);
-          NODE
-          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1280,900 --screenshot=web-desktop.png file:///tmp/talksys.html
-          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot=web-mobile.png file:///tmp/talksys.html
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: phone-ui-screenshots
-          path: |
-            web-desktop.png
-            web-mobile.png
-
       - name: Probe production before deployment
         run: |
           set +e
           body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health")"
           code=$?
           set -e
-          if [ "$code" -ne 0 ]; then
-            echo "::warning::Production /voice-health is unreachable before deployment."
+          if [ "$code" -eq 0 ]; then
+            BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};console.log('Current production voiceRevision:',d.voiceRevision||'(missing)')"
           else
-            BODY="$body" node <<'NODE'
-          let data = {};
-          try { data = JSON.parse(process.env.BODY || '{}'); } catch {}
-          console.log('Current production voiceRevision:', data.voiceRevision || '(missing)');
-          NODE
+            echo "::warning::Production /voice-health is unreachable before deployment."
           fi
 
       - name: Deploy through GitHub Actions when Cloudflare credentials are configured
@@ -102,14 +62,14 @@ jobs:
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
 
-      - name: Report native Workers Builds expectation when Actions credentials are absent
+      - name: Report external deployment path when Actions credentials are absent
         if: ${{ env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' }}
         run: |
-          echo "GitHub Actions Cloudflare credentials are absent."
-          echo "Expecting Cloudflare Workers Builds Git integration to deploy main."
-          echo "The job will fail unless production actually reaches the expected revision."
+          echo "Repository Cloudflare credentials are absent."
+          echo "Production must be deployed through the authorized external production path."
+          echo "This job will fail unless production actually reaches v23."
 
-      - name: Verify production is really v22
+      - name: Verify production v23 contract
         run: |
           expected="$EXPECTED_VOICE_REVISION"
           body=""
@@ -121,9 +81,7 @@ jobs:
             if [ "$code" -eq 0 ]; then
               current="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||''))")"
               echo "Production voiceRevision: ${current:-missing}"
-              if [ "$current" = "$expected" ]; then
-                break
-              fi
+              if [ "$current" = "$expected" ]; then break; fi
             fi
             if [ "$attempt" -eq 18 ]; then
               echo "::error::Production did not reach $expected. Deployment is NOT complete."
@@ -137,36 +95,33 @@ jobs:
           const expected = process.env.EXPECTED;
           console.log(JSON.stringify({
             voiceRevision: d.voiceRevision,
-            conversationPersistence: d.conversationPersistence,
-            crossTurnContext: d.crossTurnContext,
             conversationOrchestrator: d.conversationOrchestrator,
-            toolCalling: d.toolCalling,
             webSearchTool: d.webSearchTool,
-            groundingPolicy: d.groundingPolicy,
             groundingByDefault: d.groundingByDefault,
-            factualQuestionsSearchByDefault: d.factualQuestionsSearchByDefault,
-            nonSearchRouteExternalFactAssertionsForbidden: d.nonSearchRouteExternalFactAssertionsForbidden,
-            evidenceOnlyExternalFacts: d.evidenceOnlyExternalFacts,
-            insufficientEvidenceStopsAssertion: d.insufficientEvidenceStopsAssertion,
-            contextualFollowupGrounding: d.contextualFollowupGrounding,
-            domainSpecificSearchRoutingOnlyOptimizesRetrieval: d.domainSpecificSearchRoutingOnlyOptimizesRetrieval,
+            parallelIntentSearch: d.parallelIntentSearch,
+            audibleSearchWaitSpeech: d.audibleSearchWaitSpeech,
+            pcExpertAnswerMode: d.pcExpertAnswerMode,
+            groundedContinuationRetry: d.groundedContinuationRetry,
+            microphoneConstraintFallback: d.microphoneConstraintFallback,
+            microphoneFrameWatchdog: d.microphoneFrameWatchdog,
+            microphoneAutoRecovery: d.microphoneAutoRecovery,
+            workletToScriptProcessorAutoFallback: d.workletToScriptProcessorAutoFallback,
+            duplicateSearchTraceFixed: d.duplicateSearchTraceFixed,
+            duplicateBrowserTtsGuard: d.duplicateBrowserTtsGuard,
+            serverTtsOwnershipGuard: d.serverTtsOwnershipGuard,
             mobileAudioContextPrimedOnUserGesture: d.mobileAudioContextPrimedOnUserGesture,
-            proactiveCallGreeting: d.proactiveCallGreeting,
             hiddenModelFailureRetry: d.hiddenModelFailureRetry,
             userFacingMidStreamRetryMessageRemoved: d.userFacingMidStreamRetryMessageRemoved,
           }));
           if (d.voiceRevision !== expected) throw new Error(`expected ${expected}, got ${d.voiceRevision}`);
-          if (d.conversationPersistence !== 'call-session-with-trusted-caller-memory') throw new Error('unexpected conversation persistence mode');
-          if (d.crossTurnContext !== true) throw new Error('cross-turn context is not enabled');
-          if (d.conversationOrchestrator !== 'grounding-by-default-agent-v22') throw new Error('v22 grounding orchestrator is not active');
-          if (d.toolCalling !== 'grounding-policy-router-v22') throw new Error('v22 grounding router is not active');
-          if (d.groundingPolicy !== 'grounding-by-default-v22') throw new Error('v22 grounding policy is not active');
-          if (d.groundingByDefault !== true || d.factualQuestionsSearchByDefault !== true) throw new Error('factual search-by-default is disabled');
-          if (d.nonSearchRouteExternalFactAssertionsForbidden !== true) throw new Error('non-search external fact guard is disabled');
-          if (d.evidenceOnlyExternalFacts !== true || d.insufficientEvidenceStopsAssertion !== true) throw new Error('evidence-only answer guard is disabled');
-          if (d.contextualFollowupGrounding !== true) throw new Error('contextual follow-up grounding is disabled');
-          if (d.domainSpecificSearchRoutingOnlyOptimizesRetrieval !== true) throw new Error('domain routing must not own grounding decisions');
+          if (d.conversationOrchestrator !== 'grounded-conversation-agent-v23') throw new Error('v23 orchestrator is not active');
+          if (d.groundingByDefault !== true) throw new Error('grounding-by-default is disabled');
+          if (d.parallelIntentSearch !== true || d.audibleSearchWaitSpeech !== true) throw new Error('v23 search contract failed');
+          if (d.pcExpertAnswerMode !== true || d.pcExpertGroundedDetail !== true) throw new Error('PC expert mode is disabled');
+          if (d.groundedContinuationRetry !== true) throw new Error('grounded continuation retry is disabled');
+          if (d.microphoneConstraintFallback !== true || d.microphoneFrameWatchdog !== true || d.microphoneAutoRecovery !== true) throw new Error('mobile microphone recovery contract failed');
+          if (d.workletToScriptProcessorAutoFallback !== true) throw new Error('capture processor fallback is disabled');
+          if (d.duplicateSearchTraceFixed !== true || d.duplicateBrowserTtsGuard !== true || d.serverTtsOwnershipGuard !== true) throw new Error('duplicate output guards failed');
           if (d.mobileAudioContextPrimedOnUserGesture !== true) throw new Error('mobile AudioContext priming is disabled');
-          if (d.proactiveCallGreeting !== true) throw new Error('proactive call greeting is disabled');
-          if (d.hiddenModelFailureRetry !== true || d.userFacingMidStreamRetryMessageRemoved !== true) throw new Error('hidden answer recovery contract failed');
+          if (d.hiddenModelFailureRetry !== true || d.userFacingMidStreamRetryMessageRemoved !== true) throw new Error('answer recovery contract failed');
           NODE
