@@ -1,7 +1,7 @@
 export const GROUNDING_POLICY_V22_REVISION = 'grounding-by-default-v22';
 
 const PURE_SOCIAL_RE = /^(?:こんにちは|こんにちわ|こんばんは|おはよう(?:ございます)?|やあ|どうも|もしもし|ありがとう(?:ございます)?|助かりました|了解(?:です)?|わかりました|なるほど|そうなんだ|そうですね|はい|うん|いいえ|いや|大丈夫(?:です)?|またね|さようなら)[。！!？?、\s]*$/i;
-const CONSULTATION_OPEN_RE = /(?:について|ことで|の件で)?(?:相談したい|相談に乗って(?:ほしい|ください)?|相談があります|悩んでいます|迷っています|困っています)[。！!？?\s]*$/i;
+const CONSULTATION_OPEN_RE = /(?:について|ことで|の件で)?(?:相談したい(?:です)?|相談に乗って(?:ほしい|ください)(?:です)?|相談があります|悩んでいます|迷っています|困っています)[。！!？?\s]*$/i;
 const USER_REQUIREMENT_RE = /(?:用途|予算|希望|条件|使い方|目的).{0,20}(?:です|は|が|で)|(?:しか|だけ|ぐらい|くらい).{0,18}(?:しない|しません|使わない|使いません|見ない|見ません)|(?:主に|だいたい|ほとんど).{0,24}(?:使います|見ます|します)|(?:欲しい|ほしい|したい|したくない|苦手です|得意です)[。！!？?\s]*$/i;
 const PERSONAL_ADVICE_RE = /(?:どうすれば|どうしたら|どう考えれば|どう整理すれば|どう決めれば|どう伝えれば|どう断れば|どう進めれば).{0,40}(?:いい|よい|良い|いいかな|いいですか|よいですか)[。！!？?\s]*$/i;
 const WRITING_TASK_RE = /(?:文章|メール|返信|メッセージ|文面|挨拶文|紹介文|説明文|キャッチコピー).{0,40}(?:作って|書いて|直して|整えて|短くして|丁寧にして|自然にして)/i;
@@ -85,9 +85,6 @@ export function groundingDecisionV22(text, history = []) {
     return { search: true, reason: riskTags[0], riskTags: [...new Set(riskTags)] };
   }
 
-  // Grounding-by-default: once a turn asks the assistant to assert an external fact,
-  // the safe default is retrieval. Only explicitly identified conversational/subjective
-  // turns above bypass search.
   if (FACT_REQUEST_RE.test(value) || QUESTION_END_RE.test(value)) {
     return { search: true, reason: 'factual-default', riskTags: ['factual-default'] };
   }
