@@ -23,7 +23,7 @@ import { answerWithVerifiedWebSearch } from './search-answer-v18.js';
 import { generateSearchFiller, SEARCH_FILLER_MODEL, shouldDeepSearch } from './search-orchestrator.js';
 import { cleanSpeechText, extractText, wrapAI } from './voice-helpers.js';
 
-const VOICE_REVISION = 'cloudflare-live-v18.2';
+const VOICE_REVISION = 'cloudflare-live-v18.3';
 
 const CASUAL_SYSTEM_PROMPT = `あなたはTalkSysという日本語の電話相談アシスタントです。
 相手と電話で自然に話しているように会話してください。発話の意図を直接受け止め、最初の一文から返答を始めてください。
@@ -52,6 +52,16 @@ const QUALITY_INTENT_RE = /(どう思う|どう考える|考えて|なぜ|理由
 function needsQualityConversation(text) {
   const value = String(text || '').trim();
   return value.length >= 52 || QUALITY_INTENT_RE.test(value);
+}
+
+function quickCasualReply(text) {
+  const value = String(text || '').trim().replace(/[！!。．.]+$/u, '');
+  if (/^(こんにちは|こんにちわ|やあ|どうも)$/u.test(value)) return 'こんにちは。どうしました？';
+  if (/^(おはよう|おはようございます)$/u.test(value)) return 'おはようございます。どうしました？';
+  if (/^(こんばんは)$/u.test(value)) return 'こんばんは。どうしました？';
+  if (/^(ありがとう|ありがとうございます|どうもありがとう)$/u.test(value)) return 'どういたしまして。';
+  if (/^(元気|元気ですか|お元気ですか)$/u.test(value)) return '元気ですよ。ありがとうございます。';
+  return '';
 }
 
 function normalizedSpeech(value) {
@@ -201,34 +211,29 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
   async onTurn(transcript, context) {
     const affinity = sessionAffinity(context);
 
+    // Accuracy-first work is isolated to web research. Ordinary conversation never waits for
+    // planning, reranking, auditing, or the slower quality model.
     if (shouldDeepSearch(transcript, [])) return this.searchResponse(transcript, context);
 
-    const quality = needsQualityConversation(transcript);
+    const quick = quickCasualReply(transcript);
+    if (quick) {
+      return this.trackAssistant((async function* () { yield quick; })(), context, 'instant-local');
+    }
+
     const messages = [
-      { role: 'system', content: quality ? QUALITY_SYSTEM_PROMPT : CASUAL_SYSTEM_PROMPT },
+      { role: 'system', content: CASUAL_SYSTEM_PROMPT },
       { role: 'user', content: transcript },
     ];
-
-    if (quality) {
-      return this.trackAssistant(
-        streamCloudflareQualityConversation(this.env.AI, messages, {
-          signal: context.signal,
-          maxTokens: 480,
-          sessionAffinity: affinity,
-        }),
-        context,
-        'quality',
-      );
-    }
 
     return this.trackAssistant(
       streamCloudflareLiveConversation(this.env.AI, messages, {
         signal: context.signal,
         maxTokens: 320,
+        firstTokenTimeoutMs: 4500,
         sessionAffinity: affinity,
       }),
       context,
-      'live',
+      'live-fast',
     );
   }
 }
@@ -326,7 +331,7 @@ export default {
         audioChunkMs: 40,
         serverTurnDetectionMs: 440,
         bargeIn: true,
-        conversationPersistence: 'isolated-page-session-no-context',
+        conversationPersistence: 'warm-transport-only-no-prompt-history',
         sharedTypedAndVoiceHistory: false,
         crossTurnContext: false,
         crossSessionContext: false,
@@ -344,7 +349,10 @@ export default {
         llmGrounded: GROUNDING_CONVERSATION_MODEL,
         llmGroundedFallback: GROUNDING_FALLBACK_MODEL,
         llmFallback: FALLBACK_CONVERSATION_MODEL,
-        llmRouting: 'live / quality / verified-two-pass-grounded-search',
+        llmRouting: 'instant-local / live-fast / verified-two-pass-grounded-search',
+        normalConversationLiveOnly: true,
+        casualFastPath: true,
+        searchPrecisionOnly: true,
         qualityModelPaidAccessOptional: true,
         groundedHighModelPaidAccessOptional: true,
         modelBenchmarkEndpoint: '/api/voice-model-bench',
