@@ -9,6 +9,8 @@ const ELLIPTICAL_RE = /^(?:それ|その)?(?:どこ|どれ|どっち|誰|いつ|
 const GENERIC_SUBJECT_RE = /(?:もの|やつ|ところ|場所|店|店舗|店頭|それ|その|どれ|どっち|おすすめ|安いところ|高いところ)/i;
 const SELF_CONTAINED_ENTITY_RE = /(?:[一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{2,30}(?:駅|線|店|支店|会社|株式会社|大学|病院|ホテル|空港|市|区|町|村|県|府|道)|\b[A-Z]{1,5}[- ]?[A-Z0-9]{2,}\b|[ァ-ヶー]{4,}|Windows|iPhone|Android)/i;
 const DOMAIN_SUBJECT_RE = /(パソコン|PC|スマホ|スマートフォン|ノートPC|デスクトップ|CPU|GPU|メモリ|SSD|車|バイク|保険|税|法律|制度|薬|病気|電車|鉄道|バス|飛行機|ホテル|店舗|会社|企業|大学|学校)/i;
+const SHOP_FOLLOWUP_RE = /(店|店舗|店頭|ショップ|買う|買いたい|購入|おすすめ|どこで買|どこにある|近く|周辺)/i;
+const SHOP_MODIFIER_RE = /(中古|新品|整備済|リファービッシュ|アウトレット|安い|格安)/i;
 
 function clean(value, max = 700) {
   return String(value || '')
@@ -18,7 +20,7 @@ function clean(value, max = 700) {
     .slice(0, max);
 }
 
-function recentUserTurns(history, limit = 4) {
+function recentUserTurns(history, limit = 10) {
   const out = [];
   for (const item of Array.isArray(history) ? history : []) {
     if (item?.role !== 'user') continue;
@@ -36,10 +38,38 @@ function looksSelfContained(current) {
   return false;
 }
 
+function canonicalDomainAnchor(text) {
+  const value = clean(text, 260);
+  if (/(パソコン|\bPC\b|ノートPC|デスクトップ|CPU|GPU|メモリ|SSD|Windows|MacBook|ThinkPad|レッツノート|Let'?s\s*note)/i.test(value)) return 'パソコン';
+  if (/(スマホ|スマートフォン|iPhone|Android)/i.test(value)) return 'スマートフォン';
+  if (/(車|自動車)/i.test(value)) return '自動車';
+  if (/バイク|二輪/i.test(value)) return 'バイク';
+  if (/(電車|鉄道|駅|路線)/i.test(value)) return '鉄道';
+  if (/ホテル/i.test(value)) return 'ホテル';
+  if (/(保険|税|法律|制度|薬|病気|会社|企業|大学|学校)/i.test(value)) return value.match(DOMAIN_SUBJECT_RE)?.[0] || '';
+  return '';
+}
+
+function latestDomainAnchor(turns) {
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const anchor = canonicalDomainAnchor(turns[i]);
+    if (anchor) return anchor;
+  }
+  return '';
+}
+
+function latestShopModifier(turns) {
+  for (let i = turns.length - 1; i >= Math.max(0, turns.length - 5); i -= 1) {
+    const match = turns[i].match(SHOP_MODIFIER_RE);
+    if (match?.[1]) return match[1];
+  }
+  return '';
+}
+
 export function resolveGroundedQuestionV22(query, history = []) {
   const current = clean(query, 500);
   if (!current) return '';
-  const prior = recentUserTurns(history, 4).filter((item) => item !== current);
+  const prior = recentUserTurns(history, 10).filter((item) => item !== current);
   if (!prior.length) return current;
 
   const selfContained = looksSelfContained(current);
@@ -51,12 +81,25 @@ export function resolveGroundedQuestionV22(query, history = []) {
 
   if (!needsContext) return current;
 
+  // Shopping/location follow-ups should inherit only the subject and active purchase
+  // condition. Carrying whole earlier utterances (e.g. "YouTubeを見る") pollutes
+  // queries and can turn a used-PC store search into an unrelated YouTube search.
+  if (SHOP_FOLLOWUP_RE.test(current)) {
+    const anchor = latestDomainAnchor(prior);
+    const modifier = latestShopModifier(prior);
+    if (anchor) return clean([anchor, modifier, current].filter(Boolean).join(' '), 650);
+  }
+
   const usefulPrior = prior
-    .filter((item) => hasExternalFactRiskV22(item) || DOMAIN_SUBJECT_RE.test(item) || SELF_CONTAINED_ENTITY_RE.test(item))
-    .slice(-3);
+    .filter((item) => hasExternalFactRiskV22(item) || DOMAIN_SUBJECT_RE.test(item) || SELF_CONTAINED_ENTITY_RE.test(item));
   if (!usefulPrior.length) return current;
 
-  return clean([...usefulPrior, current].join(' '), 650);
+  const nearest = usefulPrior.at(-1);
+  const anchor = latestDomainAnchor(usefulPrior);
+  if (anchor && canonicalDomainAnchor(nearest) !== anchor) {
+    return clean([anchor, nearest, current].join(' '), 650);
+  }
+  return clean([nearest, current].join(' '), 650);
 }
 
 export async function collectGroundedEvidenceV22(query, history = [], options = {}) {
