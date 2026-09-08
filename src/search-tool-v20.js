@@ -6,7 +6,7 @@ import {
   buildDeterministicSearchQueries,
 } from './search-fallbacks.js';
 
-export const SEARCH_TOOL_V20_REVISION = 'evidence-only-web-tool-v20.1-fast-local';
+export const SEARCH_TOOL_V20_REVISION = 'evidence-only-web-tool-v20.2-verified-local';
 export const SEARCH_TOOL_V20_MAX_QUERIES = 2;
 export const SEARCH_TOOL_V20_MAX_SOURCES = 8;
 
@@ -16,8 +16,9 @@ const FOLLOWUP_REFERENCE_RE = /(それ|その(?:店|店舗|商品|製品|機種|
 const SHORT_FOLLOWUP_RE = /^(?:(?:今日|明日|今)\s*)?(?:どこ(?:で|に|が|の)?|近く|安い(?:の|方|やつ)?|高い(?:の|方|やつ)?|いくら|何時|在庫|営業時間|買える|売って(?:る)?|おすすめ(?:は|どれ)?)/i;
 const CONTEXT_NOISE_RE = /^(?:はい|うん|そう|そうだね|なるほど|ありがとう(?:ございます)?|お願いします?|えーと|うーん|じゃあ|それで)[\s。、！？!?]*$/i;
 const LOCAL_COMMERCE_RE = /(どこ(?:か)?(?:で|に).{0,28}(?:買|購入|売)|販売店|家電量販店|店舗|店頭|近く|周辺|市内|県内)/i;
-const STORE_SIGNAL_RE = /(店|店舗|ショップ|販売|家電|電器|電機|パソコン|\bPC\b|ビックカメラ|ヤマダ|エディオン|ケーズ|コジマ|ハードオフ|パソコン工房|ジョーシン)/i;
+const STORE_SIGNAL_RE = /(店|店舗|ショップ|販売|家電|電器|電機|パソコン|\bPC\b|ビックカメラ|ヤマダ|エディオン|ケーズ|コジマ|ハードオフ|パソコン工房|ジョーシン|ドスパラ|PC DEPOT|ピーシーデポ)/i;
 const LOCAL_JUNK_RE = /(観光|旅行|温泉|市役所|県庁|市公式|県公式|ホームページ$|Wikipedia|ウィキペディア|ニュース|人物|ケンミンSHOW)/i;
+const DETAIL_LOOKUP_RE = /(電話番号|連絡先|問い合わせ先|住所|所在地|営業時間|営業日|定休日|公式サイト|公式ページ|URL|アクセス)/i;
 
 function clean(value, max = 500) {
   return String(value || '')
@@ -69,7 +70,7 @@ export function resolveSearchSeed(query, history = []) {
 }
 
 function detectLocalProfile(question, queries = []) {
-  const text = clean([question, ...queries].join(' '), 600);
+  const text = clean([question, ...queries].join(' '), 700);
   const locationMatches = [...text.matchAll(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,18}(?:都|道|府|県|市|区|町|村))/g)];
   const preferred = locationMatches.find((match) => /(?:市|区|町|村)$/.test(match[1]));
   const location = clean(preferred?.[1] || locationMatches.at(-1)?.[1] || '', 24);
@@ -79,13 +80,14 @@ function detectLocalProfile(question, queries = []) {
   else if (/Android/i.test(text)) product = 'Android';
   return {
     localCommerce: Boolean(location) && LOCAL_COMMERCE_RE.test(text),
+    detailLookup: DETAIL_LOOKUP_RE.test(text),
     location,
     product,
   };
 }
 
 function sourceText(item) {
-  return clean(`${item?.title || ''} ${item?.excerpt || item?.snippet || ''}`, 1500);
+  return clean(`${item?.title || ''} ${item?.excerpt || item?.snippet || ''}`, 1800);
 }
 
 function sourceQuality(item, index, profile) {
@@ -98,12 +100,14 @@ function sourceQuality(item, index, profile) {
   if (LISTICLE_RE.test(title)) score -= 28;
   if (OFFICIAL_HINT_RE.test(title) || OFFICIAL_HINT_RE.test(text)) score += 12;
   if (String(item?.excerpt || item?.snippet || '').length >= 180) score += 4;
+  if (profile.detailLookup && DETAIL_LOOKUP_RE.test(text)) score += 20;
+  if (profile.detailLookup && /(?:0\d{1,4}[-‐‑–—]?\d{1,4}[-‐‑–—]?\d{3,4}|〒?\d{3}[-‐‑–—]?\d{4})/.test(text)) score += 18;
 
   try {
     const host = new URL(url).hostname.toLowerCase();
     if (/\.go\.jp$|\.lg\.jp$|\.ac\.jp$|\.gov$|\.edu$/.test(host)) score += profile.localCommerce ? -20 : 18;
     if (/^(?:www\.)?(?:google|bing|duckduckgo)\./.test(host)) score -= 20;
-    if (/wikipedia\.org$/.test(host)) score -= profile.localCommerce ? 85 : 10;
+    if (/wikipedia\.org$/.test(host)) score -= profile.localCommerce || profile.detailLookup ? 85 : 10;
   } catch {}
 
   if (profile.localCommerce) {
@@ -144,6 +148,13 @@ export function rankEvidenceSourcesV20(items, question = '', queries = []) {
       .slice(0, SEARCH_TOOL_V20_MAX_SOURCES);
   }
 
+  if (profile.detailLookup) {
+    return ranked
+      .filter(({ item, score }) => score >= 58 && !/wikipedia|google-news/i.test(String(item?.engine || '')))
+      .map(({ item }) => item)
+      .slice(0, SEARCH_TOOL_V20_MAX_SOURCES);
+  }
+
   return ranked.map(({ item }) => item).slice(0, SEARCH_TOOL_V20_MAX_SOURCES);
 }
 
@@ -151,7 +162,7 @@ function compactSource(item) {
   return {
     title: clean(item?.title, 180),
     url: String(item?.url || '').slice(0, 800),
-    evidence: clean(item?.excerpt || item?.snippet, 700),
+    evidence: clean(item?.excerpt || item?.snippet, 850),
     engine: clean(item?.engine, 40),
   };
 }
@@ -169,9 +180,9 @@ export function compactToolEvidence(result) {
 async function searchBatch(searchQuery, timeoutMs, profile) {
   const tasks = [
     webSearch(searchQuery, {
-      limit: 10,
+      limit: profile.detailLookup ? 8 : 10,
       timeoutMs,
-      enrichPages: false,
+      enrichPages: profile.detailLookup,
     }).catch(() => []),
     searchBingRss(searchQuery, { limit: 8, timeoutMs }).catch(() => []),
   ];
@@ -212,8 +223,8 @@ export async function collectWebEvidenceV20(query, history = [], options = {}) {
     queries,
   });
 
-  const first = await searchBatch(queries[0] || question, 2800, profile);
-  let merged = dedupeSearchResults(first, 36);
+  const first = await searchBatch(queries[0] || question, profile.detailLookup ? 3600 : 2800, profile);
+  let merged = dedupeSearchResults(first, 40);
   let sources = rankEvidenceSourcesV20(merged, question, queries);
 
   if (sources.length < 3 && queries[1]) {
@@ -224,8 +235,8 @@ export async function collectWebEvidenceV20(query, history = [], options = {}) {
       queries,
       message: '有効な根拠が少ないため補助検索を実行',
     });
-    const second = await searchBatch(queries[1], 2500, profile);
-    merged = dedupeSearchResults([...merged, ...second], 40);
+    const second = await searchBatch(queries[1], profile.detailLookup ? 3400 : 2500, profile);
+    merged = dedupeSearchResults([...merged, ...second], 44);
     sources = rankEvidenceSourcesV20(merged, question, queries);
   }
 
