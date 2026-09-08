@@ -3,22 +3,43 @@ import assert from 'node:assert/strict';
 import {
   SEARCH_FILLER_MODEL,
   SEARCH_FILLER_MIN_DELAY_MS,
+  SEARCH_MAX_QUERIES,
+  SEARCH_MAX_ROUNDS,
   heuristicContextQuery,
   planSearchQueries,
   generateSearchFiller,
   parsePlannerJson,
   sanitizeFiller,
+  shouldDeepSearch,
 } from '../src/search-orchestrator.js';
 import {
   GROUNDING_VOICE_MODEL,
   GROUNDING_FALLBACK_MODEL,
 } from '../src/streaming-workers-ai.js';
 
-test('planner JSON parser keeps a resolved question and up to three unique queries', () => {
-  const parsed = parsePlannerJson('{"resolved_question":"予算3万円のノートPCの購入先","queries":["3万円 ノートPC 中古 専門店","3万円 ノートPC 通販 比較","3万円 ノートPC 中古 専門店","3万円 ノートPC 公式"]}');
+test('planner JSON parser keeps structured intent and up to eight unique queries', () => {
+  const parsed = parsePlannerJson(JSON.stringify({
+    resolved_question: '予算3万円のノートPCの購入先',
+    intent: 'shopping',
+    location: '別府市',
+    must_include: ['3万円', '動画視聴'],
+    queries: [
+      '3万円 ノートPC 中古 専門店',
+      '3万円 ノートPC 通販 比較',
+      '3万円 ノートPC 公式',
+      '別府市 ノートPC 販売店',
+      '別府市 ノートPC 家電量販店',
+      '3万円 ノートPC 保証 比較',
+      '3万円 ノートPC 在庫',
+      '3万円 ノートPC 中古 専門店',
+      '3万円 ノートPC 評判',
+    ],
+  }));
   assert.equal(parsed.resolvedQuestion, '予算3万円のノートPCの購入先');
-  assert.equal(parsed.queries.length, 3);
-  assert.deepEqual(parsed.queries.slice(0, 2), ['3万円 ノートPC 中古 専門店', '3万円 ノートPC 通販 比較']);
+  assert.equal(parsed.intent, 'shopping');
+  assert.equal(parsed.location, '別府市');
+  assert.equal(parsed.queries.length, SEARCH_MAX_QUERIES);
+  assert.deepEqual(parsed.mustInclude, ['3万円', '動画視聴']);
 });
 
 test('heuristic context query carries recent user constraints into a short follow-up', () => {
@@ -33,35 +54,44 @@ test('heuristic context query carries recent user constraints into a short follo
   assert.match(query, /それを今買うならどこがいい/);
 });
 
-test('heuristic context query can recover topic from assistant phrasing for terse search follow-up', () => {
+test('terse contextual purchase follow-up is routed to deep search instead of casual answer', () => {
   const history = [
-    { role: 'assistant', content: '元気ですよ、ありがとうございます。パソコン、まだ迷っていますか？' },
-    { role: 'user', content: 'どこで買えばいいかわからなくて' },
-    { role: 'assistant', content: '今の検索では現在情報の裏付けが十分ではありませんでした。' },
+    { role: 'user', content: '3万円くらいのノートパソコンを探している' },
+    { role: 'assistant', content: 'ネット閲覧と動画なら候補はあります。' },
   ];
-  const query = heuristicContextQuery('調べてくれない？', history);
-  assert.match(query, /パソコン/);
-  assert.match(query, /どこで買えばいい/);
-  assert.match(query, /調べてくれない/);
-  assert.doesNotMatch(query, /裏付けが十分/);
+  assert.equal(shouldDeepSearch('どこで買えばいいかわからなくて', history), true);
+  assert.equal(shouldDeepSearch('別府市内ならどこがいい？', history), true);
+  assert.equal(shouldDeepSearch('それならどっち？', history), true);
 });
 
-test('high model resolves omitted context and preserves budget and use case', async () => {
+test('casual personal chat does not force a web search', () => {
+  assert.equal(shouldDeepSearch('今日は疲れた', [{ role: 'user', content: '仕事が忙しい' }]), false);
+  assert.equal(shouldDeepSearch('ありがとう', []), false);
+});
+
+test('high model resolves omitted context and can return six to eight diverse queries', async () => {
   const called = [];
   const ai = {
     async run(model, input) {
       called.push(model);
       assert.equal(model, GROUNDING_VOICE_MODEL);
       const prompt = input.messages.map((m) => m.content).join('\n');
-      assert.match(prompt, /予算、用途、地域、型番、日時/);
+      assert.match(prompt, /6〜8本/);
+      assert.match(prompt, /予算、用途、地域、型番、日時、数量、条件/);
       assert.match(prompt, /3万円ぐらい/);
       return {
         response: JSON.stringify({
           resolved_question: '予算3万円、ネット閲覧と動画視聴向けノートPCの現在の購入先',
+          intent: 'shopping',
+          location: '',
+          must_include: ['3万円', 'ネット閲覧', '動画視聴'],
           queries: [
-            '3万円 ノートPC 中古 PC専門店 2026',
+            '3万円 ノートPC 販売店 2026',
             '3万円 ノートPC 通販 在庫 2026',
             '3万円 ノートPC 中古 比較 保証',
+            '3万円 ノートPC メーカー 公式',
+            '3万円 ノートPC 家電量販店',
+            '3万円 ノートPC 評判 比較',
           ],
         }),
       };
@@ -75,7 +105,8 @@ test('high model resolves omitted context and preserves budget and use case', as
   assert.deepEqual(called, [GROUNDING_VOICE_MODEL]);
   assert.equal(plan.planned, true);
   assert.match(plan.resolvedQuestion, /3万円/);
-  assert.equal(plan.queries.length, 3);
+  assert.ok(plan.queries.length >= 6);
+  assert.ok(plan.queries.length <= SEARCH_MAX_QUERIES);
 });
 
 test('planner falls back from primary grounded model to gpt-oss', async () => {
@@ -85,7 +116,7 @@ test('planner falls back from primary grounded model to gpt-oss', async () => {
       called.push(model);
       if (model === GROUNDING_VOICE_MODEL) throw new Error('paid model unavailable');
       assert.equal(model, GROUNDING_FALLBACK_MODEL);
-      return { response: '{"resolved_question":"大分 大阪 航空便 現在","queries":["大分空港 大阪 伊丹 時刻表 公式","大分 大阪 航空便 2026"]}' };
+      return { response: '{"resolved_question":"大分 大阪 航空便 現在","intent":"current_fact","queries":["大分空港 大阪 伊丹 時刻表 公式","大分 大阪 航空便 2026","大分空港 大阪 航空会社 公式","大分 伊丹 運航状況"]}' };
     },
   };
   const plan = await planSearchQueries(ai, '大阪は？今調べて', [
@@ -96,21 +127,18 @@ test('planner falls back from primary grounded model to gpt-oss', async () => {
   assert.match(plan.resolvedQuestion, /大阪/);
 });
 
-test('filler model creates a short non-answer utterance only after a useful wait threshold', async () => {
+test('search uses two-pass research budget and deterministic filler, not a free-writing model', async () => {
+  assert.equal(SEARCH_MAX_ROUNDS, 2);
+  assert.equal(SEARCH_FILLER_MODEL, 'deterministic-safe-filler');
+  const ai = { async run() { throw new Error('filler must not invoke AI'); } };
   const started = Date.now();
-  const ai = {
-    async run(model, input) {
-      assert.equal(model, SEARCH_FILLER_MODEL);
-      assert.equal(input.max_tokens, 24);
-      return { response: 'うーん、見てみますね。' };
-    },
-  };
   const filler = await generateSearchFiller(ai, '今いくら？', []);
-  assert.equal(filler, 'うーん、見てみますね。');
-  assert.ok(Date.now() - started >= SEARCH_FILLER_MIN_DELAY_MS - 40);
+  assert.equal(filler, '詳しく確認します。少し待ってください。');
+  assert.ok(Date.now() - started >= SEARCH_FILLER_MIN_DELAY_MS - 50);
 });
 
-test('filler sanitizer rejects answer-like statements and keeps natural wait speech', () => {
+test('filler sanitizer only accepts safe non-answer phrases', () => {
   assert.equal(sanitizeFiller('価格は3万円です。'), '');
-  assert.equal(sanitizeFiller('えーと、少し探してみますね。'), 'えーと、少し探してみますね。');
+  assert.equal(sanitizeFiller('えーと、ヤマダ電機ならあります。'), '');
+  assert.equal(sanitizeFiller('詳しく確認します。少し待ってください。'), '詳しく確認します。少し待ってください。');
 });
