@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { CLOUDFLARE_LIVE_CLIENT } from '../src/cloudflare-live-client.js';
+import { CLOUDFLARE_LIVE_CLIENT_V20 } from '../src/cloudflare-live-client-v20.js';
 import {
   REALTIME_STT_MODEL,
   ACCURATE_STT_MODEL,
@@ -35,27 +36,28 @@ const webSource = fs.readFileSync(new URL('../src/web-search.js', import.meta.ur
 const ttsSource = fs.readFileSync(new URL('../src/cloudflare-japanese-tts.js', import.meta.url), 'utf8');
 const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
-test('v20.1 production entrypoint uses tiered Cloudflare conversation and deterministic real search while staying keyless', () => {
+test('v20.2 production entrypoint uses tiered Cloudflare conversation, deterministic search and robust audio while staying keyless', () => {
   assert.match(wranglerSource, /"main":\s*"src\/worker-v20\.js"/);
-  assert.match(productionWorkerSource, /VOICE_REVISION = 'cloudflare-agent-v20\.1-fast-search'/);
+  assert.match(productionWorkerSource, /VOICE_REVISION = 'cloudflare-agent-v20\.2-audio-search'/);
   assert.match(productionWorkerSource, /extends BaseTalkSysVoiceAgent/);
-  assert.match(productionWorkerSource, /conversationOrchestrator: 'tiered-fast-agent-v20\.1'/);
-  assert.match(productionWorkerSource, /toolCalling: 'deterministic-search-router-v20\.1'/);
+  assert.match(productionWorkerSource, /conversationOrchestrator: 'tiered-fast-agent-v20\.2'/);
+  assert.match(productionWorkerSource, /toolCalling: 'deterministic-search-router-v20\.2'/);
+  assert.match(productionWorkerSource, /CLOUDFLARE_LIVE_CLIENT_V20/);
   assert.match(productionWorkerSource, /modelDecidesToolUse: false/);
   assert.match(productionWorkerSource, /ordinaryConversationUsesToolInference: false/);
-  assert.match(productionWorkerSource, /searchPlannerBeforeRetrieval: false/);
-  assert.match(productionWorkerSource, /searchAnswerCascade: false/);
+  assert.match(productionWorkerSource, /midStreamContinuationRecovery: true/);
+  assert.match(productionWorkerSource, /strictHalfDuplexEchoGuard: true/);
   assert.doesNotMatch(productionWorkerSource, /runWithTools/);
   assert.match(workerSource, /mode: 'phone-consultation-only'/);
   assert.match(workerSource, /providerApiKeysRequired: false/);
   assert.match(workerSource, /screenFunction: false/);
   assert.match(workerSource, /screenOverlay: false/);
-  assert.doesNotMatch(workerSource + legacyV19Source + productionWorkerSource + CLOUDFLARE_LIVE_CLIENT + indexSource + sttSource + llmSource + ttsSource, /GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/);
+  assert.doesNotMatch(workerSource + legacyV19Source + productionWorkerSource + CLOUDFLARE_LIVE_CLIENT + CLOUDFLARE_LIVE_CLIENT_V20 + indexSource + sttSource + llmSource + ttsSource, /GEMINI_API_KEY|OPENAI_API_KEY|DEEPGRAM_API_KEY|ELEVENLABS_API_KEY/);
   assert.doesNotMatch(workerSource + productionWorkerSource, /screen_request|requestScreen|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
-  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /screenToggle|screenVideo|drawArrow|\/api\/locate|screen_request/);
+  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT_V20, /screenToggle|screenVideo|drawArrow|\/api\/locate|screen_request/);
 });
 
-test('Japanese STT keeps high-confidence fast path and now receives conversation context', () => {
+test('Japanese STT keeps high-confidence fast path and receives conversation context', () => {
   assert.equal(REALTIME_STT_MODEL, '@cf/deepgram/nova-3');
   assert.equal(ACCURATE_STT_MODEL, '@cf/openai/whisper-large-v3-turbo');
   assert.equal(RESOLVER_MODEL, '@cf/qwen/qwen3.8-27b');
@@ -65,7 +67,7 @@ test('Japanese STT keeps high-confidence fast path and now receives conversation
   assert.match(workerSource, /sttUsesConversationContext: true/);
 });
 
-test('legacy live, quality and grounded routes remain available while Qwen is the v20.1 fast center and GLM handles quality turns', () => {
+test('Qwen is the v20.2 fast center and GLM handles quality and grounded search turns', () => {
   assert.equal(LIVE_CONVERSATION_MODEL, '@cf/qwen/qwen3.8-27b');
   assert.equal(QUALITY_CONVERSATION_MODEL, '@cf/zai-org/glm-5.3-flash');
   assert.equal(GROUNDING_CONVERSATION_MODEL, '@cf/deepseek-ai/deepseek-v4-pro-0813');
@@ -79,7 +81,7 @@ test('legacy live, quality and grounded routes remain available while Qwen is th
   assert.match(productionWorkerSource, /streamBoundedQualityConversation/);
 });
 
-test('live Qwen fallback disables thinking and bounded conversation enforces startup timeouts', () => {
+test('live Qwen disables thinking and bounded conversation now repairs mid-stream truncation', () => {
   const input = modelInput(LIVE_CONVERSATION_MODEL, [{ role: 'user', content: 'こんにちは' }], 120, 0.2);
   assert.equal(input.stream, true);
   assert.equal(input.max_completion_tokens, 120);
@@ -88,75 +90,73 @@ test('live Qwen fallback disables thinking and bounded conversation enforces sta
   assert.match(boundedSource, /openTimeoutMs/);
   assert.match(boundedSource, /fallbackTimeoutMs/);
   assert.match(boundedSource, /Workers AI first token/);
-  assert.match(workerSource, /openTimeoutMs: 1900/);
-  assert.match(productionWorkerSource, /openTimeoutMs: 1500/);
-  assert.match(productionWorkerSource, /firstTokenTimeoutMs: 1800/);
+  assert.match(boundedSource, /recoverContinuation/);
+  assert.match(boundedSource, /直前の回答が通信上の理由で途中までしか届いていません/);
+  assert.match(productionWorkerSource, /openTimeoutMs: 1700/);
+  assert.match(productionWorkerSource, /firstTokenTimeoutMs: 2000/);
 });
 
-test('v19 search stack remains as a rollback baseline while v20.1 uses deterministic evidence-only retrieval', () => {
+test('v19 search remains rollback while v20.2 uses deterministic evidence-only retrieval', () => {
   assert.equal(SEARCH_MAX_QUERIES, 8);
   assert.equal(SEARCH_MAX_ROUNDS, 2);
   for (const required of ['google-html', 'duckduckgo-html', 'bing-html', 'wikipedia-ja', 'google-news']) assert.match(webSource, new RegExp(required));
   assert.match(searchSource, /6〜8本/);
   assert.match(searchV19Source, /const plan = await resolvePlan\(ai, question, history, options\)/);
   assert.match(searchV19Source, /const search = await runSearch\(ai, plan, options\)/);
-  assert.match(searchV19Source, /rerankSearchResults/);
   assert.match(fallbackSource, /format=rss/);
-  assert.match(workerSource, /shouldDeepSearch\(transcript, history\)/);
-  assert.match(legacyV19Source, /answerWithContextualVerifiedSearchV19/);
   assert.match(productionWorkerSource, /collectWebEvidenceV20/);
   assert.match(productionWorkerSource, /requiresFreshSearch\(transcript\)/);
+  assert.match(productionWorkerSource, /namedBusinessContactSearch: true/);
   assert.doesNotMatch(productionWorkerSource, /runWithTools/);
-  assert.doesNotMatch(productionWorkerSource, /answerWithContextualVerifiedSearchV19/);
   assert.doesNotMatch(searchToolV20Source, /runNonStreamingCascade/);
   assert.doesNotMatch(searchToolV20Source, /auditAnswer/);
 });
 
-test('v20 uses fixed search wait speech instead of spending an extra model call on filler', () => {
+test('v20 uses fixed search wait speech instead of an extra filler model call', () => {
   assert.equal(SEARCH_FILLER_MODEL, LIVE_CONVERSATION_MODEL);
   assert.match(searchSource, /回答・推測・店名の新規生成は禁止/);
   assert.match(productionWorkerSource, /少し調べますね/);
   assert.match(productionWorkerSource, /fixedSearchWaitSpeech: true/);
   assert.doesNotMatch(productionWorkerSource, /generateSearchFiller/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /前の話を踏まえて確認しています/);
 });
 
-test('typed speech simulation has audible replies without automatic microphone startup', () => {
+test('typed speech simulation remains audible without automatically opening the microphone', () => {
   assert.match(indexSource, /話したことにする/);
   assert.match(indexSource, /返事は文字と音声で再生します/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /typedVoiceOutput = true/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /ensurePlaybackAudio/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /CALL_CONNECT_TIMEOUT_MS = 10000/);
-  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT, /setTimeout\(\(\) => startCall\(true\)/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /typedVoiceOutput = true/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /ensurePlaybackAudio/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /CALL_CONNECT_TIMEOUT_MS = 10000/);
+  assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT_V20, /setTimeout\(\(\) => startCall\(true\)/);
   assert.match(workerSource, /typedSpeechSimulation: true/);
   assert.match(workerSource, /typedSpeechVoiceOutput: true/);
 });
 
-test('legacy answer audit remains available for rollback but is not in the v20 production answer path', () => {
-  assert.match(auditSource, /Web根拠監査担当/);
-  assert.match(auditSource, /unsupportedNamedCandidates/);
-  assert.match(auditSource, /根拠にない名前を絶対に残さない/);
-  assert.match(auditSource, /sourceTitleRescue/);
-  assert.match(searchV19Source, /unsupportedNamedCandidates/);
-  assert.match(searchV19Source, /auditAnswer/);
-  assert.doesNotMatch(productionWorkerSource, /auditAnswer/);
+test('production microphone capture prefers AudioWorklet, falls back on older browsers, and never monitors mic into speakers', () => {
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /echoCancellation/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /noiseSuppression/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /autoGainControl/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /createWorkletCapture/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /createScriptProcessorCapture/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /captureSilenceGain\.gain\.value = 0/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /if \(assistantAudioActive\(\)\) return/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /PLAYBACK_TAIL_GUARD_MS = 700/);
 });
 
-test('server TTS and browser playback are tuned for clearer Japanese speech', () => {
+test('server TTS and browser playback remain tuned for Japanese speech', () => {
   assert.equal(PRIMARY_TTS_MODEL, '@cf/myshell-ai/melotts');
   assert.match(ttsSource, /normalizeJapaneseTtsText/);
   assert.match(ttsSource, /Mbps/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /createDynamicsCompressor\(\)/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /highpass\.frequency\.value = 90/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /presence\.frequency\.value = 2800/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /utterance\.rate = 0\.95/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /createDynamicsCompressor\(\)/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /highpass\.frequency\.value = 90/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /presence\.frequency\.value = 2800/);
+  assert.match(CLOUDFLARE_LIVE_CLIENT_V20, /utterance\.rate = 0\.95/);
 });
 
-test('assistant playback is never streamed back into STT unless human barge-in wins', () => {
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /Never send the assistant's own audio to STT/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /BARGE_FRAMES = 3/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /type: 'interrupt'/);
-  assert.match(CLOUDFLARE_LIVE_CLIENT, /DEVICE_TTS_GUARD_MS = 350/);
+test('legacy answer audit remains available for rollback but is not in v20 production answer path', () => {
+  assert.match(auditSource, /Web根拠監査担当/);
+  assert.match(auditSource, /unsupportedNamedCandidates/);
+  assert.match(searchV19Source, /auditAnswer/);
+  assert.doesNotMatch(productionWorkerSource, /auditAnswer/);
 });
 
 test('conversation memory follows call lifecycle and only trusted caller identity persists across calls', () => {
