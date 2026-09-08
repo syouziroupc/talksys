@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: cloudflare-live-v18.5
+      EXPECTED_VOICE_REVISION: cloudflare-live-v18.6
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -28,6 +28,8 @@ jobs:
           node --check src/cloudflare-japanese-stt.js
           node --check src/cloudflare-japanese-tts.js
           node --check src/cloudflare-llm.js
+          node --check src/bounded-conversation.js
+          node --check src/conversation-memory.js
           node --check src/search-answer-v18.js
           node --check src/web-search.js
           node --check src/search-rerank.js
@@ -91,7 +93,7 @@ jobs:
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
 
-      - name: Verify production v18.5 contract when deployment credentials are configured
+      - name: Verify production v18.6 call-memory contract when deployment credentials are configured
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
           body="$(curl -fsS --max-time 30 "$PRODUCTION_URL/voice-health")" || {
@@ -103,21 +105,34 @@ jobs:
           const expected = process.env.EXPECTED;
           console.log(JSON.stringify({
             voiceRevision: d.voiceRevision,
+            conversationPersistence: d.conversationPersistence,
+            sessionMemoryLifecycle: d.sessionMemoryLifecycle,
+            sessionMemoryTimeBasedExpiry: d.sessionMemoryTimeBasedExpiry,
             crossTurnContext: d.crossTurnContext,
             crossSessionContext: d.crossSessionContext,
+            trustedCallerIdentityRequired: d.trustedCallerIdentityRequired,
+            voiceBuiltinHistoryDisabled: d.voiceBuiltinHistoryDisabled,
             conversationContextMaxMessages: d.conversationContextMaxMessages,
-            conversationContextTtlMs: d.conversationContextTtlMs,
+            callerContextMaxMessages: d.callerContextMaxMessages,
             searchSecondProgressSpeechMs: d.searchSecondProgressSpeechMs,
             normalConversationLiveOnly: d.normalConversationLiveOnly,
+            qualityRouteForComplexConversation: d.qualityRouteForComplexConversation,
             searchPrecisionOnly: d.searchPrecisionOnly,
+            speechClarityProcessing: d.speechClarityProcessing,
           }));
           if (d.voiceRevision !== expected) throw new Error(`expected ${expected}, got ${d.voiceRevision}`);
+          if (d.conversationPersistence !== 'call-session-with-trusted-caller-memory') throw new Error('unexpected conversation persistence mode');
+          if (d.sessionMemoryLifecycle !== 'start_call-to-end_call') throw new Error('unexpected session lifecycle');
+          if (d.sessionMemoryTimeBasedExpiry !== false) throw new Error('time-based session expiry must be disabled');
           if (d.crossTurnContext !== true) throw new Error('cross-turn context is not enabled');
-          if (d.crossSessionContext !== false) throw new Error('cross-session context must remain disabled');
-          if (d.conversationContextMaxMessages !== 8) throw new Error('unexpected context window');
-          if (d.conversationContextTtlMs !== 1800000) throw new Error('unexpected context TTL');
-          if (d.searchSecondProgressSpeechMs !== 5500) throw new Error('unexpected search progress threshold');
-          if (d.normalConversationLiveOnly !== true || d.searchPrecisionOnly !== true) throw new Error('conversation/search routing contract failed');
+          if (d.crossSessionContext !== 'trusted-caller-only') throw new Error('cross-session context must require a trusted caller');
+          if (d.trustedCallerIdentityRequired !== true) throw new Error('trusted caller identity is not required');
+          if (d.voiceBuiltinHistoryDisabled !== true) throw new Error('shared voice history must be disabled');
+          if (d.conversationContextMaxMessages !== 28) throw new Error('unexpected session context window');
+          if (d.callerContextMaxMessages !== 20) throw new Error('unexpected caller context window');
+          if (d.searchSecondProgressSpeechMs !== 4200) throw new Error('unexpected search progress threshold');
+          if (d.normalConversationLiveOnly !== false || d.qualityRouteForComplexConversation !== true || d.searchPrecisionOnly !== true) throw new Error('conversation/search routing contract failed');
+          if (d.speechClarityProcessing !== true) throw new Error('speech clarity processing is not enabled');
           NODE
 
       - name: Report external deployment requirement
