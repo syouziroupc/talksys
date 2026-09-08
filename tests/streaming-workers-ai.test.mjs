@@ -43,8 +43,24 @@ test('grounded marker is detected and policy forbids user-supplied-search phrasi
   };
   assert.equal(isGroundedInput(input), true);
   const prepared = withGroundedAnswerPolicy(input);
-  assert.match(prepared.messages[0].content, /いただいた検索結果/);
+  assert.match(prepared.messages[0].content, /検索責任をユーザーへ返す表現は禁止/);
   assert.match(prepared.messages[0].content, /一段階で導ける結論/);
+});
+
+test('grounded policy allows useful advice when retrieved evidence is irrelevant', () => {
+  const input = {
+    messages: [
+      { role: 'system', content: 'grounded' },
+      { role: 'assistant', content: '3万円くらいならネット閲覧と動画視聴向けのノートPCを考えましょう。' },
+      { role: 'user', content: 'どこで買うのがいいかな\n\n[ウェブ検索結果]\n有効な検索結果なし。外部事実は推測しないこと。' },
+    ],
+  };
+  const prepared = withGroundedAnswerPolicy(input);
+  const policy = prepared.messages[0].content;
+  assert.match(policy, /回答全体を拒否しない/);
+  assert.match(policy, /目的、予算、対象商品、用途/);
+  assert.match(policy, /購入チャネル/);
+  assert.match(policy, /最新価格、在庫、営業時間/);
 });
 
 test('search-grounded voice routes to gpt-oss instead of the live model', async () => {
