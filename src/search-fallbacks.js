@@ -126,7 +126,9 @@ export function buildDeterministicSearchQueries(question, history = []) {
   const all = `${context} ${current}`.trim();
   const location = detectLocation(all);
   const product = detectProduct(all) || '商品';
-  const purchase = /(買|購入|どこで|販売店|店舗|店頭|家電量販店|中古|新品|在庫)/i.test(all);
+  const explicitPurchase = /(買|購入|どこで|販売店|店舗|店頭|家電量販店|中古|新品|在庫)/i.test(all);
+  const contextualWhere = product !== '商品' && Boolean(location) && /(どこ(?:が|で)?(?:いい|良い|おすすめ)?|市内なら|県内なら)/i.test(current);
+  const purchase = explicitPurchase || contextualWhere;
   const local = Boolean(location) && /(どこ|店|店舗|買|購入|販売|近く|市内|県内)/i.test(all);
   const out = [];
 
