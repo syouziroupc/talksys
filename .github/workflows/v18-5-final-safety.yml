@@ -1,0 +1,31 @@
+name: Apply final v18.5 context safety once
+
+on:
+  push:
+    branches: [fix/v18-4-bounded-precision-search]
+    paths:
+      - '.github/workflows/v18-5-final-safety.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/v18-4-bounded-precision-search
+          fetch-depth: 0
+      - run: python scripts/post_v18_5_safety.py
+      - run: |
+          node --check src/worker-v14.js
+          node --check src/search-orchestrator.js
+          npm install --no-audit --no-fund
+          node --test tests/contextual-conversation-regression.test.mjs tests/web-search.test.mjs tests/search-budget-regression.test.mjs
+      - run: |
+          git config user.name talksys-ci
+          git config user.email talksys-ci@users.noreply.github.com
+          git add src/worker-v14.js src/search-orchestrator.js tests/contextual-conversation-regression.test.mjs
+          git commit -m "v18.5: isolate context keys and harden search filler"
+          git push origin HEAD:fix/v18-4-bounded-precision-search
