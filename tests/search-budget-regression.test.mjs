@@ -22,7 +22,7 @@ test('precision search has explicit bounded phase budgets while normal chat rema
   assert.match(orchestrator, /Promise\.all\(\[plannerPromise, firstSearchPromise\]\)/);
   assert.match(worker, /normalConversationLiveOnly: true/);
   assert.match(worker, /searchPrecisionOnly: true/);
-  assert.match(worker, /searchSecondProgressSpeechMs: 8000/);
+  assert.match(worker, /searchSecondProgressSpeechMs: 5500/);
 });
 
 test('a hanging non-streaming model cannot block the whole cascade', async () => {

@@ -31,12 +31,12 @@ import {
 } from './search-orchestrator.js';
 import { cleanSpeechText, extractText, wrapAI } from './voice-helpers.js';
 
-const VOICE_REVISION = 'cloudflare-live-v18.4';
+const VOICE_REVISION = 'cloudflare-live-v18.5';
 
 const CASUAL_SYSTEM_PROMPT = `あなたはTalkSysという日本語の電話相談アシスタントです。
 相手と電話で自然に話しているように会話してください。発話の意図を直接受け止め、最初の一文から返答を始めてください。
 短い雑談や相槌は短く、相談・意見・説明は必要なだけ話してください。毎回同じ長さ、同じ型、同じ締め方にしないでください。
-以前の発話内容は参照せず、今回の発話だけを独立した質問として扱ってください。省略されていて対象が特定できない場合は、過去会話から補わず短く確認してください。
+同じ接続の直近会話履歴が渡された場合は、その文脈を使って「それ」「さっきの」「調べて」「どこがいい？」などの省略を自然に解決してください。ただし過去のassistant発言は事実根拠ではありません。ユーザーの訂正や最新の発言を優先し、外部確認が必要な事実は検索経路に任せてください。
 相手の言葉を無意味に言い直さないでください。毎回質問で終わらせず、会話を続ける価値がある場合だけ自然な一言を返してください。
 冗談、驚き、迷い、軽い感情表現は文脈に合う範囲で自然に使えますが、過剰に演技しないでください。
 現在情報、価格、店舗、人物、法律、製品仕様、ニュースなど外部確認が必要な質問は別の検索経路で処理されます。この通常会話経路で、検索していない現在情報を推測して断定したり、「調べられない」と先回りして断らないでください。
@@ -93,6 +93,20 @@ function sessionAffinity(context) {
   return `talksys-${String(context?.connection?.id || 'default').replace(/[^a-zA-Z0-9_.:-]/g, '').slice(0, 96)}`;
 }
 
+const CONTEXT_TTL_MS = 30 * 60 * 1000;
+const CONTEXT_MAX_MESSAGES = 8;
+
+function conversationKey(context) {
+  return String(context?.connection?.id || 'default').slice(0, 160);
+}
+
+function compactHistory(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .filter((item) => item && (item.role === 'user' || item.role === 'assistant') && String(item.content || '').trim())
+    .slice(-CONTEXT_MAX_MESSAGES)
+    .map((item) => ({ role: item.role, content: String(item.content).slice(0, 1200) }));
+}
+
 const VoiceAgentBase = withVoice(Agent, {
   historyLimit: 4,
   audioFormat: 'mp3',
@@ -105,6 +119,30 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
   currentAssistantText = '';
   lastAssistantText = '';
   assistantSpeechAt = 0;
+  conversationMemory = new Map();
+
+  getConversationHistory(context) {
+    const key = conversationKey(context);
+    const entry = this.conversationMemory.get(key);
+    if (!entry) return [];
+    if (Date.now() - entry.updatedAt > CONTEXT_TTL_MS) {
+      this.conversationMemory.delete(key);
+      return [];
+    }
+    return compactHistory(entry.messages);
+  }
+
+  rememberConversationTurn(context, userText, assistantText) {
+    const user = String(userText || '').trim();
+    const assistant = cleanSpeechText(assistantText);
+    if (!user && !assistant) return;
+    const key = conversationKey(context);
+    const prior = this.getConversationHistory(context);
+    const messages = [...prior];
+    if (user) messages.push({ role: 'user', content: user.slice(0, 1200) });
+    if (assistant) messages.push({ role: 'assistant', content: assistant.slice(0, 1200) });
+    this.conversationMemory.set(key, { updatedAt: Date.now(), messages: compactHistory(messages) });
+  }
 
   createTranscriber() {
     return new CloudflareJapaneseSTT(this.env.AI, {
@@ -138,7 +176,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
     // No greeting: become ready to listen immediately.
   }
 
-  trackAssistant(iterable, context, tier) {
+  trackAssistant(iterable, context, tier, userText = '') {
     const self = this;
     return (async function* () {
       self.currentAssistantText = '';
@@ -156,13 +194,14 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       } finally {
         const clean = cleanSpeechText(self.currentAssistantText);
         if (clean) self.lastAssistantText = clean;
+        self.rememberConversationTurn(context, userText, clean);
         self.currentAssistantText = '';
         self.assistantSpeechAt = Date.now();
       }
     })();
   }
 
-  searchResponse(transcript, context) {
+  searchResponse(transcript, context, history) {
     const self = this;
     return this.trackAssistant((async function* () {
       try { context.connection.send(JSON.stringify({ type: 'search_status', phase: 'planning', searched: true })); } catch {}
@@ -172,7 +211,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       const searchPromise = answerWithVerifiedWebSearch(
         self.env.AI,
         transcript,
-        [],
+        history,
         GROUNDED_SYSTEM_PROMPT,
         {
           signal: context.signal,
@@ -182,7 +221,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
         searchSettled = true;
         if (secondProgressTimer) clearTimeout(secondProgressTimer);
       });
-      const fillerPromise = generateSearchFiller(self.env.AI, transcript, [], context.signal);
+      const fillerPromise = generateSearchFiller(self.env.AI, transcript, history, context.signal);
       secondProgressTimer = setTimeout(() => {
         if (searchSettled || context.signal?.aborted) return;
         try {
@@ -193,7 +232,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
             waitPhrase: '候補を絞って情報を照合しています。もう少しお待ちください。',
           }));
         } catch {}
-      }, 8000);
+      }, 5500);
 
       const first = await Promise.race([
         searchPromise.then((result) => ({ type: 'result', result })),
@@ -229,24 +268,25 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
         }));
       } catch {}
 
-      yield String(result.text || '検索結果を整理できなかったので、同じ条件のままもう一度確認します。');
-    })(), context, 'verified-deep-search-v18');
+      yield String(result.text || '確認できた範囲を先に答えます。');
+    })(), context, 'verified-deep-search-v18', transcript);
   }
 
   async onTurn(transcript, context) {
     const affinity = sessionAffinity(context);
+    const history = this.getConversationHistory(context);
 
-    // Accuracy-first work is isolated to web research. Ordinary conversation never waits for
-    // planning, reranking, auditing, or the slower quality model.
-    if (shouldDeepSearch(transcript, [])) return this.searchResponse(transcript, context);
+    // Precision-first work is isolated to web research. Context itself is shared across turns.
+    if (shouldDeepSearch(transcript, history)) return this.searchResponse(transcript, context, history);
 
     const quick = quickCasualReply(transcript);
     if (quick) {
-      return this.trackAssistant((async function* () { yield quick; })(), context, 'instant-local');
+      return this.trackAssistant((async function* () { yield quick; })(), context, 'instant-local', transcript);
     }
 
     const messages = [
       { role: 'system', content: CASUAL_SYSTEM_PROMPT },
+      ...history,
       { role: 'user', content: transcript },
     ];
 
@@ -259,6 +299,7 @@ export class TalkSysVoiceAgent extends VoiceAgentBase {
       }),
       context,
       'live-fast',
+      transcript,
     );
   }
 }
@@ -356,10 +397,12 @@ export default {
         audioChunkMs: 40,
         serverTurnDetectionMs: 440,
         bargeIn: true,
-        conversationPersistence: 'warm-transport-only-no-prompt-history',
-        sharedTypedAndVoiceHistory: false,
-        crossTurnContext: false,
+        conversationPersistence: 'connection-scoped-short-term-context',
+        sharedTypedAndVoiceHistory: true,
+        crossTurnContext: true,
         crossSessionContext: false,
+        conversationContextMaxMessages: CONTEXT_MAX_MESSAGES,
+        conversationContextTtlMs: CONTEXT_TTL_MS,
         promptPrefixCaching: true,
         sessionAffinity: true,
         sttRealtime: REALTIME_STT_MODEL,
@@ -374,7 +417,7 @@ export default {
         llmGrounded: GROUNDING_CONVERSATION_MODEL,
         llmGroundedFallback: GROUNDING_FALLBACK_MODEL,
         llmFallback: FALLBACK_CONVERSATION_MODEL,
-        llmRouting: 'instant-local / live-fast / verified-two-pass-grounded-search',
+        llmRouting: 'instant-local / contextual-live-fast / bounded-contextual-grounded-search',
         normalConversationLiveOnly: true,
         casualFastPath: true,
         searchPrecisionOnly: true,
@@ -392,7 +435,7 @@ export default {
         searchCoverageBudgetMs: SEARCH_COVERAGE_BUDGET_MS,
         searchAnswerModelBudgetMs: 3800,
         searchAuditBudgetMs: 2500,
-        searchSecondProgressSpeechMs: 8000,
+        searchSecondProgressSpeechMs: 5500,
         searchWaitSpeech: true,
         searchFillerModel: SEARCH_FILLER_MODEL,
         searchFillerGeneratedInParallel: true,

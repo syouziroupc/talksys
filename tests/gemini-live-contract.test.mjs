@@ -31,7 +31,7 @@ const wranglerSource = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.
 
 test('v18 production entrypoint is phone consultation only and keyless', () => {
   assert.match(wranglerSource, /"main":\s*"src\/worker-v14\.js"/);
-  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v18\.4'/);
+  assert.match(workerSource, /VOICE_REVISION = 'cloudflare-live-v18\.5'/);
   assert.match(workerSource, /mode: 'phone-consultation-only'/);
   assert.match(workerSource, /providerApiKeysRequired: false/);
   assert.match(workerSource, /screenFunction: false/);

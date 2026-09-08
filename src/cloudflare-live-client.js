@@ -48,8 +48,15 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   let deviceSpeaking = false;
   let deviceGuardUntil = 0;
   let deviceUtterance = null;
+  let ttsFallbackTimer = null;
 
   function setStatus(text) { if (status) status.textContent = text || ''; }
+
+  function clearTtsFallbackTimer() {
+    if (!ttsFallbackTimer) return;
+    clearTimeout(ttsFallbackTimer);
+    ttsFallbackTimer = null;
+  }
 
   function addMessage(role, text) {
     const value = String(text || '').trim();
@@ -66,6 +73,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
 
   function beginAssistantStream() {
     if (streamNode) return;
+    clearTtsFallbackTimer();
     streamText = '';
     currentAssistantText = '';
     serverAudioThisTurn = false;
@@ -94,7 +102,14 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
       streamText = '';
       if (value) lastAdded = 'assistant:' + value;
     } else if (value) addMessage('assistant', value);
-    if ((desiredCall || typedVoiceOutput) && ttsFailedThisTurn && !serverAudioThisTurn && value) setTimeout(() => speakJapaneseFallback(value), 120);
+    clearTtsFallbackTimer();
+    if ((desiredCall || typedVoiceOutput) && !serverAudioThisTurn && value) {
+      const delay = ttsFailedThisTurn ? 120 : 650;
+      ttsFallbackTimer = setTimeout(() => {
+        ttsFallbackTimer = null;
+        if (!serverAudioThisTurn && !playing && !deviceSpeaking) speakJapaneseFallback(value);
+      }, delay);
+    }
   }
 
   function setVoiceUi() {
@@ -191,6 +206,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   }
 
   function stopPlayback(interruptServer = false) {
+    clearTtsFallbackTimer();
     playbackQueue = [];
     playing = false;
     if (playbackSource) {
@@ -247,6 +263,7 @@ export const CLOUDFLARE_LIVE_CLIENT = String.raw`(() => {
   }
 
   function queueAudio(buffer) {
+    clearTtsFallbackTimer();
     if (!(desiredCall || typedVoiceOutput)) {
       serverAudioThisTurn = true;
       ttsFailedThisTurn = false;

@@ -23,22 +23,25 @@ test('voice keeps fast live model and high-accuracy grounded cascade', () => {
 });
 
 test('v18 phone runtime has no screen overlay or screenshot routing', () => {
-  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.4'/);
+  assert.match(worker, /VOICE_REVISION = 'cloudflare-live-v18\.5'/);
   assert.match(worker, /mode: 'phone-consultation-only'/);
   assert.doesNotMatch(worker, /requestScreen|screen_request|SCREEN_SYSTEM_PROMPT|mightNeedScreen/);
   assert.doesNotMatch(liveClient, /screenToggle|screenVideo|drawArrow|handleScreenRequest|api\/locate/);
   assert.doesNotMatch(index, /画面共有|PNG保存|VISION_MODEL|api\/locate/);
 });
 
-test('each turn is self-contained and prior conversation cannot trigger search', () => {
-  assert.match(worker, /contextProvider: \(\) => \[\]/);
-  assert.match(worker, /shouldDeepSearch\(transcript, \[\]\)/);
-  assert.match(worker, /answerWithVerifiedWebSearch[\s\S]*?transcript,[\s\n]*\[\]/);
-  assert.doesNotMatch(worker, /context\.messages\.slice/);
-  assert.match(liveClient, /talk-sys-voice-agent\/default/);
-  assert.doesNotMatch(liveClient, /crypto\.randomUUID/);
-  assert.match(worker, /crossTurnContext: false/);
+test('recent conversation context is connection-scoped and feeds both search and normal chat', () => {
+  assert.match(worker, /conversationMemory = new Map/);
+  assert.match(worker, /getConversationHistory\(context\)/);
+  assert.match(worker, /CONTEXT_MAX_MESSAGES = 8/);
+  assert.match(worker, /CONTEXT_TTL_MS = 30 \* 60 \* 1000/);
+  assert.match(worker, /shouldDeepSearch\(transcript, history\)/);
+  assert.match(worker, /answerWithVerifiedWebSearch[\s\S]*?transcript,[\s\n]*history/);
+  assert.match(worker, /generateSearchFiller\(self\.env\.AI, transcript, history/);
+  assert.match(worker, /\.\.\.history,[\s\n]*\{ role: 'user', content: transcript \}/);
+  assert.match(worker, /crossTurnContext: true/);
   assert.match(worker, /crossSessionContext: false/);
+  assert.match(liveClient, /talk-sys-voice-agent\/default/);
 });
 
 test('deep search plans up to eight queries and performs a second research pass when needed', () => {
@@ -76,7 +79,8 @@ test('grounded answers receive a separate evidence audit for named businesses an
 
 test('search failure boilerplate cannot be the final answer path', () => {
   assert.match(cloudflareLlm, /isEvasiveGroundedAnswer/);
-  assert.match(cloudflareLlm, /質問に直接答え直してください/);
+  assert.match(cloudflareLlm, /deterministicRescue/);
+  assert.match(cloudflareLlm, /perModelTimeoutMs: 3800/);
   assert.match(audit, /BAD_SEARCH_BOILERPLATE_RE/);
   assert.match(audit, /ご提示いただいた/);
   assert.match(audit, /裏付けが十分ではありません/);
@@ -84,7 +88,7 @@ test('search failure boilerplate cannot be the final answer path', () => {
 
 test('search progress is a one-shot spoken status and is not duplicated into the answer transcript', () => {
   assert.match(orchestrator, /SEARCH_FILLER_MODEL = LIVE_VOICE_MODEL/);
-  assert.match(orchestrator, /SEARCH_FILLER_MIN_DELAY_MS = 650/);
+  assert.match(orchestrator, /SEARCH_FILLER_MIN_DELAY_MS = 320/);
   assert.match(worker, /waitPhrase: filler/);
   assert.doesNotMatch(worker, /yield `\$\{filler\}\\n`/);
   assert.match(liveClient, /lastSearchWaitPhrase/);
@@ -97,6 +101,8 @@ test('typed text simulates speech and plays the reply without opening the microp
   assert.match(liveClient, /typedVoiceOutput = true/);
   assert.match(liveClient, /ensurePlaybackAudio/);
   assert.match(liveClient, /desiredCall \|\| typedVoiceOutput/);
+  assert.match(liveClient, /ttsFallbackTimer/);
+  assert.match(liveClient, /!serverAudioThisTurn && !playing && !deviceSpeaking/);
   assert.doesNotMatch(liveClient, /setTimeout\(\(\) => startCall\(true\)/);
 });
 
@@ -129,10 +135,10 @@ test('health contract advertises precision-first verified two-pass search', () =
   assert.match(worker, /searchMaxQueries: 8/);
   assert.match(worker, /searchMaxRounds: 2/);
   assert.match(worker, /searchAnswerAudit: true/);
-  assert.match(worker, /verified-two-pass-grounded-search/);
+  assert.match(worker, /bounded-contextual-grounded-search/);
   assert.match(worker, /screenFunction: false/);
   assert.match(worker, /screenOverlay: false/);
-  assert.match(worker, /crossTurnContext: false/);
+  assert.match(worker, /crossTurnContext: true/);
   assert.match(worker, /typedSpeechVoiceOutput: true/);
   assert.match(worker, /normalConversationLiveOnly: true/);
   assert.match(worker, /casualFastPath: true/);
