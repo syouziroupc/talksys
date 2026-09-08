@@ -6,7 +6,7 @@ import { generateSearchFiller } from './search-orchestrator.js';
 import { streamBoundedQualityConversation } from './bounded-conversation.js';
 import { cleanSpeechText } from './voice-helpers.js';
 
-const VOICE_REVISION = 'cloudflare-live-v19.1';
+const VOICE_REVISION = 'cloudflare-live-v19.0';
 
 const RECOMMENDATION_SYSTEM_PROMPT = `あなたはTalkSysという日本語の電話相談アシスタントです。
 今回は、直前までの会話条件を使ってユーザー自身へのおすすめ・助言を答えます。
