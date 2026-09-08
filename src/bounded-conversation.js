@@ -103,22 +103,71 @@ async function* iterateResult(result, firstTokenTimeoutMs) {
   if (text) yield text;
 }
 
+function looksComplete(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  if (/[。！？!?」』）)】]$/.test(value)) return true;
+  if (/(です|ます|でした|ません|ください|ですね|ですよ|でしょう|と思います|できます|あります|ありません)$/.test(value)) return true;
+  return false;
+}
+
+function continuationMessages(messages, partial) {
+  return [
+    ...(Array.isArray(messages) ? messages : []),
+    { role: 'assistant', content: String(partial || '').trim() },
+    {
+      role: 'user',
+      content: '直前の回答が通信上の理由で途中までしか届いていません。内容を言い直さず、直前の文の自然な続きだけを短く返してください。',
+    },
+  ];
+}
+
+async function recoverContinuation(ai, model, messages, partial, options) {
+  if (!partial || looksComplete(partial)) return '';
+  try {
+    const fallback = await open(ai, model, continuationMessages(messages, partial), {
+      ...options,
+      maxTokens: Math.min(180, Math.max(80, Number(options.maxTokens) || 180)),
+      fallbackTimeoutMs: Math.max(2600, Number(options.fallbackTimeoutMs) || 0),
+    }, false);
+    return String(readFinal(fallback) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
 async function* cascade(ai, models, messages, options = {}) {
   let lastError = null;
   for (const model of [...new Set(models.filter(Boolean))]) {
     let yielded = false;
+    let partial = '';
     try {
       const stream = await open(ai, model, messages, options, true);
       try {
         for await (const delta of iterateResult(stream, options.firstTokenTimeoutMs ?? 2500)) {
+          const value = String(delta || '');
+          if (!value) continue;
           yielded = true;
-          yield delta;
+          partial += value;
+          yield value;
         }
       } catch (error) {
         lastError = error;
-        if (yielded) return;
+        if (yielded) {
+          const continuation = await recoverContinuation(ai, model, messages, partial, options);
+          if (continuation) yield continuation;
+          else if (!looksComplete(partial)) yield '。';
+          return;
+        }
       }
-      if (yielded) return;
+      if (yielded) {
+        if (!looksComplete(partial)) {
+          const continuation = await recoverContinuation(ai, model, messages, partial, options);
+          if (continuation) yield continuation;
+          else yield '。';
+        }
+        return;
+      }
 
       const fallback = await open(ai, model, messages, options, false);
       const text = readFinal(fallback);
