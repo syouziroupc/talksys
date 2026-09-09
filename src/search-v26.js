@@ -1,8 +1,11 @@
 import { collectGroundedEvidenceV23 } from './search-v23.js';
+import { searchBingRss, searchOpenStreetMapLocal, dedupeSearchResults } from './search-fallbacks.js';
 
-export const SEARCH_TOOL_V26_REVISION = 'evidence-web-v26-direct-transit-fallback';
+export const SEARCH_TOOL_V26_REVISION = 'evidence-web-v26-redundant-local-direct-transit';
 
 const TRANSIT_RE = /(乗り換え|乗換|経路|行き方|電車|鉄道|所要時間|運賃|時刻表|直通)/i;
+const PC_RE = /(パソコン|\bPC\b|ＰＣ|ノートパソコン|ノート|Windows)/i;
+const STORE_RE = /(店|店舗|ショップ|販売店|家電量販店|専門店|どこで買|おすすめ)/i;
 
 function clean(value, max = 4000) {
   return String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -35,6 +38,23 @@ function stationPair(text) {
   const pair = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,28}?)(?:駅)?\s*(?:から|より|→|⇒|〜|～|-)\s*([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,28}?)(?:駅)?\s*(?:まで|へ|に)(?=$|[のをがはで、。！？!?\s])/i);
   if (!pair?.[1] || !pair?.[2]) return [];
   return [pair[1].replace(/駅$/u, ''), pair[2].replace(/駅$/u, '')];
+}
+
+function localArea(text) {
+  const value = clean(text, 900);
+  const matches = [...value.matchAll(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,18}(?:都|道|府|県|市|区|町|村))/g)];
+  return clean(matches.at(-1)?.[1] || '', 40);
+}
+
+function localToken(area) {
+  return clean(area, 40).replace(/(?:都|道|府|県|市|区|町|村)$/u, '');
+}
+
+function localStoreRelevant(item, area) {
+  const text = clean(`${item?.title || ''} ${item?.excerpt || item?.snippet || ''}`, 1800);
+  const token = localToken(area);
+  if (token && !text.includes(token)) return false;
+  return /(パソコン|\bPC\b|ＰＣ|家電|コンピュータ|computer|ドスパラ|ヤマダ|ケーズ|コジマ|エディオン|ショップ|店舗|販売)/i.test(text);
 }
 
 function timeoutSignal(parentSignal, timeoutMs = 3600) {
@@ -86,36 +106,79 @@ function evidenceFromSources(sources) {
   return (sources || []).slice(0, 8).map((item, i) => `[${i + 1}] ${clean(item?.title, 180)}\n${clean(item?.url, 500)}\n${clean(item?.excerpt || item?.snippet || '', 1200)}`).join('\n\n');
 }
 
-export async function augmentGroundedEvidenceV26(base, options = {}) {
+async function augmentLocalStoreEvidence(base, options = {}) {
   const resolved = clean(base?.resolvedQuestion || '', 900);
-  if (!TRANSIT_RE.test(resolved)) return { ...(base || {}), revision: SEARCH_TOOL_V26_REVISION };
+  const area = localArea(resolved);
+  if (!area || !PC_RE.test(resolved) || !STORE_RE.test(resolved)) return base;
+  const existing = Array.isArray(base?.sources) ? base.sources : [];
+  if (existing.length >= 3) return base;
+
+  const bingQueries = [
+    `${area} パソコン 店舗`,
+    `${area} ノートパソコン 販売店`,
+    `${area} パソコン 専門店`,
+    `${area} 家電量販店 パソコン`,
+  ];
+  const osmQueries = [`${area} パソコンショップ`, `${area} 家電量販店`];
+  const settled = await Promise.allSettled([
+    ...bingQueries.map((q) => searchBingRss(q, { timeoutMs: 5200, limit: 6 })),
+    ...osmQueries.map((q) => searchOpenStreetMapLocal(q, { timeoutMs: 5200 })),
+  ]);
+  const fallback = settled.flatMap((result) => result.status === 'fulfilled' && Array.isArray(result.value) ? result.value : []).filter((item) => localStoreRelevant(item, area));
+  const sources = dedupeSearchResults([...existing, ...fallback], 8);
+  if (!sources.length) return { ...base, localFallbackAttempted: true };
+
+  options.onProgress?.({
+    phase: 'evidence_ready',
+    revision: SEARCH_TOOL_V26_REVISION,
+    resolvedQuestion: resolved,
+    queries: base?.queries || bingQueries.slice(0, 3),
+    evidenceCount: sources.length,
+    sources: sources.map((item) => ({ title: item.title, url: item.url })),
+    message: '地域店舗を複数の検索経路で再確認',
+  });
+  return {
+    ...base,
+    sources,
+    evidence: evidenceFromSources(sources),
+    searchUseful: true,
+    localFallbackAttempted: true,
+    localFallbackSucceeded: true,
+  };
+}
+
+export async function augmentGroundedEvidenceV26(base, options = {}) {
+  let augmented = await augmentLocalStoreEvidence(base || {}, options);
+  const resolved = clean(augmented?.resolvedQuestion || '', 900);
+  if (!TRANSIT_RE.test(resolved)) return { ...augmented, revision: SEARCH_TOOL_V26_REVISION };
   const [from, to] = stationPair(resolved);
-  if (!from || !to) return { ...(base || {}), revision: SEARCH_TOOL_V26_REVISION };
+  if (!from || !to) return { ...augmented, revision: SEARCH_TOOL_V26_REVISION };
 
   try {
     const direct = await fetchYahooTransitRoute(from, to, options.signal);
-    const existing = Array.isArray(base?.sources) ? base.sources : [];
+    const existing = Array.isArray(augmented?.sources) ? augmented.sources : [];
     const directKey = String(direct.url || '').replace(/[?#].*$/, '').replace(/\/$/, '');
     const sources = [direct, ...existing.filter((item) => String(item?.url || '').replace(/[?#].*$/, '').replace(/\/$/, '') !== directKey)].slice(0, 8);
     options.onProgress?.({
       phase: 'evidence_ready',
       revision: SEARCH_TOOL_V26_REVISION,
       resolvedQuestion: resolved,
-      queries: base?.queries || [],
+      queries: augmented?.queries || [],
       evidenceCount: sources.length,
       sources: sources.map((item) => ({ title: item.title, url: item.url })),
       message: '乗換案内の実ページを優先根拠として確認',
     });
     return {
-      ...(base || {}),
+      ...augmented,
       revision: SEARCH_TOOL_V26_REVISION,
       sources,
       evidence: evidenceFromSources(sources),
+      searchUseful: true,
       directTransitPrimary: true,
     };
   } catch (error) {
     return {
-      ...(base || {}),
+      ...augmented,
       revision: SEARCH_TOOL_V26_REVISION,
       directTransitError: String(error?.message || error).slice(0, 180),
     };
@@ -127,4 +190,4 @@ export async function collectGroundedEvidenceV26(query, history = [], options = 
   return augmentGroundedEvidenceV26(base, options);
 }
 
-export const __test = { stationPair, usefulRouteExcerpt, stripHtml, evidenceFromSources };
+export const __test = { stationPair, localArea, localStoreRelevant, usefulRouteExcerpt, stripHtml, evidenceFromSources };
