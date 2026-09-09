@@ -36,7 +36,7 @@ function makePhoneSearchPlan(text,history=[]){
   const instructions=[`${parts.join('')}について、現在販売を確認できる具体的な機種名と実売価格を販売元の情報から調べる。`];
   if(f.androidOld)instructions.push('Androidが古いことが買い替え理由なので、候補ごとにAndroid/OS更新またはセキュリティサポートの根拠も確認し、価格だけで推薦しない。');
   if(f.simFree)instructions.push('利用者がSIMフリーを条件にしているため、その条件も確認する。');
-  if(f.warranty)instructions.push('利用者が保証を条件にしているため、保証情報も確認する。');
+  if(f.warranty)instructions.push('利用者が保証を条件にしているため、その条件も確認する。');
   instructions.push('利用者が言っていないAndroid 13、SIMフリー、保証付き等を勝手に必須条件へ追加しない。情報が薄い場合は検索語と候補を変えて継続する。');
   return {ok:true,search:true,topic:clean(parts.join(''),120),resolvedQuestion:resolved,searchInstruction:instructions.join(''),ack:retry?'もう少し広く探します。':'候補を探します。',planner:'phone-shopping-local-v42',plannerMs:0,jst:''};
 }
@@ -64,7 +64,7 @@ async function phoneSearchTurn(body,plan,env){
 export default {
   async fetch(request,env,ctx){
     const url=new URL(request.url);
-    if(request.method==='GET'&&url.pathname==='/voice-health')return json({ok:true,revision:REVISION,voiceRevision:REVISION,architecture:'http-turns-client-vad',conversationModel:MODEL,languageMode:'ja-only',searchJudgment:'general-advice-local-current-lookup-search',searchMode:'escalating-up-to-five-pass',maxSearchPasses:5,searchGiveupBoilerplateGuard:true,userConstraintOnlyPlanner:true,phoneModelSpecificOsEvidence:true,persistentConversationLogs:'r2-private',logBinding:'TALKSYS_LOGS',rawAudioLogged:false,workersObservability:true,sttModel:'@cf/openai/whisper-large-v3-turbo',ttsPrimary:'browser ja-JP',serverTtsEnabled:false,bargeIn:true,legacyWebSocketVoice:false,durableObjectVoice:false});
+    if(request.method==='GET'&&url.pathname==='/voice-health')return json({ok:true,revision:REVISION,voiceRevision:REVISION,architecture:'http-turns-client-vad',conversationModel:MODEL,languageMode:'ja-only',searchJudgment:'general-advice-local-current-lookup-search',searchMode:'escalating-up-to-five-pass',maxSearchPasses:5,searchGiveupBoilerplateGuard:true,userConstraintOnlyPlanner:true,phoneModelSpecificOsEvidence:true,persistentConversationLogs:'d1-private',logBinding:'TALKSYS_LOG_DB',rawAudioLogged:false,workersObservability:true,sttModel:'@cf/openai/whisper-large-v3-turbo',ttsPrimary:'browser ja-JP',serverTtsEnabled:false,bargeIn:true,legacyWebSocketVoice:false,durableObjectVoice:false});
     if(request.method==='GET'&&['/talk-v42.js','/talk-v41.js','/talk-v40.js'].includes(url.pathname))return new Response(TALK_CLIENT_V42,{headers:{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store','x-talksys-revision':REVISION}});
     if(request.method==='GET'&&url.pathname==='/'){
       const base=await workerV41.fetch(request,env,ctx);const html=(await base.text()).replace('/talk-v41.js','/talk-v42.js');return new Response(html,{status:base.status,headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-talksys-revision':REVISION}});
