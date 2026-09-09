@@ -38,6 +38,13 @@ test('v37 purchase lookup is explicit about trustworthy purchase sources',()=>{
   assert.match(r,/メーカー直販/);
   assert.match(r,/パソコン専門店/);
   assert.match(r,/保証/);
+  assert.match(r,/根拠にない販売店名は挙げない/);
+});
+
+test('v37 search plan bypasses the v36 rewrite layer',()=>{
+  assert.match(worker,/import workerV34 from '.\/worker-v34\.js'/);
+  assert.match(worker,/workerV34\.fetch\(rewritten,env\)/);
+  assert.doesNotMatch(worker,/if\(plan\.search\)[\s\S]{0,500}workerV36\.fetch\(rewritten,env\)/);
 });
 
 test('v37 client greets first and announces searches',()=>{
