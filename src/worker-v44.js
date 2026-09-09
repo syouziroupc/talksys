@@ -2,10 +2,15 @@ import baseWorker from './worker-v43-finalcandidate.js';
 import {
   runDeepSearchV44,
   SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
+  SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
+  SEARCH_V44_MAX_ENGINE_RETRIES,
+  SEARCH_V44_MAX_PER_HOST,
   SEARCH_V44_MAX_QUERIES,
   SEARCH_V44_MAX_RECOVERY_QUERIES,
   SEARCH_V44_MAX_ROUNDS,
   SEARCH_V44_MAX_TOTAL_QUERIES,
+  SEARCH_V44_PROBE_CONCURRENCY,
+  SEARCH_V44_REVISION,
   SEARCH_V44_SOURCE_LIMIT,
 } from './search-v44.js';
 import { persistTalkLog } from './log-v42.js';
@@ -82,8 +87,6 @@ export function shouldSearchByDefault(text) {
 function shouldPreserveSpecializedTurn(text, history = []) {
   const userContext = clean(`${userHistory(history).map((x) => x.content).join(' ')} ${text}`, 6500);
   if (WEATHER_RE.test(userContext) || TRANSIT_RE.test(userContext)) return true;
-  // v42's phone-shopping path has retailer/OS/model-specific recovery logic that is more specialized
-  // than the generic exhaustive route. PC and all other factual/product lookups now go through v44.
   if (PHONE_RE.test(userContext) && EXPLICIT_LOOKUP_RE.test(text)) return true;
   return false;
 }
@@ -102,7 +105,7 @@ function deepPlan(text, history = []) {
     search: true,
     topic: clean(resolvedQuestion, 90),
     resolvedQuestion,
-    searchInstruction: 'Web検索を既定で全面利用する。複数の検索語、一次情報、独立した別ソース、ページ本文、比較・反証を使い、根拠が不足すれば検索語を変えて最大3ラウンドまで追加調査する。現在性がある情報は新しい一次情報を優先する。',
+    searchInstruction: 'Web検索を既定で全面利用する。複数の検索語、一次情報、独立した別ソース、ページ本文、比較・反証を使い、根拠が不足すれば検索語を変えて最大3ラウンドまで追加調査する。検索エンジンが空振り・タイムアウトした場合は別エンジンへ自動再試行する。現在性がある情報は新しい一次情報を優先する。',
     ack: '詳しく調べます。少し時間かかります。',
     planner: 'deep-search-v44',
     plannerMs: 0,
@@ -163,10 +166,20 @@ async function deepTurn(body, env, requestSignal) {
     searchPasses: Number(search.rounds) || 1,
     maxSearchPasses: SEARCH_V44_MAX_ROUNDS,
     searchCoverage: search.coverage || null,
-    sourceQuality: 'multi-engine-page-enriched-coverage-audited-v44',
+    sourceQuality: 'resilient-multi-engine-page-enriched-host-diverse-v44',
     searchMode: 'exhaustive-default',
     historyPolicy: 'assistant-context-not-evidence',
     subrequestBudgetAware: Boolean(search.subrequestBudgetAware),
+    searchDiagnostics: {
+      searchRevision: search.revision || SEARCH_V44_REVISION,
+      retryCount: Number(search.retryCount) || 0,
+      crossEngineCount: Number(search.crossEngineCount) || 0,
+      hostCount: Number(search.hostCount) || 0,
+      probeFailures: Number(search.probeFailures) || 0,
+      externalSubrequestBaseTarget: Number(search.externalSubrequestBaseTarget) || SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
+      externalSubrequestWorstTarget: Number(search.externalSubrequestWorstTarget) || SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
+      probes: Array.isArray(search.probeDiagnostics) ? search.probeDiagnostics.slice(0, 24) : [],
+    },
     timings: { totalMs: Date.now() - started, searchMs, glmMs: answer.ms, ...(search.timings || {}) },
     model: MODEL,
     planner: 'deep-search-v44',
@@ -196,7 +209,8 @@ export default {
         revision: REVISION,
         voiceRevision: REVISION,
         webSearch: true,
-        webSearchPolicy: 'default-exhaustive-multi-round-v44',
+        webSearchPolicy: 'default-exhaustive-resilient-multi-engine-v44',
+        searchRevision: SEARCH_V44_REVISION,
         searchDefault: 'all-substantive-turns',
         searchMaxQueries: SEARCH_V44_MAX_QUERIES,
         searchMaxRecoveryQueries: SEARCH_V44_MAX_RECOVERY_QUERIES,
@@ -206,8 +220,15 @@ export default {
         searchPageEnrichment: true,
         searchCoverageAudit: true,
         searchIndependentSources: true,
+        searchEngineRotation: true,
+        searchEngineRetry: true,
+        searchMaxEngineRetries: SEARCH_V44_MAX_ENGINE_RETRIES,
+        searchHostDiversity: true,
+        searchMaxPerHost: SEARCH_V44_MAX_PER_HOST,
+        searchProbeConcurrency: SEARCH_V44_PROBE_CONCURRENCY,
         searchSubrequestBudgetAware: true,
         searchExternalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
+        searchExternalSubrequestWorstTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
         specializedSearchRoutesPreserved: true,
       }, response.status);
     }
@@ -219,8 +240,6 @@ export default {
       const history = historyOf(body?.history);
       if (!text) return json({ ok: false, error: 'text required' }, 400);
 
-      // Specialized data sources stay specialized. Everything else substantive is deliberately
-      // upgraded to the exhaustive v44 planner even if older workers would also have searched.
       if (shouldPreserveSpecializedTurn(text, history) || !shouldSearchByDefault(text)) {
         return wrap(await baseWorker.fetch(request, env, ctx));
       }
@@ -237,8 +256,6 @@ export default {
       const history = historyOf(body?.history);
       if (!text) return json({ ok: false, error: 'text required' }, 400);
 
-      // Do not let stale/legacy searchPlan values silently route ordinary factual questions back
-      // to the old generic search. Only known stronger specialized routes bypass v44.
       if (shouldPreserveSpecializedTurn(text, history) || !shouldSearchByDefault(text)) {
         return wrap(await baseWorker.fetch(request, env, ctx));
       }
