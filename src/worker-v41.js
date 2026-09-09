@@ -9,19 +9,23 @@ const SUBJECTIVE_RE=/(どう思う|どうかな|と思う(?:かな|？|\?)|話�
 const RETRY_RE=/(もうちょっと|もう少し|もっと|再度|もう一度|引き続き|詳しく|ちゃんと).*?(?:調べ|探|検索|確認)|(?:調べ|探|検索).*?(?:直して|続けて|もっと)/i;
 const PHONE_RE=/(スマホ|スマートフォン|携帯|Android|iPhone|Xperia|Pixel|Galaxy|AQUOS|arrows|OPPO|Xiaomi)/i;
 const SHOPPING_RE=/(中古|新品|買|購入|乗り換え|乗換|機種|候補|価格|値段|予算|円|万円|在庫|販売|安い)/i;
+const EXTREMISM_RE=/(ISIS|ISIL|イスラム国|アルカイダ|ネオナチ|ナチズム|白人至上主義|KKK|テロ組織|暴力的過激派|武装過激派)/i;
 
 function clean(v,max=6000){return String(v||'').replace(/\s+/g,' ').trim().slice(0,max);}
 function historyOf(v){return Array.isArray(v)?v.slice(-14).map(x=>({role:x?.role==='assistant'?'assistant':'user',content:clean(x?.content,1500)})).filter(x=>x.content):[];}
 function json(data,status=200){return new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-talksys-revision':REVISION}});}
 function wrap(response){const h=new Headers(response.headers);h.set('x-talksys-revision',REVISION);h.set('cache-control','no-store');return new Response(response.body,{status:response.status,statusText:response.statusText,headers:h});}
 function extractText(result){if(typeof result==='string')return clean(result);if(!result)return '';for(const v of [result.response,result.result,result.text,result.output_text])if(typeof v==='string'&&v.trim())return clean(v);const c=result.choices?.[0]?.message?.content;if(typeof c==='string')return clean(c);if(Array.isArray(c))return clean(c.map(x=>typeof x==='string'?x:x?.text||x?.content||'').join(''));return clean(result.choices?.[0]?.text||'');}
-function evidenceBlock(search){return (Array.isArray(search?.sources)?search.sources:[]).slice(0,10).map((x,i)=>`[${i+1}] ${clean(x?.title,220)}\n${clean(x?.url,700)}\n${clean(x?.excerpt||x?.snippet||'',1800)}`).join('\n\n');}
+function evidenceBlock(search){return (Array.isArray(search?.sources)?search.sources:[]).slice(0,12).map((x,i)=>`[${i+1}] ${clean(x?.title,220)}\n${clean(x?.url,700)}\n${clean(x?.excerpt||x?.snippet||'',1800)}`).join('\n\n');}
 function isSubjectiveChat(text){return SUBJECTIVE_RE.test(clean(text,500))&&!FRESH_RE.test(text);}
+function isStableConsentAdvice(text){const v=clean(text,900);return /(同意.{0,22}(確認|確かめ|聞|取り方)|(?:セックス|性交|性行為).{0,30}同意|相手.{0,24}同意)/u.test(v)&&!/(未成年|子ども|子供|小学生|中学生|法律|犯罪|逮捕|年齢|緊急|出血|妊娠|薬|病気|感染症|HIV|性病)/u.test(v)&&!FRESH_RE.test(v);}
+function stableConsentReply(){return '相手が自分の意思で、はっきり「いいよ」と言える形で確認するのが基本です。始める前だけでなく途中でも「ここまで大丈夫？」と確認して、迷っている、黙っている、酔っている、眠っているような場合は同意があるとは扱わず止めてください。同意は途中で変わってもいいので、嫌そうな反応があればその時点でやめるのが大切です。';}
+function isNeutralExtremismDiscussion(text){const v=clean(text,1200);return EXTREMISM_RE.test(v)&&/(歴史|なぜ|危険|問題|背景|説明|分析|批判|何が|どうして|影響|教訓)/u.test(v);}
+function finishAtSentence(text){const v=clean(text,5000);if(!v)return '';if(/[。！？!?]$/.test(v))return v;const p=Math.max(v.lastIndexOf('。'),v.lastIndexOf('！'),v.lastIndexOf('？'),v.lastIndexOf('!'),v.lastIndexOf('?'));return p>=Math.min(80,Math.floor(v.length*0.45))?v.slice(0,p+1):v;}
 
 function classifySafety(text){
   const v=clean(text,1600);
   if(/(死にたい|自殺したい|自殺する|自分を傷つけたい|自分を殺したい|消えてしまいたい|生きていたくない)/u.test(v))return 'self-harm';
-
   const minor=/(幼児|幼女|子ども|子供|小学生|中学生|未成年|児童|少女|少年)/u.test(v);
   const sexualBroad=/(セックス|性交|性行為|挿入|中出し|フェラ|クンニ|オナニー|自慰|ちんこ|ちんぽ|まんこ|膣|アナル|射精|勃起|裸|エロ|性的|犯す|ハメる)/u.test(v);
   const graphicSex=/(挿入|中出し|フェラ|クンニ|オナニー|自慰|ちんこ|ちんぽ|まんこ|膣|アナル|射精|勃起|犯す|ハメる)/u.test(v);
@@ -31,13 +35,10 @@ function classifySafety(text){
   if(minor&&sexualBroad)return 'sexual-minor';
   if(coerciveSex)return 'sexual-coercion';
   if(bananaSlang||eroticRequest||(graphicSex&&/(したい|して|教えて|描写|話して|言って|入れ|挿れ|突っ込|舐め|触り|犯す|ハメ)/u.test(v)))return 'sexual-explicit';
-
   if(/(?:民族|人種|宗教|国民|外国人|女性|男性|障害者|同性愛者|移民|在日|中国人|韓国人|日本人|黒人|白人).{0,24}(?:皆殺し|殺せ|絶滅|排除しろ|消せ)/u.test(v))return 'violent-hate';
   if(/(殺し方|傷つけ方|刺し方|首を絞める方法|バレずに殺|証拠を消す方法|爆弾.{0,12}(作り方|作る方法)|毒.{0,12}(作り方|作る方法)|放火.{0,12}(方法|やり方)|テロ.{0,12}(方法|やり方)|人を殺したい|誰かを殺したい)/u.test(v))return 'violent-action';
-
-  const extremist=/(ISIS|ISIL|イスラム国|アルカイダ|ネオナチ|ナチズム|白人至上主義|KKK|テロ組織|暴力的過激派|武装過激派)/i.test(v);
   const extremistSupport=/(参加したい|入りたい|加わりたい|支持したい|支持すべき|勧誘したい|仲間を増や|宣伝したい|広めたい|プロパガンダ.{0,12}(書|作)|称賛する文章|資金提供したい|寄付したい|攻撃を正当化|万歳)/u.test(v);
-  if(extremist&&extremistSupport)return 'extremist-support';
+  if(EXTREMISM_RE.test(v)&&extremistSupport)return 'extremist-support';
   return '';
 }
 function safetyReply(kind){
@@ -65,21 +66,27 @@ function searchAck(text,plan={}){
   if(/(最新|現在|今日|ニュース|予定|時刻表|運行|遅延)/i.test(v))return '最新情報を確認します。';
   return '少し確認します。';
 }
-async function runGlm(env,messages,max=360){const started=Date.now();const result=await env.AI.run(MODEL,{messages,stream:false,modalities:['text'],max_completion_tokens:max,temperature:0.08,reasoning_effort:'low'});const text=extractText(result);if(!text)throw new Error('empty model answer');return {text,elapsedMs:Date.now()-started};}
-const SAFE_GROUNDED_PROMPT=`あなたはTalkSysという日本語の電話相談AIです。電話で自然に話す日本語だけで答えてください。\n今回のターンでは複数段階のWeb検索を実行済みです。検索結果の羅列ではなく、利用者の質問に直接答えてください。\n商品相談では、根拠に具体的な機種名・価格・販売元があるなら2〜4候補を具体的に挙げ、利用者の条件に合う理由を短く説明してください。「自分で検索してください」「確認できませんでした」で簡単に終えないでください。\n根拠が一部しかない場合も、確認できた範囲を先に答え、足りない部分だけを明示してください。根拠にない価格・在庫・仕様は作らないでください。\n成人同士の恋愛、同意、避妊、性教育や健康相談は普通に扱ってください。露骨な性的描写や性的な煽りには乗らないでください。自傷の相談は拒否せず安全確保を優先してください。他害、武器、暴力扇動、差別扇動、暴力的過激思想の支持・勧誘・宣伝の具体的支援は提供せず、安全な代替案へ戻してください。\n通常2〜5文。URL、Markdown、内部処理、検索回数、モデル名は読み上げないでください。`;
+async function runGlm(env,messages,max=360){const started=Date.now();const result=await env.AI.run(MODEL,{messages,stream:false,modalities:['text'],max_completion_tokens:max,temperature:0.08,reasoning_effort:'low'});const text=finishAtSentence(extractText(result));if(!text)throw new Error('empty model answer');return {text,elapsedMs:Date.now()-started};}
 
+const SAFE_GROUNDED_PROMPT=`あなたはTalkSysという日本語の電話相談AIです。電話で自然に話す日本語だけで答えてください。\n今回のターンでは複数段階のWeb検索を実行済みです。検索結果の羅列ではなく、利用者の質問に直接答えてください。\n商品相談では、根拠に具体的な機種名・価格・販売元があるなら2〜4候補を具体的に挙げ、利用者の条件に合う理由を短く説明してください。「自分で検索してください」「確認できませんでした」で簡単に終えないでください。\nスマホ相談でAndroidが古いことやOSの新しさが買い替え理由なら、発売年が新しいだけで「新しいAndroidが使える」と推測してはいけません。候補ごとにAndroidバージョン、OS更新、またはサポートの根拠が確認できる場合だけ、その条件を満たす候補として勧めてください。価格だけ確認できてOSが未確認の機種は、条件を満たすおすすめとして数えないでください。\n根拠が一部しかない場合も、確認できた範囲を先に答え、足りない部分だけを明示してください。根拠にない価格・在庫・仕様は作らないでください。検索で確認できるはずの条件について、利用者へ「自分で店頭や商品ページを確認してください」と検索作業を押し戻さないでください。\n成人同士の恋愛、同意、避妊、性教育や健康相談は普通に扱ってください。露骨な性的描写や性的な煽りには乗らないでください。自傷の相談は拒否せず安全確保を優先してください。他害、武器、暴力扇動、差別扇動、暴力的過激思想の支持・勧誘・宣伝の具体的支援は提供せず、安全な代替案へ戻してください。\n通常2〜5文。URL、Markdown、内部処理、検索回数、モデル名は読み上げないでください。`;
+const NEUTRAL_EXTREMISM_PROMPT=`あなたはTalkSysという日本語の電話相談AIです。暴力的過激思想や歴史上の全体主義について、中立的・批判的・教育的に説明してください。支持、勧誘、宣伝、暴力の正当化はしません。一方で歴史的背景、危険性、社会への影響、教訓は具体的に説明して構いません。電話で自然に聞ける3〜5文で、内部処理や検索能力についての断り書きは付けず、必ず文を完結させてください。`;
+
+async function neutralExtremismTurn(text,history,env){
+  const started=Date.now();const generated=await runGlm(env,[{role:'system',content:NEUTRAL_EXTREMISM_PROMPT},...historyOf(history),{role:'user',content:text}],440);
+  return json({ok:true,answer:generated.text,search:false,route:'neutral-extremism-analysis-v41',searchUseful:false,resolvedQuestion:'',queries:[],sources:[],timings:{totalMs:Date.now()-started,searchMs:0,glmMs:generated.elapsedMs},model:MODEL,languageMode:'ja-only'});
+}
 async function resilientSearchTurn(body,plan,env){
   const started=Date.now(),text=clean(body?.text,1800),history=historyOf(body?.history),resolved=clean(plan?.resolvedQuestion,1000)||text,instruction=clean(plan?.searchInstruction,1400);
   const searchStarted=Date.now();const search=await collectResilientEvidenceV41(resolved,history,instruction);const searchMs=Date.now()-searchStarted;
   const evidence=evidenceBlock(search);const messages=[{role:'system',content:SAFE_GROUNDED_PROMPT},...history,{role:'user',content:`相談: ${resolved}\n検索上の条件: ${instruction||'(追加条件なし)'}\n\n[今回取得した根拠]\n${evidence||'(根拠を取得できませんでした)'}\n\nこの根拠で可能な限り具体的に答えてください。`}];
-  const generated=await runGlm(env,messages,360);
-  return json({ok:true,answer:generated.text,search:true,route:'resilient-search-v41',searchUseful:Boolean(search?.sources?.length),resolvedQuestion:search?.resolvedQuestion||resolved,queries:Array.isArray(search?.queries)?search.queries.slice(0,12):[],sources:Array.isArray(search?.sources)?search.sources.slice(0,10).map(x=>({title:clean(x?.title,220),url:clean(x?.url,700)})):[],searchPasses:Number(search?.searchPasses)||1,concreteShoppingEvidence:Boolean(search?.concreteShoppingEvidence),trustedDirectEvidence:Number(search?.trustedDirectEvidence)||0,timings:{totalMs:Date.now()-started,searchMs,glmMs:generated.elapsedMs,plannerMs:Number(plan?.plannerMs)||0},model:MODEL,planner:plan?.planner||'v41-client-plan',searchPlan:instruction,languageMode:'ja-only'});
+  const generated=await runGlm(env,messages,420);
+  return json({ok:true,answer:generated.text,search:true,route:'resilient-search-v41',searchUseful:Boolean(search?.sources?.length),resolvedQuestion:search?.resolvedQuestion||resolved,queries:Array.isArray(search?.queries)?search.queries.slice(0,20):[],sources:Array.isArray(search?.sources)?search.sources.slice(0,12).map(x=>({title:clean(x?.title,220),url:clean(x?.url,700)})):[],searchPasses:Number(search?.searchPasses)||1,concreteShoppingEvidence:Boolean(search?.concreteShoppingEvidence),androidRequirement:search?.androidRequirement??null,androidFreshnessRequired:Boolean(search?.androidFreshnessRequired),androidRequirementEvidence:Boolean(search?.androidRequirementEvidence),trustedDirectEvidence:Number(search?.trustedDirectEvidence)||0,timings:{totalMs:Date.now()-started,searchMs,glmMs:generated.elapsedMs,plannerMs:Number(plan?.plannerMs)||0},model:MODEL,planner:plan?.planner||'v41-client-plan',searchPlan:instruction,languageMode:'ja-only'});
 }
 
 export default {
   async fetch(request,env){
     const url=new URL(request.url);
-    if(request.method==='GET'&&url.pathname==='/voice-health')return json({ok:true,revision:REVISION,voiceRevision:REVISION,architecture:'http-turns-client-vad',conversationModel:MODEL,languageMode:'ja-only',englishConversationEnabled:false,japaneseOutputGuard:true,safetyGuard:'v41-contextual',sexualExplicitGuard:true,minorSexualGuard:true,sexualCoercionGuard:true,selfHarmSupport:true,violentActionGuard:true,hateViolenceGuard:true,extremistSupportGuard:true,searchMode:'multi-pass-resilient',maxSearchPasses:3,trustedShoppingDirectFetch:true,searchRetryOnWeakEvidence:true,nonSearchBackchannel:'selective',searchBackchannel:'contextual-single',sttModel:'@cf/openai/whisper-large-v3-turbo',ttsPrimary:'browser explicit ja voice',ttsFallback:'browser default voice selected by lang=ja-JP',serverTtsEnabled:false,grokTtsActive:false,melottsFallback:false,bargeIn:true,legacyWebSocketVoice:false,durableObjectVoice:false});
+    if(request.method==='GET'&&url.pathname==='/voice-health')return json({ok:true,revision:REVISION,voiceRevision:REVISION,architecture:'http-turns-client-vad',conversationModel:MODEL,languageMode:'ja-only',englishConversationEnabled:false,japaneseOutputGuard:true,safetyGuard:'v41-contextual',sexualExplicitGuard:true,minorSexualGuard:true,sexualCoercionGuard:true,selfHarmSupport:true,violentActionGuard:true,hateViolenceGuard:true,extremistSupportGuard:true,stableConsentAdvice:true,neutralExtremismAnalysis:true,searchMode:'multi-pass-resilient',maxSearchPasses:3,qualitativeAndroidRequirement:true,trustedShoppingDirectFetch:true,searchRetryOnWeakEvidence:true,nonSearchBackchannel:'selective',searchBackchannel:'contextual-single',sttModel:'@cf/openai/whisper-large-v3-turbo',ttsPrimary:'browser explicit ja voice',ttsFallback:'browser default voice selected by lang=ja-JP',serverTtsEnabled:false,grokTtsActive:false,melottsFallback:false,bargeIn:true,legacyWebSocketVoice:false,durableObjectVoice:false});
     if(request.method==='GET'&&['/talk-v41.js','/talk-v40.js','/talk-v39.js'].includes(url.pathname))return new Response(TALK_CLIENT_V41,{headers:{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store','x-talksys-revision':REVISION}});
     if(request.method==='GET'&&url.pathname==='/'){
       const base=await workerV40.fetch(request,env);const html=(await base.text()).replace('/talk-v40.js','/talk-v41.js');return new Response(html,{status:base.status,headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-talksys-revision':REVISION}});
@@ -87,12 +94,15 @@ export default {
     if(request.method==='POST'&&url.pathname==='/api/plan'){
       let body;try{body=await request.clone().json();}catch{return json({ok:false,error:'invalid json'},400);}const text=clean(body?.text,1200);const safety=classifySafety(text);
       if(safety)return json({ok:true,search:false,topic:'',resolvedQuestion:text,searchInstruction:'',ack:'',planner:'safety-local-v41',plannerMs:0,jst:''});
+      if(isStableConsentAdvice(text))return json({ok:true,search:false,topic:'成人同士の同意相談',resolvedQuestion:text,searchInstruction:'',ack:'',planner:'stable-consent-v41',plannerMs:0,jst:''});
       if(isSubjectiveChat(text))return json({ok:true,search:false,topic:'',resolvedQuestion:text,searchInstruction:'',ack:conversationAck(text),planner:'subjective-local-v41',plannerMs:0,jst:''});
       const r=await workerV40.fetch(request,env);const type=r.headers.get('content-type')||'';if(!type.includes('application/json'))return wrap(r);try{const data=await r.json();if(data?.ok)data.ack=data.search?searchAck(text,data):conversationAck(text);data.planner=data.planner||'v40-base-v41';return json(data,r.status);}catch{return wrap(r);}
     }
     if(request.method==='POST'&&url.pathname==='/api/turn'){
       let body;try{body=await request.clone().json();}catch{return json({ok:false,error:'invalid json'},400);}const text=clean(body?.text,1800);if(!text)return json({ok:false,error:'text required'},400);
       const safety=classifySafety(text);if(safety)return json({ok:true,answer:safetyReply(safety),search:false,route:`safety-${safety}-v41`,safetyClass:safety,searchUseful:false,resolvedQuestion:'',queries:[],sources:[],timings:{totalMs:0,searchMs:0,glmMs:0},model:'local',languageMode:'ja-only'});
+      if(isStableConsentAdvice(text))return json({ok:true,answer:stableConsentReply(),search:false,route:'stable-consent-advice-v41',searchUseful:false,resolvedQuestion:'',queries:[],sources:[],timings:{totalMs:0,searchMs:0,glmMs:0},model:'local',languageMode:'ja-only'});
+      if(isNeutralExtremismDiscussion(text))try{return await neutralExtremismTurn(text,body?.history,env);}catch{}
       const plan=body?.searchPlan&&typeof body.searchPlan==='object'?body.searchPlan:null;
       if(plan?.search){try{return await resilientSearchTurn(body,plan,env);}catch(error){const fallback=await workerV40.fetch(request,env);return wrap(fallback);}}
       return wrap(await workerV40.fetch(request,env));
@@ -101,4 +111,4 @@ export default {
   }
 };
 
-export const __test={classifySafety,safetyReply,conversationAck,searchAck,isSubjectiveChat};
+export const __test={classifySafety,safetyReply,conversationAck,searchAck,isSubjectiveChat,isStableConsentAdvice,stableConsentReply,isNeutralExtremismDiscussion,finishAtSentence};
