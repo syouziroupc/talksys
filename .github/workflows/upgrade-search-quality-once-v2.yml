@@ -40,3 +40,5 @@ jobs:
           git add src/search-v44.js src/worker-v44.js
           git commit -m 'Replace flat search fanout with evidence-gap planning'
           git push origin HEAD:main
+
+# Retry marker: strict missing-facet followups verified before commit.
