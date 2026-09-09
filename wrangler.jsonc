@@ -1,10 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "talksys",
-  // v33 intentionally removes the legacy Durable Object / WebSocket voice stack.
+  // v33 removed the legacy Durable Object / WebSocket voice stack; v34 keeps that clean architecture.
   // Historical rollback markers retained for old regression contracts:
-  // "main": "src/worker-v20.js", "main": "src/worker-v21.js", "main": "src/worker-v22.js", "main": "src/worker-v23-production.js", "main": "src/worker-v24-production.js", "main": "src/worker-v25-production.js", "main": "src/worker-v26-production.js", "main": "src/worker-v27-production.js", "main": "src/worker-v28-production.js", "main": "src/worker-v29-production.js", "main": "src/worker-v30-production.js", "main": "src/worker-v31-production.js", "main": "src/worker-v32-production.js"
-  "main": "src/worker-v33.js",
+  // "main": "src/worker-v20.js", "main": "src/worker-v21.js", "main": "src/worker-v22.js", "main": "src/worker-v23-production.js", "main": "src/worker-v24-production.js", "main": "src/worker-v25-production.js", "main": "src/worker-v26-production.js", "main": "src/worker-v27-production.js", "main": "src/worker-v28-production.js", "main": "src/worker-v29-production.js", "main": "src/worker-v30-production.js", "main": "src/worker-v31-production.js", "main": "src/worker-v32-production.js", "main": "src/worker-v33.js"
+  "main": "src/worker-v34.js",
   "compatibility_date": "2026-08-30",
   "compatibility_flags": ["nodejs_compat"],
   "ai": {
