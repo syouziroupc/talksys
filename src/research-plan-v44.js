@@ -87,7 +87,7 @@ export function compileInitialQueries(plan, limit = 6) {
 
 export function compileFollowupQueries(plan, coverage, usedQueries = [], limit = 6) {
   const used = new Set(unique(usedQueries, 100).map((q) => q.toLowerCase()));
-  const missing = new Set((coverage?.missingFacets || coverage?.missing_facets || []).map((x) => clean(x, 40)));
+  const missing = new Set((coverage?.missingFacets || coverage?.missing_facets || []).map((x) => clean(x, 40)).filter(Boolean));
   const out = [];
   const add = (q) => {
     const value = clean(q, 320);
@@ -102,7 +102,12 @@ export function compileFollowupQueries(plan, coverage, usedQueries = [], limit =
     for (const q of facet?.backupQueries || []) add(q);
     if (out.length >= limit) break;
   }
-  if (!coverage?.sufficient && out.length < limit) {
+
+  // A named evidence gap is authoritative. Never spend the remaining budget by
+  // re-searching facets already judged covered merely to fill a query quota.
+  // Only when the coverage model cannot identify any particular missing facet do
+  // we broaden through the remaining facet backups.
+  if (!missing.size && !coverage?.sufficient && out.length < limit) {
     for (const facet of facets) {
       for (const q of facet?.backupQueries || []) add(q);
       if (out.length >= limit) break;
