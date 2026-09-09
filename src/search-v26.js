@@ -82,30 +82,36 @@ async function fetchYahooTransitRoute(from, to, signal) {
   };
 }
 
+function evidenceFromSources(sources) {
+  return (sources || []).slice(0, 8).map((item, i) => `[${i + 1}] ${clean(item?.title, 180)}\n${clean(item?.url, 500)}\n${clean(item?.excerpt || item?.snippet || '', 1200)}`).join('\n\n');
+}
+
 export async function augmentGroundedEvidenceV26(base, options = {}) {
   const resolved = clean(base?.resolvedQuestion || '', 900);
-  if (base?.sources?.length || !TRANSIT_RE.test(resolved)) {
-    return { ...(base || {}), revision: SEARCH_TOOL_V26_REVISION };
-  }
+  if (!TRANSIT_RE.test(resolved)) return { ...(base || {}), revision: SEARCH_TOOL_V26_REVISION };
   const [from, to] = stationPair(resolved);
   if (!from || !to) return { ...(base || {}), revision: SEARCH_TOOL_V26_REVISION };
 
   try {
     const direct = await fetchYahooTransitRoute(from, to, options.signal);
+    const existing = Array.isArray(base?.sources) ? base.sources : [];
+    const directKey = String(direct.url || '').replace(/[?#].*$/, '').replace(/\/$/, '');
+    const sources = [direct, ...existing.filter((item) => String(item?.url || '').replace(/[?#].*$/, '').replace(/\/$/, '') !== directKey)].slice(0, 8);
     options.onProgress?.({
       phase: 'evidence_ready',
       revision: SEARCH_TOOL_V26_REVISION,
       resolvedQuestion: resolved,
       queries: base?.queries || [],
-      evidenceCount: 1,
-      sources: [{ title: direct.title, url: direct.url }],
-      message: '乗換案内の実ページで経路根拠を確認',
+      evidenceCount: sources.length,
+      sources: sources.map((item) => ({ title: item.title, url: item.url })),
+      message: '乗換案内の実ページを優先根拠として確認',
     });
     return {
       ...(base || {}),
       revision: SEARCH_TOOL_V26_REVISION,
-      sources: [direct],
-      evidence: `[1] ${direct.title}\n${direct.url}\n${direct.excerpt}`,
+      sources,
+      evidence: evidenceFromSources(sources),
+      directTransitPrimary: true,
     };
   } catch (error) {
     return {
@@ -121,4 +127,4 @@ export async function collectGroundedEvidenceV26(query, history = [], options = 
   return augmentGroundedEvidenceV26(base, options);
 }
 
-export const __test = { stationPair, usefulRouteExcerpt, stripHtml };
+export const __test = { stationPair, usefulRouteExcerpt, stripHtml, evidenceFromSources };
