@@ -8,15 +8,24 @@ const worker=fs.readFileSync(new URL('../src/worker-v36.js',import.meta.url),'ut
 const search=fs.readFileSync(new URL('../src/search-v26.js',import.meta.url),'utf8');
 const wrangler=fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8');
 
-test('v36 rewrites subjectless search requests with the previous user subject',()=>{
+test('v36 rewrites subjectless transit search into a compact transit intent',()=>{
   const history=[
     {role:'user',content:'大分駅から別府駅まで行かないといけないんだけど、何を乗っていけばいいかわかんないんだよね。'},
     {role:'assistant',content:'JRで移動できます。'},
   ];
   const r=routing.buildContextualSearch('今から君がちょっと検索してほしいんだけど。',history);
-  assert.equal(r.reason,'context-carry-search');
-  assert.match(r.text,/大分駅から別府駅/);
+  assert.equal(r.reason,'context-carry-transit-search');
+  assert.match(r.text,/大分駅から別府駅まで/);
+  assert.match(r.text,/電車の経路/);
+  assert.match(r.text,/直通/);
+  assert.match(r.text,/所要時間/);
+  assert.match(r.text,/運賃/);
+  assert.match(r.text,/時刻表/);
   assert.match(r.text,/検索して/);
+});
+
+test('v36 extracts station pairs from conversational Japanese',()=>{
+  assert.deepEqual(routing.stationPairFrom('大分駅から別府駅まで行かないといけない。'),['大分駅','別府駅']);
 });
 
 test('v36 forces local PC store requests into a location-aware search',()=>{
