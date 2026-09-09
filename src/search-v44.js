@@ -7,8 +7,17 @@ import {
   searchOpenStreetMapLocal,
 } from './search-fallbacks.js';
 import { engineForIndex, fallbackEngine, searchProbe } from './search-probes-v44.js';
+import {
+  compileFollowupQueries,
+  compileInitialQueries,
+  facetPlanQueries,
+  heuristicResearchFacets,
+  normalizeResearchFacets,
+  researchFocus,
+  RESEARCH_PLAN_V44_REVISION,
+} from './research-plan-v44.js';
 
-export const SEARCH_V44_REVISION = 'deep-search-v44-resilient-multi-engine';
+export const SEARCH_V44_REVISION = 'deep-search-v44-question-first-evidence-loop';
 export const SEARCH_V44_MAX_QUERIES = 14;
 export const SEARCH_V44_MAX_RECOVERY_QUERIES = 5;
 export const SEARCH_V44_MAX_TOTAL_QUERIES = SEARCH_V44_MAX_QUERIES + SEARCH_V44_MAX_RECOVERY_QUERIES;
@@ -107,43 +116,53 @@ async function planDeepSearch(ai, text, history, signal) {
       messages: [
         {
           role: 'system',
-          content: `あなたはTalkSysのWeb調査プランナーです。検索量を惜しまず、回答に必要な根拠を徹底的に集めます。今回の発話を直前の会話から自己完結した調査課題へ復元し、重複しない検索語を10〜14本作ってください。\n\n必須:\n- ユーザーが述べた地域、予算、型番、日時、用途、数量、除外条件を落とさない。\n- assistantの過去発言は対象復元には使えるが、外部事実の根拠にはしない。\n- 広い探索、公式/一次情報、独立した別ソース、比較/反証、現在性確認を分けて検索する。\n- 価格・在庫・法律・制度・時刻・ニュース・現行仕様など変動情報は${year}年の現在性を確認する。\n- 購入相談は候補発見、価格、販売元、仕様、評判を別クエリにする。\n- 地域相談は地域名を省略しない。\n- 実在未確認の固有名詞を新しく作らない。\n- 同じ検索語の語順違いだけを量産しない。\n\nJSONだけを返す: {"resolved_question":"...","intent":"shopping|local|current|comparison|general|news|other","location":"...","must_include":["..."],"queries":["...最大14"]}`,
+          content: `あなたはTalkSysの調査設計者です。検索語を大量生成する役ではありません。まず「この質問に正しく答えるには、何が分かれば結論が決まるか」を分解してください。\n\n手順:\n1. 今回の発話を会話から自己完結した調査課題へ復元する。\n2. 結論を左右する独立した論点を3〜6個に分ける。論点は「候補発見」「価格」「仕様」「適合性」「現在性」「例外・反証」など、必要なものだけにする。\n3. 各論点について、必要な証拠、最適な情報源の種類、最初に打つ短い検索語を1本、必要なら予備検索語を最大2本だけ作る。\n4. 検索語は会話文をそのまま貼らず、固有名詞・条件・知りたい事実を中心にする。「公式」「比較」「最新」を機械的に付け足さない。情報源の性質に合う場合だけ使う。\n5. ユーザーが述べた地域、予算、型番、日時、用途、数量、除外条件を落とさない。assistantの過去発言は対象復元には使えるが外部事実の根拠にはしない。\n6. 価格・在庫・法律・制度・時刻・ニュース・現行仕様など変動情報は${year}年の現在性が確認できる論点を作る。\n7. 実在未確認の固有名詞を新しく作らない。検索本数に最低数はない。\n\nJSONだけを返す: {"resolved_question":"...","intent":"shopping|local|current|comparison|general|news|other","location":"...","must_include":["..."],"facets":[{"id":"短いID","question":"答えを決める小問","evidence_needed":"必要証拠","preferred_sources":["最適な情報源種別"],"primary_query":"最初の検索語","backup_queries":["予備1","予備2"],"priority":1-5}]}`,
         },
         { role: 'user', content: `直近の会話:\n${recent || '(なし)'}\n\n今回の発話:\n${clean(text, 1800)}` },
       ],
       stream: false,
-      max_completion_tokens: 900,
+      max_completion_tokens: 1250,
       temperature: 0.02,
       reasoning_effort: 'low',
     }, signal ? { signal } : undefined);
     const data = parseJsonObject(readModelText(result));
     if (data && typeof data === 'object') {
       const resolvedQuestion = clean(data.resolved_question || data.resolvedQuestion || fallback, 2200) || fallback;
-      const planned = Array.isArray(data.queries) ? data.queries : [];
-      const queries = uniqueQueries([...planned, ...deterministicQueries(resolvedQuestion, history)], SEARCH_V44_MAX_QUERIES);
-      if (queries.length) {
+      const inferredIntent = SHOPPING_RE.test(resolvedQuestion) ? 'shopping' : (LOCAL_RE.test(resolvedQuestion) ? 'local' : (CURRENT_OR_HIGH_STAKES_RE.test(resolvedQuestion) ? 'current' : 'general'));
+      const intent = clean(data.intent || '', 40) || inferredIntent;
+      const location = clean(data.location || '', 100);
+      const mustInclude = Array.isArray(data.must_include || data.mustInclude)
+        ? (data.must_include || data.mustInclude).map((x) => clean(x, 180)).filter(Boolean).slice(0, 10)
+        : [];
+      const facets = normalizeResearchFacets(data.facets, resolvedQuestion, intent);
+      const queries = facetPlanQueries({ resolvedQuestion, intent, location, mustInclude, facets }, SEARCH_V44_MAX_QUERIES);
+      if (facets.length && queries.length) {
         return {
           resolvedQuestion,
-          intent: clean(data.intent || '', 40) || (CURRENT_OR_HIGH_STAKES_RE.test(resolvedQuestion) ? 'current' : 'general'),
-          location: clean(data.location || '', 100),
-          mustInclude: Array.isArray(data.must_include || data.mustInclude)
-            ? (data.must_include || data.mustInclude).map((x) => clean(x, 180)).filter(Boolean).slice(0, 10)
-            : [],
+          intent,
+          location,
+          mustInclude,
+          facets,
           queries,
           planned: true,
           plannerModel: PLANNER_MODEL,
+          researchPlanRevision: RESEARCH_PLAN_V44_REVISION,
         };
       }
     }
   } catch {}
+  const intent = SHOPPING_RE.test(fallback) ? 'shopping' : (LOCAL_RE.test(fallback) ? 'local' : (CURRENT_OR_HIGH_STAKES_RE.test(fallback) ? 'current' : 'general'));
+  const facets = heuristicResearchFacets(fallback, intent, '');
   return {
     resolvedQuestion: fallback,
-    intent: CURRENT_OR_HIGH_STAKES_RE.test(fallback) ? 'current' : (SHOPPING_RE.test(fallback) ? 'shopping' : 'general'),
+    intent,
     location: '',
     mustInclude: [],
-    queries: deterministicQueries(fallback, history),
+    facets,
+    queries: facetPlanQueries({ resolvedQuestion: fallback, intent, facets }, SEARCH_V44_MAX_QUERIES),
     planned: false,
     plannerModel: null,
+    researchPlanRevision: RESEARCH_PLAN_V44_REVISION,
   };
 }
 
@@ -346,11 +365,14 @@ function evidenceSummary(results, limit = SEARCH_V44_SOURCE_LIMIT) {
 }
 
 async function assessCoverage(ai, plan, results, history, signal) {
+  const facetLines = (plan?.facets || []).map((f) => `${f.id}: ${f.question} | 必要証拠=${f.evidenceNeeded} | 推奨=${(f.preferredSources || []).join(',')}`).join('\n');
   if (!results?.length) {
     return {
       sufficient: false,
       reason: 'no_results',
-      queries: deterministicQueries(plan.resolvedQuestion, history).slice(0, SEARCH_V44_MAX_RECOVERY_QUERIES),
+      missingFacets: (plan?.facets || []).map((f) => f.id),
+      facetStatus: [],
+      queries: compileFollowupQueries(plan, { sufficient: false, missingFacets: (plan?.facets || []).map((f) => f.id), queries: [] }, [], SEARCH_V44_MAX_RECOVERY_QUERIES),
     };
   }
   try {
@@ -358,45 +380,58 @@ async function assessCoverage(ai, plan, results, history, signal) {
       messages: [
         {
           role: 'system',
-          content: 'Web調査の十分性を厳しく監査します。回答は書かず、主要な主張を複数ソースで支えられるか、現在情報に一次情報または信頼できる根拠があるか、質問の条件を落としていないかを確認してください。同一ドメインに偏っている場合も不足扱いです。不足があれば既存検索と重複しない追加検索語を最大5本作ってください。JSONだけ: {"sufficient":true|false,"reason":"...","queries":["..."]}',
+          content: 'Web調査の証拠ギャップを監査します。検索件数やドメイン数ではなく、各論点について「結論を出すのに必要な証拠が得られたか」を判定してください。論点ごとに covered / partial / missing / conflict を付け、missingまたはconflictの論点だけ追加検索してください。partialでも結論を左右する情報が欠けていればmissing_facetsへ入れてください。すでに結論を決められるなら追加検索しません。追加検索語は不足証拠を直接取りに行く短い語にし、既存検索の言い換えは禁止です。JSONだけ: {"sufficient":true|false,"reason":"...","facet_status":[{"id":"...","status":"covered|partial|missing|conflict","reason":"..."}],"missing_facets":["id"],"queries":["...最大5"]}',
         },
         {
           role: 'user',
-          content: `調査課題: ${plan.resolvedQuestion}\n意図: ${plan.intent}\n地域: ${plan.location || '(なし)'}\n必須条件: ${(plan.mustInclude || []).join(' / ') || '(なし)'}\n検索済み: ${(plan.queries || []).join(' / ')}\n\n上位根拠:\n${evidenceSummary(results)}`,
+          content: `調査課題: ${plan.resolvedQuestion}\n意図: ${plan.intent}\n地域: ${plan.location || '(なし)'}\n必須条件: ${(plan.mustInclude || []).join(' / ') || '(なし)'}\n\n調査論点:\n${facetLines || '(なし)'}\n\n検索済み: ${(plan.queries || []).join(' / ')}\n\n上位根拠:\n${evidenceSummary(results)}`,
         },
       ],
       stream: false,
-      max_completion_tokens: 420,
+      max_completion_tokens: 650,
       temperature: 0.01,
       reasoning_effort: 'low',
     }, signal ? { signal } : undefined);
     const data = parseJsonObject(readModelText(result));
     if (data && typeof data === 'object') {
+      const facetStatus = Array.isArray(data.facet_status || data.facetStatus)
+        ? (data.facet_status || data.facetStatus).map((x) => ({ id: clean(x?.id, 40), status: clean(x?.status, 20), reason: clean(x?.reason, 220) })).filter((x) => x.id)
+        : [];
+      const missingFacets = Array.isArray(data.missing_facets || data.missingFacets)
+        ? (data.missing_facets || data.missingFacets).map((x) => clean(x, 40)).filter(Boolean)
+        : facetStatus.filter((x) => ['missing', 'conflict'].includes(x.status)).map((x) => x.id);
       return {
-        sufficient: data.sufficient === true,
+        sufficient: data.sufficient === true && missingFacets.length === 0,
         reason: clean(data.reason || '', 300),
+        facetStatus,
+        missingFacets,
         queries: uniqueQueries(Array.isArray(data.queries) ? data.queries : [], SEARCH_V44_MAX_RECOVERY_QUERIES),
       };
     }
   } catch {}
   const hosts = new Set((results || []).map((x) => hostOf(x?.url || '')).filter(Boolean));
+  const sufficient = hasUsefulSearchEvidence(results, 7) && hosts.size >= 3;
   return {
-    sufficient: hasUsefulSearchEvidence(results, 7) && hosts.size >= 3,
+    sufficient,
     reason: 'coverage_model_unavailable',
+    facetStatus: [],
+    missingFacets: sufficient ? [] : (plan?.facets || []).map((f) => f.id),
     queries: [],
   };
 }
 
-function recoveryQueries(plan, history) {
-  const resolved = plan.resolvedQuestion;
-  return uniqueQueries([
-    `${resolved} 公式 詳細`,
-    `${resolved} 一次情報`,
-    `${resolved} 別ソース`,
-    `${resolved} 反証 問題`,
-    `${resolved} 比較 評判`,
-    ...deterministicQueries(resolved, history),
-  ], SEARCH_V44_MAX_RECOVERY_QUERIES);
+function recoveryQueries(plan, history, coverage = {}) {
+  const gaps = compileFollowupQueries(
+    plan,
+    {
+      sufficient: false,
+      missingFacets: coverage?.missingFacets?.length ? coverage.missingFacets : (plan?.facets || []).map((f) => f.id),
+      queries: coverage?.queries || [],
+    },
+    plan?.queries || [],
+    SEARCH_V44_MAX_RECOVERY_QUERIES,
+  );
+  return gaps.length ? gaps : deterministicQueries(plan.resolvedQuestion, history).slice(0, SEARCH_V44_MAX_RECOVERY_QUERIES);
 }
 
 function shouldForceThirdRound(plan) {
@@ -414,11 +449,12 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   const queryTimeoutMs = Math.max(3500, Math.min(9000, Number(options.queryTimeoutMs) || SEARCH_V44_QUERY_TIMEOUT_MS));
   const planStarted = Date.now();
   const plan = await planDeepSearch(ai, text, history, signal);
+  const focus = researchFocus(plan) || plan.resolvedQuestion;
   timings.plannerMs = Date.now() - planStarted;
 
   const plannedQueries = uniqueQueries(plan.queries, SEARCH_V44_MAX_QUERIES);
-  const first = plannedQueries.slice(0, 7);
-  const second = plannedQueries.slice(7, 14);
+  let first = compileInitialQueries(plan, 6);
+  if (!first.length) first = plannedQueries.slice(0, 4);
   const allQueries = [...first];
 
   const round1Started = Date.now();
@@ -432,26 +468,9 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   probeDiagnostics.push(...batch1.diagnostics);
   retryCount += batch1.retries;
   if (batch1.crossEngineUsed) crossEngineCount += 1;
-  merged = await enrichTopResults(merged, plan.resolvedQuestion, ai, signal, queryTimeoutMs, 3);
+  merged = await enrichTopResults(merged, focus, ai, signal, queryTimeoutMs, 3);
   timings.round1Ms = Date.now() - round1Started;
   let rounds = 1;
-
-  if (second.length && Date.now() - startedAt < maxBudgetMs - 4500) {
-    const round2Started = Date.now();
-    const batch2 = await runQueryBatch(second, {
-      timeoutMs: queryTimeoutMs,
-      multiEngine: false,
-      engineOffset: 2,
-      retryBudget: Math.max(0, SEARCH_V44_MAX_ENGINE_RETRIES - retryCount),
-    });
-    merged = dedupeSearchResults([...merged, ...batch2.results], 150);
-    probeDiagnostics.push(...batch2.diagnostics);
-    retryCount += batch2.retries;
-    if (batch2.crossEngineUsed) crossEngineCount += 1;
-    allQueries.push(...second);
-    timings.round2Ms = Date.now() - round2Started;
-    rounds = 2;
-  }
 
   if ((plan.intent === 'local' || LOCAL_RE.test(plan.resolvedQuestion)) && Date.now() - startedAt < maxBudgetMs - 3500) {
     const localQueries = uniqueQueries([
@@ -467,22 +486,39 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     timings.localMs = Date.now() - localStarted;
   }
 
-  const rerank1Started = Date.now();
-  let ranked = await rankExpanded(ai, plan.resolvedQuestion, merged, signal, SEARCH_V44_SOURCE_LIMIT);
-  timings.rerank1Ms = Date.now() - rerank1Started;
-
-  const coverageStarted = Date.now();
+  let ranked = await rankExpanded(ai, focus, merged, signal, SEARCH_V44_SOURCE_LIMIT);
+  const coverage1Started = Date.now();
   let coverage = await assessCoverage(ai, { ...plan, queries: allQueries }, ranked, history, signal);
-  timings.coverageMs = Date.now() - coverageStarted;
+  timings.coverage1Ms = Date.now() - coverage1Started;
 
-  const needThird = !coverage.sufficient || shouldForceThirdRound(plan);
-  if (needThird && Date.now() - startedAt < maxBudgetMs - 4000) {
+  if (!coverage.sufficient && Date.now() - startedAt < maxBudgetMs - 5000) {
+    const second = compileFollowupQueries(plan, coverage, allQueries, 6);
+    if (second.length) {
+      const round2Started = Date.now();
+      const batch2 = await runQueryBatch(second, {
+        timeoutMs: queryTimeoutMs,
+        multiEngine: false,
+        engineOffset: 2,
+        retryBudget: Math.max(0, SEARCH_V44_MAX_ENGINE_RETRIES - retryCount),
+      });
+      merged = dedupeSearchResults([...merged, ...batch2.results], 170);
+      probeDiagnostics.push(...batch2.diagnostics);
+      retryCount += batch2.retries;
+      if (batch2.crossEngineUsed) crossEngineCount += 1;
+      allQueries.push(...second);
+      timings.round2Ms = Date.now() - round2Started;
+      rounds = 2;
+      ranked = await rankExpanded(ai, focus, merged, signal, SEARCH_V44_SOURCE_LIMIT);
+      coverage = await assessCoverage(ai, { ...plan, queries: allQueries }, ranked, history, signal);
+    }
+  }
+
+  if (!coverage.sufficient && Date.now() - startedAt < maxBudgetMs - 4000) {
     const already = new Set(allQueries.map((q) => q.toLowerCase()));
     const thirdQueries = uniqueQueries(
-      [...(coverage.queries || []), ...recoveryQueries(plan, history)],
+      [...(coverage.queries || []), ...recoveryQueries({ ...plan, queries: allQueries }, history, coverage)],
       SEARCH_V44_MAX_RECOVERY_QUERIES,
     ).filter((q) => !already.has(q.toLowerCase()));
-
     if (thirdQueries.length) {
       const round3Started = Date.now();
       const batch3 = await runQueryBatch(thirdQueries, {
@@ -498,7 +534,7 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
       allQueries.push(...thirdQueries);
       timings.round3Ms = Date.now() - round3Started;
       rounds = 3;
-      ranked = await rankExpanded(ai, plan.resolvedQuestion, merged, signal, SEARCH_V44_SOURCE_LIMIT);
+      ranked = await rankExpanded(ai, focus, merged, signal, SEARCH_V44_SOURCE_LIMIT);
       coverage = await assessCoverage(ai, { ...plan, queries: allQueries }, ranked, history, signal);
     }
   }
@@ -513,6 +549,9 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     rounds,
     coverage,
     evidenceUseful: hasUsefulSearchEvidence(ranked, 4),
+    researchStateMachine: true,
+    questionFirstPlanning: true,
+    gapDrivenFollowups: true,
     subrequestBudgetAware: true,
     externalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
     externalSubrequestWorstTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
@@ -534,4 +573,9 @@ export const __test = {
   extractPageExcerpt,
   diversifyHosts,
   hostOf,
+  planDeepSearch,
+  assessCoverage,
+  compileInitialQueries,
+  compileFollowupQueries,
+  researchFocus,
 };
