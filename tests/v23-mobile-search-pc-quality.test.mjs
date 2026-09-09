@@ -41,7 +41,7 @@ test('PC search adds official specification-oriented queries', () => {
   assert.match(queries[0], /仕様/);
   assert.match(queries[0], /公式/);
   assert.match(queries[1], /マニュアル/);
-  assert.equal(SEARCH_TOOL_V23_REVISION, 'evidence-only-web-tool-v23-parallel-intent-search');
+  assert.equal(SEARCH_TOOL_V23_REVISION, 'evidence-only-web-tool-v23-trusted-purchase-queries');
 });
 
 test('entity gate rejects unrelated PC pages and transit encyclopedias', () => {
