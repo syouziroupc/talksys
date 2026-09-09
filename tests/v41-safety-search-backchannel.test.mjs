@@ -48,6 +48,14 @@ test('v41 retry search makes smartphone queries shorter and source-diverse',()=>
   assert.ok(q2.some(x=>/Android 13以降/.test(x)));
 });
 
+test('v41 treats smartphone replacement as shopping, never railway transit',()=>{
+  const resolved='画面が割れた初代Xperia 5からの乗り換え用に、2万円以下で買える中古Androidスマホを探したい。';
+  assert.equal(search.isPhoneShopping(resolved),true);
+  const queries=search.buildRetryQueries(resolved,[],'実売価格と在庫を確認',1);
+  assert.ok(queries.length>=3);
+  assert.ok(queries.every(q=>!/(所要時間|運賃|時刻表|停車駅|路線)/.test(q)));
+});
+
 test('v41 smartphone evidence gate requires concrete prices before declaring shopping evidence sufficient',()=>{
   assert.equal(search.hasConcreteShoppingEvidence([{title:'中古スマホ一覧',url:'https://example.com',snippet:'Androidスマホを販売しています'}],'2万円以下の中古スマホ'),false);
   assert.equal(search.hasConcreteShoppingEvidence([
