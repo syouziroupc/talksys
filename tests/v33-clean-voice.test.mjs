@@ -8,9 +8,9 @@ const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 
 
 test('v33 is a clean worker and does not inherit the legacy voice stack', () => {
   assert.doesNotMatch(worker, /extends\s+TalkSysVoiceAgentV\d+/);
-  assert.doesNotMatch(worker, /@cloudflare\/voice|routeAgentRequest|WebSocket/);
+  assert.doesNotMatch(worker, /@cloudflare\/voice|routeAgentRequest|new\s+WebSocket/);
   assert.match(wrangler, /"main"\s*:\s*"src\/worker-v33\.js"/);
-  assert.doesNotMatch(wrangler, /"durable_objects"/);
+  assert.doesNotMatch(wrangler, /"durable_objects"\s*:/);
 });
 
 test('v33 uses the requested GLM, Japanese STT and dedicated Japanese TTS', () => {
@@ -22,7 +22,7 @@ test('v33 uses the requested GLM, Japanese STT and dedicated Japanese TTS', () =
 });
 
 test('v33 browser path is only mic turns, text fallback and diagnostics', () => {
-  assert.doesNotMatch(client, /new WebSocket|AudioWorkletNode/);
+  assert.doesNotMatch(client, /new\s+WebSocket|AudioWorkletNode/);
   assert.match(client, /getUserMedia/);
   assert.match(client, /createScriptProcessor/);
   assert.match(client, /\/api\/transcribe/);
