@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { completeGlmConversationV32, streamGlmConversationV32, GLM_CONVERSATION_MODEL_V32 } from '../src/glm-conversation-v32.js';
 
 const worker = await readFile(new URL('../src/worker-v32.js', import.meta.url), 'utf8');
+const glmConversation = await readFile(new URL('../src/glm-conversation-v32.js', import.meta.url), 'utf8');
 const liveClient = await readFile(new URL('../src/cloudflare-live-client-v32.js', import.meta.url), 'utf8');
 const traceClient = await readFile(new URL('../src/search-trace-client-v32.js', import.meta.url), 'utf8');
 const wrangler = await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
@@ -66,7 +67,8 @@ test('v32 processing view receives safe operational traces on every turn', () =>
 });
 
 test('v32 preserves GLM plus Melo and retains v31 as rollback', () => {
-  assert.match(worker, /@cf\/zai-org\/glm-5\.3-flash/);
+  assert.match(glmConversation, /@cf\/zai-org\/glm-5\.3-flash/);
+  assert.equal(GLM_CONVERSATION_MODEL_V32, '@cf/zai-org/glm-5.3-flash');
   assert.match(worker, /@cf\/myshell-ai\/melotts/);
   assert.doesNotMatch(worker, /xai\/|grok/i);
   assert.match(wrangler, /worker-v31-production\.js/);
