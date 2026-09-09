@@ -49,11 +49,7 @@ export function readGlmFinalV32(result) {
 }
 
 function sanitizeAnswer(text) {
-  return String(text || '')
-    .replace(/([ぁ-んァ-ヶ一-龠A-Za-z]{2,12})\1(?=[ぁ-んァ-ヶ一-龠A-Za-z])/g, '$1')
-    .replace(/([〜～])\1+/g, '$1')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return String(text || '').replace(/\s+/g, ' ').trim();
 }
 
 async function completeAttempt(ai, messages, options, attemptName) {
@@ -76,7 +72,7 @@ async function completeAttempt(ai, messages, options, attemptName) {
 }
 
 export async function completeGlmConversationV32(ai, messages, options = {}) {
-  const hedgeDelayMs = Math.max(900, Number(options.hedgeDelayMs) || GLM_V32_HEDGE_DELAY_MS);
+  const hedgeDelayMs = Math.max(250, Number(options.hedgeDelayMs) || GLM_V32_HEDGE_DELAY_MS);
   const primary = completeAttempt(ai, messages, options, 'primary');
   const hedge = (async () => {
     await delay(hedgeDelayMs, options.signal);
