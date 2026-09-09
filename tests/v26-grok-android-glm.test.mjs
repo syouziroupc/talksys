@@ -6,6 +6,7 @@ import { GrokJapaneseTTSV26, GROK_TTS_MODEL_V26 } from '../src/grok-japanese-tts
 import { streamGlmConversationV25 } from '../src/glm-conversation-v25.js';
 import { appendConversationTurn, recordConversationUser, getConversationHistory } from '../src/conversation-memory.js';
 import { resolveGroundedQuestionV22 } from '../src/search-v22.js';
+import { __test as searchV26Test } from '../src/search-v26.js';
 
 const worker = fs.readFileSync(new URL('../src/worker-v26.js', import.meta.url), 'utf8');
 const production = fs.readFileSync(new URL('../src/worker-v26-production.js', import.meta.url), 'utf8');
@@ -39,6 +40,16 @@ test('どうですか resolves to the in-flight Saginuma to Sagami-Ono transit q
   assert.match(resolved, /鷺沼/);
   assert.match(resolved, /相模大野/);
   assert.match(resolved, /どうですか/);
+});
+
+test('direct transit fallback extracts arbitrary station pairs and useful server-rendered route text', () => {
+  assert.deepEqual(searchV26Test.stationPair('博多駅から熊本駅までの乗換案内を教えて'), ['博多', '熊本']);
+  assert.deepEqual(searchV26Test.stationPair('鷺沼から相模大野までの乗換案内が知りたい どうですか'), ['鷺沼', '相模大野']);
+  const text = searchV26Test.stripHtml('<html><body><h1>鷺沼→相模大野</h1><div>ルート1 09:10発 09:45着 35分 乗換1回 424円</div></body></html>');
+  const excerpt = searchV26Test.usefulRouteExcerpt(text, '鷺沼', '相模大野');
+  assert.match(excerpt, /鷺沼→相模大野/);
+  assert.match(excerpt, /35分/);
+  assert.match(excerpt, /424円/);
 });
 
 test('GLM reasoning-only SSE cannot keep the visible answer waiting indefinitely', async () => {
@@ -98,12 +109,14 @@ test('Android runtime prefers AudioWorklet, probes PCM, and recovers lifecycle/n
   assert.match(CLOUDFLARE_LIVE_CLIENT_V26, /socket\?\.close\(\)/);
 });
 
-test('v26 health contract exposes GLM bounded answer, Grok TTS, and Android recovery', () => {
+test('v26 health contract exposes GLM bounded answer, Grok TTS, Android recovery, and direct transit fallback', () => {
   assert.match(worker, /cloudflare-agent-v26-grok-tts-android-realtime/);
   assert.match(worker, /ttsPrimary: GROK_TTS_MODEL_V26/);
   assert.match(worker, /glmVisibleFirstTokenDeadline: true/);
   assert.match(worker, /inFlightUserContext: true/);
+  assert.match(worker, /directTransitEvidenceFallback: true/);
   assert.match(production, /search-smoke-v26-transit-followup/);
+  assert.match(production, /collectGroundedEvidenceV26/);
   assert.match(production, /androidAudioWorkletPreferred: true/);
   assert.match(wrangler, /"main":\s*"src\/worker-v26-production\.js"/);
 });
