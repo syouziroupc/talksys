@@ -1,5 +1,6 @@
 import { parseBingHtml, parseDuckHtml, parseGoogleHtml, parseRss } from './web-search.js';
 import { searchBingRss } from './search-fallbacks.js';
+import { filterQueryRelevantResults } from './query-result-gate-v44.js';
 
 export const SEARCH_PROBE_ENGINES = ['bing-rss', 'google', 'duckduckgo', 'bing-html', 'google-news'];
 
@@ -30,13 +31,14 @@ async function fetchText(url, timeoutMs, accept = 'text/html,application/xhtml+x
   }
 }
 
-function normalizeResults(results, engine, query) {
-  return (Array.isArray(results) ? results : []).map((item) => ({
+function normalizeResults(results, engine, query, limit = 10) {
+  const normalized = (Array.isArray(results) ? results : []).map((item) => ({
     ...item,
     engine: item?.engine || engine,
     probeEngine: engine,
     probeQuery: query,
   }));
+  return filterQueryRelevantResults(query, normalized, limit);
 }
 
 export async function searchProbe(engine, query, options = {}) {
@@ -48,13 +50,15 @@ export async function searchProbe(engine, query, options = {}) {
 
   try {
     if (engine === 'bing-rss') {
-      const results = await searchBingRss(value, { limit, timeoutMs }).catch(() => []);
+      const raw = await searchBingRss(value, { limit: Math.min(12, limit + 2), timeoutMs }).catch(() => []);
+      const results = normalizeResults(raw, engine, value, limit);
       return {
         engine,
         query: value,
         ok: results.length > 0,
-        results: normalizeResults(results, engine, value),
-        error: results.length ? '' : 'empty_results',
+        results,
+        error: results.length ? '' : (raw.length ? 'irrelevant_results' : 'empty_results'),
+        rawCount: raw.length,
         elapsedMs: Date.now() - startedAt,
       };
     }
@@ -63,27 +67,28 @@ export async function searchProbe(engine, query, options = {}) {
     let parsed = [];
     if (engine === 'google') {
       fetched = await fetchText(`https://www.google.com/search?hl=ja&gl=jp&num=10&filter=0&q=${encodeURIComponent(value)}`, timeoutMs);
-      parsed = fetched.text ? parseGoogleHtml(fetched.text, limit) : [];
+      parsed = fetched.text ? parseGoogleHtml(fetched.text, Math.min(12, limit + 2)) : [];
     } else if (engine === 'duckduckgo') {
       fetched = await fetchText(`https://html.duckduckgo.com/html/?kl=jp-jp&q=${encodeURIComponent(value)}`, timeoutMs);
-      parsed = fetched.text ? parseDuckHtml(fetched.text, limit) : [];
+      parsed = fetched.text ? parseDuckHtml(fetched.text, Math.min(12, limit + 2)) : [];
     } else if (engine === 'bing-html') {
       fetched = await fetchText(`https://www.bing.com/search?setlang=ja-JP&cc=jp&mkt=ja-JP&q=${encodeURIComponent(value)}`, timeoutMs);
-      parsed = fetched.text ? parseBingHtml(fetched.text, limit, 'bing-html') : [];
+      parsed = fetched.text ? parseBingHtml(fetched.text, Math.min(12, limit + 2), 'bing-html') : [];
     } else if (engine === 'google-news') {
       fetched = await fetchText(`https://news.google.com/rss/search?hl=ja&gl=JP&ceid=JP:ja&q=${encodeURIComponent(value)}`, timeoutMs, 'application/rss+xml,application/xml,text/xml');
-      parsed = fetched.text ? parseRss(fetched.text, 'google-news', limit) : [];
+      parsed = fetched.text ? parseRss(fetched.text, 'google-news', Math.min(12, limit + 2)) : [];
     } else {
       return { engine, query: value, ok: false, results: [], error: 'unknown_engine', elapsedMs: Date.now() - startedAt };
     }
 
-    const results = normalizeResults(parsed, engine, value);
+    const results = normalizeResults(parsed, engine, value, limit);
     return {
       engine,
       query: value,
       ok: results.length > 0,
       results,
-      error: results.length ? '' : (fetched?.error || 'empty_results'),
+      error: results.length ? '' : (parsed.length ? 'irrelevant_results' : (fetched?.error || 'empty_results')),
+      rawCount: parsed.length,
       status: fetched?.status || 0,
       elapsedMs: Date.now() - startedAt,
     };
@@ -110,4 +115,4 @@ export function engineForIndex(index, offset = 0) {
   return order[(Math.max(0, Number(index) || 0) + Math.max(0, Number(offset) || 0)) % order.length];
 }
 
-export const __test = { clean };
+export const __test = { clean, normalizeResults };
