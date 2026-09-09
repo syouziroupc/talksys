@@ -24,16 +24,27 @@ function boundedSignal(parentSignal, timeoutMs) {
   return typeof AbortSignal.any === 'function' ? AbortSignal.any([parentSignal, timeout]) : parentSignal;
 }
 
+function textFromContent(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((item) => {
+    if (typeof item === 'string') return item;
+    if (typeof item?.text === 'string') return item.text;
+    if (typeof item?.content === 'string') return item.content;
+    return '';
+  }).join('');
+}
+
 function readDelta(payload) {
   if (!payload) return '';
   if (typeof payload.response === 'string') return payload.response;
   if (typeof payload.text === 'string') return payload.text;
   const choice = payload.choices?.[0];
-  const content = choice?.delta?.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content.map((item) => typeof item === 'string' ? item : (item?.text || '')).join('');
-  }
+  const delta = choice?.delta;
+  const content = textFromContent(delta?.content);
+  if (content) return content;
+  const messageContent = textFromContent(choice?.message?.content);
+  if (messageContent) return messageContent;
   if (typeof choice?.text === 'string') return choice.text;
   return '';
 }
@@ -45,7 +56,8 @@ function readFinal(result) {
   if (typeof result.result === 'string') return result.result.trim();
   if (typeof result.text === 'string') return result.text.trim();
   const choice = result.choices?.[0];
-  if (typeof choice?.message?.content === 'string') return choice.message.content.trim();
+  const messageContent = textFromContent(choice?.message?.content).trim();
+  if (messageContent) return messageContent;
   if (typeof choice?.text === 'string') return choice.text.trim();
   return '';
 }
@@ -54,6 +66,7 @@ function inputFor(messages, options, stream) {
   return {
     messages,
     stream,
+    modalities: ['text'],
     max_completion_tokens: options.maxTokens ?? 260,
     temperature: options.temperature ?? 0.12,
     reasoning_effort: options.reasoningEffort ?? 'low',
@@ -61,7 +74,11 @@ function inputFor(messages, options, stream) {
 }
 
 async function open(ai, messages, options, stream) {
-  const timeoutMs = stream ? (options.openTimeoutMs ?? 1800) : (options.fallbackTimeoutMs ?? 2600);
+  // Streaming opens must be quick. A synchronous recovery gets a longer but still
+  // bounded window so GLM cannot leave a telephone turn hanging for tens of seconds.
+  const timeoutMs = stream
+    ? (options.openTimeoutMs ?? 1800)
+    : Math.max(6000, options.fallbackTimeoutMs ?? 6000);
   const signal = boundedSignal(options.signal, timeoutMs);
   const runOptions = {};
   if (signal) runOptions.signal = signal;
@@ -72,12 +89,31 @@ async function open(ai, messages, options, stream) {
       inputFor(messages, options, stream),
       Object.keys(runOptions).length ? runOptions : undefined,
     ),
-    timeoutMs + 120,
+    timeoutMs + 150,
     `Workers AI ${stream ? 'GLM stream open' : 'GLM fallback'}`,
   );
 }
 
-async function* iterateStream(result, firstTokenTimeoutMs) {
+async function* iterateStream(result, options = {}) {
+  const firstVisibleTimeoutMs = Math.max(700, Number(options.firstTokenTimeoutMs) || 2100);
+  const idleTimeoutMs = Math.max(900, Number(options.streamIdleTimeoutMs) || 2600);
+  const totalTimeoutMs = Math.max(3500, Number(options.streamTotalTimeoutMs) || 12000);
+  const startedAt = Date.now();
+  const firstVisibleDeadline = startedAt + firstVisibleTimeoutMs;
+  const totalDeadline = startedAt + totalTimeoutMs;
+
+  const readWithDeadline = (reader, sawText) => {
+    const now = Date.now();
+    const totalRemaining = totalDeadline - now;
+    if (totalRemaining <= 0) throw new Error('Workers AI GLM stream total timeout');
+    const visibleRemaining = firstVisibleDeadline - now;
+    if (!sawText && visibleRemaining <= 0) throw new Error('Workers AI GLM visible first-token timeout');
+    const waitMs = sawText
+      ? Math.min(idleTimeoutMs, totalRemaining)
+      : Math.min(visibleRemaining, totalRemaining);
+    return withTimeout(reader.read(), waitMs, sawText ? 'Workers AI GLM stream idle' : 'Workers AI GLM visible first token');
+  };
+
   const byteStream = result && (result instanceof ReadableStream || typeof result.getReader === 'function');
   if (byteStream) {
     const reader = result.getReader();
@@ -86,9 +122,7 @@ async function* iterateStream(result, firstTokenTimeoutMs) {
     let sawText = false;
     try {
       while (true) {
-        const next = sawText
-          ? await reader.read()
-          : await withTimeout(reader.read(), firstTokenTimeoutMs, 'Workers AI GLM first token');
+        const next = await readWithDeadline(reader, sawText);
         if (next.done) break;
         pending += decoder.decode(next.value, { stream: true });
         const lines = pending.split(/\r?\n/);
@@ -113,10 +147,15 @@ async function* iterateStream(result, firstTokenTimeoutMs) {
         const body = tail.startsWith('data:') ? tail.slice(5).trim() : tail;
         try {
           const delta = readDelta(JSON.parse(body));
-          if (delta) yield delta;
+          if (delta) {
+            sawText = true;
+            yield delta;
+          }
         } catch {}
       }
     } finally {
+      // cancel() matters when GLM is still emitting reasoning-only SSE chunks.
+      try { await reader.cancel(); } catch {}
       try { reader.releaseLock(); } catch {}
     }
     return;
@@ -124,15 +163,23 @@ async function* iterateStream(result, firstTokenTimeoutMs) {
 
   if (result && typeof result[Symbol.asyncIterator] === 'function') {
     const iterator = result[Symbol.asyncIterator]();
-    let first = true;
+    let sawText = false;
     while (true) {
-      const next = first
-        ? await withTimeout(iterator.next(), firstTokenTimeoutMs, 'Workers AI GLM first token')
-        : await iterator.next();
-      first = false;
+      const now = Date.now();
+      const totalRemaining = totalDeadline - now;
+      const visibleRemaining = firstVisibleDeadline - now;
+      if (totalRemaining <= 0) throw new Error('Workers AI GLM async stream total timeout');
+      if (!sawText && visibleRemaining <= 0) throw new Error('Workers AI GLM async visible first-token timeout');
+      const waitMs = sawText
+        ? Math.min(idleTimeoutMs, totalRemaining)
+        : Math.min(visibleRemaining, totalRemaining);
+      const next = await withTimeout(iterator.next(), waitMs, 'Workers AI GLM async stream');
       if (next.done) break;
       const delta = readDelta(next.value);
-      if (delta) yield delta;
+      if (delta) {
+        sawText = true;
+        yield delta;
+      }
     }
     return;
   }
@@ -143,18 +190,18 @@ async function* iterateStream(result, firstTokenTimeoutMs) {
 
 export async function* streamGlmConversationV25(ai, messages, options = {}) {
   let yielded = false;
-  let partial = '';
   try {
     const stream = await open(ai, messages, options, true);
-    for await (const delta of iterateStream(stream, options.firstTokenTimeoutMs ?? 2100)) {
+    for await (const delta of iterateStream(stream, options)) {
       const value = String(delta || '');
       if (!value) continue;
       yielded = true;
-      partial += value;
       yield value;
     }
     if (yielded) return;
-  } catch (error) {
+  } catch {
+    // If no visible answer arrived promptly, immediately switch to a bounded complete
+    // response. Do not let reasoning-only SSE traffic keep a phone call waiting.
     if (yielded) return;
   }
 
@@ -164,5 +211,5 @@ export async function* streamGlmConversationV25(ai, messages, options = {}) {
     yield text;
     return;
   }
-  throw new Error('GLM-5.3 Flash returned no text');
+  throw new Error('GLM-5.3 Flash returned no visible text');
 }
