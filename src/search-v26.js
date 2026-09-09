@@ -1,0 +1,120 @@
+import { collectGroundedEvidenceV23, SEARCH_TOOL_V23_REVISION } from './search-v23.js';
+
+export const SEARCH_TOOL_V26_REVISION = 'evidence-web-v26-direct-transit-fallback';
+
+const TRANSIT_RE = /(乗り換え|乗換|経路|行き方|電車|鉄道|所要時間|運賃|時刻表|直通)/i;
+
+function clean(value, max = 4000) {
+  return String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+function decodeEntities(value) {
+  return String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)));
+}
+
+function stripHtml(value) {
+  return decodeEntities(String(value || ''))
+    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<svg\b[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stationPair(text) {
+  const value = clean(text, 900);
+  const pair = value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,28}?)(?:駅)?\s*(?:から|より|→|⇒|〜|～|-)\s*([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,28}?)(?:駅)?\s*(?:まで|へ|に)(?=$|[のをがはで、。！？!?\s])/i);
+  if (!pair?.[1] || !pair?.[2]) return [];
+  return [pair[1].replace(/駅$/u, ''), pair[2].replace(/駅$/u, '')];
+}
+
+function timeoutSignal(parentSignal, timeoutMs = 3600) {
+  if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return parentSignal;
+  const timeout = AbortSignal.timeout(timeoutMs);
+  if (!parentSignal) return timeout;
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any([parentSignal, timeout]) : parentSignal;
+}
+
+function usefulRouteExcerpt(text, from, to) {
+  const normalized = clean(text, 50000);
+  const needles = [`${from}→${to}`, `${from}から${to}`, 'ルート1', '経路1'];
+  let index = -1;
+  for (const needle of needles) {
+    index = normalized.indexOf(needle);
+    if (index >= 0) break;
+  }
+  const start = index >= 0 ? Math.max(0, index - 180) : 0;
+  return normalized.slice(start, start + 3200);
+}
+
+async function fetchYahooTransitRoute(from, to, signal) {
+  const url = `https://transit.yahoo.co.jp/search/result/${encodeURIComponent(from)}-${encodeURIComponent(to)}`;
+  const response = await fetch(url, {
+    signal: timeoutSignal(signal, 3600),
+    redirect: 'follow',
+    headers: {
+      'accept': 'text/html,application/xhtml+xml',
+      'accept-language': 'ja-JP,ja;q=0.9',
+      'user-agent': 'Mozilla/5.0 (compatible; TalkSys/1.0; +https://talksys.syouziroupc.workers.dev)',
+    },
+  });
+  if (!response.ok) throw new Error(`Yahoo Transit ${response.status}`);
+  const html = await response.text();
+  const text = stripHtml(html);
+  const excerpt = usefulRouteExcerpt(text, from, to);
+  if (!excerpt.includes(from) || !excerpt.includes(to)) throw new Error('Transit page endpoints did not match');
+  if (!/(乗換|乗り換え|ルート|経路|運賃|円|分|発|着)/i.test(excerpt)) throw new Error('Transit page contained no usable route evidence');
+  return {
+    title: `${from}から${to}への乗換案内 - Yahoo!路線情報`,
+    url: response.url || url,
+    engine: 'yahoo-transit-direct',
+    excerpt,
+    snippet: excerpt,
+  };
+}
+
+export async function collectGroundedEvidenceV26(query, history = [], options = {}) {
+  const base = await collectGroundedEvidenceV23(query, history, options);
+  if (base.sources?.length) return { ...base, revision: SEARCH_TOOL_V26_REVISION };
+
+  const resolved = clean(base.resolvedQuestion || query, 900);
+  if (!TRANSIT_RE.test(resolved)) return { ...base, revision: SEARCH_TOOL_V26_REVISION };
+  const [from, to] = stationPair(resolved);
+  if (!from || !to) return { ...base, revision: SEARCH_TOOL_V26_REVISION };
+
+  try {
+    const direct = await fetchYahooTransitRoute(from, to, options.signal);
+    options.onProgress?.({
+      phase: 'evidence_ready',
+      revision: SEARCH_TOOL_V26_REVISION,
+      resolvedQuestion: resolved,
+      queries: base.queries || [],
+      evidenceCount: 1,
+      sources: [{ title: direct.title, url: direct.url }],
+      message: '乗換案内の実ページで経路根拠を確認',
+    });
+    return {
+      ...base,
+      revision: SEARCH_TOOL_V26_REVISION,
+      sources: [direct],
+      evidence: `[1] ${direct.title}\n${direct.url}\n${direct.excerpt}`,
+    };
+  } catch (error) {
+    return {
+      ...base,
+      revision: SEARCH_TOOL_V26_REVISION,
+      directTransitError: String(error?.message || error).slice(0, 180),
+    };
+  }
+}
+
+export const __test = { stationPair, usefulRouteExcerpt, stripHtml };
