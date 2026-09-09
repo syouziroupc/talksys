@@ -12,20 +12,20 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: talksys-v37-grounded-continuity
+      EXPECTED_REVISION: talksys-v44-default-exhaustive-search
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+
       - run: npm install --no-audit --no-fund
 
-      - name: Validate v37 production path
+      - name: Validate current production path
         run: |
-          node --check src/worker-v37.js
-          node --check src/talk-client-v37.js
-          node --check src/search-v26.js
-          node --test tests/v37-grounded-continuity.test.mjs
+          node --check src/search-v44.js
+          node --check src/worker-v44.js
+          node --test tests/v44-deep-search-default.test.mjs
           npm test
           npx wrangler deploy --dry-run
 
@@ -41,61 +41,48 @@ jobs:
         if: ${{ env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' }}
         run: echo "Cloudflare production deployment is handled by the authorized external path."
 
-      - name: Verify production v37 contract after direct deployment
+      - name: Verify v44 production contract
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
           body=""
           for attempt in $(seq 1 20); do
             body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
-            current="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||''))")"
-            [ "$current" = "$EXPECTED_VOICE_REVISION" ] && break
+            current="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||d.revision||''))")"
+            [ "$current" = "$EXPECTED_REVISION" ] && break
             [ "$attempt" -eq 20 ] && { echo "$body"; exit 1; }
             sleep 3
           done
           BODY="$body" node <<'NODE'
           const d = JSON.parse(process.env.BODY || '{}');
-          if (d.voiceRevision !== 'talksys-v37-grounded-continuity') throw new Error('v37 revision missing');
-          if (d.ttsModel !== 'browser/speechSynthesis' || d.ttsLanguage !== 'ja-JP') throw new Error('Japanese system TTS mismatch');
-          if (d.genericSearchFallback !== true || d.searchAnnouncements !== true || d.searchTrace !== true) throw new Error('v37 search features missing');
-          if (d.falseBargeResume !== true || d.bargeIn !== true) throw new Error('v37 continuity features missing');
-          if (!d.serverTimeJst) throw new Error('JST context missing');
-          if (d.serverTtsEnabled !== false) throw new Error('server TTS unexpectedly enabled');
+          if (d.voiceRevision !== 'talksys-v44-default-exhaustive-search') throw new Error('v44 revision missing');
+          if (d.webSearch !== true) throw new Error('web search disabled');
+          if (d.searchDefault !== 'all-substantive-turns') throw new Error('default exhaustive search missing');
+          if (d.searchMaxQueries !== 14 || d.searchMaxRounds !== 3 || d.searchSourceLimit !== 18) throw new Error('v44 deep-search limits mismatch');
+          if (d.searchPageEnrichment !== true || d.searchCoverageAudit !== true || d.searchIndependentSources !== true) throw new Error('v44 deep-search quality controls missing');
+          if (d.specializedSearchRoutesPreserved !== true) throw new Error('specialized search routes not preserved');
           NODE
 
-      - name: Verify v37 client after direct deployment
+      - name: Verify default deep-search planning
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
-          script="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v37.js")"
-          grep -F 'AIアシスタントのフォーンズです' <<< "$script"
-          grep -F 'について検索しています。' <<< "$script"
-          grep -F 'resumeInterruptedSpeech' <<< "$script"
-          grep -F 'searchTrace' <<< "$script"
-          grep -F 'falseBargeResumes' <<< "$script"
-
-      - name: Reproduce current next-train search after direct deployment
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
-        run: |
-          payload='{"text":"次の電車、大分発何時?","history":[{"role":"user","content":"大分から別府まで行きたいんだけど、何で行こう。"},{"role":"assistant","content":"JR日豊本線がおすすめです。"}]}'
-          out="$(curl -fsS --max-time 50 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          payload='{"text":"Cloudflare Workersとは何？","history":[]}'
+          out="$(curl -fsS --max-time 30 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/plan")"
           echo "$out"
           OUT="$out" node <<'NODE'
-          const d=JSON.parse(process.env.OUT||'{}');
-          if(!d.ok||d.search!==true) throw new Error('next-train lookup did not search');
-          if(!/大分/.test(d.resolvedQuestion||'')||!/別府/.test(d.resolvedQuestion||'')) throw new Error('route context lost');
-          if(!/現在|日本時間|時刻/.test(d.resolvedQuestion||'')) throw new Error('current-time context missing');
-          if(!Array.isArray(d.sources)||d.sources.length<1) throw new Error('no search evidence');
-          if(!/transit\.yahoo\.co\.jp/.test(String(d.sources[0]?.url||''))) throw new Error('current transit source not primary');
+          const d = JSON.parse(process.env.OUT || '{}');
+          if (!d.ok || d.search !== true) throw new Error('substantive turn was not routed to search');
+          if (d.planner !== 'deep-search-v44') throw new Error(`unexpected planner: ${d.planner}`);
+          if (d.searchMode !== 'exhaustive-default') throw new Error('exhaustive search mode missing');
           NODE
 
-      - name: Reproduce generic PC purchase search after direct deployment
+      - name: Verify specialized weather route remains available
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
-          payload='{"text":"どこで買えばいいの?","history":[{"role":"user","content":"youtubeや動画視聴かなぁ。"},{"role":"assistant","content":"エントリーモデルで十分です。"},{"role":"user","content":"安いノートパソコンでいい。"}]}'
-          out="$(curl -fsS --max-time 50 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          payload='{"text":"明日の別府市の天気は？","history":[]}'
+          out="$(curl -fsS --max-time 30 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/plan")"
           echo "$out"
           OUT="$out" node <<'NODE'
-          const d=JSON.parse(process.env.OUT||'{}');
-          if(!d.ok||d.search!==true) throw new Error('purchase lookup did not search');
-          if(!Array.isArray(d.sources)||d.sources.length<1) throw new Error('purchase search returned no evidence');
-          if(/具体的にはお伝えできません|情報を確認できませんでした/.test(d.answer||'')) throw new Error('generic no-result answer regressed');
+          const d = JSON.parse(process.env.OUT || '{}');
+          if (!d.ok || d.search !== true) throw new Error('weather route did not search');
+          if (!String(d.planner || '').includes('weather')) throw new Error(`weather specialized planner lost: ${d.planner}`);
           NODE
