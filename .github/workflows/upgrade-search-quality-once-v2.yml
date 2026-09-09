@@ -1,0 +1,42 @@
+name: Upgrade TalkSys search quality once v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/upgrade-search-quality-once-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Apply question-first evidence loop
+        run: python scripts/apply-search-quality-v44.py
+      - name: Validate upgraded search architecture
+        run: |
+          node --check src/research-plan-v44.js
+          node --check src/search-v44.js
+          node --check src/worker-v44.js
+          node --test tests/v44-query-quality.test.mjs
+          node --test tests/v44-deep-search-default.test.mjs
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Commit upgraded search architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name syouziroupc
+          git config user.email syouziroupc@gmail.com
+          git add src/search-v44.js src/worker-v44.js
+          git commit -m 'Replace flat search fanout with evidence-gap planning'
+          git push origin HEAD:main
