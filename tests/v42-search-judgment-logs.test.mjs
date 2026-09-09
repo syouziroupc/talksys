@@ -8,6 +8,7 @@ import { __test as logs } from '../src/log-v42.js';
 
 const wrangler=fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8');
 const workerSource=fs.readFileSync(new URL('../src/worker-v42.js',import.meta.url),'utf8');
+const logSource=fs.readFileSync(new URL('../src/log-v42.js',import.meta.url),'utf8');
 
 test('v42 generated browser client is valid and carries one session id through plan turn and STT',()=>{
   assert.doesNotThrow(()=>new Function(TALK_CLIENT_V42));
@@ -69,15 +70,17 @@ test('v42 persistent log records conversation and diagnostics but never raw audi
   const request=new Request('https://talksys.example/api/turn',{method:'POST',headers:{'x-talksys-session':'session-123'}});
   const rec=logs.buildLogRecord({request,body:{sessionId:'session-123',text:'2万円以下で探して',history:[{role:'user',content:'中古スマホが欲しい'}],searchPlan:{search:true,planner:'phone-shopping-local-v42'}},result:{ok:true,answer:'候補です',route:'resilient-search-v42',search:true,queries:['q'],sources:[{title:'店',url:'https://example.com'}]},event:'turn',status:200,revision:'v42',extra:{audioBytes:12345}});
   assert.match(rec.key,/session-123/);assert.equal(rec.value.userText,'2万円以下で探して');assert.equal(rec.value.audioBytes,12345);assert.equal('rawAudio' in rec.value,false);assert.equal(rec.value.result.route,'resilient-search-v42');
+  assert.match(logSource,/TALKSYS_LOG_DB\.prepare/);assert.match(logSource,/INSERT INTO conversation_logs/);assert.doesNotMatch(logSource,/TALKSYS_LOGS\.put/);
 });
 
-test('v42 production config binds private R2 logs and full Workers observability without removing migration history',()=>{
+test('v42 production config binds private D1 logs and full Workers observability without removing migration history',()=>{
   assert.match(wrangler,/"main"\s*:\s*"src\/worker-v42\.js"/);
-  assert.match(wrangler,/"binding"\s*:\s*"TALKSYS_LOGS"/);assert.match(wrangler,/"bucket_name"\s*:\s*"talksys-conversation-logs"/);
+  assert.match(wrangler,/"binding"\s*:\s*"TALKSYS_LOG_DB"/);assert.match(wrangler,/"database_name"\s*:\s*"talksys-conversation-logs"/);
+  assert.match(wrangler,/"database_id"\s*:\s*"4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a"/);
   assert.match(wrangler,/"observability"[\s\S]*"enabled"\s*:\s*true/);assert.match(wrangler,/"head_sampling_rate"\s*:\s*1/);
   assert.match(wrangler,/v1-voice/);assert.match(wrangler,/v33-delete-legacy-voice/);
 });
 
 test('v42 health source advertises local general advice, escalating search and private persistent logs',()=>{
-  assert.match(workerSource,/general-advice-local-current-lookup-search/);assert.match(workerSource,/escalating-up-to-five-pass/);assert.match(workerSource,/persistentConversationLogs:'r2-private'/);assert.match(workerSource,/rawAudioLogged:false/);
+  assert.match(workerSource,/general-advice-local-current-lookup-search/);assert.match(workerSource,/escalating-up-to-five-pass/);assert.match(workerSource,/persistentConversationLogs:'d1-private'/);assert.match(workerSource,/logBinding:'TALKSYS_LOG_DB'/);assert.match(workerSource,/rawAudioLogged:false/);
 });
