@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { __test as worker } from '../src/worker-v44.js';
+import { engineForIndex, fallbackEngine, SEARCH_PROBE_ENGINES } from '../src/search-probes-v44.js';
 import {
   SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
+  SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
+  SEARCH_V44_MAX_ENGINE_RETRIES,
+  SEARCH_V44_MAX_PER_HOST,
   SEARCH_V44_MAX_QUERIES,
   SEARCH_V44_MAX_RECOVERY_QUERIES,
   SEARCH_V44_MAX_ROUNDS,
   SEARCH_V44_MAX_TOTAL_QUERIES,
-  SEARCH_V44_RSS_CONCURRENCY,
+  SEARCH_V44_PROBE_CONCURRENCY,
   SEARCH_V44_SOURCE_LIMIT,
   __test as search,
 } from '../src/search-v44.js';
@@ -45,7 +49,30 @@ test('v44 exhaustive search keeps broad planning plus recovery', () => {
 
 test('v44 leaves external-subrequest and connection headroom', () => {
   assert.ok(SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET < 50);
-  assert.ok(SEARCH_V44_RSS_CONCURRENCY <= 4);
+  assert.ok(SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET < 50);
+  assert.ok(SEARCH_V44_PROBE_CONCURRENCY <= 4);
+  assert.ok(SEARCH_V44_MAX_ENGINE_RETRIES <= 5);
+});
+
+test('v44 rotates independent search engines and retries on another engine', () => {
+  const firstFive = Array.from({ length: 5 }, (_, i) => engineForIndex(i));
+  assert.deepEqual(firstFive, SEARCH_PROBE_ENGINES);
+  for (const engine of SEARCH_PROBE_ENGINES) assert.notEqual(fallbackEngine(engine), engine);
+});
+
+test('v44 source selection limits host concentration when alternatives exist', () => {
+  const input = [
+    { url: 'https://a.example/1', title: 'a1' },
+    { url: 'https://a.example/2', title: 'a2' },
+    { url: 'https://a.example/3', title: 'a3' },
+    { url: 'https://b.example/1', title: 'b1' },
+    { url: 'https://c.example/1', title: 'c1' },
+  ];
+  const out = search.diversifyHosts(input, 4, SEARCH_V44_MAX_PER_HOST);
+  assert.equal(out.length, 4);
+  assert.equal(out.filter((x) => new URL(x.url).hostname === 'a.example').length, 2);
+  assert.ok(out.some((x) => new URL(x.url).hostname === 'b.example'));
+  assert.ok(out.some((x) => new URL(x.url).hostname === 'c.example'));
 });
 
 test('v44 contextual fallback retains prior user constraints', () => {
