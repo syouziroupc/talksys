@@ -15,6 +15,11 @@ function locationFrom(text){
   const matches=[...value.matchAll(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,18}(?:都|道|府|県|市|区|町|村))(?:内)?/g)];
   return clean(matches.at(-1)?.[1]||'',40);
 }
+function stationPairFrom(text){
+  const value=clean(text,900);
+  const pair=value.match(/([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)\s*(?:から|より)\s*([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,24}?駅)\s*(?:まで|へ|に)/i);
+  return pair?.[1]&&pair?.[2]?[pair[1],pair[2]]:[];
+}
 function lastUserSubject(history){
   for(const item of [...history].reverse()){
     if(item.role!=='user')continue;
@@ -39,7 +44,11 @@ function buildContextualSearch(text,history){
 
   if(subjectlessSearch(current)){
     const subject=lastUserSubject(history);
-    if(subject)return {text:`${subject} 最新の正確な情報を検索して`,reason:'context-carry-search'};
+    if(subject){
+      const [from,to]=stationPairFrom(subject);
+      if(from&&to)return {text:`${from}から${to}までの電車の経路 直通 所要時間 運賃 時刻表 最新情報を検索して`,reason:'context-carry-transit-search'};
+      return {text:`${subject} 最新の正確な情報を検索して`,reason:'context-carry-search'};
+    }
   }
 
   if(STORE_REQUEST_RE.test(current)&&PC_RE.test(all)){
@@ -79,4 +88,4 @@ export default {
   }
 };
 
-export const __test={locationFrom,lastUserSubject,subjectlessSearch,buildContextualSearch};
+export const __test={locationFrom,stationPairFrom,lastUserSubject,subjectlessSearch,buildContextualSearch};
