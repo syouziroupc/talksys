@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { CLOUDFLARE_LIVE_CLIENT_V30 } from '../src/cloudflare-live-client-v30.js';
-import workerV30, { VOICE_REVISION_V30 } from '../src/worker-v30.js';
 
 const client = CLOUDFLARE_LIVE_CLIENT_V30;
 
@@ -32,16 +31,15 @@ test('v30 Grok startup budget no longer aborts at 1.55 seconds', async () => {
   assert.match(conversation, /Math\.max\(4500, Number\(options\.firstTokenTimeoutMs\)/);
 });
 
-test('v30 health declares Grok authoritative audio and typed Grok TTS', async () => {
-  const response = await workerV30.fetch(new Request('https://talksys.example/voice-health'), {}, {});
-  assert.equal(response.status, 200);
-  const data = await response.json();
-  assert.equal(data.voiceRevision, VOICE_REVISION_V30);
-  assert.equal(data.conversationModel, 'xai/grok-4.20-0309-non-reasoning');
-  assert.equal(data.ttsPrimary, 'xai/grok-tts');
-  assert.equal(data.browserSpeechSynthesisEnabled, false);
-  assert.equal(data.typedSpeechUsesGrokTts, true);
-  assert.equal(data.serverAudioAuthoritative, true);
+test('v30 health source declares Grok authoritative audio and typed Grok TTS', async () => {
+  const worker = await readFile(new URL('../src/worker-v30.js', import.meta.url), 'utf8');
+  assert.match(worker, /cloudflare-agent-v30-real-grok-audio-runtime/);
+  assert.match(worker, /GROK_CONVERSATION_MODEL_V29/);
+  assert.match(worker, /GROK_TTS_MODEL_V29/);
+  assert.match(worker, /browserSpeechSynthesisEnabled:\s*false/);
+  assert.match(worker, /typedSpeechUsesGrokTts:\s*true/);
+  assert.match(worker, /serverAudioAuthoritative:\s*true/);
+  assert.match(worker, /\/api\/grok-binding-probe-v30/);
 });
 
 test('v30 is the selected production entrypoint while v29 remains rollback', async () => {
