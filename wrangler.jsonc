@@ -9,5 +9,15 @@
   "compatibility_flags": ["nodejs_compat"],
   "ai": {
     "binding": "AI"
-  }
+  },
+  "migrations": [
+    {
+      "tag": "v1-voice",
+      "new_sqlite_classes": ["TalkSysVoiceAgent"]
+    },
+    {
+      "tag": "v33-delete-legacy-voice",
+      "deleted_classes": ["TalkSysVoiceAgent"]
+    }
+  ]
 }
