@@ -1,8 +1,8 @@
 import { collectResilientEvidenceV41, __test as v41 } from './search-v41.js';
 import { searchBingRss, dedupeSearchResults } from './search-fallbacks.js';
 
-export const SEARCH_V42_REVISION='evidence-v42-escalating-quality';
-const PHONE_RE=/(スマホ|スマートフォン|携帯|Android|iPhone|Xperia|Pixel|Galaxy|AQUOS|arrows|OPPO|Xiaomi|Redmi|motorola)/i;
+export const SEARCH_V42_REVISION='evidence-v42-escalating-quality-user-only';
+const PHONE_RE=/(スマホ|スマートフォン|携帯|Android|アンドロイド|iPhone|Xperia|エクスペリア|Pixel|Galaxy|AQUOS|arrows|OPPO|Xiaomi|Redmi|motorola)/i;
 const PRICE_RE=/(?:\d{1,3}(?:,\d{3})+|\d{3,6})\s*円|\d+(?:\.\d+)?\s*万円/i;
 const OS_RE=/Android\s*\d{1,2}|OS\s*(?:アップデート|更新|バージョンアップ)|ソフトウェア\s*(?:アップデート|更新)|セキュリティ\s*(?:アップデート|更新)|バージョンアップ/i;
 const SELLER_HOST_RE=/(?:^|\.)(?:iosys\.co\.jp|janpara\.co\.jp|geo-online\.co\.jp|sofmap\.com|bookoffonline\.co\.jp)$/i;
@@ -16,6 +16,21 @@ function textOf(item,max=7000){return clean(`${item?.title||''} ${item?.excerpt|
 function normalizeModel(v){return clean(v,100).toLowerCase().replace(/[\s　_-]+/g,'');}
 function containsModel(text,model){return normalizeModel(text).includes(normalizeModel(model));}
 function phoneContext(text){return PHONE_RE.test(clean(text,5000));}
+function userOnlyHistory(history){return Array.isArray(history)?history.filter(x=>x?.role==='user').slice(-12):[];}
+function userConstraintText(history,resolved=''){return clean(`${userOnlyHistory(history).map(x=>x?.content||'').join(' ')} ${resolved}`,6500);}
+function explicitConstraintFlags(text){return {numericAndroid:/Android\s*\d{1,2}/i.test(text),simFree:/(SIM\s*フリー|シムフリー)/i.test(text),warranty:/(保証|返品|交換)/i.test(text)};}
+function sanitizeQuery(query,constraints){
+  let q=clean(query,900);
+  if(!constraints.numericAndroid)q=q.replace(/Android\s*\d{1,2}(?:\s*(?:以降|以上|以下|まで))?/gi,'Android アップデート');
+  if(!constraints.simFree)q=q.replace(/SIM\s*フリー|シムフリー/gi,'');
+  if(!constraints.warranty)q=q.replace(/保証(?:付き)?|返品|交換/gi,'');
+  return clean(q,900);
+}
+function sanitizeQueries(queries,userText){
+  const flags=explicitConstraintFlags(userText),out=[];
+  for(const raw of queries||[]){const q=sanitizeQuery(raw,flags);if(q&&!out.some(x=>x.toLowerCase()===q.toLowerCase()))out.push(q);}
+  return out;
+}
 function isTrustedPhoneSource(item){
   const host=hostOf(item?.url), text=textOf(item,6000);
   if(!text||JUNK_RE.test(`${item?.title||''} ${host}`))return false;
@@ -34,6 +49,9 @@ function extractPricedModels(sources){
 }
 function osEvidenceForModel(sources,model){return (sources||[]).find(x=>isTrustedPhoneSource(x)&&OFFICIAL_HOST_RE.test(hostOf(x?.url))&&containsModel(textOf(x,9000),model)&&OS_RE.test(textOf(x,9000)))||null;}
 function priceEvidenceForModel(sources,model){return (sources||[]).find(x=>SELLER_HOST_RE.test(hostOf(x?.url))&&containsModel(textOf(x,9000),model)&&PRICE_RE.test(textOf(x,9000)))||null;}
+function pricedCandidates(sources){
+  return extractPricedModels(sources).flatMap(model=>{const price=priceEvidenceForModel(sources,model);return price?[{model,priceSource:{title:clean(price.title,220),url:clean(price.url,700),text:textOf(price,1800)}}]:[];}).slice(0,8);
+}
 function verifiedCandidates(sources){
   return extractPricedModels(sources).flatMap(model=>{
     const price=priceEvidenceForModel(sources,model),os=osEvidenceForModel(sources,model);
@@ -41,7 +59,7 @@ function verifiedCandidates(sources){
   }).slice(0,5);
 }
 function officialQueries(model){
-  if(/^AQUOS/i.test(model))return [`site:k-tai.sharp.co.jp "${model}" OS アップデート`,`site:au.com "${model}" Android バージョンアップ`,`site:docomo.ne.jp "${model}" Android`];
+  if(/^AQUOS/i.test(model))return [`site:k-tai.sharp.co.jp/support "${model}" アップデート`,`site:k-tai.sharp.co.jp "${model}" Android`,`site:au.com "${model}" Android バージョンアップ`,`site:docomo.ne.jp "${model}" Android`];
   if(/^Xperia/i.test(model))return [`site:sony.jp "${model}" Android アップデート`,`site:au.com "${model}" OS アップデート`,`site:docomo.ne.jp "${model}" Android`];
   if(/^Pixel/i.test(model))return [`site:support.google.com/pixelphone "${model}" Android`,`site:store.google.com "${model}" アップデート`];
   if(/^Galaxy/i.test(model))return [`site:samsung.com/jp "${model}" Android アップデート`,`site:au.com "${model}" OS アップデート`,`site:docomo.ne.jp "${model}" Android`];
@@ -51,7 +69,7 @@ function officialQueries(model){
   return [`"${model}" Android OS アップデート 公式`,`"${model}" Android バージョン`];
 }
 async function runQueries(queries){
-  const settled=await Promise.allSettled(queries.slice(0,12).map(q=>searchBingRss(q,{timeoutMs:6200,limit:10})));
+  const settled=await Promise.allSettled(queries.slice(0,14).map(q=>searchBingRss(q,{timeoutMs:6200,limit:10})));
   return settled.flatMap(x=>x.status==='fulfilled'&&Array.isArray(x.value)?x.value:[]);
 }
 function filterTargeted(results,models){
@@ -61,7 +79,7 @@ function filterTargeted(results,models){
   });
 }
 async function targetedVerification(sources,models){
-  const queries=[...new Set(models.flatMap(officialQueries))].slice(0,12);if(!queries.length)return {queries:[],sources:[]};
+  const queries=[...new Set(models.flatMap(officialQueries))].slice(0,14);if(!queries.length)return {queries:[],sources:[]};
   const results=filterTargeted(await runQueries(queries),models);return {queries,sources:results};
 }
 async function alternateDiscovery(){
@@ -74,11 +92,11 @@ async function alternateDiscovery(){
 function compactEvidence(sources){return (sources||[]).slice(0,14).map((x,i)=>`[${i+1}] ${clean(x?.title,220)}\n${clean(x?.url,700)}\n${clean(x?.excerpt||x?.snippet||'',1800)}`).join('\n\n');}
 
 export async function collectResilientEvidenceV42(resolved,history=[],instruction='',options={}){
-  const combined=clean(`${(history||[]).slice(-12).map(x=>x?.content||'').join(' ')} ${resolved} ${instruction}`,6000);
-  const base=await collectResilientEvidenceV41(resolved,history,instruction,options);
+  const uHistory=userOnlyHistory(history),uText=userConstraintText(history,resolved),combined=clean(`${uText} ${instruction}`,6000);
+  const base=await collectResilientEvidenceV41(resolved,uHistory,instruction,options);
   if(!phoneContext(combined))return {...base,revision:SEARCH_V42_REVISION,maxSearchPasses:3};
 
-  let sources=dedupeSearchResults((base.sources||[]).filter(isTrustedPhoneSource),20),queries=[...(base.queries||[])],pass=Number(base.searchPasses)||1;
+  let sources=dedupeSearchResults((base.sources||[]).filter(isTrustedPhoneSource),20),queries=sanitizeQueries(base.queries||[],uText),pass=Number(base.searchPasses)||1;
   let models=extractPricedModels(sources).slice(0,5),verified=verifiedCandidates(sources);
 
   if(!verified.length&&models.length){
@@ -90,8 +108,9 @@ export async function collectResilientEvidenceV42(resolved,history=[],instructio
     options.onProgress?.({phase:'alternate_candidate_search',revision:SEARCH_V42_REVISION,pass:5,evidenceCount:sources.length,message:'別候補へ広げて価格とOS情報を再確認'});
   }
 
-  const hasPrice=sources.some(x=>SELLER_HOST_RE.test(hostOf(x?.url))&&PRICE_RE.test(textOf(x,7000)));
-  return {...base,revision:SEARCH_V42_REVISION,queries:queries.slice(0,30),sources,evidence:compactEvidence(sources),searchPasses:pass,maxSearchPasses:5,searchUseful:sources.length>0,concreteShoppingEvidence:verified.length>0,androidRequirementEvidence:verified.length>0,verifiedCandidates:verified,priceEvidenceAvailable:hasPrice,sourceQuality:'trusted-phone-seller-or-official-v42'};
+  queries=sanitizeQueries(queries,uText);
+  const priced=pricedCandidates(sources),hasPrice=priced.length>0;
+  return {...base,revision:SEARCH_V42_REVISION,queries:queries.slice(0,30),sources,evidence:compactEvidence(sources),searchPasses:pass,maxSearchPasses:5,searchUseful:sources.length>0,concreteShoppingEvidence:verified.length>0,androidRequirementEvidence:verified.length>0,verifiedCandidates:verified,pricedCandidates:priced,priceEvidenceAvailable:hasPrice,sourceQuality:'trusted-phone-seller-or-official-v42',historyPolicy:'user-only'};
 }
 
-export const __test={hostOf,isTrustedPhoneSource,extractPricedModels,osEvidenceForModel,priceEvidenceForModel,verifiedCandidates,officialQueries,filterTargeted,normalizeModel,containsModel};
+export const __test={hostOf,isTrustedPhoneSource,extractPricedModels,osEvidenceForModel,priceEvidenceForModel,pricedCandidates,verifiedCandidates,officialQueries,filterTargeted,normalizeModel,containsModel,userOnlyHistory,userConstraintText,explicitConstraintFlags,sanitizeQuery,sanitizeQueries};
