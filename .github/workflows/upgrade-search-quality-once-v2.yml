@@ -45,4 +45,4 @@ jobs:
           git commit -m 'Sequence candidate discovery before evidence verification'
           git push origin HEAD:main
 
-# retry: generic PC is not a concrete model identifier
+# retry: discovery facets now exclude spec/price verification wording
