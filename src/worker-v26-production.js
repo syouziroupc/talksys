@@ -1,6 +1,6 @@
 import workerV26, { TalkSysVoiceAgent } from './worker-v26.js';
 import { CLOUDFLARE_LIVE_CLIENT_V26 } from './cloudflare-live-client-v26.js';
-import { collectGroundedEvidenceV23, SEARCH_TOOL_V23_REVISION } from './search-v23.js';
+import { collectGroundedEvidenceV26, SEARCH_TOOL_V26_REVISION } from './search-v26.js';
 import { GLM_CONVERSATION_MODEL_V25 } from './glm-conversation-v25.js';
 import { GROK_TTS_MODEL_V26 } from './grok-japanese-tts-v26.js';
 
@@ -21,14 +21,15 @@ function serveScript(source) {
 async function searchSmoke(query, history = []) {
   const started = Date.now();
   try {
-    const result = await collectGroundedEvidenceV23(query, history);
+    const result = await collectGroundedEvidenceV26(query, history);
     return Response.json({
       ok: Boolean(result.sources?.length),
-      revision: SEARCH_TOOL_V23_REVISION,
+      revision: SEARCH_TOOL_V26_REVISION,
       resolvedQuestion: result.resolvedQuestion,
       queries: result.queries,
       evidenceCount: result.sources?.length || 0,
       elapsedMs: result.elapsedMs,
+      directTransitError: result.directTransitError || '',
       sources: (result.sources || []).slice(0, 8).map((item) => ({
         title: item.title,
         url: item.url,
@@ -39,7 +40,7 @@ async function searchSmoke(query, history = []) {
   } catch (error) {
     return Response.json({
       ok: false,
-      revision: SEARCH_TOOL_V23_REVISION,
+      revision: SEARCH_TOOL_V26_REVISION,
       error: String(error?.message || error).slice(0, 240),
       elapsedMs: Date.now() - started,
     }, { status: 500, headers: { 'cache-control': 'no-store' } });
@@ -84,6 +85,8 @@ export default {
         glmVisibleFirstTokenDeadline: true,
         glmReasoningOnlyStreamEscape: true,
         inFlightUserContext: true,
+        searchTool: SEARCH_TOOL_V26_REVISION,
+        directTransitEvidenceFallback: true,
         ttsPrimary: GROK_TTS_MODEL_V26,
         ttsFallback: '@cf/myshell-ai/melotts',
         mobileAudioPipelineV26: true,
