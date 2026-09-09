@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: talksys-v34-grok-ja-natural
+      EXPECTED_VOICE_REVISION: talksys-v36-search-voice-barge
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -20,13 +20,12 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
 
-      - name: Validate v34 production path
+      - name: Validate v36 production path
         run: |
-          node --check src/worker-v34.js
-          node --check src/talk-client-v34.js
+          node --check src/worker-v36.js
+          node --check src/talk-client-v36.js
           node --check src/search-v26.js
-          node --check src/grounding-policy-v22.js
-          node --test tests/v34-natural-ja.test.mjs
+          node --test tests/v36-search-voice-barge.test.mjs
           npm test
           npx wrangler deploy --dry-run
 
@@ -38,20 +37,25 @@ jobs:
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
 
-      - name: Use connected Cloudflare Git production path when Actions credentials are absent
+      - name: Use authorized external production path when Actions credentials are absent
         if: ${{ env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' }}
         run: echo "Cloudflare production deployment is handled by the authorized external path."
 
-      - name: Verify production v34 contract after direct deployment
+      - name: Verify production v36 contract after direct deployment
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
-          body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health")"
+          body=""
+          for attempt in $(seq 1 20); do
+            body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
+            current="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||''))")"
+            [ "$current" = "$EXPECTED_VOICE_REVISION" ] && break
+            [ "$attempt" -eq 20 ] && { echo "$body"; exit 1; }
+            sleep 3
+          done
           BODY="$body" node <<'NODE'
           const d = JSON.parse(process.env.BODY || '{}');
-          if (d.voiceRevision !== 'talksys-v34-grok-ja-natural') throw new Error('v34 revision missing');
-          if (d.architecture !== 'http-turns-client-vad') throw new Error('v34 architecture missing');
-          if (d.conversationModel !== '@cf/zai-org/glm-5.3-flash') throw new Error('GLM mismatch');
-          if (d.sttModel !== '@cf/openai/whisper-large-v3-turbo') throw new Error('Whisper mismatch');
-          if (d.ttsModel !== 'xai/grok-tts' || d.ttsLanguage !== 'ja') throw new Error('Japanese Grok TTS mismatch');
-          if (d.legacyWebSocketVoice !== false || d.durableObjectVoice !== false) throw new Error('legacy voice path still active');
+          if (d.voiceRevision !== 'talksys-v36-search-voice-barge') throw new Error('v36 revision missing');
+          if (d.ttsModel !== 'browser/speechSynthesis' || d.ttsLanguage !== 'ja-JP') throw new Error('Japanese system TTS mismatch');
+          if (d.searchContextRewrite !== true || d.bargeIn !== true) throw new Error('v36 features missing');
+          if (d.serverTtsEnabled !== false) throw new Error('server TTS unexpectedly enabled');
           NODE
