@@ -24,9 +24,11 @@ export function buildRetryQueries(resolved,history=[],instruction='',pass=1){
     const price=budget||'2万円以下', os=android||'Android';
     const first=[`中古 ${os} スマホ ${price} 価格`,`中古 Xperia Pixel AQUOS Galaxy ${price}`,`site:iosys.co.jp 中古 Android スマホ ${price}`,`site:janpara.co.jp 中古 Android スマホ ${price}`,`site:ec.geo-online.co.jp 中古 スマホ ${price}`];
     const second=[`${price} 中古 スマホ ${os} SIMフリー`,`中古 スマホ ${price} 保証 在庫`,`site:iosys.co.jp/items/smartphone ${price} Android`,`site:ec.geo-online.co.jp/shop/c/c1001 ${price} スマホ`,`site:janpara.co.jp Android 中古 ${price}`];
-    return [...new Set((pass<=1?first:second).map(x=>clean(x)))].slice(0,6);
+    const third=[`中古 Android スマホ 10000円 20000円 価格`,`中古 SIMフリー スマホ ${price} 商品 価格`,`中古 Xperia Pixel AQUOS Galaxy ${os} 価格`,`site:sofmap.com 中古 Android スマホ ${price}`,`site:bookoffonline.co.jp 中古 スマホ Android ${price}`];
+    const selected=pass<=1?first:pass===2?second:third;
+    return [...new Set(selected.map(x=>clean(x)))].slice(0,6);
   }
-  const suffix=pass<=1?['公式','価格 在庫','販売 公式']:['別の情報源','詳細 公式','比較 価格'];
+  const suffix=pass<=1?['公式','価格 在庫','販売 公式']:pass===2?['別の情報源','詳細 公式','比較 価格']:['一次情報','別サイト','具体例 価格'];
   return [...new Set([core,...suffix.map(s=>`${core} ${s}`)].map(x=>clean(x)).filter(x=>x.length>=2))].slice(0,5);
 }
 
@@ -57,23 +59,15 @@ export async function collectResilientEvidenceV41(resolved,history=[],instructio
   const direct=await trustedPhoneDirect(goal);sources=dedupeSearchResults([...sources,...direct],12);
 
   if(phoneShopping){
-    // 商品検索では信頼できる販売元の直接取得に加え、必ず短い専用クエリを一巡させる。
-    const firstQueries=buildRetryQueries(resolved,history,instruction,1);
-    const firstSearch=await searchQueries(firstQueries,goal);
-    queries=[...new Set([...queries,...firstQueries])].slice(0,12);
-    sources=dedupeSearchResults([...sources,...firstSearch],12);
-    options.onProgress?.({phase:'targeted_search',revision:SEARCH_V41_REVISION,pass:1,resolvedQuestion:resolved,queries:firstQueries,evidenceCount:sources.length,message:'中古スマホの販売元を横断検索'});
-    if(!hasConcreteShoppingEvidence(sources,goal)){
-      const secondQueries=buildRetryQueries(resolved,history,instruction,2);
-      const secondSearch=await searchQueries(secondQueries,goal);
-      queries=[...new Set([...queries,...secondQueries])].slice(0,12);
-      sources=dedupeSearchResults([...sources,...secondSearch],12);passes=2;
-      options.onProgress?.({phase:'retry_search',revision:SEARCH_V41_REVISION,pass:2,resolvedQuestion:resolved,queries:secondQueries,evidenceCount:sources.length,message:'別の条件と販売元で追加検索'});
+    for(let pass=1;pass<=3&&!hasConcreteShoppingEvidence(sources,goal);pass++){
+      const qs=buildRetryQueries(resolved,history,instruction,pass),extra=await searchQueries(qs,goal);
+      queries=[...new Set([...queries,...qs])].slice(0,16);sources=dedupeSearchResults([...sources,...extra],12);passes=pass;
+      options.onProgress?.({phase:pass===1?'targeted_search':'retry_search',revision:SEARCH_V41_REVISION,pass,resolvedQuestion:resolved,queries:qs,evidenceCount:sources.length,message:pass===1?'中古スマホの販売元を横断検索':pass===2?'別の条件と販売元で追加検索':'条件を広げて三巡目の検索'});
     }
   }else{
-    for(let pass=1;pass<=2&&!hasConcreteShoppingEvidence(sources,goal);pass++){
-      const qs=buildRetryQueries(resolved,history,instruction,pass),extra=await searchQueries(qs,goal);queries=[...new Set([...queries,...qs])].slice(0,12);sources=dedupeSearchResults([...sources,...extra],12);passes++;
-      options.onProgress?.({phase:'retry_search',revision:SEARCH_V41_REVISION,pass:passes,resolvedQuestion:resolved,queries:qs,evidenceCount:sources.length,message:pass===1?'検索語を短く組み直して再検索':'販売元を変えて追加検索'});
+    for(let pass=1;pass<=3&&!hasConcreteShoppingEvidence(sources,goal);pass++){
+      const qs=buildRetryQueries(resolved,history,instruction,pass),extra=await searchQueries(qs,goal);queries=[...new Set([...queries,...qs])].slice(0,16);sources=dedupeSearchResults([...sources,...extra],12);passes=pass;
+      options.onProgress?.({phase:'retry_search',revision:SEARCH_V41_REVISION,pass,resolvedQuestion:resolved,queries:qs,evidenceCount:sources.length,message:pass===1?'検索語を短く組み直して再検索':pass===2?'販売元を変えて追加検索':'条件を広げて追加検索'});
     }
   }
   const useful=sources.length>0;
