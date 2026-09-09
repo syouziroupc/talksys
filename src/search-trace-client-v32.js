@@ -46,7 +46,7 @@ export const SEARCH_TRACE_CLIENT_V32 = String.raw`(() => {
     if (entries.at(-1)?.endsWith('  ' + value)) return;
     const time = new Date().toLocaleTimeString('ja-JP', { hour12: false });
     entries.push(time + '  ' + value);
-    while (entries.length > 18) entries.shift();
+    while (entries.length > 24) entries.shift();
     log.textContent = entries.join('\n');
   }
   function setStage(phase) {
@@ -83,6 +83,23 @@ export const SEARCH_TRACE_CLIENT_V32 = String.raw`(() => {
     addLog(safe(data.message, phaseLabels[data.phase] || data.phase) + elapsed(data));
   }
 
+  function renderMicState(data) {
+    panel.hidden = false;
+    const state = safe(data?.state, data?.diagnostics?.captureState || '不明');
+    const kind = safe(data?.diagnostics?.captureKind, '未確定');
+    if (state === 'verified') {
+      setStage('マイク入力確認済み');
+      addLog('マイクPCM生成確認: ' + kind + ' / 16kHz・640sample単位');
+    } else if (state === 'failed') {
+      setStage('マイク入力エラー');
+      addLog('マイク入力経路エラー: ' + safe(data?.message, '詳細なし'));
+    } else if (state === 'track-live') {
+      addLog('マイクデバイス取得済み');
+    } else if (state === 'processor') {
+      addLog('音声キャプチャ処理を起動: ' + kind);
+    }
+  }
+
   if (toggle) toggle.addEventListener('click', () => {
     const compact = panel.classList.toggle('compact');
     toggle.textContent = compact ? '処理詳細を開く' : '処理詳細を閉じる';
@@ -99,5 +116,18 @@ export const SEARCH_TRACE_CLIENT_V32 = String.raw`(() => {
     addLog('MeloTTS音声を受信' + (bytes > 0 ? ' (' + Math.round(bytes / 1024) + 'KB)' : ''));
   });
   window.addEventListener('talksys-melo-tts-error', (event) => addLog('MeloTTS音声生成エラー: ' + safe(event.detail?.message, '不明')));
+  window.addEventListener('talksys-mic-state', (event) => renderMicState(event.detail));
+  window.addEventListener('talksys-mic-tx', (event) => {
+    const d = event.detail || {};
+    addLog('マイクPCM送信: ' + Number(d.pcmFramesSent || 0) + 'フレーム / ' + Math.round(Number(d.pcmBytesSent || 0) / 1024) + 'KB');
+  });
+  window.addEventListener('talksys-mic-transport', (event) => {
+    const d = event.detail || {};
+    setStage('サーバー音声受信確認済み');
+    addLog('STT入口でPCM受信確認: ' + Number(d.frames || 0) + 'フレーム / RMS ' + Number(d.rms || 0).toFixed(4));
+  });
+  window.addEventListener('talksys-mic-capture-fallback', (event) => addLog('キャプチャ方式を自動切替: ' + safe(event.detail?.from) + ' → ' + safe(event.detail?.to)));
+  window.addEventListener('talksys-mic-recovery', (event) => addLog('マイク経路を再構築: ' + safe(event.detail?.reason, '不明')));
+  window.addEventListener('talksys-mic-error', (event) => addLog('マイク開始エラー: ' + safe(event.detail?.message, '不明')));
 })();
 `;
