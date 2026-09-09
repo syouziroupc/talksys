@@ -107,11 +107,18 @@ source = replaceOnce(
   source,
   `    clearTimeout(ttsFallbackTimer);
     ttsFallbackTimer = null;
-    if ((desiredCall || typedVoiceOutput) && !serverAudioThisTurn && value) {
+    if ((desiredCall || typedVoiceOutput) && !serverAudioThisTurn && !serverTtsExpectedThisTurn && value) {
       ttsFallbackTimer = setTimeout(() => {
         ttsFallbackTimer = null;
-        if (!serverAudioThisTurn && !playing && !deviceSpeaking) speakJapaneseFallback(value);
-      }, 500);
+        const now = Date.now();
+        const duplicate = value === lastFallbackAnswerText && now - lastFallbackAnswerAt < 8000;
+        if (!duplicate && !serverAudioThisTurn && !playing && !deviceSpeaking) {
+          if (speakJapaneseFallback(value, 'answer-fallback')) {
+            lastFallbackAnswerText = value;
+            lastFallbackAnswerAt = now;
+          }
+        }
+      }, 3500);
     }
 `,
   `    clearTimeout(ttsFallbackTimer);
