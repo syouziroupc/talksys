@@ -22,7 +22,7 @@ test('v30 disables audible browser speech fallback', () => {
 test('話したことにする routes completed text to server Grok TTS', () => {
   assert.match(client, /const GROK_TTS_ENDPOINT = '\/api\/grok-tts-v30'/);
   assert.match(client, /requestTypedGrokTts/);
-  assert.match(client, /x-talksys-tts-provider/);
+  assert.match(client, /fetch\(GROK_TTS_ENDPOINT/);
   assert.match(client, /typedTtsGeneration \+= 1/);
 });
 
