@@ -26,10 +26,12 @@ test('v44 keeps zero-value social and memory turns local', () => {
   assert.equal(worker.shouldSearchByDefault('検索できるの？'), false);
 });
 
-test('v44 preserves specialized routes', () => {
+test('v44 preserves only stronger specialized routes', () => {
   assert.equal(worker.shouldPreserveSpecializedTurn('明日の別府の天気は？', []), true);
   assert.equal(worker.shouldPreserveSpecializedTurn('大分から別府まで次の電車は？', []), true);
-  assert.equal(worker.shouldPreserveSpecializedTurn('どこで買えばいい？', [{ role: 'user', content: '安いノートPCがほしい' }]), true);
+  assert.equal(worker.shouldPreserveSpecializedTurn('どこで買えばいい？', [{ role: 'user', content: '安いスマホがほしい' }]), true);
+  assert.equal(worker.shouldPreserveSpecializedTurn('どこで買えばいい？', [{ role: 'user', content: '安いノートPCがほしい' }]), false);
+  assert.equal(worker.shouldPreserveSpecializedTurn('FCR-062とPEA系添加剤を比較して', []), false);
 });
 
 test('v44 exhaustive search keeps broad planning plus recovery', () => {
