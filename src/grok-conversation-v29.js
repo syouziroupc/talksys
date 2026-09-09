@@ -67,9 +67,14 @@ function requestFor(messages, options, stream) {
 }
 
 async function open(ai, messages, options, stream) {
-  const timeoutMs = stream
-    ? (options.openTimeoutMs ?? 1600)
-    : (options.retryTimeoutMs ?? 3000);
+  // Third-party Grok has materially higher network startup variance than a local
+  // Workers AI model. The old 1.55 s cutoff repeatedly aborted valid production
+  // calls immediately before the first token. These are upper bounds only; a fast
+  // response still returns immediately.
+  const requested = stream
+    ? (options.openTimeoutMs ?? 5000)
+    : (options.retryTimeoutMs ?? 7000);
+  const timeoutMs = Math.max(stream ? 4500 : 6500, Number(requested) || 0);
   const signal = boundedSignal(options.signal, timeoutMs);
   const runOptions = {};
   if (signal) runOptions.signal = signal;
@@ -80,7 +85,7 @@ async function open(ai, messages, options, stream) {
       requestFor(messages, options, stream),
       Object.keys(runOptions).length ? runOptions : undefined,
     ),
-    timeoutMs + 180,
+    timeoutMs + 250,
     `TalkSys Grok ${stream ? 'stream' : 'retry'}`,
   );
 }
@@ -93,9 +98,9 @@ function looksComplete(text) {
 }
 
 async function* iterateStream(result, options = {}) {
-  const firstTokenTimeoutMs = Math.max(500, Number(options.firstTokenTimeoutMs) || 1900);
-  const idleTimeoutMs = Math.max(700, Number(options.streamIdleTimeoutMs) || 2600);
-  const totalTimeoutMs = Math.max(2800, Number(options.streamTotalTimeoutMs) || 10000);
+  const firstTokenTimeoutMs = Math.max(4500, Number(options.firstTokenTimeoutMs) || 5000);
+  const idleTimeoutMs = Math.max(2200, Number(options.streamIdleTimeoutMs) || 3200);
+  const totalTimeoutMs = Math.max(9000, Number(options.streamTotalTimeoutMs) || 14000);
   const deadline = Date.now() + totalTimeoutMs;
   let sawText = false;
 
@@ -205,7 +210,9 @@ export async function* streamGrokConversationV29(ai, messages, options = {}) {
     yield text;
     return;
   } catch (retryError) {
-    throw retryError || firstError || new Error('Grok produced no visible text');
+    const error = retryError || firstError || new Error('Grok produced no visible text');
+    error.cause = error.cause || firstError || undefined;
+    throw error;
   }
 }
 
