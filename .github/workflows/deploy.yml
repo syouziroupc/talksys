@@ -23,32 +23,55 @@ jobs:
 
       - name: Validate current production path
         run: |
+          node --check src/search-probes-v44.js
           node --check src/search-v44.js
           node --check src/worker-v44.js
           node --test tests/v44-deep-search-default.test.mjs
           npm test
           npx wrangler deploy --dry-run
 
-      - name: Deploy through GitHub Actions when Cloudflare credentials exist
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
+      - name: Detect Cloudflare deployment credentials
+        id: cf_auth
+        shell: bash
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "Cloudflare deployment credentials are available."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Cloudflare deployment credentials are missing. Wrangler production deployment cannot run from this workflow. Production will still be probed for any external promotion."
+          fi
+
+      - name: Deploy v44 through Wrangler
+        if: ${{ steps.cf_auth.outputs.available == 'true' }}
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
 
-      - name: Use authorized external production path when Actions credentials are absent
-        if: ${{ env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' }}
-        run: echo "Cloudflare production deployment is expected through the connected external Git path; production will be probed below."
-
       - name: Verify v44 production contract
+        shell: bash
         run: |
+          if [ "${{ steps.cf_auth.outputs.available }}" = "true" ]; then
+            attempts=20
+          else
+            attempts=5
+          fi
           body=""
-          for attempt in $(seq 1 20); do
+          current=""
+          for attempt in $(seq 1 "$attempts"); do
             body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
             current="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||d.revision||''))")"
             [ "$current" = "$EXPECTED_REVISION" ] && break
-            [ "$attempt" -eq 20 ] && { echo "$body"; echo "Expected $EXPECTED_REVISION but production returned $current"; exit 1; }
+            [ "$attempt" -eq "$attempts" ] && {
+              echo "$body"
+              echo "::error::Expected $EXPECTED_REVISION but production returned ${current:-no revision}."
+              if [ "${{ steps.cf_auth.outputs.available }}" != "true" ]; then
+                echo "::error::Add repository secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to enable Wrangler production deployment."
+              fi
+              exit 1
+            }
             sleep 3
           done
           BODY="$body" node <<'NODE'
@@ -56,8 +79,13 @@ jobs:
           if (d.voiceRevision !== 'talksys-v44-default-exhaustive-search') throw new Error('v44 revision missing');
           if (d.webSearch !== true) throw new Error('web search disabled');
           if (d.searchDefault !== 'all-substantive-turns') throw new Error('default exhaustive search missing');
-          if (d.searchMaxQueries !== 14 || d.searchMaxRounds !== 3 || d.searchSourceLimit !== 18) throw new Error('v44 deep-search limits mismatch');
-          if (d.searchPageEnrichment !== true || d.searchCoverageAudit !== true || d.searchIndependentSources !== true) throw new Error('v44 deep-search quality controls missing');
+          if (d.searchMaxQueries !== 14 || d.searchMaxRecoveryQueries !== 5 || d.searchMaxTotalQueries !== 19) throw new Error('v44 query budget mismatch');
+          if (d.searchMaxRounds !== 3 || d.searchSourceLimit !== 18) throw new Error('v44 depth limits mismatch');
+          if (d.searchPageEnrichment !== true || d.searchCoverageAudit !== true || d.searchIndependentSources !== true) throw new Error('v44 quality controls missing');
+          if (d.searchEngineRotation !== true || d.searchEngineRetry !== true || d.searchMaxEngineRetries !== 5) throw new Error('v44 resilient engine retry missing');
+          if (d.searchHostDiversity !== true || d.searchMaxPerHost !== 2) throw new Error('v44 host diversity missing');
+          if (d.searchProbeConcurrency !== 4) throw new Error('v44 probe concurrency mismatch');
+          if (d.searchSubrequestBudgetAware !== true || d.searchExternalSubrequestWorstTarget >= 50) throw new Error('v44 subrequest headroom missing');
           if (d.specializedSearchRoutesPreserved !== true) throw new Error('specialized search routes not preserved');
           NODE
 
@@ -71,6 +99,19 @@ jobs:
           if (!d.ok || d.search !== true) throw new Error('substantive turn was not routed to search');
           if (d.planner !== 'deep-search-v44') throw new Error(`unexpected planner: ${d.planner}`);
           if (d.searchMode !== 'exhaustive-default') throw new Error('exhaustive search mode missing');
+          NODE
+
+      - name: Verify resilient deep-search turn
+        run: |
+          payload='{"text":"Cloudflare Workersの外部サブリクエスト制限を現在の情報で短く教えて","history":[],"searchPlan":{"planner":"deep-search-v44"}}'
+          out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node <<'NODE'
+          const d = JSON.parse(process.env.OUT || '{}');
+          if (!d.ok || d.route !== 'deep-search-v44') throw new Error(`deep-search turn failed: ${d.route || d.error || 'unknown'}`);
+          if (!Array.isArray(d.sources) || d.sources.length < 1) throw new Error('deep-search returned no sources');
+          if (!d.searchDiagnostics || !Number.isFinite(d.searchDiagnostics.hostCount)) throw new Error('search diagnostics missing');
+          if (d.searchDiagnostics.externalSubrequestWorstTarget >= 50) throw new Error('search request budget too high');
+          console.log(JSON.stringify({route:d.route, sourceCount:d.sources.length, diagnostics:d.searchDiagnostics, timings:d.timings}));
           NODE
 
       - name: Verify specialized weather route remains available
