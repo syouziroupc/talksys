@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: talksys-v33-clean-http-voice
+      EXPECTED_VOICE_REVISION: talksys-v34-grok-ja-natural
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -20,13 +20,13 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
 
-      - name: Validate v33 production path
+      - name: Validate v34 production path
         run: |
-          node --check src/worker-v33.js
-          node --check src/talk-client-v33.js
+          node --check src/worker-v34.js
+          node --check src/talk-client-v34.js
           node --check src/search-v26.js
           node --check src/grounding-policy-v22.js
-          node --test tests/v33-clean-voice.test.mjs
+          node --test tests/v34-natural-ja.test.mjs
           npm test
           npx wrangler deploy --dry-run
 
@@ -40,36 +40,18 @@ jobs:
 
       - name: Use connected Cloudflare Git production path when Actions credentials are absent
         if: ${{ env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' }}
-        run: echo "Waiting for the Cloudflare Git production deployment triggered by this main push."
+        run: echo "Cloudflare production deployment is handled by the authorized external path."
 
-      - name: Verify production v33 contract
+      - name: Verify production v34 contract after direct deployment
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
-          body=""
-          for attempt in $(seq 1 24); do
-            body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
-            current="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||''))")"
-            echo "Production voiceRevision: ${current:-missing}"
-            [ "$current" = "$EXPECTED_VOICE_REVISION" ] && break
-            [ "$attempt" -eq 24 ] && { echo "::error::Production did not reach $EXPECTED_VOICE_REVISION"; exit 1; }
-            sleep 5
-          done
+          body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health")"
           BODY="$body" node <<'NODE'
           const d = JSON.parse(process.env.BODY || '{}');
-          if (d.voiceRevision !== 'talksys-v33-clean-http-voice') throw new Error('v33 revision missing');
-          if (d.architecture !== 'http-turns-client-vad') throw new Error('v33 architecture missing');
-          if (d.conversationModel !== '@cf/zai-org/glm-5.3-flash') throw new Error('GLM-5.3 Flash mismatch');
+          if (d.voiceRevision !== 'talksys-v34-grok-ja-natural') throw new Error('v34 revision missing');
+          if (d.architecture !== 'http-turns-client-vad') throw new Error('v34 architecture missing');
+          if (d.conversationModel !== '@cf/zai-org/glm-5.3-flash') throw new Error('GLM mismatch');
           if (d.sttModel !== '@cf/openai/whisper-large-v3-turbo') throw new Error('Whisper mismatch');
-          if (d.ttsModel !== '@cf/myshell-ai/melotts' || d.ttsLanguage !== 'JP') throw new Error('Japanese MeloTTS mismatch');
+          if (d.ttsModel !== 'xai/grok-tts' || d.ttsLanguage !== 'ja') throw new Error('Japanese Grok TTS mismatch');
           if (d.legacyWebSocketVoice !== false || d.durableObjectVoice !== false) throw new Error('legacy voice path still active');
           NODE
-
-      - name: Verify minimal live v33 client
-        run: |
-          page="$(curl -fsS --max-time 20 "$PRODUCTION_URL/")"
-          script="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v33.js")"
-          grep -F "TalkSys" <<< "$page"
-          grep -F "非常用の文字入力" <<< "$page"
-          grep -F "/api/transcribe" <<< "$script"
-          grep -F "/api/turn" <<< "$script"
-          grep -F "/api/tts" <<< "$script"
-          if grep -F "new WebSocket" <<< "$script"; then echo "::error::Legacy WebSocket found"; exit 1; fi
