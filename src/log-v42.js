@@ -1,4 +1,4 @@
-export const LOG_V42_REVISION='talksys-log-v42-r2-private';
+export const LOG_V42_REVISION='talksys-log-v42-d1-private';
 
 function clean(v,max=12000){return String(v??'').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'').slice(0,max);}
 function safeId(v){return clean(v,120).replace(/[^A-Za-z0-9._-]/g,'-').replace(/-+/g,'-')||'unknown-session';}
@@ -25,12 +25,18 @@ export function buildLogRecord({request,body,result,event,status,revision,extra=
 }
 
 export async function persistTalkLog(env,input){
-  const record=buildLogRecord(input);
+  const record=buildLogRecord(input),v=record.value;
   try{
-    if(env?.TALKSYS_LOGS?.put){await env.TALKSYS_LOGS.put(record.key,JSON.stringify(record.value),{httpMetadata:{contentType:'application/json'}});}
-    console.log(JSON.stringify({type:'talksys_log',sessionId:record.value.sessionId,event:record.value.event,status:record.value.status,route:record.value.result?.route||'',search:record.value.result?.search||false,error:record.value.result?.error||''}));
+    if(env?.TALKSYS_LOG_DB?.prepare){
+      await env.TALKSYS_LOG_DB.prepare(`INSERT INTO conversation_logs (id,session_id,event,timestamp,jst,revision,path,status,user_text,history_json,search_plan_json,result_json,audio_bytes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(v.id,v.sessionId,v.event,v.timestamp,v.jst,v.revision,v.path,v.status,v.userText,JSON.stringify(v.history||[]),JSON.stringify(v.searchPlan??null),JSON.stringify(v.result??null),Number(v.audioBytes)||0)
+        .run();
+    }else{
+      throw new Error('TALKSYS_LOG_DB binding missing');
+    }
+    console.log(JSON.stringify({type:'talksys_log',storage:'d1',sessionId:v.sessionId,event:v.event,status:v.status,route:v.result?.route||'',search:v.result?.search||false,error:v.result?.error||''}));
     return true;
-  }catch(error){console.error(JSON.stringify({type:'talksys_log_error',event:record.value.event,message:clean(error?.message||error,600)}));return false;}
+  }catch(error){console.error(JSON.stringify({type:'talksys_log_error',storage:'d1',event:v.event,message:clean(error?.message||error,600)}));return false;}
 }
 
 export const __test={safeId,compactHistory,compactPlan,compactResult,keyFor,buildLogRecord};
