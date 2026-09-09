@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import workerV42Hotfix, { __test as routing } from '../src/worker-v42-hotfix.js';
 import { TALK_CLIENT_V42 } from '../src/talk-client-v42.js';
 import { __test as worker } from '../src/worker-v42.js';
 import { __test as search } from '../src/search-v42.js';
@@ -8,6 +9,7 @@ import { __test as logs } from '../src/log-v42.js';
 
 const wrangler=fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8');
 const workerSource=fs.readFileSync(new URL('../src/worker-v42.js',import.meta.url),'utf8');
+const hotfixSource=fs.readFileSync(new URL('../src/worker-v42-hotfix.js',import.meta.url),'utf8');
 const logSource=fs.readFileSync(new URL('../src/log-v42.js',import.meta.url),'utf8');
 
 test('v42 generated browser client is valid and carries one session id through plan turn and STT',()=>{
@@ -23,6 +25,23 @@ test('v42 keeps repair-versus-replace advice local when current facts are not re
   const h=[{role:'user',content:'スマホが終わってしまいました。買い替えるか修理するか悩んでいます。'}];
   assert.equal(worker.isGeneralPhoneDecision('背面割れです。機種はエクスペリア5で、半年ぐらい前にゲオで8000円で買いました。大事なデータは特に入っていません。',h),true);
   assert.equal(worker.isGeneralPhoneDecision('Androidが古いから、中古で安い他の携帯に乗り換えようかと思っています。',h),true);
+});
+
+test('v42 hotfix HTTP plan route keeps the exact production repair case local',async()=>{
+  const body={sessionId:'test-general-route',text:'背面割れです。機種はXperia 5で、半年前にゲオで8000円で買いました。大事なデータは特に入っていません。修理か買い替えか悩んでいます。',history:[{role:'user',content:'スマホが壊れて修理か買い替えか悩んでいます。'}]};
+  assert.equal(routing.localDecision(body.text,body.history),true);
+  const response=await workerV42Hotfix.fetch(new Request('https://talksys.example/api/plan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}),{},{});
+  const plan=await response.json();
+  assert.equal(response.status,200);assert.equal(plan.ok,true);assert.equal(plan.search,false);assert.equal(plan.planner,'device-decision-local-v42');
+});
+
+test('v42 hotfix HTTP plan route searches explicit budget lookup without assistant-invented constraints',async()=>{
+  const body={sessionId:'test-search-route',text:'もうちょっと調べてみてよ。2万円以下のスマホについて。',history:[{role:'user',content:'初代Xperia 5はAndroidが古いので中古で安いスマホへ乗り換えたい。'},{role:'assistant',content:'Android 13以降、SIMフリー、保証付きが条件ですね。'}]};
+  assert.equal(routing.explicitLookup(body.text,body.history),true);
+  const response=await workerV42Hotfix.fetch(new Request('https://talksys.example/api/plan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}),{},{});
+  const plan=await response.json();
+  assert.equal(response.status,200);assert.equal(plan.ok,true);assert.equal(plan.search,true);assert.equal(plan.planner,'phone-shopping-local-v42');
+  assert.doesNotMatch(plan.resolvedQuestion,/Android 13|SIMフリー|保証付き/);
 });
 
 test('v42 searches explicit phone lookup and retry turns',()=>{
@@ -64,6 +83,7 @@ test('v42 answer policy explicitly blocks the old search-giveup family',()=>{
   for(const s of ['申し訳ありません、今回確認できる情報が得られませんでした','具体的な機種のご案内はできません','通販サイトで検索してください'])assert.equal(worker.GIVEUP_RE.test(s),true);
   assert.match(workerSource,/確認できた有用な事実を先に答え/);
   assert.match(workerSource,/発売年が新しいだけで/);
+  assert.match(hotfixSource,/確認できた有用な事実を先に答えてください/);
 });
 
 test('v42 persistent log records conversation and diagnostics but never raw audio bytes',()=>{
@@ -73,8 +93,8 @@ test('v42 persistent log records conversation and diagnostics but never raw audi
   assert.match(logSource,/TALKSYS_LOG_DB\.prepare/);assert.match(logSource,/INSERT INTO conversation_logs/);assert.doesNotMatch(logSource,/TALKSYS_LOGS\.put/);
 });
 
-test('v42 production config binds private D1 logs and full Workers observability without removing migration history',()=>{
-  assert.match(wrangler,/"main"\s*:\s*"src\/worker-v42\.js"/);
+test('v42 production config binds hotfix entry, private D1 logs and full Workers observability without removing migration history',()=>{
+  assert.match(wrangler,/"main"\s*:\s*"src\/worker-v42-hotfix\.js"/);
   assert.match(wrangler,/"binding"\s*:\s*"TALKSYS_LOG_DB"/);assert.match(wrangler,/"database_name"\s*:\s*"talksys-conversation-logs"/);
   assert.match(wrangler,/"database_id"\s*:\s*"4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a"/);
   assert.match(wrangler,/"observability"[\s\S]*"enabled"\s*:\s*true/);assert.match(wrangler,/"head_sampling_rate"\s*:\s*1/);
