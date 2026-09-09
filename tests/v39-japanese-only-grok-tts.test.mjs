@@ -7,6 +7,10 @@ import { __test as routing } from '../src/worker-v39.js';
 const worker=fs.readFileSync(new URL('../src/worker-v39.js',import.meta.url),'utf8');
 const wrangler=fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8');
 
+test('v39 generated browser client is valid JavaScript',()=>{
+  assert.doesNotThrow(()=>new Function(TALK_CLIENT_V39));
+});
+
 test('v39 treats English-only input as outside the Japanese-only conversation mode',()=>{
   assert.equal(routing.isNonJapaneseLanguageInput('Hello'),true);
   assert.equal(routing.isNonJapaneseLanguageInput('Where is Beppu Onsen in Japan?'),true);
