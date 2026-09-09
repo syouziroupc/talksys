@@ -39,17 +39,16 @@ jobs:
 
       - name: Use authorized external production path when Actions credentials are absent
         if: ${{ env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' }}
-        run: echo "Cloudflare production deployment is handled by the authorized external path."
+        run: echo "Cloudflare production deployment is expected through the connected external Git path; production will be probed below."
 
       - name: Verify v44 production contract
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
           body=""
           for attempt in $(seq 1 20); do
             body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
             current="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||d.revision||''))")"
             [ "$current" = "$EXPECTED_REVISION" ] && break
-            [ "$attempt" -eq 20 ] && { echo "$body"; exit 1; }
+            [ "$attempt" -eq 20 ] && { echo "$body"; echo "Expected $EXPECTED_REVISION but production returned $current"; exit 1; }
             sleep 3
           done
           BODY="$body" node <<'NODE'
@@ -63,7 +62,6 @@ jobs:
           NODE
 
       - name: Verify default deep-search planning
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
           payload='{"text":"Cloudflare Workersとは何？","history":[]}'
           out="$(curl -fsS --max-time 30 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/plan")"
@@ -76,7 +74,6 @@ jobs:
           NODE
 
       - name: Verify specialized weather route remains available
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         run: |
           payload='{"text":"明日の別府市の天気は？","history":[]}'
           out="$(curl -fsS --max-time 30 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/plan")"
