@@ -1,4 +1,4 @@
-import { collectGroundedEvidenceV23, SEARCH_TOOL_V23_REVISION } from './search-v23.js';
+import { collectGroundedEvidenceV23 } from './search-v23.js';
 
 export const SEARCH_TOOL_V26_REVISION = 'evidence-web-v26-direct-transit-fallback';
 
@@ -62,7 +62,7 @@ async function fetchYahooTransitRoute(from, to, signal) {
     signal: timeoutSignal(signal, 3600),
     redirect: 'follow',
     headers: {
-      'accept': 'text/html,application/xhtml+xml',
+      accept: 'text/html,application/xhtml+xml',
       'accept-language': 'ja-JP,ja;q=0.9',
       'user-agent': 'Mozilla/5.0 (compatible; TalkSys/1.0; +https://talksys.syouziroupc.workers.dev)',
     },
@@ -82,14 +82,13 @@ async function fetchYahooTransitRoute(from, to, signal) {
   };
 }
 
-export async function collectGroundedEvidenceV26(query, history = [], options = {}) {
-  const base = await collectGroundedEvidenceV23(query, history, options);
-  if (base.sources?.length) return { ...base, revision: SEARCH_TOOL_V26_REVISION };
-
-  const resolved = clean(base.resolvedQuestion || query, 900);
-  if (!TRANSIT_RE.test(resolved)) return { ...base, revision: SEARCH_TOOL_V26_REVISION };
+export async function augmentGroundedEvidenceV26(base, options = {}) {
+  const resolved = clean(base?.resolvedQuestion || '', 900);
+  if (base?.sources?.length || !TRANSIT_RE.test(resolved)) {
+    return { ...(base || {}), revision: SEARCH_TOOL_V26_REVISION };
+  }
   const [from, to] = stationPair(resolved);
-  if (!from || !to) return { ...base, revision: SEARCH_TOOL_V26_REVISION };
+  if (!from || !to) return { ...(base || {}), revision: SEARCH_TOOL_V26_REVISION };
 
   try {
     const direct = await fetchYahooTransitRoute(from, to, options.signal);
@@ -97,24 +96,29 @@ export async function collectGroundedEvidenceV26(query, history = [], options = 
       phase: 'evidence_ready',
       revision: SEARCH_TOOL_V26_REVISION,
       resolvedQuestion: resolved,
-      queries: base.queries || [],
+      queries: base?.queries || [],
       evidenceCount: 1,
       sources: [{ title: direct.title, url: direct.url }],
       message: '乗換案内の実ページで経路根拠を確認',
     });
     return {
-      ...base,
+      ...(base || {}),
       revision: SEARCH_TOOL_V26_REVISION,
       sources: [direct],
       evidence: `[1] ${direct.title}\n${direct.url}\n${direct.excerpt}`,
     };
   } catch (error) {
     return {
-      ...base,
+      ...(base || {}),
       revision: SEARCH_TOOL_V26_REVISION,
       directTransitError: String(error?.message || error).slice(0, 180),
     };
   }
+}
+
+export async function collectGroundedEvidenceV26(query, history = [], options = {}) {
+  const base = await collectGroundedEvidenceV23(query, history, options);
+  return augmentGroundedEvidenceV26(base, options);
 }
 
 export const __test = { stationPair, usefulRouteExcerpt, stripHtml };
