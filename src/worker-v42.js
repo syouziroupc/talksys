@@ -14,18 +14,19 @@ const GIVEUP_RE=/(申し訳ありません.{0,80}(?:確認|情報|検索)|具体
 function clean(v,max=9000){return String(v||'').replace(/\s+/g,' ').trim().slice(0,max);}
 function historyOf(v){return Array.isArray(v)?v.slice(-16).map(x=>({role:x?.role==='assistant'?'assistant':'user',content:clean(x?.content,1800)})).filter(x=>x.content):[];}
 function historyText(v){return historyOf(v).map(x=>x.content).join(' ');}
+function userHistoryText(v){return historyOf(v).filter(x=>x.role==='user').map(x=>x.content).join(' ');}
 function json(data,status=200){return new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-talksys-revision':REVISION}});}
 function wrap(response){const h=new Headers(response.headers);h.set('x-talksys-revision',REVISION);h.set('cache-control','no-store');return new Response(response.body,{status:response.status,statusText:response.statusText,headers:h});}
 function extractText(result){if(typeof result==='string')return clean(result);if(!result)return '';for(const v of [result.response,result.result,result.text,result.output_text])if(typeof v==='string'&&v.trim())return clean(v);const c=result.choices?.[0]?.message?.content;if(typeof c==='string')return clean(c);if(Array.isArray(c))return clean(c.map(x=>typeof x==='string'?x:x?.text||x?.content||'').join(''));return clean(result.choices?.[0]?.text||'');}
 function scheduleLog(ctx,env,input){const p=persistTalkLog(env,{...input,revision:REVISION});if(ctx?.waitUntil)ctx.waitUntil(p);else p.catch(()=>{});}
 function scheduleResponseLog(ctx,env,request,body,response,event,extra={}){const p=(async()=>{let result=null;try{result=await response.clone().json();}catch{result={ok:response.ok,error:response.ok?'':'non-json response'};}await persistTalkLog(env,{request,body,result,event,status:response.status,revision:REVISION,extra});})();if(ctx?.waitUntil)ctx.waitUntil(p);else p.catch(()=>{});}
 function phoneContext(text,history=[]){return PHONE_RE.test(clean(`${historyText(history)} ${text}`,6000));}
-function budgetFrom(text,history=[]){const v=clean(`${historyText(history)} ${text}`,6000);let m=v.match(/([0-9０-９]{1,3})\s*万\s*円?\s*(以下|以内|まで)/);if(m)return `${m[1]}万円${m[2]}`;m=v.match(/([0-9０-９]{4,6})\s*円\s*(以下|以内|まで)/);return m?`${m[1]}円${m[2]}`:'';}
+function budgetFrom(text,history=[]){const v=clean(`${userHistoryText(history)} ${text}`,6000);let m=v.match(/([0-9０-９]{1,3})\s*万\s*円?\s*(以下|以内|まで)/);if(m)return `${m[1]}万円${m[2]}`;m=v.match(/([0-9０-９]{4,6})\s*円\s*(以下|以内|まで)/);return m?`${m[1]}円${m[2]}`:'';}
 function hasBudgetPhoneLookup(text,history=[]){const v=clean(text,1400),all=clean(`${historyText(history)} ${text}`,5000);return PHONE_RE.test(all)&&/(?:[0-9０-９]{1,3}\s*万\s*円?|[0-9０-９]{4,6}\s*円)\s*(?:以下|以内|まで)/.test(v);}
 function isExplicitPhoneLookup(text,history=[]){return phoneContext(text,history)&&(EXPLICIT_LOOKUP_RE.test(text)||RETRY_RE.test(text)||hasBudgetPhoneLookup(text,history));}
 function isGeneralPhoneDecision(text,history=[]){return phoneContext(text,history)&&REPAIR_RE.test(clean(`${historyText(history)} ${text}`,5500))&&!isExplicitPhoneLookup(text,history);}
 function userConstraintFlags(text,history=[]){
-  const all=clean(`${historyText(history)} ${text}`,6500);
+  const all=clean(`${userHistoryText(history)} ${text}`,6500);
   return {budget:budgetFrom(text,history),used:/(中古)/i.test(all),newPhone:/(新品)/i.test(all),androidOld:/(Android|アンドロイド).{0,22}(?:古い|古く|バージョン.{0,12}古)|(?:古い|古く).{0,22}(?:Android|アンドロイド)/i.test(all),simFree:/(SIM\s*フリー|シムフリー)/i.test(all),warranty:/(保証|返品|交換)/i.test(all)};
 }
 function makePhoneSearchPlan(text,history=[]){
@@ -56,9 +57,7 @@ async function phoneSearchTurn(body,plan,env){
   const verified=Array.isArray(search?.verifiedCandidates)?search.verifiedCandidates:[];
   const prompt=`相談: ${resolved}\n利用者が明示した検索条件: ${instruction}\nverifiedCandidates: ${JSON.stringify(verified)}\n\n取得根拠:\n${evidenceBlock(search)||'(根拠なし)'}\n\n利用者の質問へ直接答えてください。`;
   let generated=await runGlm(env,[{role:'system',content:SEARCH_PROMPT},...history,{role:'user',content:prompt}],520);
-  if(GIVEUP_RE.test(generated.text)){
-    generated=await runGlm(env,[{role:'system',content:SEARCH_PROMPT+'\n前の草案が検索失敗の定型文に逃げました。謝罪や自己検索の依頼を削除し、取得できた事実を先にした完成回答だけを書いてください。'},...history,{role:'user',content:prompt}],480);
-  }
+  if(GIVEUP_RE.test(generated.text))generated=await runGlm(env,[{role:'system',content:SEARCH_PROMPT+'\n前の草案が検索失敗の定型文に逃げました。謝罪や自己検索の依頼を削除し、取得できた事実を先にした完成回答だけを書いてください。'},...history,{role:'user',content:prompt}],480);
   return {ok:true,answer:generated.text,search:true,route:'resilient-search-v42',searchUseful:Boolean(search?.sources?.length),resolvedQuestion:search?.resolvedQuestion||resolved,queries:(search?.queries||[]).slice(0,24),sources:(search?.sources||[]).slice(0,14).map(x=>({title:clean(x?.title,220),url:clean(x?.url,700)})),searchPasses:Number(search?.searchPasses)||1,maxSearchPasses:Number(search?.maxSearchPasses)||5,concreteShoppingEvidence:Boolean(search?.concreteShoppingEvidence),androidFreshnessRequired:Boolean(search?.androidFreshnessRequired),androidRequirementEvidence:Boolean(search?.androidRequirementEvidence),verifiedCandidates:verified,sourceQuality:search?.sourceQuality||'',timings:{totalMs:Date.now()-started,searchMs,glmMs:generated.elapsedMs,plannerMs:Number(plan?.plannerMs)||0},model:MODEL,planner:plan?.planner||'phone-shopping-local-v42',searchPlan:instruction,languageMode:'ja-only'};
 }
 
@@ -75,30 +74,20 @@ export default {
     }
     if(request.method==='POST'&&url.pathname==='/api/plan'){
       let body;try{body=await request.clone().json();}catch{return json({ok:false,error:'invalid json'},400);}const text=clean(body?.text,1800),history=historyOf(body?.history);if(!text)return json({ok:false,error:'text required'},400);
-      if(isExplicitPhoneLookup(text,history)){
-        const data=makePhoneSearchPlan(text,history),response=json(data);scheduleLog(ctx,env,{request,body,result:data,event:'plan',status:200});return response;
-      }
-      if(isGeneralPhoneDecision(text,history)){
-        const data=generalPlan(text),response=json(data);scheduleLog(ctx,env,{request,body,result:data,event:'plan',status:200});return response;
-      }
+      if(isExplicitPhoneLookup(text,history)){const data=makePhoneSearchPlan(text,history),response=json(data);scheduleLog(ctx,env,{request,body,result:data,event:'plan',status:200});return response;}
+      if(isGeneralPhoneDecision(text,history)){const data=generalPlan(text),response=json(data);scheduleLog(ctx,env,{request,body,result:data,event:'plan',status:200});return response;}
       const response=wrap(await workerV41.fetch(request,env,ctx));scheduleResponseLog(ctx,env,request,body,response,'plan');return response;
     }
     if(request.method==='POST'&&url.pathname==='/api/turn'){
       let body;try{body=await request.clone().json();}catch{return json({ok:false,error:'invalid json'},400);}const text=clean(body?.text,2000),history=historyOf(body?.history);if(!text)return json({ok:false,error:'text required'},400);
       try{
-        if(isExplicitPhoneLookup(text,history)){
-          const plan=(body?.searchPlan?.planner==='phone-shopping-local-v42')?body.searchPlan:makePhoneSearchPlan(text,history);const data=await phoneSearchTurn(body,plan,env),response=json(data);scheduleLog(ctx,env,{request,body:{...body,searchPlan:plan},result:data,event:'turn',status:200});return response;
-        }
-        if(isGeneralPhoneDecision(text,history)){
-          const data=await generalDeviceTurn(body,env),response=json(data);scheduleLog(ctx,env,{request,body:{...body,searchPlan:generalPlan(text)},result:data,event:'turn',status:200});return response;
-        }
-      }catch(error){
-        const err={ok:false,error:clean(error?.message||error,1200),route:'v42-intercept-error'},response=json(err,500);scheduleLog(ctx,env,{request,body,result:err,event:'turn-error',status:500});return response;
-      }
+        if(isExplicitPhoneLookup(text,history)){const plan=(body?.searchPlan?.planner==='phone-shopping-local-v42')?body.searchPlan:makePhoneSearchPlan(text,history);const data=await phoneSearchTurn(body,plan,env),response=json(data);scheduleLog(ctx,env,{request,body:{...body,searchPlan:plan},result:data,event:'turn',status:200});return response;}
+        if(isGeneralPhoneDecision(text,history)){const data=await generalDeviceTurn(body,env),response=json(data);scheduleLog(ctx,env,{request,body:{...body,searchPlan:generalPlan(text)},result:data,event:'turn',status:200});return response;}
+      }catch(error){const err={ok:false,error:clean(error?.message||error,1200),route:'v42-intercept-error'},response=json(err,500);scheduleLog(ctx,env,{request,body,result:err,event:'turn-error',status:500});return response;}
       const response=wrap(await workerV41.fetch(request,env,ctx));scheduleResponseLog(ctx,env,request,body,response,'turn');return response;
     }
-    const response=wrap(await workerV41.fetch(request,env,ctx));return response;
+    return wrap(await workerV41.fetch(request,env,ctx));
   }
 };
 
-export const __test={budgetFrom,hasBudgetPhoneLookup,isExplicitPhoneLookup,isGeneralPhoneDecision,userConstraintFlags,makePhoneSearchPlan,generalPlan,GIVEUP_RE};
+export const __test={budgetFrom,hasBudgetPhoneLookup,isExplicitPhoneLookup,isGeneralPhoneDecision,userConstraintFlags,makePhoneSearchPlan,generalPlan,GIVEUP_RE,userHistoryText};
