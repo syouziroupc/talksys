@@ -12,13 +12,8 @@ client=client.replace(
 );
 
 client=client.replace(
-  "if(ack){add('assistant',ack);log('相槌: '+ack);await speak(ack,{resumeable:false});if(seq!==turnSeq)return;}",
-  "if(ack)log('非検索ターンの相槌は省略: '+ack);",
-);
-
-client=client.replace(
-  "searchAnnouncements:true,backchannels:true",
-  "searchAnnouncements:true,backchannels:true",
+  "log((j.search?'検索あり':'検索なし')+' / route='+(j.route||'?')+' / planner='+(j.planner||plan.planner||'?')+' / GLM '+lastGlmMs+'ms'+(lastSearchMs?' / 検索 '+lastSearchMs+'ms':''));",
+  "log((j.search?'検索あり':'検索なし')+' / route='+(j.route||'?')+' / planner='+(j.planner||plan.planner||'?')+' / GLM '+lastGlmMs+'ms'+(lastSearchMs?' / 検索 '+lastSearchMs+'ms':'')+(j.searchPasses?' / passes='+j.searchPasses:''));",
 );
 
 export const TALK_CLIENT_V41=client;
