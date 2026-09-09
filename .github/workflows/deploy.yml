@@ -30,7 +30,7 @@ jobs:
           npm test
           npx wrangler deploy --dry-run
 
-      - name: Deploy when repository Cloudflare credentials exist
+      - name: Deploy through GitHub Actions when Cloudflare credentials exist
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         uses: cloudflare/wrangler-action@v4
         with:
@@ -38,20 +38,20 @@ jobs:
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
 
-      - name: Note external production path
+      - name: Use connected Cloudflare Git production path when Actions credentials are absent
         if: ${{ env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' }}
-        run: echo "Repository credentials are absent; validated SHA will be deployed by the authorized production workflow."
+        run: echo "Waiting for the Cloudflare Git production deployment triggered by this main push."
 
-      - name: Verify production contract after direct deployment
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
+      - name: Verify production v33 contract
         run: |
           body=""
-          for attempt in $(seq 1 15); do
+          for attempt in $(seq 1 24); do
             body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
             current="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||''))")"
+            echo "Production voiceRevision: ${current:-missing}"
             [ "$current" = "$EXPECTED_VOICE_REVISION" ] && break
-            [ "$attempt" -eq 15 ] && { echo "::error::Production revision mismatch"; exit 1; }
-            sleep 3
+            [ "$attempt" -eq 24 ] && { echo "::error::Production did not reach $EXPECTED_VOICE_REVISION"; exit 1; }
+            sleep 5
           done
           BODY="$body" node <<'NODE'
           const d = JSON.parse(process.env.BODY || '{}');
@@ -63,8 +63,7 @@ jobs:
           if (d.legacyWebSocketVoice !== false || d.durableObjectVoice !== false) throw new Error('legacy voice path still active');
           NODE
 
-      - name: Verify minimal live client after direct deployment
-        if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
+      - name: Verify minimal live v33 client
         run: |
           page="$(curl -fsS --max-time 20 "$PRODUCTION_URL/")"
           script="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v33.js")"
