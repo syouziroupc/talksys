@@ -1,6 +1,6 @@
 const GENERIC_TERMS = new Set([
-  '公式','最新','比較','おすすめ','評判','レビュー','情報','確認','目安','相場','価格','値段','販売','購入','選び方','問題','注意点','現在','2026',
-  'official','latest','review','reviews','compare','comparison','price','buy','shopping','info','information',
+  '公式','最新','比較','おすすめ','評判','レビュー','情報','確認','目安','相場','価格','値段','販売','購入','選び方','問題','注意点','現在','2026','保証','返品',
+  'official','latest','review','reviews','compare','comparison','price','buy','shopping','info','information','warranty','return',
 ]);
 
 function clean(value, max = 2000) {
@@ -9,6 +9,13 @@ function clean(value, max = 2000) {
 
 function normalize(value) {
   return clean(value, 4000).toLowerCase().normalize('NFKC');
+}
+
+function addTerm(out, seen, value) {
+  const term = String(value || '').trim();
+  if (term.length < 2 || GENERIC_TERMS.has(term) || seen.has(term)) return;
+  seen.add(term);
+  out.push(term);
 }
 
 function queryTerms(query) {
@@ -22,11 +29,15 @@ function queryTerms(query) {
   const seen = new Set();
   for (const term of split) {
     const compact = term.replace(/^(?:の|を|が|は|に|で|と|へ)+|(?:の|を|が|は|に|で|と|へ)+$/g, '');
-    if (compact.length < 2 || GENERIC_TERMS.has(compact) || seen.has(compact)) continue;
-    seen.add(compact);
-    out.push(compact);
+    addTerm(out, seen, compact);
+    // Japanese product/category phrases often arrive without spaces, e.g.
+    // 中古ノートPC. Preserve the full phrase but also expose script chunks so
+    // relevant variants such as 中古パソコン / ノートPC are not discarded.
+    for (const part of compact.match(/[\p{Script=Han}]{2,}|[\p{Script=Katakana}ー]{2,}|[a-z0-9][a-z0-9+_.-]{1,}/giu) || []) {
+      addTerm(out, seen, part.toLowerCase());
+    }
   }
-  return out.slice(0, 16);
+  return out.slice(0, 24);
 }
 
 function isStrongTerm(term) {
@@ -49,8 +60,8 @@ export function queryResultEvidence(query, result) {
   const titleMatched = matched.filter((term) => title.includes(term));
   const score = strongMatched.length * 4 + titleMatched.length * 2 + matched.length;
 
-  // One strong subject/entity term is enough. Otherwise require two distinct
-  // meaningful query concepts; generic modifiers alone never establish relevance.
+  // Authority never substitutes for relevance. One strong entity/category term
+  // or two independent meaningful concepts must be present in the result itself.
   const relevant = strongMatched.length >= 1 || matched.length >= 2;
   return { relevant, matched, strongMatched, score };
 }
