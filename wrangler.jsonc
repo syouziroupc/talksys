@@ -3,11 +3,18 @@
   "name": "talksys",
   // v33 removed the legacy Durable Object / WebSocket voice stack; later versions keep that clean architecture.
   // Historical rollback markers retained for regression contracts:
-  // "main": "src/worker-v20.js", "main": "src/worker-v21.js", "main": "src/worker-v22.js", "main": "src/worker-v23-production.js", "main": "src/worker-v24-production.js", "main": "src/worker-v25-production.js", "main": "src/worker-v26-production.js", "main": "src/worker-v27-production.js", "main": "src/worker-v28-production.js", "main": "src/worker-v29-production.js", "main": "src/worker-v30-production.js", "main": "src/worker-v31-production.js", "main": "src/worker-v32-production.js", "main": "src/worker-v33.js", "main": "src/worker-v34.js", "main": "src/worker-v35.js", "main": "src/worker-v36.js", "main": "src/worker-v37.js", "main": "src/worker-v38.js", "main": "src/worker-v39.js", "main": "src/worker-v40.js"
-  "main": "src/worker-v41.js",
-  "compatibility_date": "2026-08-30",
+  // "main": "src/worker-v20.js", "main": "src/worker-v21.js", "main": "src/worker-v22.js", "main": "src/worker-v23-production.js", "main": "src/worker-v24-production.js", "main": "src/worker-v25-production.js", "main": "src/worker-v26-production.js", "main": "src/worker-v27-production.js", "main": "src/worker-v28-production.js", "main": "src/worker-v29-production.js", "main": "src/worker-v30-production.js", "main": "src/worker-v31-production.js", "main": "src/worker-v32-production.js", "main": "src/worker-v33.js", "main": "src/worker-v34.js", "main": "src/worker-v35.js", "main": "src/worker-v36.js", "main": "src/worker-v37.js", "main": "src/worker-v38.js", "main": "src/worker-v39.js", "main": "src/worker-v40.js", "main": "src/worker-v41.js"
+  "main": "src/worker-v42.js",
+  "compatibility_date": "2026-09-09",
   "compatibility_flags": ["nodejs_compat"],
   "ai": { "binding": "AI" },
+  "r2_buckets": [
+    { "binding": "TALKSYS_LOGS", "bucket_name": "talksys-conversation-logs" }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
   "migrations": [
     { "tag": "v1-voice", "new_sqlite_classes": ["TalkSysVoiceAgent"] },
     { "tag": "v33-delete-legacy-voice", "deleted_classes": ["TalkSysVoiceAgent"] }
