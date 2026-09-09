@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import worker,{__test as t} from '../src/worker-v43-reviewfix.js';
+import {__test as finalT} from '../src/worker-v43-finalcandidate.js';
 
 const wrangler=fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8');
 
@@ -53,7 +54,12 @@ test('safe device decision does not assert unsearched repair cost',async()=>{
   assert.equal(j.ok,true);assert.equal(j.search,false);assert.match(j.answer,/修理費用はこのターンでは調べていない/);assert.doesNotMatch(j.answer,/修理費用.{0,30}(?:高い|上回る).{0,20}(?:可能性が高い|珍しくない)/);
 });
 
-test('production candidate entry is the grounded review wrapper and keeps migrations',()=>{
-  assert.match(wrangler,/"main"\s*:\s*"src\/worker-v43-reviewfix\.js"/);
+test('final candidate removes repeated phone greeting from PC advice',()=>{
+  const x=finalT.polishPcAdvice('こんにちは、お電話ありがとうございます。パソコンの購入をご検討中とのことですね。主な用途を教えてください。');
+  assert.equal(x,'主な用途を教えてください。');
+});
+
+test('production candidate entry is the final v43.1 wrapper and keeps migrations',()=>{
+  assert.match(wrangler,/"main"\s*:\s*"src\/worker-v43-finalcandidate\.js"/);
   assert.match(wrangler,/v1-voice/);assert.match(wrangler,/v33-delete-legacy-voice/);assert.match(wrangler,/TALKSYS_LOG_DB/);
 });
