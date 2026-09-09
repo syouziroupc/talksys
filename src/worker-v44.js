@@ -1,5 +1,13 @@
 import baseWorker from './worker-v43-finalcandidate.js';
-import { runDeepSearchV44, SEARCH_V44_MAX_QUERIES, SEARCH_V44_MAX_ROUNDS, SEARCH_V44_SOURCE_LIMIT } from './search-v44.js';
+import {
+  runDeepSearchV44,
+  SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
+  SEARCH_V44_MAX_QUERIES,
+  SEARCH_V44_MAX_RECOVERY_QUERIES,
+  SEARCH_V44_MAX_ROUNDS,
+  SEARCH_V44_MAX_TOTAL_QUERIES,
+  SEARCH_V44_SOURCE_LIMIT,
+} from './search-v44.js';
 import { persistTalkLog } from './log-v42.js';
 
 const REVISION = 'talksys-v44-default-exhaustive-search';
@@ -11,7 +19,6 @@ const MEMORY_ONLY_RE = /^(?:さっき|先ほど|前に|前の話|今の話|こ�
 const CAPABILITY_RE = /(?:検索|調べ).{0,20}(?:できる|出来る|使える|あるの|あるだろ|できない|出来ない)|(?:できる|出来る|使える).{0,20}(?:検索|調べ)/i;
 const WEATHER_RE = /(天気|天候|気温|降水|雨|晴|曇|雪|予報)/i;
 const TRANSIT_RE = /(電車|鉄道|乗換|乗り換え|経路|行き方|何に乗|何を乗|所要時間|運賃|時刻表|次の電車|何時発)/i;
-const PC_RE = /(パソコン|\bPC\b|ＰＣ|ノートパソコン|ノートPC|デスクトップ|Windows|MacBook|Chromebook)/i;
 const PHONE_RE = /(スマホ|スマートフォン|携帯|Android|アンドロイド|iPhone|Xperia|Pixel|Galaxy|AQUOS|arrows|OPPO|Xiaomi|Redmi|motorola)/i;
 const EXPLICIT_LOOKUP_RE = /(検索|調べ|探して|探せ|見つけ|在庫|実売|価格|値段|相場|いくら|どこで買|販売店|店舗|通販|具体的|おすすめ|最新|現在)/i;
 
@@ -75,7 +82,8 @@ export function shouldSearchByDefault(text) {
 function shouldPreserveSpecializedTurn(text, history = []) {
   const userContext = clean(`${userHistory(history).map((x) => x.content).join(' ')} ${text}`, 6500);
   if (WEATHER_RE.test(userContext) || TRANSIT_RE.test(userContext)) return true;
-  if (PC_RE.test(userContext) && EXPLICIT_LOOKUP_RE.test(text)) return true;
+  // v42's phone-shopping path has retailer/OS/model-specific recovery logic that is more specialized
+  // than the generic exhaustive route. PC and all other factual/product lookups now go through v44.
   if (PHONE_RE.test(userContext) && EXPLICIT_LOOKUP_RE.test(text)) return true;
   return false;
 }
@@ -150,7 +158,7 @@ async function deepTurn(body, env, requestSignal) {
     route: 'deep-search-v44',
     searchUseful: Boolean(search.evidenceUseful),
     resolvedQuestion: search.plan?.resolvedQuestion || text,
-    queries: (search.plan?.queries || []).slice(0, 24),
+    queries: (search.plan?.queries || []).slice(0, SEARCH_V44_MAX_TOTAL_QUERIES),
     sources,
     searchPasses: Number(search.rounds) || 1,
     maxSearchPasses: SEARCH_V44_MAX_ROUNDS,
@@ -158,6 +166,7 @@ async function deepTurn(body, env, requestSignal) {
     sourceQuality: 'multi-engine-page-enriched-coverage-audited-v44',
     searchMode: 'exhaustive-default',
     historyPolicy: 'assistant-context-not-evidence',
+    subrequestBudgetAware: Boolean(search.subrequestBudgetAware),
     timings: { totalMs: Date.now() - started, searchMs, glmMs: answer.ms, ...(search.timings || {}) },
     model: MODEL,
     planner: 'deep-search-v44',
@@ -190,11 +199,15 @@ export default {
         webSearchPolicy: 'default-exhaustive-multi-round-v44',
         searchDefault: 'all-substantive-turns',
         searchMaxQueries: SEARCH_V44_MAX_QUERIES,
+        searchMaxRecoveryQueries: SEARCH_V44_MAX_RECOVERY_QUERIES,
+        searchMaxTotalQueries: SEARCH_V44_MAX_TOTAL_QUERIES,
         searchMaxRounds: SEARCH_V44_MAX_ROUNDS,
         searchSourceLimit: SEARCH_V44_SOURCE_LIMIT,
         searchPageEnrichment: true,
         searchCoverageAudit: true,
         searchIndependentSources: true,
+        searchSubrequestBudgetAware: true,
+        searchExternalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
         specializedSearchRoutesPreserved: true,
       }, response.status);
     }
@@ -206,10 +219,11 @@ export default {
       const history = historyOf(body?.history);
       if (!text) return json({ ok: false, error: 'text required' }, 400);
 
-      const baseResponse = await baseWorker.fetch(request.clone(), env, ctx);
-      const baseData = await parseJsonClone(baseResponse);
-      if (baseData?.search === true) return wrap(baseResponse);
-      if (!shouldSearchByDefault(text)) return wrap(baseResponse);
+      // Specialized data sources stay specialized. Everything else substantive is deliberately
+      // upgraded to the exhaustive v44 planner even if older workers would also have searched.
+      if (shouldPreserveSpecializedTurn(text, history) || !shouldSearchByDefault(text)) {
+        return wrap(await baseWorker.fetch(request, env, ctx));
+      }
 
       const data = deepPlan(text, history);
       schedule(ctx, env, { request, body, result: data, event: 'plan', status: 200 });
@@ -223,10 +237,11 @@ export default {
       const history = historyOf(body?.history);
       if (!text) return json({ ok: false, error: 'text required' }, 400);
 
-      const planner = clean(body?.searchPlan?.planner, 100);
-      if (planner && planner !== 'deep-search-v44') return wrap(await baseWorker.fetch(request, env, ctx));
-      if (shouldPreserveSpecializedTurn(text, history)) return wrap(await baseWorker.fetch(request, env, ctx));
-      if (!planner && !shouldSearchByDefault(text)) return wrap(await baseWorker.fetch(request, env, ctx));
+      // Do not let stale/legacy searchPlan values silently route ordinary factual questions back
+      // to the old generic search. Only known stronger specialized routes bypass v44.
+      if (shouldPreserveSpecializedTurn(text, history) || !shouldSearchByDefault(text)) {
+        return wrap(await baseWorker.fetch(request, env, ctx));
+      }
 
       try {
         const data = await deepTurn(body, env, request.signal);
