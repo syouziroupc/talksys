@@ -24,10 +24,10 @@ export function buildRetryQueries(resolved,history=[],instruction='',pass=1){
     const price=budget||'2万円以下', os=android||'Android';
     const first=[`中古 ${os} スマホ ${price} 価格`,`中古 Xperia Pixel AQUOS Galaxy ${price}`,`site:iosys.co.jp 中古 Android スマホ ${price}`,`site:janpara.co.jp 中古 Android スマホ ${price}`,`site:ec.geo-online.co.jp 中古 スマホ ${price}`];
     const second=[`${price} 中古 スマホ ${os} SIMフリー`,`中古 スマホ ${price} 保証 在庫`,`site:iosys.co.jp/items/smartphone ${price} Android`,`site:ec.geo-online.co.jp/shop/c/c1001 ${price} スマホ`,`site:janpara.co.jp Android 中古 ${price}`];
-    return [...new Set((pass<=1?first:second).map(clean))].slice(0,6);
+    return [...new Set((pass<=1?first:second).map(x=>clean(x)))].slice(0,6);
   }
   const suffix=pass<=1?['公式','価格 在庫','販売 公式']:['別の情報源','詳細 公式','比較 価格'];
-  return [...new Set([core,...suffix.map(s=>`${core} ${s}`)].map(clean).filter(x=>x.length>=2))].slice(0,5);
+  return [...new Set([core,...suffix.map(s=>`${core} ${s}`)].map(x=>clean(x)).filter(x=>x.length>=2))].slice(0,5);
 }
 
 async function fetchDirect(url,title,needles=[]){
