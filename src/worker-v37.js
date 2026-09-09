@@ -1,4 +1,5 @@
 import workerV36 from './worker-v36.js';
+import workerV34 from './worker-v34.js';
 import { groundingDecisionV22 } from './grounding-policy-v22.js';
 import { TALK_CLIENT_V37 } from './talk-client-v37.js';
 
@@ -73,7 +74,7 @@ function rewriteSearch(text,history,now=new Date()){
   }
   if(PC_RE.test(`${context} ${current}`)&&PURCHASE_RE.test(current)){
     const cheap=/(安い|格安|低価格)/i.test(context),laptop=/(ノート|ノートパソコン)/i.test(context);
-    return `${laptop?'ノートパソコン':'パソコン'}の購入先を検索して。${cheap?'低価格帯を優先し、':''}メーカー直販、パソコン専門店、大手販売店の公式情報を比較し、保証や販売実態を確認できる具体的な購入先を挙げて。`;
+    return `${laptop?'ノートパソコン':'パソコン'}の購入先を検索して。${cheap?'低価格帯を優先し、':''}メーカー直販、パソコン専門店、大手販売店の公式情報を比較し、保証や販売実態を確認できる具体的な購入先を挙げて。根拠にない販売店名は挙げないで。`;
   }
   if(/(次|今|現在|今日|明日|何時|いつ|最新)/i.test(current))return `${stamp}。${current} 最新の正確な情報を複数の検索元で確認して。`;
   return `${current} 正確な情報を複数の検索元で確認して。`;
@@ -102,7 +103,11 @@ export default {
       if(CLOCK_RE.test(text))return json({ok:true,answer:`現在の日本時間は${jstJapanese()}です。`,search:false,route:'server-jst-clock',searchUseful:false,resolvedQuestion:'',queries:[],sources:[],timings:{totalMs:0,searchMs:0,glmMs:0},model:'local'});
       if(DATE_RE.test(text))return json({ok:true,answer:`今日は${jstJapanese()}です。`,search:false,route:'server-jst-date',searchUseful:false,resolvedQuestion:'',queries:[],sources:[],timings:{totalMs:0,searchMs:0,glmMs:0},model:'local'});
       const plan=buildPlan(text,history);
-      if(plan.search){const rewritten=new Request(request.url,{method:'POST',headers:request.headers,body:JSON.stringify({...body,text:plan.resolvedQuestion})});return wrap(await workerV36.fetch(rewritten,env));}
+      if(plan.search){
+        const rewritten=new Request(request.url,{method:'POST',headers:request.headers,body:JSON.stringify({...body,text:plan.resolvedQuestion})});
+        // v37 already resolved the conversational intent. Search through v34 directly so v36 cannot rewrite it a second time.
+        return wrap(await workerV34.fetch(rewritten,env));
+      }
     }
     return wrap(await workerV36.fetch(request,env));
   }
