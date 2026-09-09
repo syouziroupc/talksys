@@ -6,7 +6,7 @@ import {
 } from './search-fallbacks.js';
 import { resolveGroundedQuestionV22 } from './search-v22.js';
 
-export const SEARCH_TOOL_V23_REVISION = 'evidence-only-web-tool-v23-parallel-intent-search';
+export const SEARCH_TOOL_V23_REVISION = 'evidence-only-web-tool-v23-trusted-purchase-queries';
 
 const TRANSIT_RE = /(乗り換え|乗換|経路|行き方|電車|鉄道|何分|所要時間|運賃|料金|時刻表|直通|発車|到着)/i;
 const PC_RE = /(パソコン|\bPC\b|ＰＣ|Windows|MacBook|ThinkPad|Let'?s\s*note|レッツノート|CPU|GPU|Core\s*i[3579]|Ryzen|GeForce|Radeon|メモリ|RAM|SSD|NVMe|SATA|USB[- ]?C|Thunderbolt|Wi-?Fi|Bluetooth|BIOS|UEFI)/i;
@@ -14,10 +14,15 @@ const LOCAL_RE = /((?:お)?店(?:で|が|は|を|に|ある|ない|探|おすす
 const USED_RE = /(中古|リユース|再生品|整備済|リファービッシュ|used|secondhand)/i;
 const STORE_SIGNAL_RE = /(店舗|店頭|販売店|専門店|ショップ|販売|買取|中古|リユース|住所|営業時間|アクセス)/i;
 const DETAIL_RE = /(仕様|スペック|型番|製品情報|マニュアル|取扱説明書|電話番号|住所|営業時間|価格|値段|発売日|対応|要件)/i;
+const PC_PURCHASE_RE = /(購入先|どこで買|買える|買いたい|メーカー直販|直販|販売店|専門店|家電量販店|公式ストア|公式通販|保証|販売実態|低価格帯)/i;
+const PC_PRODUCT_SIGNAL_RE = /(ノートパソコン|ノートPC|パソコン|\bPC\b|Windows|ThinkPad|IdeaPad|LAVIE|dynabook|Inspiron|Vostro|Latitude|Lenovo|Dell|HP|ASUS|Acer|mouse)/i;
+const PC_COMMERCE_SIGNAL_RE = /(購入|販売|通販|直販|ストア|ショップ|価格|円|保証|カート|注文|製品)/i;
 const LISTICLE_RE = /(おすすめ\s*\d+選|ランキング|まとめ|選び方|比較.*\d+選)/i;
 const ROUTE_HOST_RE = /(tokyu\.co\.jp|jr.*\.co\.jp|odakyu\.jp|keio\.co\.jp|seiburailway\.jp|tobu\.co\.jp|keikyu\.co\.jp|tokyometro\.jp|jorudan\.co\.jp|navitime\.co\.jp|transit\.yahoo\.co\.jp|ekitan\.com)/i;
 const PC_OFFICIAL_HOST_RE = /(panasonic\.jp|nec-lavie\.jp|dynabook\.com|fmworld\.net|fujitsu\.com|lenovo\.com|dell\.com|hp\.com|asus\.com|acer\.com|microsoft\.com|apple\.com|intel\.(?:com|co\.jp)|amd\.com|nvidia\.com)/i;
+const PC_COMMERCE_HOST_RE = /(lenovo\.com|dell\.com|hp\.com|asus\.com|acer\.com|nec-lavie\.jp|dynabook\.com|fmworld\.net|mouse-jp\.co\.jp|dospara\.co\.jp|pc-koubou\.jp|yodobashi\.com|biccamera\.com|yamada-denkiweb\.com|ksdenki\.com|nojima\.co\.jp|edion\.com)/i;
 const LOW_SIGNAL_ENGINE_RE = /wikipedia/i;
+const LOW_QUALITY_PURCHASE_HOST_RE = /(reddit\.com|scribd\.com|books\.google\.|quora\.com|chiebukuro\.yahoo\.co\.jp)/i;
 const POLITE_TAIL_RE = /(?:を)?(?:教えて(?:ください|ほしい|よ)?|知りたい(?:です)?|調べて(?:ください)?|お願いします?|どうですか|どうなの|って何|とは何)[。！？!?]*$/i;
 const STOPWORDS = new Set(['について','まで','から','ので','です','ます','したい','知りたい','教えて','ください','どう','どんな','もの','こと','これ','それ','その']);
 
@@ -74,7 +79,7 @@ function pcModelTokens(text) {
 }
 
 function compactQuestion(question) {
-  const value = clean(question, 450).replace(POLITE_TAIL_RE, '').trim();
+  const value = clean(question, 450).replace(/^[0-9]{4}年[^。]{0,70}（日本時間）[。．]?/u, '').replace(POLITE_TAIL_RE, '').trim();
   return value || clean(question, 450);
 }
 
@@ -84,7 +89,14 @@ function profileFor(question) {
   const pc = PC_RE.test(question);
   const location = locationName(question);
   const local = !transit && Boolean(location) && LOCAL_RE.test(question);
-  return { transit, pc, local, used: USED_RE.test(question), detail: DETAIL_RE.test(question), stations, location, pcTokens: pcModelTokens(question) };
+  const purchase = pc && PC_PURCHASE_RE.test(question);
+  return { transit, pc, local, purchase, used: USED_RE.test(question), detail: DETAIL_RE.test(question), stations, location, pcTokens: pcModelTokens(question) };
+}
+
+function purchaseProduct(question) {
+  if (/(ノートパソコン|ノートPC|ノート)/i.test(question)) return 'ノートパソコン';
+  if (/(デスクトップ)/i.test(question)) return 'デスクトップパソコン';
+  return 'パソコン';
 }
 
 export function buildSearchQueriesV23(question) {
@@ -101,6 +113,15 @@ export function buildSearchQueriesV23(question) {
       `${profile.location} ${condition} パソコン 店舗`.replace(/\s+/g, ' ').trim(),
       `${profile.location} ${condition} PC 専門店 販売`.replace(/\s+/g, ' ').trim(),
       `${profile.location} ${condition} パソコン ショップ 店頭`.replace(/\s+/g, ' ').trim(),
+    ];
+  }
+  if (profile.pc && profile.purchase) {
+    const product = purchaseProduct(q);
+    const cheap = /(低価格|安い|格安|予算)/i.test(q) ? '低価格 ' : '';
+    return [
+      `${product} ${cheap}メーカー直販 公式ストア`.replace(/\s+/g, ' ').trim(),
+      `${product} パソコン専門店 公式通販`,
+      `${product} 家電量販店 公式通販`,
     ];
   }
   if (profile.pc) {
@@ -133,6 +154,8 @@ export function sourceEligibleV23(item, question) {
   const text = sourceText(item);
   const title = clean(item?.title, 240);
   const engine = String(item?.engine || '');
+  let host = '';
+  try { host = new URL(String(item?.url || '')).hostname.toLowerCase(); } catch {}
   if (!text) return false;
   if ((profile.transit || profile.pc || profile.local) && (LOW_SIGNAL_ENGINE_RE.test(engine) || /Wikipedia|ウィキペディア/i.test(title))) return false;
   if (profile.transit) {
@@ -140,6 +163,12 @@ export function sourceEligibleV23(item, question) {
     if (endpoints.length === 2 && !endpoints.every((station) => textContainsEntity(text, station))) return false;
   }
   if (profile.pc && profile.pcTokens.length && !profile.pcTokens.some((token) => textContainsEntity(text, token))) return false;
+  if (profile.pc && profile.purchase && !profile.local) {
+    if (LOW_QUALITY_PURCHASE_HOST_RE.test(host)) return false;
+    if (!PC_COMMERCE_HOST_RE.test(host) && !PC_OFFICIAL_HOST_RE.test(host)) return false;
+    if (!PC_PRODUCT_SIGNAL_RE.test(text)) return false;
+    if (!PC_COMMERCE_SIGNAL_RE.test(text) && !PC_COMMERCE_HOST_RE.test(host)) return false;
+  }
   if (profile.local && profile.location) {
     const osm = item?.engine === 'openstreetmap-nominatim';
     const locationHit = textContainsEntity(text, profile.location);
@@ -170,6 +199,9 @@ function scoreSource(item, index, question, profile) {
   }
   if (profile.pc && !profile.local) {
     if (PC_OFFICIAL_HOST_RE.test(host)) score += 34;
+    if (profile.purchase && PC_COMMERCE_HOST_RE.test(host)) score += 52;
+    if (profile.purchase && PC_PRODUCT_SIGNAL_RE.test(text)) score += 20;
+    if (profile.purchase && PC_COMMERCE_SIGNAL_RE.test(text)) score += 14;
     for (const token of profile.pcTokens) if (textContainsEntity(text, token)) score += 28;
     if (/(仕様|スペック|CPU|メモリ|SSD|インターフェース|USB|無線|ディスプレイ|バッテリー|対応OS|最大|スロット|Thunderbolt|充電)/i.test(text)) score += 18;
     if (/知恵袋|まとめ|ランキング/i.test(title)) score -= 25;
