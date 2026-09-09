@@ -17,10 +17,13 @@ jobs:
 
       - name: Check JavaScript syntax
         run: |
+          node --check src/worker-v34.js
+          node --check src/talk-client-v34.js
           node --check src/worker-v33.js
           node --check src/talk-client-v33.js
           node --check src/search-v26.js
           node --check src/grounding-policy-v22.js
+          node --check tests/v34-natural-ja.test.mjs
           node --check tests/v33-clean-voice.test.mjs
           node --check src/worker.js
           node --check src/worker-v20.js
