@@ -16,17 +16,20 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: Check JavaScript syntax
         run: |
+          node --check src/worker-v36.js
+          node --check src/talk-client-v36.js
           node --check src/worker-v35.js
           node --check src/talk-client-v35.js
           node --check src/worker-v34.js
           node --check src/talk-client-v34.js
-          node --check src/worker-v33.js
-          node --check src/talk-client-v33.js
           node --check src/search-v26.js
+          node --check src/search-v23.js
           node --check src/grounding-policy-v22.js
+          node --check tests/v36-search-voice-barge.test.mjs
           node --check tests/v35-system-ja-quality.test.mjs
           node --check tests/v34-natural-ja.test.mjs
-          node --check tests/v33-clean-voice.test.mjs
+      - name: Run v36 targeted tests
+        run: node --test tests/v36-search-voice-barge.test.mjs
       - name: Run full test suite
         run: npm test
       - name: Check Wrangler bundle
