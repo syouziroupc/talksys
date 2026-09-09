@@ -8,13 +8,12 @@
   "compatibility_date": "2026-09-09",
   "compatibility_flags": ["nodejs_compat"],
   "ai": { "binding": "AI" },
-  "r2_buckets": [
-    { "binding": "TALKSYS_LOGS", "bucket_name": "talksys-conversation-logs" }
-  ],
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1
-  },
+  "d1_databases": [{
+    "binding": "TALKSYS_LOG_DB",
+    "database_name": "talksys-conversation-logs",
+    "database_id": "4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a"
+  }],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
   "migrations": [
     { "tag": "v1-voice", "new_sqlite_classes": ["TalkSysVoiceAgent"] },
     { "tag": "v33-delete-legacy-voice", "deleted_classes": ["TalkSysVoiceAgent"] }
