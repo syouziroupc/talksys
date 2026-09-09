@@ -43,6 +43,14 @@ test('v36 forces local PC store requests into a location-aware search',()=>{
   assert.match(r.text,/店舗/);
 });
 
+test('v36 local store search has independent Bing RSS and OpenStreetMap fallbacks',()=>{
+  assert.match(search,/searchBingRss/);
+  assert.match(search,/searchOpenStreetMapLocal/);
+  assert.match(search,/大分|localArea/);
+  assert.match(search,/地域店舗を複数の検索経路で再確認/);
+  assert.match(search,/localFallbackSucceeded:\s*true/);
+});
+
 test('v36 keeps one preferred Japanese voice for the session',()=>{
   assert.match(TALK_CLIENT_V36,/lockedVoiceKey/);
   assert.match(TALK_CLIENT_V36,/Google.*(?:日本語|Japanese)/i);
