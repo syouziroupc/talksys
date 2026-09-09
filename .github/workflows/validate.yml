@@ -3,7 +3,7 @@ name: Validate TalkSys
 on:
   pull_request:
   push:
-    branches: [main, fix/search-grounding-v16]
+    branches: [main]
 
 jobs:
   validate:
@@ -14,23 +14,15 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
-      - name: Check JavaScript syntax
+      - name: Check current JavaScript syntax
         run: |
-          node --check src/worker-v37.js
-          node --check src/talk-client-v37.js
-          node --check src/worker-v36.js
-          node --check src/talk-client-v36.js
-          node --check src/worker-v35.js
-          node --check src/talk-client-v35.js
-          node --check src/worker-v34.js
-          node --check src/talk-client-v34.js
-          node --check src/search-v26.js
-          node --check src/search-v23.js
-          node --check src/grounding-policy-v22.js
-          node --check tests/v37-grounded-continuity.test.mjs
-          node --check tests/v36-search-voice-barge.test.mjs
-      - name: Run v37 targeted tests
-        run: node --test tests/v37-grounded-continuity.test.mjs
+          node --check src/search-v44.js
+          node --check src/worker-v44.js
+          node --check src/worker-v43-finalcandidate.js
+          node --check src/worker-v43-reviewfix.js
+          node --check tests/v44-deep-search-default.test.mjs
+      - name: Run v44 targeted tests
+        run: node --test tests/v44-deep-search-default.test.mjs
       - name: Run full test suite
         run: npm test
       - name: Check Wrangler bundle
