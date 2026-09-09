@@ -1,11 +1,19 @@
 import { collectGroundedEvidenceV23 } from './search-v23.js';
 import { searchBingRss, searchOpenStreetMapLocal, dedupeSearchResults } from './search-fallbacks.js';
 
-export const SEARCH_TOOL_V26_REVISION = 'evidence-web-v26-redundant-generic-current-transit';
+export const SEARCH_TOOL_V26_REVISION = 'evidence-web-v26-trusted-commerce-generic-current-transit';
 
 const TRANSIT_RE = /(乗り換え|乗換|経路|行き方|電車|鉄道|所要時間|運賃|時刻表|直通|次の電車|何時発|発車時刻)/i;
 const PC_RE = /(パソコン|\bPC\b|ＰＣ|ノートパソコン|ノート|Windows)/i;
 const STORE_RE = /(店|店舗|ショップ|販売店|家電量販店|専門店|どこで買|おすすめ)/i;
+const PC_PURCHASE_RE = /(購入先|どこで買|メーカー直販|直販|販売店|専門店|家電量販店|公式ストア|公式通販|保証|販売実態|低価格帯|根拠にない販売店名)/i;
+const PC_PURCHASE_HOST_RE = /(lenovo\.com|dell\.com|hp\.com|asus\.com|acer\.com|nec-lavie\.jp|dynabook\.com|fmworld\.net|mouse-jp\.co\.jp|dospara\.co\.jp|pc-koubou\.jp|yodobashi\.com|biccamera\.com|yamada-denkiweb\.com|ksdenki\.com|nojima\.co\.jp|edion\.com)/i;
+const PC_PRODUCT_SIGNAL_RE = /(ノートパソコン|ノートPC|パソコン|\bPC\b|Windows|ThinkPad|IdeaPad|LAVIE|dynabook|Inspiron|Lenovo|Dell|HP|ASUS|Acer|mouse)/i;
+const PC_COMMERCE_SIGNAL_RE = /(購入|販売|通販|直販|ストア|ショップ|価格|円|保証|カート|注文|製品)/i;
+const OFFICIAL_PC_SEEDS = [
+  { title: 'Lenovo ノートパソコン公式ストア', url: 'https://www.lenovo.com/jp/ja/laptops/' },
+  { title: 'Dell ノートパソコン公式ストア', url: 'https://www.dell.com/ja-jp/shop/dell-laptops/scr/laptops' },
+];
 
 function clean(value, max = 4000) { return String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max); }
 function decodeEntities(value) { return String(value || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16))).replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))); }
@@ -32,10 +40,29 @@ function localStoreRelevant(item, area) {
   if (token && !text.includes(token)) return false;
   return /(パソコン|\bPC\b|ＰＣ|家電|コンピュータ|computer|ドスパラ|ヤマダ|ケーズ|コジマ|エディオン|ショップ|店舗|販売)/i.test(text);
 }
+function hostOf(item) { try { return new URL(String(item?.url || '')).hostname.toLowerCase(); } catch { return ''; } }
+function pcPurchaseRelevant(item) {
+  const host = hostOf(item); if (!PC_PURCHASE_HOST_RE.test(host)) return false;
+  const text = clean(`${item?.title || ''} ${item?.excerpt || item?.snippet || ''}`, 4200);
+  return PC_PRODUCT_SIGNAL_RE.test(text) && (PC_COMMERCE_SIGNAL_RE.test(text) || PC_PURCHASE_HOST_RE.test(host));
+}
+function pcPurchaseQueries(resolved) {
+  const product = /(ノートパソコン|ノートPC|ノート)/i.test(resolved) ? 'ノートパソコン' : 'パソコン';
+  const cheap = /(低価格|安い|格安|予算)/i.test(resolved) ? '低価格 ' : '';
+  return [`${product} ${cheap}メーカー直販 公式ストア`.replace(/\s+/g, ' ').trim(), `${product} パソコン専門店 公式通販`, `${product} 家電量販店 公式通販`];
+}
 function timeoutSignal(parentSignal, timeoutMs = 4200) {
   if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return parentSignal;
   const timeout = AbortSignal.timeout(timeoutMs); if (!parentSignal) return timeout;
   return typeof AbortSignal.any === 'function' ? AbortSignal.any([parentSignal, timeout]) : parentSignal;
+}
+async function fetchOfficialPcSeed(seed, signal) {
+  const response = await fetch(seed.url, { signal: timeoutSignal(signal, 5200), redirect: 'follow', headers: { accept: 'text/html,application/xhtml+xml', 'accept-language': 'ja-JP,ja;q=0.9', 'user-agent': 'Mozilla/5.0 (compatible; TalkSys/1.0; +https://talksys.syouziroupc.workers.dev)' } });
+  if (!response.ok) throw new Error(`PC official ${response.status}`);
+  const text = stripHtml(await response.text());
+  if (!PC_PRODUCT_SIGNAL_RE.test(text)) throw new Error('PC official page contained no product signal');
+  const excerpt = clean(text, 4200);
+  return { title: seed.title, url: response.url || seed.url, engine: 'official-pc-commerce-direct', excerpt, snippet: excerpt };
 }
 function usefulRouteExcerpt(text, from, to) {
   const normalized = clean(text, 60000), needles = [`${from}→${to}`, `${from}から${to}`, 'ルート1', '経路1', '検索結果']; let index = -1;
@@ -68,9 +95,26 @@ function genericQueries(base) {
   const fromBase = Array.isArray(base?.queries) ? base.queries.map((q) => clean(q, 220)) : [];
   return [...new Set([...fromBase, core, `${core} 公式`, `${core} ${year}`].filter((q) => q && q.length >= 2))].slice(0, 6);
 }
+async function augmentPcPurchaseEvidence(base, options = {}) {
+  const resolved = clean(base?.resolvedQuestion || '', 1100);
+  if (!PC_RE.test(resolved) || !PC_PURCHASE_RE.test(resolved)) return base;
+  if (localArea(resolved) && STORE_RE.test(resolved)) return base;
+  const queries = pcPurchaseQueries(resolved);
+  const existing = (Array.isArray(base?.sources) ? base.sources : []).filter(pcPurchaseRelevant);
+  const settled = await Promise.allSettled([
+    ...queries.map((q) => searchBingRss(q, { timeoutMs: 5600, limit: 8 })),
+    ...OFFICIAL_PC_SEEDS.map((seed) => fetchOfficialPcSeed(seed, options.signal)),
+  ]);
+  const fallback = settled.flatMap((r) => r.status === 'fulfilled' ? (Array.isArray(r.value) ? r.value : [r.value]) : []).filter(pcPurchaseRelevant);
+  const sources = dedupeSearchResults([...existing, ...fallback], 8);
+  options.onProgress?.({ phase: 'evidence_ready', revision: SEARCH_TOOL_V26_REVISION, resolvedQuestion: resolved, queries, evidenceCount: sources.length, sources: sources.map((item) => ({ title: item.title, url: item.url })), message: 'PC購入先を公式販売元中心に再確認' });
+  return { ...base, queries, sources, evidence: evidenceFromSources(sources), searchUseful: sources.length > 0, pcPurchaseFallbackAttempted: true, pcPurchaseFallbackSucceeded: sources.length > 0 };
+}
 async function augmentGenericEvidence(base, options = {}) {
+  const resolved = clean(base?.resolvedQuestion || '', 900);
+  if (PC_RE.test(resolved) && PC_PURCHASE_RE.test(resolved)) return base;
   const existing = Array.isArray(base?.sources) ? base.sources : []; if (existing.length >= 3) return base;
-  const resolved = clean(base?.resolvedQuestion || '', 900), queries = genericQueries(base); if (!resolved || !queries.length) return base;
+  const queries = genericQueries(base); if (!resolved || !queries.length) return base;
   const settled = await Promise.allSettled(queries.slice(0, 5).map((q) => searchBingRss(q, { timeoutMs: 5600, limit: 7 })));
   const fallback = settled.flatMap((r) => r.status === 'fulfilled' && Array.isArray(r.value) ? r.value : []).filter((item) => genericRelevant(item, resolved));
   const sources = dedupeSearchResults([...existing, ...fallback], 8); if (!sources.length) return { ...base, genericFallbackAttempted: true };
@@ -91,6 +135,7 @@ async function augmentLocalStoreEvidence(base, options = {}) {
 
 export async function augmentGroundedEvidenceV26(base, options = {}) {
   let augmented = await augmentLocalStoreEvidence(base || {}, options);
+  augmented = await augmentPcPurchaseEvidence(augmented, options);
   augmented = await augmentGenericEvidence(augmented, options);
   const resolved = clean(augmented?.resolvedQuestion || '', 1200);
   if (!TRANSIT_RE.test(resolved)) return { ...augmented, revision: SEARCH_TOOL_V26_REVISION };
@@ -104,4 +149,4 @@ export async function augmentGroundedEvidenceV26(base, options = {}) {
   } catch (error) { return { ...augmented, revision: SEARCH_TOOL_V26_REVISION, directTransitError: String(error?.message || error).slice(0, 180) }; }
 }
 export async function collectGroundedEvidenceV26(query, history = [], options = {}) { const base = await collectGroundedEvidenceV23(query, history, options); return augmentGroundedEvidenceV26(base, options); }
-export const __test = { jstParts, stationPair, localArea, localStoreRelevant, usefulRouteExcerpt, stripHtml, evidenceFromSources, coreQuestion, queryTerms, genericRelevant, genericQueries };
+export const __test = { jstParts, stationPair, localArea, localStoreRelevant, pcPurchaseRelevant, pcPurchaseQueries, usefulRouteExcerpt, stripHtml, evidenceFromSources, coreQuestion, queryTerms, genericRelevant, genericQueries };
