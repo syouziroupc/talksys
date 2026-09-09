@@ -18,7 +18,7 @@ function unique(values, limit = 20) {
 }
 
 const DISCOVERY_HINT_RE = /(候補|機種|型番|モデル|商品|製品|店舗|店|場所|どこ|おすすめ|選ぶ|探す|選定|候補発見|candidate|model|product|store|place)/i;
-const VERIFY_HINT_RE = /(仕様|スペック|価格|値段|在庫|保証|返品|対応|適合|条件|性能|バッテリー|状態|弱点|欠点|問題|注意|相場|現在|最新|spec|price|stock|warranty|support|fit|condition|risk)/i;
+const VERIFY_HINT_RE = /(仕様|スペック|価格|値段|在庫|保証|返品|対応|適合|性能|バッテリー|状態|弱点|欠点|問題|注意|相場|現在|最新|spec|price|stock|warranty|support|fit|condition|risk)/i;
 const GENERIC_DISCOVERY_RE = /(おすすめ|何がいい|どれがいい|選ぶ|探す|候補|安い.*(?:PC|パソコン|スマホ|製品|商品)|(?:PC|パソコン|スマホ|製品|商品).*(?:安い|おすすめ|選び))/i;
 const KNOWN_MODEL_RE = /(?:\b(?=[A-Z0-9-]*\d)[A-Z]{1,6}[- ]?[A-Z0-9]{1,12}(?:[- ][A-Z0-9]{1,12})*\b|\biPhone\s*\d{1,2}(?:\s*(?:Pro|Plus|mini|Max))?\b|\bPixel\s*\d{1,2}[A-Za-z]?\b|\bGalaxy\s*[A-Z]\d{1,3}[A-Za-z]?\b|\bThinkPad\s+[A-Z]\d{1,3}\b|\bCF-[A-Z0-9-]*\d[A-Z0-9-]*\b)/i;
 
