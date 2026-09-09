@@ -16,6 +16,7 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: Check current JavaScript syntax
         run: |
+          node --check src/search-probes-v44.js
           node --check src/search-v44.js
           node --check src/worker-v44.js
           node --check src/worker-v43-finalcandidate.js
