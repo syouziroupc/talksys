@@ -44,3 +44,5 @@ jobs:
           git add src/search-v44.js src/worker-v44.js
           git commit -m 'Sequence candidate discovery before evidence verification'
           git push origin HEAD:main
+
+# retry: generic PC is not a concrete model identifier
