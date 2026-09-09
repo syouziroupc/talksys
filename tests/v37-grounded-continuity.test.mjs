@@ -66,6 +66,35 @@ test('v37 search stores actual query and source trace',()=>{
   assert.match(TALK_CLIENT_V37,/lastSearchQueries/);
 });
 
+test('v37 mobile STT no longer seeds Whisper with text that can leak into transcription',()=>{
+  const transcribeBlock=worker.slice(worker.indexOf('async function transcribeHardened'),worker.indexOf('function jstParts'));
+  assert.doesNotMatch(transcribeBlock,/initial_prompt/);
+  assert.match(transcribeBlock,/no_speech_threshold:0\.48/);
+  assert.match(transcribeBlock,/hallucination_silence_threshold:0\.5/);
+  assert.match(transcribeBlock,/condition_on_previous_text:false/);
+});
+
+test('v37 mobile STT rejects the leaked old prompt and weak-signal YouTube-style hallucination',()=>{
+  const weak={valid:true,durationMs:1800,rms:0.003,peak:0.014,activeMs:180,activeRatio:0.1};
+  assert.equal(routing.isLikelySttHallucination('日本語の日常会話を、聞こえた内容のまま文字起こしする。',weak),true);
+  assert.equal(routing.isLikelySttHallucination('ご視聴ありがとうございました。',weak),true);
+  assert.equal(routing.weakSpeechSignal(weak),false);
+});
+
+test('v37 mobile STT does not blacklist a genuinely strong spoken phrase',()=>{
+  const strong={valid:true,durationMs:1800,rms:0.035,peak:0.21,activeMs:1220,activeRatio:0.68};
+  assert.equal(routing.isLikelySttHallucination('ご視聴ありがとうございました。',strong),false);
+  assert.equal(routing.isLikelySttHallucination('こんにちは。',strong),false);
+  assert.equal(routing.weakSpeechSignal(strong),false);
+});
+
+test('v37 server STT has a pre-inference signal gate',()=>{
+  assert.match(worker,/analyzeWav\(buffer\)/);
+  assert.match(worker,/weak-speech-signal/);
+  assert.match(worker,/sttHallucinationGuard:true/);
+  assert.match(worker,/sttSignalGate:true/);
+});
+
 test('search v26 has generic redundant Bing fallback for all sparse factual searches',()=>{
   assert.match(searchSource,/augmentGenericEvidence/);
   assert.match(searchSource,/genericFallbackSucceeded/);
