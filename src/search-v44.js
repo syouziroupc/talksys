@@ -1,4 +1,4 @@
-import { webSearch } from './web-search.js';
+import { relevanceScore, webSearch } from './web-search.js';
 import { rerankSearchResults } from './search-rerank.js';
 import {
   buildDeterministicSearchQueries,
@@ -8,12 +8,19 @@ import {
   searchOpenStreetMapLocal,
 } from './search-fallbacks.js';
 
-export const SEARCH_V44_REVISION = 'deep-search-v44-default-exhaustive';
+export const SEARCH_V44_REVISION = 'deep-search-v44-default-exhaustive-budget-aware';
 export const SEARCH_V44_MAX_QUERIES = 14;
+export const SEARCH_V44_MAX_RECOVERY_QUERIES = 5;
+export const SEARCH_V44_MAX_TOTAL_QUERIES = SEARCH_V44_MAX_QUERIES + SEARCH_V44_MAX_RECOVERY_QUERIES;
 export const SEARCH_V44_MAX_ROUNDS = 3;
 export const SEARCH_V44_SOURCE_LIMIT = 18;
 export const SEARCH_V44_TOTAL_BUDGET_MS = 28000;
 export const SEARCH_V44_QUERY_TIMEOUT_MS = 6500;
+export const SEARCH_V44_RSS_CONCURRENCY = 4;
+// Approximate external-fetch target before HTTP redirect hops: 14 RSS + 6-engine cross-check +
+// 3 direct page reads + up to 2 local lookups + 5 recovery RSS = about 30.
+// This intentionally leaves headroom below Workers Free's 50 external-subrequest ceiling.
+export const SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET = 30;
 
 const PLANNER_MODEL = '@cf/zai-org/glm-5.3-flash';
 const CURRENT_OR_HIGH_STAKES_RE = /(最新|現在|今日|明日|今|価格|値段|在庫|営業時間|法律|制度|規制|ニュース|発売|販売|予定|日程|時刻|時刻表|天気|株価|為替|相場|選挙|首相|大統領|CEO|仕様|バージョン|アップデート)/i;
@@ -134,24 +141,116 @@ async function planDeepSearch(ai, text, history, signal) {
   };
 }
 
-async function searchOne(query, options = {}) {
-  const timeoutMs = Math.max(3000, Math.min(9000, Number(options.timeoutMs) || SEARCH_V44_QUERY_TIMEOUT_MS));
-  const enrichPages = options.enrichPages === true;
-  const [html, rss] = await Promise.all([
-    webSearch(query, { limit: 12, timeoutMs, enrichPages }).catch(() => []),
-    searchBingRss(query, { limit: 12, timeoutMs }).catch(() => []),
-  ]);
-  return dedupeSearchResults([...(html || []), ...(rss || [])], 24);
+async function runRssQueries(queries, timeoutMs) {
+  const list = uniqueQueries(queries, SEARCH_V44_MAX_QUERIES);
+  const out = [];
+  for (let offset = 0; offset < list.length; offset += SEARCH_V44_RSS_CONCURRENCY) {
+    const batch = list.slice(offset, offset + SEARCH_V44_RSS_CONCURRENCY);
+    const settled = await Promise.allSettled(batch.map((q) => searchBingRss(q, { limit: 12, timeoutMs })));
+    out.push(...settled.flatMap((x) => x.status === 'fulfilled' && Array.isArray(x.value) ? x.value : []));
+  }
+  return out;
 }
 
 async function runQueryBatch(queries, options = {}) {
-  const list = uniqueQueries(queries, 8);
+  const list = uniqueQueries(queries, SEARCH_V44_MAX_QUERIES);
   if (!list.length) return [];
-  const settled = await Promise.allSettled(list.map((q, index) => searchOne(q, {
-    timeoutMs: options.timeoutMs,
-    enrichPages: index < (options.enrichCount ?? 3),
-  })));
-  return settled.flatMap((x) => x.status === 'fulfilled' && Array.isArray(x.value) ? x.value : []);
+  const rss = await runRssQueries(list, options.timeoutMs);
+  let crossEngine = [];
+  if (options.multiEngine === true) {
+    // One representative query gets the expensive Google/DDG/Bing/Wikipedia/News cross-check.
+    // All other planned questions still run through RSS, preserving breadth without exhausting
+    // Workers Free external-subrequest allowance.
+    crossEngine = await webSearch(list[0], {
+      limit: 12,
+      timeoutMs: options.timeoutMs,
+      enrichPages: false,
+    }).catch(() => []);
+  }
+  return dedupeSearchResults([...crossEngine, ...rss], 120);
+}
+
+function decodeEntities(value) {
+  return String(value || '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)));
+}
+
+function stripHtml(value) {
+  return decodeEntities(String(value || ''))
+    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<svg\b[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractPageExcerpt(html) {
+  const source = String(html || '');
+  const meta = source.match(/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']/i)
+    || source.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["'](?:description|og:description)["']/i);
+  const paragraphs = [];
+  for (const match of source.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)) {
+    const text = stripHtml(match[1]);
+    if (text.length < 35) continue;
+    paragraphs.push(text);
+    if (paragraphs.join(' ').length >= 3500) break;
+  }
+  return [meta ? decodeEntities(meta[1]) : '', ...paragraphs].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().slice(0, 4200);
+}
+
+async function enrichOne(item, timeoutMs) {
+  if (!/^https?:\/\//i.test(item?.url || '')) return item;
+  try {
+    const response = await fetch(item.url, {
+      redirect: 'follow',
+      headers: {
+        accept: 'text/html,application/xhtml+xml',
+        'accept-language': 'ja,en;q=0.7',
+        'user-agent': 'TalkSys/44 (+https://talksys.syouziroupc.workers.dev)',
+      },
+      signal: AbortSignal.timeout(Math.min(4200, timeoutMs)),
+    });
+    if (!response.ok) return item;
+    const type = response.headers.get('content-type') || '';
+    if (!/(?:text|html)/i.test(type)) return item;
+    const html = (await response.text()).slice(0, 500000);
+    const excerpt = extractPageExcerpt(html);
+    return excerpt ? { ...item, excerpt, engine: item.engine ? `${item.engine}+page` : 'page-direct-v44' } : item;
+  } catch {
+    return item;
+  }
+}
+
+async function enrichTopResults(results, question, ai, signal, timeoutMs, count = 3) {
+  if (!Array.isArray(results) || !results.length || count <= 0) return results || [];
+  const candidates = await rerankSearchResults(ai, question, results, Math.min(6, Math.max(count, 4)), { signal, timeoutMs: 2200 });
+  const targets = candidates.slice(0, count);
+  const enriched = await Promise.all(targets.map((item) => enrichOne(item, timeoutMs)));
+  const byUrl = new Map(enriched.map((item) => [item.url, item]));
+  return (results || []).map((item) => byUrl.get(item.url) || item);
+}
+
+async function rankExpanded(ai, question, results, signal, limit = SEARCH_V44_SOURCE_LIMIT) {
+  const unique = dedupeSearchResults(results, 120)
+    .map((item) => ({ item, score: relevanceScore(question, item) }))
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.item)
+    .slice(0, 72);
+  if (unique.length <= 6) return unique.slice(0, limit);
+
+  const modelRanked = [];
+  for (let offset = 0; offset < unique.length && modelRanked.length < Math.min(limit, 12); offset += 24) {
+    const chunk = unique.slice(offset, offset + 24);
+    const ranked = await rerankSearchResults(ai, question, chunk, 6, { signal, timeoutMs: 2500 });
+    modelRanked.push(...ranked);
+  }
+  const selectedUrls = new Set(modelRanked.map((x) => x.url));
+  const supplements = unique.filter((x) => !selectedUrls.has(x.url));
+  return dedupeSearchResults([...modelRanked, ...supplements], limit);
 }
 
 function evidenceSummary(results, limit = SEARCH_V44_SOURCE_LIMIT) {
@@ -163,7 +262,7 @@ function evidenceSummary(results, limit = SEARCH_V44_SOURCE_LIMIT) {
 }
 
 async function assessCoverage(ai, plan, results, history, signal) {
-  if (!results?.length) return { sufficient: false, reason: 'no_results', queries: deterministicQueries(plan.resolvedQuestion, history).slice(0, 5) };
+  if (!results?.length) return { sufficient: false, reason: 'no_results', queries: deterministicQueries(plan.resolvedQuestion, history).slice(0, SEARCH_V44_MAX_RECOVERY_QUERIES) };
   try {
     const result = await ai.run(PLANNER_MODEL, {
       messages: [
@@ -186,7 +285,7 @@ async function assessCoverage(ai, plan, results, history, signal) {
       return {
         sufficient: data.sufficient === true,
         reason: clean(data.reason || '', 300),
-        queries: uniqueQueries(Array.isArray(data.queries) ? data.queries : [], 5),
+        queries: uniqueQueries(Array.isArray(data.queries) ? data.queries : [], SEARCH_V44_MAX_RECOVERY_QUERIES),
       };
     }
   } catch {}
@@ -202,7 +301,7 @@ function recoveryQueries(plan, history) {
     `${resolved} 反証 問題`,
     `${resolved} 比較 評判`,
     ...deterministicQueries(resolved, history),
-  ], 6);
+  ], SEARCH_V44_MAX_RECOVERY_QUERIES);
 }
 
 function shouldForceThirdRound(plan) {
@@ -225,13 +324,14 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   const allQueries = [...first];
 
   const round1Started = Date.now();
-  let merged = await runQueryBatch(first, { timeoutMs: queryTimeoutMs, enrichCount: 4 });
+  let merged = await runQueryBatch(first, { timeoutMs: queryTimeoutMs, multiEngine: true });
+  merged = await enrichTopResults(merged, plan.resolvedQuestion, ai, signal, queryTimeoutMs, 3);
   timings.round1Ms = Date.now() - round1Started;
   let rounds = 1;
 
   if (second.length && Date.now() - startedAt < maxBudgetMs - 4500) {
     const round2Started = Date.now();
-    const round2 = await runQueryBatch(second, { timeoutMs: queryTimeoutMs, enrichCount: 4 });
+    const round2 = await runQueryBatch(second, { timeoutMs: queryTimeoutMs, multiEngine: false });
     merged = dedupeSearchResults([...merged, ...round2], 140);
     allQueries.push(...second);
     timings.round2Ms = Date.now() - round2Started;
@@ -250,7 +350,7 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   }
 
   const rerank1Started = Date.now();
-  let ranked = await rerankSearchResults(ai, plan.resolvedQuestion, merged, SEARCH_V44_SOURCE_LIMIT, { signal, timeoutMs: 2800 });
+  let ranked = await rankExpanded(ai, plan.resolvedQuestion, merged, signal, SEARCH_V44_SOURCE_LIMIT);
   timings.rerank1Ms = Date.now() - rerank1Started;
 
   const coverageStarted = Date.now();
@@ -260,16 +360,16 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   const needThird = !coverage.sufficient || shouldForceThirdRound(plan);
   if (needThird && Date.now() - startedAt < maxBudgetMs - 4000) {
     const already = new Set(allQueries.map((q) => q.toLowerCase()));
-    const thirdQueries = uniqueQueries([...(coverage.queries || []), ...recoveryQueries(plan, history)], 5)
+    const thirdQueries = uniqueQueries([...(coverage.queries || []), ...recoveryQueries(plan, history)], SEARCH_V44_MAX_RECOVERY_QUERIES)
       .filter((q) => !already.has(q.toLowerCase()));
     if (thirdQueries.length) {
       const round3Started = Date.now();
-      const round3 = await runQueryBatch(thirdQueries, { timeoutMs: queryTimeoutMs, enrichCount: 4 });
+      const round3 = await runQueryBatch(thirdQueries, { timeoutMs: queryTimeoutMs, multiEngine: false });
       merged = dedupeSearchResults([...merged, ...round3], 170);
       allQueries.push(...thirdQueries);
       timings.round3Ms = Date.now() - round3Started;
       rounds = 3;
-      ranked = await rerankSearchResults(ai, plan.resolvedQuestion, merged, SEARCH_V44_SOURCE_LIMIT, { signal, timeoutMs: 3000 });
+      ranked = await rankExpanded(ai, plan.resolvedQuestion, merged, signal, SEARCH_V44_SOURCE_LIMIT);
       coverage = await assessCoverage(ai, { ...plan, queries: allQueries }, ranked, history, signal);
     }
   }
@@ -277,12 +377,14 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   timings.totalMs = Date.now() - startedAt;
   return {
     revision: SEARCH_V44_REVISION,
-    plan: { ...plan, queries: uniqueQueries(allQueries, 24) },
+    plan: { ...plan, queries: uniqueQueries(allQueries, SEARCH_V44_MAX_TOTAL_QUERIES) },
     rawResults: merged,
     results: ranked,
     rounds,
     coverage,
     evidenceUseful: hasUsefulSearchEvidence(ranked, 4),
+    subrequestBudgetAware: true,
+    externalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
     timings,
   };
 }
@@ -293,4 +395,5 @@ export const __test = {
   uniqueQueries,
   deterministicQueries,
   shouldForceThirdRound,
+  extractPageExcerpt,
 };
