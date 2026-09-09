@@ -114,10 +114,23 @@ export function appendConversationTurn(connection, userText, assistantText) {
   const messages = [...session.messages];
   const user = cleanContent(userText);
   const assistant = cleanContent(assistantText);
-  if (user) messages.push({ role: 'user', content: user });
+
+  // User input is recorded as soon as a turn begins so a follow-up arriving while
+  // the previous answer/search is still running can resolve phrases such as
+  // "どうですか" against that in-flight question. When the answer later completes,
+  // avoid duplicating the already-recorded user message.
+  const last = messages.at(-1);
+  if (user && !(last?.role === 'user' && last.content === user)) {
+    messages.push({ role: 'user', content: user });
+  }
   if (assistant) messages.push({ role: 'assistant', content: assistant });
+
   const next = writeSession(connection, { ...session, messages });
   return contextWindow(next?.messages || []);
+}
+
+export function recordConversationUser(connection, userText) {
+  return appendConversationTurn(connection, userText, '');
 }
 
 export function endCallSession(connection) {
