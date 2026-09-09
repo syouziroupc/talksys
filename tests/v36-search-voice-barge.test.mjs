@@ -74,7 +74,7 @@ test('v36 still does not call broken server TTS',()=>{
 
 test('transit evidence prioritizes the direct route page even when web sources exist',()=>{
   assert.match(search,/directTransitPrimary:\s*true/);
-  assert.match(search,/乗換案内の実ページを優先根拠として確認/);
+  assert.match(search,/(?:乗換案内の実ページ|現在時刻を指定した乗換案内)を優先根拠として確認/);
 });
 
 test('v36 is wired as production entry',()=>{
