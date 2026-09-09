@@ -12,7 +12,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_VOICE_REVISION: cloudflare-agent-v25-glm-mobile-audio
+      EXPECTED_VOICE_REVISION: cloudflare-agent-v27-grok-conversation-android-realtime
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
@@ -22,16 +22,14 @@ jobs:
 
       - name: Check JavaScript syntax
         run: |
-          node --check src/worker-v25-production.js
-          node --check src/worker-v25.js
+          node --check src/worker-v27-production.js
+          node --check src/worker-v27.js
+          node --check src/grok-conversation-v27.js
+          node --check src/worker-v26-production.js
+          node --check src/worker-v26.js
+          node --check src/cloudflare-live-client-v26.js
+          node --check src/search-v26.js
           node --check src/glm-conversation-v25.js
-          node --check src/cloudflare-live-client-v25.js
-          node --check src/worker-v24-production.js
-          node --check src/worker-v24.js
-          node --check src/cloudflare-live-client-v24.js
-          node --check src/search-v23.js
-          node --check src/search-v22.js
-          node --check src/grounding-policy-v22.js
           node --check src/bounded-conversation.js
           node --check src/conversation-memory.js
           node --check src/web-search.js
@@ -68,9 +66,9 @@ jobs:
         run: |
           echo "Repository Cloudflare credentials are absent."
           echo "Production must be deployed through the authorized external production path."
-          echo "This job will fail unless production actually reaches v25."
+          exit 1
 
-      - name: Verify production v25 contract
+      - name: Verify production v27 contract
         run: |
           expected="$EXPECTED_VOICE_REVISION"
           body=""
@@ -88,7 +86,7 @@ jobs:
               echo "::error::Production did not reach $expected. Deployment is NOT complete."
               exit 1
             fi
-            sleep 10
+            sleep 5
           done
 
           BODY="$body" EXPECTED="$expected" node <<'NODE'
@@ -98,48 +96,53 @@ jobs:
             voiceRevision: d.voiceRevision,
             conversationOrchestrator: d.conversationOrchestrator,
             conversationModel: d.conversationModel,
-            glmOnlyConversation: d.glmOnlyConversation,
-            glmReasoningEffort: d.glmReasoningEffort,
-            mobileAudioPipelineV25: d.mobileAudioPipelineV25,
-            dedicatedCaptureAudioContext: d.dedicatedCaptureAudioContext,
-            androidScriptProcessorPreferred: d.androidScriptProcessorPreferred,
-            androidCallStartsAfterFirstMicFrame: d.androidCallStartsAfterFirstMicFrame,
-            nativeMobileCaptureSampleRate: d.nativeMobileCaptureSampleRate,
-            microphoneDiagnostics: d.microphoneDiagnostics,
+            conversationModelFallback: d.conversationModelFallback,
+            conversationEmergencyFallback: d.conversationEmergencyFallback,
+            grokConversationPrimary: d.grokConversationPrimary,
+            ttsPrimary: d.ttsPrimary,
+            androidAudioWorkletPreferred: d.androidAudioWorkletPreferred,
+            androidPcmFrameProbeBeforeCall: d.androidPcmFrameProbeBeforeCall,
           }));
           if (d.voiceRevision !== expected) throw new Error(`expected ${expected}, got ${d.voiceRevision}`);
-          if (d.conversationModel !== '@cf/zai-org/glm-5.3-flash') throw new Error('GLM-5.3 Flash is not the active conversation model');
-          if (d.conversationModelFallback !== '@cf/zai-org/glm-5.3-flash') throw new Error('non-GLM conversation fallback is still configured');
-          if (d.glmReasoningEffort !== 'low') throw new Error('GLM low reasoning is not active');
+          if (d.conversationModel !== 'xai/grok-4.20-0309-non-reasoning') throw new Error('Grok is not the primary conversation model');
+          if (d.conversationModelFallback !== '@cf/zai-org/glm-5.3-flash') throw new Error('GLM fallback missing');
+          if (d.conversationEmergencyFallback !== '@cf/qwen/qwen3.8-27b') throw new Error('Qwen emergency fallback missing');
+          if (d.ttsPrimary !== '@cf/myshell-ai/melotts') throw new Error('MeloTTS is not the primary speech synthesizer');
           const required = [
-            'glmOnlyConversation','conciseRepliesByDefault','mobileAudioPipelineV25','dedicatedCaptureAudioContext',
-            'androidScriptProcessorPreferred','androidCallStartsAfterFirstMicFrame','nativeMobileCaptureSampleRate','microphoneDiagnostics',
-            'browserStreamingTts','browserStreamingTtsStartsAtFirstSentence','preListeningMicFrames','voiceBargeIn',
+            'grokConversationPrimary','grokNonReasoningRealtime','grokStreaming','inFlightUserContext',
+            'directTransitEvidenceFallback','mobileAudioPipelineV26','androidAudioWorkletPreferred',
+            'androidScriptProcessorFallback','androidPcmFrameProbeBeforeCall','androidCaptureBackendFailover',
+            'androidLifecycleResume','mobileWebSocketHardRecovery','microphoneDiagnostics',
             'contextualSearchSubjectOnlyCarryover'
           ];
           for (const key of required) if (d[key] !== true) throw new Error(`${key} is not true`);
           NODE
 
-      - name: Verify live v25 client
+      - name: Verify live Android client
         run: |
           script="$(curl -fsS --max-time 20 "$PRODUCTION_URL/cloudflare-live.js")"
-          grep -F "captureAudioContext" <<< "$script"
-          grep -F "IS_ANDROID" <<< "$script"
-          grep -F "micFrameCount < 1" <<< "$script"
-          grep -F "__talksysVoiceDebug" <<< "$script"
-          grep -F "talksys-mic-stalled" <<< "$script"
+          grep -F "verifyAndroidCapturePipeline" <<< "$script"
+          grep -F "talksys-mic-no-frames" <<< "$script"
+          grep -F "resumeMobileRuntime" <<< "$script"
+          grep -F "socket?.close()" <<< "$script"
           grep -F "callStartPending" <<< "$script"
           grep -F "talksys-barge-in" <<< "$script"
-          grep -F "queueCompletedStreamSpeech(streamText, false)" <<< "$script"
 
-      - name: Verify contextual search regression
+      - name: Verify contextual search regressions
         run: |
-          body="$(curl -fsS --max-time 35 "$PRODUCTION_URL/api/search-smoke-v25-context")"
-          echo "$body"
-          BODY="$body" node <<'NODE'
+          transit="$(curl -fsS --max-time 35 "$PRODUCTION_URL/api/search-smoke-v27-transit-followup")"
+          BODY="$transit" node <<'NODE'
           const d = JSON.parse(process.env.BODY || '{}');
-          if (!d.ok) throw new Error('context smoke returned no evidence');
+          if (!d.ok) throw new Error(`transit follow-up failed: ${d.directTransitError || 'no evidence'}`);
           const q = String(d.resolvedQuestion || '');
-          if (!/パソコン/.test(q) || !/中古/.test(q) || !/横浜/.test(q)) throw new Error(`context not preserved: ${q}`);
-          if (/YouTube|ネットサーフィン/i.test(q)) throw new Error(`old usage polluted current search: ${q}`);
+          if (!/鷺沼/.test(q) || !/相模大野/.test(q) || !/どうですか/.test(q)) throw new Error(`in-flight context lost: ${q}`);
+          if (!(d.sources || []).some(s => /鷺沼/.test(JSON.stringify(s)) && /相模大野/.test(JSON.stringify(s)))) throw new Error('route evidence lacks endpoints');
+          NODE
+
+          shopping="$(curl -fsS --max-time 35 "$PRODUCTION_URL/api/search-smoke-v27-context")"
+          BODY="$shopping" node <<'NODE'
+          const d = JSON.parse(process.env.BODY || '{}');
+          if (!d.ok) throw new Error('shopping context smoke failed');
+          const q = String(d.resolvedQuestion || '');
+          if (!/パソコン/.test(q) || !/中古/.test(q) || !/横浜/.test(q) || /YouTube|ネットサーフィン/i.test(q)) throw new Error(`bad shopping context: ${q}`);
           NODE
