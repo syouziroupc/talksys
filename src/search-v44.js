@@ -4,23 +4,27 @@ import {
   buildDeterministicSearchQueries,
   dedupeSearchResults,
   hasUsefulSearchEvidence,
-  searchBingRss,
   searchOpenStreetMapLocal,
 } from './search-fallbacks.js';
+import { engineForIndex, fallbackEngine, searchProbe } from './search-probes-v44.js';
 
-export const SEARCH_V44_REVISION = 'deep-search-v44-default-exhaustive-budget-aware';
+export const SEARCH_V44_REVISION = 'deep-search-v44-resilient-multi-engine';
 export const SEARCH_V44_MAX_QUERIES = 14;
 export const SEARCH_V44_MAX_RECOVERY_QUERIES = 5;
 export const SEARCH_V44_MAX_TOTAL_QUERIES = SEARCH_V44_MAX_QUERIES + SEARCH_V44_MAX_RECOVERY_QUERIES;
 export const SEARCH_V44_MAX_ROUNDS = 3;
 export const SEARCH_V44_SOURCE_LIMIT = 18;
-export const SEARCH_V44_TOTAL_BUDGET_MS = 28000;
-export const SEARCH_V44_QUERY_TIMEOUT_MS = 6500;
-export const SEARCH_V44_RSS_CONCURRENCY = 4;
-// Approximate external-fetch target before HTTP redirect hops: 14 RSS + 6-engine cross-check +
-// 3 direct page reads + up to 2 local lookups + 5 recovery RSS = about 30.
-// This intentionally leaves headroom below Workers Free's 50 external-subrequest ceiling.
+export const SEARCH_V44_TOTAL_BUDGET_MS = 30000;
+export const SEARCH_V44_QUERY_TIMEOUT_MS = 6200;
+export const SEARCH_V44_PROBE_CONCURRENCY = 4;
+export const SEARCH_V44_MAX_ENGINE_RETRIES = 5;
+export const SEARCH_V44_MAX_PER_HOST = 2;
+// Baseline external fetch target: 14 distributed probes + one 6-source cross-check +
+// 3 page reads + up to 2 local lookups + 5 recovery probes = about 30.
+// Failed probes may consume up to 5 extra retries, leaving headroom below Workers Free's
+// 50 external-subrequest limit even before accounting for unusual redirect chains.
 export const SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET = 30;
+export const SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET = 35;
 
 const PLANNER_MODEL = '@cf/zai-org/glm-5.3-flash';
 const CURRENT_OR_HIGH_STAKES_RE = /(最新|現在|今日|明日|今|価格|値段|在庫|営業時間|法律|制度|規制|ニュース|発売|販売|予定|日程|時刻|時刻表|天気|株価|為替|相場|選挙|首相|大統領|CEO|仕様|バージョン|アップデート)/i;
@@ -122,7 +126,9 @@ async function planDeepSearch(ai, text, history, signal) {
           resolvedQuestion,
           intent: clean(data.intent || '', 40) || (CURRENT_OR_HIGH_STAKES_RE.test(resolvedQuestion) ? 'current' : 'general'),
           location: clean(data.location || '', 100),
-          mustInclude: Array.isArray(data.must_include || data.mustInclude) ? (data.must_include || data.mustInclude).map((x) => clean(x, 180)).filter(Boolean).slice(0, 10) : [],
+          mustInclude: Array.isArray(data.must_include || data.mustInclude)
+            ? (data.must_include || data.mustInclude).map((x) => clean(x, 180)).filter(Boolean).slice(0, 10)
+            : [],
           queries,
           planned: true,
           plannerModel: PLANNER_MODEL,
@@ -141,33 +147,110 @@ async function planDeepSearch(ai, text, history, signal) {
   };
 }
 
-async function runRssQueries(queries, timeoutMs) {
-  const list = uniqueQueries(queries, SEARCH_V44_MAX_QUERIES);
+function hostOf(url) {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; }
+}
+
+function diversifyHosts(results, limit = SEARCH_V44_SOURCE_LIMIT, maxPerHost = SEARCH_V44_MAX_PER_HOST) {
+  const items = Array.isArray(results) ? results.filter(Boolean) : [];
   const out = [];
-  for (let offset = 0; offset < list.length; offset += SEARCH_V44_RSS_CONCURRENCY) {
-    const batch = list.slice(offset, offset + SEARCH_V44_RSS_CONCURRENCY);
-    const settled = await Promise.allSettled(batch.map((q) => searchBingRss(q, { limit: 12, timeoutMs })));
-    out.push(...settled.flatMap((x) => x.status === 'fulfilled' && Array.isArray(x.value) ? x.value : []));
+  const deferred = [];
+  const counts = new Map();
+  for (const item of items) {
+    const host = hostOf(item?.url || '') || `unknown:${out.length + deferred.length}`;
+    const count = counts.get(host) || 0;
+    if (count < maxPerHost) {
+      counts.set(host, count + 1);
+      out.push(item);
+    } else {
+      deferred.push(item);
+    }
+    if (out.length >= limit) return out.slice(0, limit);
   }
-  return out;
+  for (const item of deferred) {
+    out.push(item);
+    if (out.length >= limit) break;
+  }
+  return out.slice(0, limit);
+}
+
+function summarizeProbe(probe) {
+  return {
+    engine: probe?.engine || '',
+    query: probe?.query || '',
+    ok: probe?.ok === true,
+    count: Array.isArray(probe?.results) ? probe.results.length : 0,
+    error: clean(probe?.error || '', 120),
+    elapsedMs: Number(probe?.elapsedMs) || 0,
+  };
+}
+
+async function runDistributedProbes(queries, options = {}) {
+  const list = uniqueQueries(queries, SEARCH_V44_MAX_QUERIES);
+  const timeoutMs = options.timeoutMs;
+  const engineOffset = Math.max(0, Number(options.engineOffset) || 0);
+  const retryBudget = Math.max(0, Math.min(SEARCH_V44_MAX_ENGINE_RETRIES, Number(options.retryBudget ?? SEARCH_V44_MAX_ENGINE_RETRIES)));
+  const results = [];
+  const diagnostics = [];
+  const failed = [];
+
+  for (let offset = 0; offset < list.length; offset += SEARCH_V44_PROBE_CONCURRENCY) {
+    const batch = list.slice(offset, offset + SEARCH_V44_PROBE_CONCURRENCY);
+    const settled = await Promise.all(batch.map((q, i) => {
+      const absoluteIndex = offset + i;
+      const engine = engineForIndex(absoluteIndex, engineOffset);
+      return searchProbe(engine, q, { timeoutMs, limit: 10 });
+    }));
+    for (const probe of settled) {
+      diagnostics.push(summarizeProbe(probe));
+      if (probe?.ok && Array.isArray(probe.results) && probe.results.length) results.push(...probe.results);
+      else failed.push(probe);
+    }
+  }
+
+  let retries = 0;
+  for (const failedProbe of failed) {
+    if (retries >= retryBudget) break;
+    const engine = fallbackEngine(failedProbe?.engine || 'bing-rss');
+    const retry = await searchProbe(engine, failedProbe?.query || '', { timeoutMs, limit: 10 });
+    diagnostics.push({ ...summarizeProbe(retry), retryOf: failedProbe?.engine || '' });
+    if (retry?.ok && Array.isArray(retry.results)) results.push(...retry.results);
+    retries += 1;
+  }
+
+  return {
+    results: dedupeSearchResults(results, 140),
+    diagnostics,
+    retries,
+    failures: diagnostics.filter((x) => !x.ok).length,
+  };
 }
 
 async function runQueryBatch(queries, options = {}) {
   const list = uniqueQueries(queries, SEARCH_V44_MAX_QUERIES);
-  if (!list.length) return [];
-  const rss = await runRssQueries(list, options.timeoutMs);
-  let crossEngine = [];
-  if (options.multiEngine === true) {
-    // One representative query gets the expensive Google/DDG/Bing/Wikipedia/News cross-check.
-    // All other planned questions still run through RSS, preserving breadth without exhausting
-    // Workers Free external-subrequest allowance.
-    crossEngine = await webSearch(list[0], {
+  if (!list.length) return { results: [], diagnostics: [], retries: 0, crossEngineUsed: false };
+
+  const distributed = await runDistributedProbes(list, options);
+  let merged = distributed.results;
+  let crossEngineUsed = false;
+
+  if (options.multiEngine === true || merged.length < 6) {
+    const cross = await webSearch(list[0], {
       limit: 12,
       timeoutMs: options.timeoutMs,
       enrichPages: false,
     }).catch(() => []);
+    merged = dedupeSearchResults([...cross, ...merged], 150);
+    crossEngineUsed = true;
   }
-  return dedupeSearchResults([...crossEngine, ...rss], 120);
+
+  return {
+    results: merged,
+    diagnostics: distributed.diagnostics,
+    retries: distributed.retries,
+    failures: distributed.failures,
+    crossEngineUsed,
+  };
 }
 
 function decodeEntities(value) {
@@ -214,21 +297,23 @@ async function enrichOne(item, timeoutMs) {
       },
       signal: AbortSignal.timeout(Math.min(4200, timeoutMs)),
     });
-    if (!response.ok) return item;
+    if (!response.ok) return { ...item, pageFetch: `http_${response.status}` };
     const type = response.headers.get('content-type') || '';
-    if (!/(?:text|html)/i.test(type)) return item;
+    if (!/(?:text|html)/i.test(type)) return { ...item, pageFetch: 'unsupported_content_type' };
     const html = (await response.text()).slice(0, 500000);
     const excerpt = extractPageExcerpt(html);
-    return excerpt ? { ...item, excerpt, engine: item.engine ? `${item.engine}+page` : 'page-direct-v44' } : item;
-  } catch {
-    return item;
+    return excerpt
+      ? { ...item, excerpt, pageFetch: 'ok', engine: item.engine ? `${item.engine}+page` : 'page-direct-v44' }
+      : { ...item, pageFetch: 'empty_excerpt' };
+  } catch (error) {
+    return { ...item, pageFetch: clean(error?.name || error?.message || error, 100) || 'page_fetch_failed' };
   }
 }
 
 async function enrichTopResults(results, question, ai, signal, timeoutMs, count = 3) {
   if (!Array.isArray(results) || !results.length || count <= 0) return results || [];
   const candidates = await rerankSearchResults(ai, question, results, Math.min(6, Math.max(count, 4)), { signal, timeoutMs: 2200 });
-  const targets = candidates.slice(0, count);
+  const targets = diversifyHosts(candidates, count, 1).slice(0, count);
   const enriched = await Promise.all(targets.map((item) => enrichOne(item, timeoutMs)));
   const byUrl = new Map(enriched.map((item) => [item.url, item]));
   return (results || []).map((item) => byUrl.get(item.url) || item);
@@ -240,7 +325,7 @@ async function rankExpanded(ai, question, results, signal, limit = SEARCH_V44_SO
     .sort((a, b) => b.score - a.score)
     .map((x) => x.item)
     .slice(0, 72);
-  if (unique.length <= 6) return unique.slice(0, limit);
+  if (unique.length <= 6) return diversifyHosts(unique, limit);
 
   const modelRanked = [];
   for (let offset = 0; offset < unique.length && modelRanked.length < Math.min(limit, 12); offset += 24) {
@@ -250,25 +335,30 @@ async function rankExpanded(ai, question, results, signal, limit = SEARCH_V44_SO
   }
   const selectedUrls = new Set(modelRanked.map((x) => x.url));
   const supplements = unique.filter((x) => !selectedUrls.has(x.url));
-  return dedupeSearchResults([...modelRanked, ...supplements], limit);
+  return diversifyHosts(dedupeSearchResults([...modelRanked, ...supplements], 72), limit);
 }
 
 function evidenceSummary(results, limit = SEARCH_V44_SOURCE_LIMIT) {
   return (results || []).slice(0, limit).map((item, index) => {
-    let host = '';
-    try { host = new URL(item?.url || '').hostname.replace(/^www\./, ''); } catch {}
+    const host = hostOf(item?.url || '');
     return `[${index + 1}] ${clean(item?.title, 220)}\n${host}\n${clean(item?.excerpt || item?.snippet, 1200)}`;
   }).join('\n\n');
 }
 
 async function assessCoverage(ai, plan, results, history, signal) {
-  if (!results?.length) return { sufficient: false, reason: 'no_results', queries: deterministicQueries(plan.resolvedQuestion, history).slice(0, SEARCH_V44_MAX_RECOVERY_QUERIES) };
+  if (!results?.length) {
+    return {
+      sufficient: false,
+      reason: 'no_results',
+      queries: deterministicQueries(plan.resolvedQuestion, history).slice(0, SEARCH_V44_MAX_RECOVERY_QUERIES),
+    };
+  }
   try {
     const result = await ai.run(PLANNER_MODEL, {
       messages: [
         {
           role: 'system',
-          content: 'Web調査の十分性を厳しく監査します。回答は書かず、主要な主張を複数ソースで支えられるか、現在情報に一次情報または信頼できる根拠があるか、質問の条件を落としていないかを確認してください。不足があれば既存検索と重複しない追加検索語を最大5本作ってください。JSONだけ: {"sufficient":true|false,"reason":"...","queries":["..."]}',
+          content: 'Web調査の十分性を厳しく監査します。回答は書かず、主要な主張を複数ソースで支えられるか、現在情報に一次情報または信頼できる根拠があるか、質問の条件を落としていないかを確認してください。同一ドメインに偏っている場合も不足扱いです。不足があれば既存検索と重複しない追加検索語を最大5本作ってください。JSONだけ: {"sufficient":true|false,"reason":"...","queries":["..."]}',
         },
         {
           role: 'user',
@@ -289,7 +379,12 @@ async function assessCoverage(ai, plan, results, history, signal) {
       };
     }
   } catch {}
-  return { sufficient: hasUsefulSearchEvidence(results, 7), reason: 'coverage_model_unavailable', queries: [] };
+  const hosts = new Set((results || []).map((x) => hostOf(x?.url || '')).filter(Boolean));
+  return {
+    sufficient: hasUsefulSearchEvidence(results, 7) && hosts.size >= 3,
+    reason: 'coverage_model_unavailable',
+    queries: [],
+  };
 }
 
 function recoveryQueries(plan, history) {
@@ -312,6 +407,9 @@ function shouldForceThirdRound(plan) {
 export async function runDeepSearchV44(ai, text, history = [], signal, options = {}) {
   const startedAt = Date.now();
   const timings = {};
+  const probeDiagnostics = [];
+  let retryCount = 0;
+  let crossEngineCount = 0;
   const maxBudgetMs = Math.max(12000, Math.min(45000, Number(options.totalBudgetMs) || SEARCH_V44_TOTAL_BUDGET_MS));
   const queryTimeoutMs = Math.max(3500, Math.min(9000, Number(options.queryTimeoutMs) || SEARCH_V44_QUERY_TIMEOUT_MS));
   const planStarted = Date.now();
@@ -324,15 +422,32 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   const allQueries = [...first];
 
   const round1Started = Date.now();
-  let merged = await runQueryBatch(first, { timeoutMs: queryTimeoutMs, multiEngine: true });
+  const batch1 = await runQueryBatch(first, {
+    timeoutMs: queryTimeoutMs,
+    multiEngine: true,
+    engineOffset: 0,
+    retryBudget: 3,
+  });
+  let merged = batch1.results;
+  probeDiagnostics.push(...batch1.diagnostics);
+  retryCount += batch1.retries;
+  if (batch1.crossEngineUsed) crossEngineCount += 1;
   merged = await enrichTopResults(merged, plan.resolvedQuestion, ai, signal, queryTimeoutMs, 3);
   timings.round1Ms = Date.now() - round1Started;
   let rounds = 1;
 
   if (second.length && Date.now() - startedAt < maxBudgetMs - 4500) {
     const round2Started = Date.now();
-    const round2 = await runQueryBatch(second, { timeoutMs: queryTimeoutMs, multiEngine: false });
-    merged = dedupeSearchResults([...merged, ...round2], 140);
+    const batch2 = await runQueryBatch(second, {
+      timeoutMs: queryTimeoutMs,
+      multiEngine: false,
+      engineOffset: 2,
+      retryBudget: Math.max(0, SEARCH_V44_MAX_ENGINE_RETRIES - retryCount),
+    });
+    merged = dedupeSearchResults([...merged, ...batch2.results], 150);
+    probeDiagnostics.push(...batch2.diagnostics);
+    retryCount += batch2.retries;
+    if (batch2.crossEngineUsed) crossEngineCount += 1;
     allQueries.push(...second);
     timings.round2Ms = Date.now() - round2Started;
     rounds = 2;
@@ -345,7 +460,10 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     ], 2);
     const localStarted = Date.now();
     const settled = await Promise.allSettled(localQueries.map((q) => searchOpenStreetMapLocal(q, { timeoutMs: Math.min(5000, queryTimeoutMs) })));
-    merged = dedupeSearchResults([...merged, ...settled.flatMap((x) => x.status === 'fulfilled' && Array.isArray(x.value) ? x.value : [])], 150);
+    merged = dedupeSearchResults([
+      ...merged,
+      ...settled.flatMap((x) => x.status === 'fulfilled' && Array.isArray(x.value) ? x.value : []),
+    ], 160);
     timings.localMs = Date.now() - localStarted;
   }
 
@@ -360,12 +478,23 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   const needThird = !coverage.sufficient || shouldForceThirdRound(plan);
   if (needThird && Date.now() - startedAt < maxBudgetMs - 4000) {
     const already = new Set(allQueries.map((q) => q.toLowerCase()));
-    const thirdQueries = uniqueQueries([...(coverage.queries || []), ...recoveryQueries(plan, history)], SEARCH_V44_MAX_RECOVERY_QUERIES)
-      .filter((q) => !already.has(q.toLowerCase()));
+    const thirdQueries = uniqueQueries(
+      [...(coverage.queries || []), ...recoveryQueries(plan, history)],
+      SEARCH_V44_MAX_RECOVERY_QUERIES,
+    ).filter((q) => !already.has(q.toLowerCase()));
+
     if (thirdQueries.length) {
       const round3Started = Date.now();
-      const round3 = await runQueryBatch(thirdQueries, { timeoutMs: queryTimeoutMs, multiEngine: false });
-      merged = dedupeSearchResults([...merged, ...round3], 170);
+      const batch3 = await runQueryBatch(thirdQueries, {
+        timeoutMs: queryTimeoutMs,
+        multiEngine: ranked.length < 6,
+        engineOffset: 4,
+        retryBudget: Math.max(0, SEARCH_V44_MAX_ENGINE_RETRIES - retryCount),
+      });
+      merged = dedupeSearchResults([...merged, ...batch3.results], 180);
+      probeDiagnostics.push(...batch3.diagnostics);
+      retryCount += batch3.retries;
+      if (batch3.crossEngineUsed) crossEngineCount += 1;
       allQueries.push(...thirdQueries);
       timings.round3Ms = Date.now() - round3Started;
       rounds = 3;
@@ -375,6 +504,7 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   }
 
   timings.totalMs = Date.now() - startedAt;
+  const hostCount = new Set((ranked || []).map((x) => hostOf(x?.url || '')).filter(Boolean)).size;
   return {
     revision: SEARCH_V44_REVISION,
     plan: { ...plan, queries: uniqueQueries(allQueries, SEARCH_V44_MAX_TOTAL_QUERIES) },
@@ -385,6 +515,12 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     evidenceUseful: hasUsefulSearchEvidence(ranked, 4),
     subrequestBudgetAware: true,
     externalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
+    externalSubrequestWorstTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
+    retryCount,
+    crossEngineCount,
+    hostCount,
+    probeFailures: probeDiagnostics.filter((x) => !x.ok).length,
+    probeDiagnostics: probeDiagnostics.slice(0, 32),
     timings,
   };
 }
@@ -396,4 +532,6 @@ export const __test = {
   deterministicQueries,
   shouldForceThirdRound,
   extractPageExcerpt,
+  diversifyHosts,
+  hostOf,
 };
