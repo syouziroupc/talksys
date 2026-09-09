@@ -66,7 +66,11 @@ function extractText(result) {
 
 function normalizeTts(text) {
   return cleanText(text, 1800)
+    .replace(/\bWindows\s*10\b/gi, 'ウィンドウズ テン')
+    .replace(/\bWindows\s*11\b/gi, 'ウィンドウズ イレブン')
     .replace(/\bPC\b/gi, 'パソコン').replace(/\bSSD\b/gi, 'エスエスディー')
+    .replace(/\bHDD\b/gi, 'エイチディーディー').replace(/\bUSB\b/gi, 'ユーエスビー')
+    .replace(/\bHDMI\b/gi, 'エイチディーエムアイ')
     .replace(/\bCPU\b/gi, 'シーピーユー').replace(/\bGPU\b/gi, 'ジーピーユー')
     .replace(/\bRAM\b/gi, 'メモリー').replace(/\bWeb\b/gi, 'ウェブ')
     .replace(/\bAI\b/gi, 'エーアイ').replace(/\bWi[-‐‑–—]?Fi\b/gi, 'ワイファイ')
@@ -85,6 +89,15 @@ async function audioBufferFromResult(result) {
   const bytes = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
   return bytes.buffer;
+}
+
+function audioContentType(audio) {
+  const bytes = new Uint8Array(audio, 0, Math.min(audio.byteLength, 12));
+  if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
+    && bytes[8] === 0x57 && bytes[9] === 0x41 && bytes[10] === 0x56 && bytes[11] === 0x45) return 'audio/wav';
+  if (bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) return 'audio/mpeg';
+  if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) return 'audio/mpeg';
+  return 'application/octet-stream';
 }
 
 function evidenceBlock(result) {
@@ -200,21 +213,31 @@ async function tts(request, env) {
   try { body = await request.json(); } catch { return json({ ok: false, error: 'invalid json' }, { status: 400 }); }
   const prompt = normalizeTts(body?.text);
   if (!prompt) return json({ ok: false, error: 'text required' }, { status: 400 });
-  try {
-    const result = await env.AI.run(TTS_MODEL, { prompt, lang: 'JP' });
-    const audio = await audioBufferFromResult(result);
-    if (!audio || audio.byteLength < 100) throw new Error('empty TTS audio');
-    return new Response(audio, { headers: {
-      'content-type': 'audio/mpeg',
-      'cache-control': 'no-store',
-      'x-talksys-revision': REVISION,
-      'x-talksys-tts-model': TTS_MODEL,
-      'x-talksys-tts-lang': 'JP',
-      'x-talksys-tts-ms': String(Date.now() - started),
-    }});
-  } catch (error) {
-    return json({ ok: false, error: String(error?.message || error).slice(0, 240), elapsedMs: Date.now() - started }, { status: 502 });
+
+  let lastError = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const result = await env.AI.run(TTS_MODEL, { prompt, lang: 'JP' });
+      const audio = await audioBufferFromResult(result);
+      if (!audio || audio.byteLength < 100) throw new Error('empty TTS audio');
+      return new Response(audio, { headers: {
+        'content-type': audioContentType(audio),
+        'cache-control': 'no-store',
+        'x-talksys-revision': REVISION,
+        'x-talksys-tts-model': TTS_MODEL,
+        'x-talksys-tts-lang': 'JP',
+        'x-talksys-tts-attempts': String(attempt + 1),
+        'x-talksys-tts-ms': String(Date.now() - started),
+      }});
+    } catch (error) {
+      lastError = error;
+      const transient = /(?:3043|internal server error|out of capacity|temporar|timeout)/i.test(String(error?.message || error));
+      if (!transient || attempt >= 3) break;
+      await new Promise((resolve) => setTimeout(resolve, [120, 320, 650][attempt] || 650));
+    }
   }
+
+  return json({ ok: false, error: String(lastError?.message || lastError || 'TTS failed').slice(0, 240), elapsedMs: Date.now() - started }, { status: 502 });
 }
 
 export default {
