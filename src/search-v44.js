@@ -7,6 +7,14 @@ import {
   searchOpenStreetMapLocal,
 } from './search-fallbacks.js';
 import { engineForIndex, fallbackEngine, searchProbe } from './search-probes-v44.js';
+import { filterQueryRelevantResults, isQueryRelevantResult } from './query-result-gate-v44.js';
+import {
+  buildCandidateVerificationQueries,
+  candidateEvidenceText,
+  discoveryQueries,
+  needsCandidateDiscovery,
+  normalizeCandidates,
+} from './research-sequence-v44.js';
 import {
   compileFollowupQueries,
   compileInitialQueries,
@@ -17,7 +25,7 @@ import {
   RESEARCH_PLAN_V44_REVISION,
 } from './research-plan-v44.js';
 
-export const SEARCH_V44_REVISION = 'deep-search-v44-question-first-evidence-loop';
+export const SEARCH_V44_REVISION = 'deep-search-v44-sequential-evidence-search';
 export const SEARCH_V44_MAX_QUERIES = 14;
 export const SEARCH_V44_MAX_RECOVERY_QUERIES = 5;
 export const SEARCH_V44_MAX_TOTAL_QUERIES = SEARCH_V44_MAX_QUERIES + SEARCH_V44_MAX_RECOVERY_QUERIES;
@@ -259,7 +267,12 @@ async function runQueryBatch(queries, options = {}) {
       timeoutMs: options.timeoutMs,
       enrichPages: false,
     }).catch(() => []);
-    merged = dedupeSearchResults([...cross, ...merged], 150);
+    const gatedCross = filterQueryRelevantResults(list[0], cross, 12).map((item) => ({
+      ...item,
+      probeQuery: item?.probeQuery || list[0],
+      probeEngine: item?.probeEngine || 'cross-engine',
+    }));
+    merged = dedupeSearchResults([...gatedCross, ...merged], 150);
     crossEngineUsed = true;
   }
 
@@ -340,7 +353,8 @@ async function enrichTopResults(results, question, ai, signal, timeoutMs, count 
 
 async function rankExpanded(ai, question, results, signal, limit = SEARCH_V44_SOURCE_LIMIT) {
   const unique = dedupeSearchResults(results, 120)
-    .map((item) => ({ item, score: relevanceScore(question, item) }))
+    .filter((item) => isQueryRelevantResult(item?.probeQuery || question, item))
+    .map((item) => ({ item, score: relevanceScore(question, item) + (Number(item?.queryGateScore) || 0) * 2 }))
     .sort((a, b) => b.score - a.score)
     .map((x) => x.item)
     .slice(0, 72);
@@ -362,6 +376,33 @@ function evidenceSummary(results, limit = SEARCH_V44_SOURCE_LIMIT) {
     const host = hostOf(item?.url || '');
     return `[${index + 1}] ${clean(item?.title, 220)}\n${host}\n${clean(item?.excerpt || item?.snippet, 1200)}`;
   }).join('\n\n');
+}
+
+async function extractSupportedCandidates(ai, plan, results, signal) {
+  const evidence = candidateEvidenceText(results, 24);
+  if (!evidence) return [];
+  try {
+    const result = await ai.run(PLANNER_MODEL, {
+      messages: [
+        {
+          role: 'system',
+          content: '検索結果から、次の検証検索に使う実在候補を抽出します。質問に直接関係する具体的な商品型番・サービス名・店舗名などだけを最大4件選んでください。候補名は必ず提示された検索結果のタイトルまたは本文に文字列として実在するものだけ。一般カテゴリ名、記事タイトル、検索サイト名、ログインページ名、推測した型番は禁止です。JSONだけ: {"candidates":[{"name":"検索結果に実在する正確な候補名","evidence":"どの結果で確認したか短く"}]}',
+        },
+        {
+          role: 'user',
+          content: `調査課題: ${plan.resolvedQuestion}\n意図: ${plan.intent}\n必須条件: ${(plan.mustInclude || []).join(' / ') || '(なし)'}\n\n検索結果:\n${evidence}`,
+        },
+      ],
+      stream: false,
+      max_completion_tokens: 420,
+      temperature: 0.01,
+      reasoning_effort: 'low',
+    }, signal ? { signal } : undefined);
+    const data = parseJsonObject(readModelText(result));
+    return normalizeCandidates(data?.candidates, evidence, 4);
+  } catch {
+    return [];
+  }
 }
 
 async function assessCoverage(ai, plan, results, history, signal) {
@@ -447,14 +488,16 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   let crossEngineCount = 0;
   const maxBudgetMs = Math.max(12000, Math.min(45000, Number(options.totalBudgetMs) || SEARCH_V44_TOTAL_BUDGET_MS));
   const queryTimeoutMs = Math.max(3500, Math.min(9000, Number(options.queryTimeoutMs) || SEARCH_V44_QUERY_TIMEOUT_MS));
+
   const planStarted = Date.now();
   const plan = await planDeepSearch(ai, text, history, signal);
   const focus = researchFocus(plan) || plan.resolvedQuestion;
+  const sequentialDiscovery = needsCandidateDiscovery(plan);
   timings.plannerMs = Date.now() - planStarted;
 
   const plannedQueries = uniqueQueries(plan.queries, SEARCH_V44_MAX_QUERIES);
-  let first = compileInitialQueries(plan, 6);
-  if (!first.length) first = plannedQueries.slice(0, 4);
+  let first = sequentialDiscovery ? discoveryQueries(plan, 2) : compileInitialQueries(plan, 6);
+  if (!first.length) first = plannedQueries.slice(0, sequentialDiscovery ? 2 : 4);
   const allQueries = [...first];
 
   const round1Started = Date.now();
@@ -462,15 +505,17 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     timeoutMs: queryTimeoutMs,
     multiEngine: true,
     engineOffset: 0,
-    retryBudget: 3,
+    retryBudget: 2,
   });
   let merged = batch1.results;
   probeDiagnostics.push(...batch1.diagnostics);
   retryCount += batch1.retries;
   if (batch1.crossEngineUsed) crossEngineCount += 1;
   merged = await enrichTopResults(merged, focus, ai, signal, queryTimeoutMs, 3);
+  let ranked = await rankExpanded(ai, focus, merged, signal, SEARCH_V44_SOURCE_LIMIT);
   timings.round1Ms = Date.now() - round1Started;
   let rounds = 1;
+  let candidates = [];
 
   if ((plan.intent === 'local' || LOCAL_RE.test(plan.resolvedQuestion)) && Date.now() - startedAt < maxBudgetMs - 3500) {
     const localQueries = uniqueQueries([
@@ -483,59 +528,78 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
       ...merged,
       ...settled.flatMap((x) => x.status === 'fulfilled' && Array.isArray(x.value) ? x.value : []),
     ], 160);
+    ranked = await rankExpanded(ai, focus, merged, signal, SEARCH_V44_SOURCE_LIMIT);
     timings.localMs = Date.now() - localStarted;
   }
 
-  let ranked = await rankExpanded(ai, focus, merged, signal, SEARCH_V44_SOURCE_LIMIT);
-  const coverage1Started = Date.now();
-  let coverage = await assessCoverage(ai, { ...plan, queries: allQueries }, ranked, history, signal);
-  timings.coverage1Ms = Date.now() - coverage1Started;
-
-  if (!coverage.sufficient && Date.now() - startedAt < maxBudgetMs - 5000) {
-    const second = compileFollowupQueries(plan, coverage, allQueries, 6);
-    if (second.length) {
-      const round2Started = Date.now();
-      const batch2 = await runQueryBatch(second, {
+  // Candidate-discovery questions are sequential by nature. Discover actual names
+  // first, then search those exact entities for the remaining evidence facets.
+  if (sequentialDiscovery && ranked.length && Date.now() - startedAt < maxBudgetMs - 7000) {
+    const candidateStarted = Date.now();
+    candidates = await extractSupportedCandidates(ai, plan, ranked, signal);
+    timings.candidateExtractionMs = Date.now() - candidateStarted;
+    const verifyQueries = buildCandidateVerificationQueries(plan, candidates, 6)
+      .filter((q) => !allQueries.some((used) => used.toLowerCase() === q.toLowerCase()));
+    if (verifyQueries.length) {
+      const verifyStarted = Date.now();
+      const verifyBatch = await runQueryBatch(verifyQueries, {
         timeoutMs: queryTimeoutMs,
         multiEngine: false,
         engineOffset: 2,
         retryBudget: Math.max(0, SEARCH_V44_MAX_ENGINE_RETRIES - retryCount),
       });
-      merged = dedupeSearchResults([...merged, ...batch2.results], 170);
-      probeDiagnostics.push(...batch2.diagnostics);
-      retryCount += batch2.retries;
-      if (batch2.crossEngineUsed) crossEngineCount += 1;
-      allQueries.push(...second);
-      timings.round2Ms = Date.now() - round2Started;
-      rounds = 2;
+      merged = dedupeSearchResults([...merged, ...verifyBatch.results], 170);
+      probeDiagnostics.push(...verifyBatch.diagnostics);
+      retryCount += verifyBatch.retries;
+      if (verifyBatch.crossEngineUsed) crossEngineCount += 1;
+      allQueries.push(...verifyQueries);
       ranked = await rankExpanded(ai, focus, merged, signal, SEARCH_V44_SOURCE_LIMIT);
-      coverage = await assessCoverage(ai, { ...plan, queries: allQueries }, ranked, history, signal);
+      timings.round2Ms = Date.now() - verifyStarted;
+      rounds = 2;
     }
   }
 
+  const coverageStarted = Date.now();
+  let coverage = await assessCoverage(ai, { ...plan, queries: allQueries, candidates }, ranked, history, signal);
+  timings.coverageMs = Date.now() - coverageStarted;
+
+  // One final adaptive round is reserved strictly for remaining evidence gaps.
   if (!coverage.sufficient && Date.now() - startedAt < maxBudgetMs - 4000) {
     const already = new Set(allQueries.map((q) => q.toLowerCase()));
-    const thirdQueries = uniqueQueries(
-      [...(coverage.queries || []), ...recoveryQueries({ ...plan, queries: allQueries }, history, coverage)],
-      SEARCH_V44_MAX_RECOVERY_QUERIES,
+    const gapLimit = rounds >= 2 ? SEARCH_V44_MAX_RECOVERY_QUERIES : 6;
+    let gapQueries = uniqueQueries(
+      [...(coverage.queries || []), ...compileFollowupQueries(plan, coverage, allQueries, gapLimit)],
+      gapLimit,
     ).filter((q) => !already.has(q.toLowerCase()));
-    if (thirdQueries.length) {
-      const round3Started = Date.now();
-      const batch3 = await runQueryBatch(thirdQueries, {
+
+    // For discovery tasks, generic gap queries are inferior to candidate-specific
+    // verification. If candidates exist, bind unresolved questions to those names.
+    if (sequentialDiscovery && candidates.length) {
+      const entityQueries = buildCandidateVerificationQueries(
+        { ...plan, facets: (plan.facets || []).filter((f) => (coverage.missingFacets || []).includes(f.id)) },
+        candidates,
+        gapLimit,
+      );
+      gapQueries = uniqueQueries([...entityQueries, ...gapQueries], gapLimit).filter((q) => !already.has(q.toLowerCase()));
+    }
+
+    if (gapQueries.length) {
+      const gapStarted = Date.now();
+      const gapBatch = await runQueryBatch(gapQueries, {
         timeoutMs: queryTimeoutMs,
-        multiEngine: ranked.length < 6,
+        multiEngine: ranked.length < 5,
         engineOffset: 4,
         retryBudget: Math.max(0, SEARCH_V44_MAX_ENGINE_RETRIES - retryCount),
       });
-      merged = dedupeSearchResults([...merged, ...batch3.results], 180);
-      probeDiagnostics.push(...batch3.diagnostics);
-      retryCount += batch3.retries;
-      if (batch3.crossEngineUsed) crossEngineCount += 1;
-      allQueries.push(...thirdQueries);
-      timings.round3Ms = Date.now() - round3Started;
-      rounds = 3;
+      merged = dedupeSearchResults([...merged, ...gapBatch.results], 180);
+      probeDiagnostics.push(...gapBatch.diagnostics);
+      retryCount += gapBatch.retries;
+      if (gapBatch.crossEngineUsed) crossEngineCount += 1;
+      allQueries.push(...gapQueries);
       ranked = await rankExpanded(ai, focus, merged, signal, SEARCH_V44_SOURCE_LIMIT);
-      coverage = await assessCoverage(ai, { ...plan, queries: allQueries }, ranked, history, signal);
+      timings.round3Ms = Date.now() - gapStarted;
+      rounds = Math.min(3, rounds + 1);
+      coverage = await assessCoverage(ai, { ...plan, queries: allQueries, candidates }, ranked, history, signal);
     }
   }
 
@@ -543,7 +607,7 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   const hostCount = new Set((ranked || []).map((x) => hostOf(x?.url || '')).filter(Boolean)).size;
   return {
     revision: SEARCH_V44_REVISION,
-    plan: { ...plan, queries: uniqueQueries(allQueries, SEARCH_V44_MAX_TOTAL_QUERIES) },
+    plan: { ...plan, queries: uniqueQueries(allQueries, SEARCH_V44_MAX_TOTAL_QUERIES), candidates },
     rawResults: merged,
     results: ranked,
     rounds,
@@ -552,6 +616,11 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     researchStateMachine: true,
     questionFirstPlanning: true,
     gapDrivenFollowups: true,
+    sequentialDiscovery,
+    candidateCount: candidates.length,
+    candidateNames: candidates.map((x) => x.name),
+    queryResultGate: true,
+    authorityAfterRelevance: true,
     subrequestBudgetAware: true,
     externalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
     externalSubrequestWorstTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
@@ -578,4 +647,8 @@ export const __test = {
   compileInitialQueries,
   compileFollowupQueries,
   researchFocus,
+  extractSupportedCandidates,
+  needsCandidateDiscovery,
+  discoveryQueries,
+  buildCandidateVerificationQueries,
 };
