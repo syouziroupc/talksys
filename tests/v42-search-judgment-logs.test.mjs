@@ -10,6 +10,7 @@ import { __test as logs } from '../src/log-v42.js';
 const wrangler=fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8');
 const workerSource=fs.readFileSync(new URL('../src/worker-v42.js',import.meta.url),'utf8');
 const hotfixSource=fs.readFileSync(new URL('../src/worker-v42-hotfix.js',import.meta.url),'utf8');
+const searchSource=fs.readFileSync(new URL('../src/search-v42.js',import.meta.url),'utf8');
 const logSource=fs.readFileSync(new URL('../src/log-v42.js',import.meta.url),'utf8');
 
 test('v42 generated browser client is valid and carries one session id through plan turn and STT',()=>{
@@ -44,6 +45,12 @@ test('v42 hotfix HTTP plan route searches explicit budget lookup without assista
   assert.doesNotMatch(plan.resolvedQuestion,/Android 13|SIMフリー|保証付き/);
 });
 
+test('v42 disabled server TTS has a stable 410 contract',async()=>{
+  const response=await workerV42Hotfix.fetch(new Request('https://talksys.example/api/tts',{method:'POST',headers:{'content-type':'application/json'},body:'{"text":"日本語テスト"}'}),{},{});
+  const body=await response.json();
+  assert.equal(response.status,410);assert.equal(body.ok,false);assert.match(body.error,/disabled/i);
+});
+
 test('v42 searches explicit phone lookup and retry turns',()=>{
   const h=[{role:'user',content:'初代Xperia 5はAndroidが古いので中古へ乗り換えたい'}];
   assert.equal(worker.isExplicitPhoneLookup('もうちょっと調べてみてよ。2万円以下のスマホについて。',h),true);
@@ -65,6 +72,26 @@ test('v42 search constraints come only from user turns, never assistant inventio
   assert.doesNotMatch(plan.resolvedQuestion,/Android 13|SIMフリー|保証/);
 });
 
+test('v42 evidence layer strips assistant-only Android numbers, SIM-free and warranty from actual queries',()=>{
+  const h=[
+    {role:'user',content:'初代Xperia 5はAndroidが古いので中古で安いスマホへ乗り換えたい。'},
+    {role:'assistant',content:'Android 13以降、SIMフリー、保証付きが条件ですね。'}
+  ];
+  const userText=search.userConstraintText(h,'2万円以下中古スマホの具体的な購入候補');
+  assert.doesNotMatch(userText,/Android 13|SIMフリー|保証付き/);
+  const queries=search.sanitizeQueries(['2万円以下 中古 スマホ Android 13以降 SIMフリー 保証付き','AQUOS sense5G Android 13 アップデート 公式'],userText);
+  assert.ok(queries.length>=1);
+  assert.doesNotMatch(queries.join(' | '),/Android\s*13|SIM\s*フリー|保証/);
+  assert.match(searchSource,/collectResilientEvidenceV41\(resolved,uHistory,instruction,options\)/);
+  assert.match(searchSource,/historyPolicy:'user-only'/);
+});
+
+test('v42 query sanitizer preserves explicit user constraints when they really said them',()=>{
+  const userText='Android 13以降、SIMフリー、保証付きで2万円以下を探して';
+  const q=search.sanitizeQueries(['中古スマホ Android 13以降 SIMフリー 保証付き'],userText).join(' ');
+  assert.match(q,/Android 13/);assert.match(q,/SIMフリー/);assert.match(q,/保証/);
+});
+
 test('v42 rejects junk search sources and accepts trusted seller or model-specific official OS sources',()=>{
   assert.equal(search.isTrustedPhoneSource({title:'ローマ数字の2の表記や覚え方',url:'https://toushitsu-off8.com/roman',snippet:'Android 2'}),false);
   assert.equal(search.isTrustedPhoneSource({title:'AQUOS sense5G 中古',url:'https://www.iosys.co.jp/items/smartphone',snippet:'AQUOS sense5G 中古 9,980円'}),true);
@@ -75,8 +102,17 @@ test('v42 only verifies a phone candidate when price and OS evidence refer to th
   const price={title:'AQUOS sense5G 中古',url:'https://www.iosys.co.jp/items/smartphone',snippet:'AQUOS sense5G 中古 9,980円'};
   const general={title:'Android OS一覧',url:'https://support.google.com/android/',snippet:'Android 16の情報'};
   assert.equal(search.verifiedCandidates([price,general]).length,0);
+  assert.equal(search.pricedCandidates([price,general]).length,1);
   const os={title:'AQUOS sense5G OSアップデート',url:'https://k-tai.sharp.co.jp/support/aquos-sense5g/update/',snippet:'AQUOS sense5G Android 12 バージョンアップ'};
   const verified=search.verifiedCandidates([price,os]);assert.equal(verified.length,1);assert.match(verified[0].model,/AQUOS sense5G/i);
+});
+
+test('v42 grounded-answer guard rejects release-year OS inference and user verification handoff',()=>{
+  const sparse={androidFreshnessRequired:true,verifiedCandidates:[]};
+  assert.equal(routing.badGroundedAnswer('2024年発売と新しいためAndroidの古さが気になるなら有力です。',sparse),true);
+  assert.equal(routing.badGroundedAnswer('購入前に商品ページで最新状態を確認してください。',sparse),true);
+  const partial=routing.groundedPartialAnswer({androidFreshnessRequired:true,verifiedCandidates:[],pricedCandidates:[{model:'AQUOS wish4',priceSource:{text:'AQUOS wish4 中古 17,800円'}}]});
+  assert.match(partial,/17,800円/);assert.match(partial,/OS面で「おすすめ」とは断定しません/);assert.doesNotMatch(partial,/発売.*新し.*有力/);
 });
 
 test('v42 answer policy explicitly blocks the old search-giveup family',()=>{
@@ -84,6 +120,7 @@ test('v42 answer policy explicitly blocks the old search-giveup family',()=>{
   assert.match(workerSource,/確認できた有用な事実を先に答え/);
   assert.match(workerSource,/発売年が新しいだけで/);
   assert.match(hotfixSource,/確認できた有用な事実を先に答えてください/);
+  assert.match(hotfixSource,/発売年・登場時期・機種の新しさだけから/);
 });
 
 test('v42 persistent log records conversation and diagnostics but never raw audio bytes',()=>{
