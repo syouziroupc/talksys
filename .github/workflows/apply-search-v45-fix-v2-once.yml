@@ -1,0 +1,42 @@
+name: Apply Search v45 fix v2 once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-search-v45-fix-v2-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Apply patch
+        run: python scripts/apply-search-v45-production-findings.py
+      - name: Validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+          find src -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Commit validated patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name talksys-automation
+          git config user.email actions@users.noreply.github.com
+          git add src/search-v45.js src/worker-v44.js tests/search-v45-production-findings.test.mjs
+          git commit -m 'Fix v45 fallback intent and evidence failure handling'
+          git push origin HEAD:main
