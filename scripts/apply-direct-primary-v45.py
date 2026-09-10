@@ -102,13 +102,13 @@ new = """  if (!apiOk.length && !search.evidenceUseful) {
 if old not in s: raise SystemExit('stable-only block not found')
 s = s.replace(old, new, 1)
 
-old = """      probeFailures: search.probeFailures || 0,
-      externalSubrequestBaseTarget: search.externalSubrequestBaseTarget || SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,"""
-new = """      probeFailures: search.probeFailures || 0,
-      directPrimarySourceCount: search.directPrimarySourceCount || 0,
-      directPrimaryDiagnostics: search.directPrimaryDiagnostics || [],
-      directPrimaryTargets: search.directPrimaryTargets || [],
-      externalSubrequestBaseTarget: search.externalSubrequestBaseTarget || SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,"""
+old = """      probeFailures: Number(search.probeFailures) || 0,
+      externalSubrequestBaseTarget: Number(search.externalSubrequestBaseTarget) || SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,"""
+new = """      probeFailures: Number(search.probeFailures) || 0,
+      directPrimarySourceCount: Number(search.directPrimarySourceCount) || 0,
+      directPrimaryDiagnostics: Array.isArray(search.directPrimaryDiagnostics) ? search.directPrimaryDiagnostics.slice(0, 8) : [],
+      directPrimaryTargets: Array.isArray(search.directPrimaryTargets) ? search.directPrimaryTargets.slice(0, 8) : [],
+      externalSubrequestBaseTarget: Number(search.externalSubrequestBaseTarget) || SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,"""
 if old not in s: raise SystemExit('worker diagnostics block not found')
 s = s.replace(old, new, 1)
 p.write_text(s)
