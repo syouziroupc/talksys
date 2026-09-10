@@ -96,8 +96,10 @@ function unique(values, limit = SEARCH_V44_MAX_QUERIES) {
 
 function inferIntent(value) {
   if (LOCAL_RE.test(value)) return 'local';
-  if (/比較|どっち|違い/.test(value)) return 'comparison';
+  // Shopping remains the domain even when the requested operation is comparison.
+  // This keeps deterministic fallback correct when the AI director times out.
   if (SHOPPING_RE.test(value)) return 'shopping';
+  if (/比較|どっち|違い/.test(value)) return 'comparison';
   if (/ニュース/.test(value)) return 'news';
   if (CURRENT_RE.test(value)) return 'current';
   return 'general';
@@ -161,10 +163,13 @@ function simplePlan(text, history) {
     queries.push(compactSubject(resolved));
   } else {
     const subject = compactSubject(resolved);
-    if (domain && /(BIOS|UEFI|ファームウェア|ドライバ|仕様|サポート)/i.test(resolved)) {
-      queries.push(`${subject} site:${domain}`);
+    if (domain && known && /(BIOS|UEFI|ファームウェア|ドライバ|仕様|サポート)/i.test(resolved)) {
+      const kind = /BIOS|UEFI/i.test(resolved) ? 'BIOS' : /ドライバ/i.test(resolved) ? 'ドライバ' : /仕様/i.test(resolved) ? '仕様' : 'サポート';
+      queries.push(`${known} ${kind} site:${domain}`);
+      queries.push(`${known} ${kind}`);
+    } else {
+      queries.push(subject);
     }
-    queries.push(subject);
   }
   return {
     resolvedQuestion: resolved,
@@ -270,7 +275,9 @@ export function stageEvidence(query, result, stage = 'verification', sourceRole 
   const matched = terms.filter(t => hay.includes(t));
   const model = MODEL_RE.exec(`${result?.title || ''} ${result?.snippet || ''}`)?.[0] || '';
   const requestedSite = String(query).match(/site:([^\s]+)/i)?.[1]?.toLowerCase() || '';
-  const siteMatch = requestedSite && (host === requestedSite || host.endsWith(`.${requestedSite}`));
+  const expectedOfficialHost = ['official_spec','official_support'].includes(sourceRole) ? officialDomainHint(query) : '';
+  const expectedHost = requestedSite || expectedOfficialHost;
+  const siteMatch = expectedHost && (host === expectedHost || host.endsWith(`.${expectedHost}`));
   let score = matched.length * 2 + (model ? 5 : 0) + (siteMatch ? 6 : 0);
   if (/official|公式|support|サポート/i.test(`${title} ${host}`)) score += 2;
   let relevant;
@@ -281,7 +288,7 @@ export function stageEvidence(query, result, stage = 'verification', sourceRole 
     // Verification optimizes precision: exact model/site, or two independent query concepts.
     relevant = Boolean(siteMatch) || Boolean(model && terms.some(t => normalize(model).includes(t) || hay.includes(t))) || matched.length >= 2;
   }
-  if (['official_spec','official_support'].includes(sourceRole) && requestedSite) relevant = relevant && Boolean(siteMatch);
+  if (['official_spec','official_support'].includes(sourceRole) && expectedHost) relevant = relevant && Boolean(siteMatch);
   return { relevant, score, matched, model };
 }
 

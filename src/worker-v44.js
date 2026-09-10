@@ -546,15 +546,18 @@ async function deepTurn(body, env, requestSignal, decision) {
       search = await runDeepSearchV44(env.AI, text, history, requestSignal);
     } catch (error) {
       webResearchError = clean(error?.message || error, 240);
-      if (!apiOk.length) throw error;
+      // Retrieval failure is evidence absence, not an application exception.
       search = {
         revision: SEARCH_V44_REVISION,
-        evidenceUseful: true,
+        evidenceUseful: apiOk.length > 0,
         results: [],
         rounds: 0,
-        coverage: { sufficient: true, reason: 'structured API evidence retained after web research failure' },
+        coverage: {
+          sufficient: apiOk.length > 0,
+          reason: apiOk.length ? 'structured API evidence retained after web research failure' : 'web_retrieval_failed_no_evidence',
+        },
         plan: { resolvedQuestion: text, queries: [], facets: [] },
-        researchMode: 'api_retained_after_web_failure',
+        researchMode: apiOk.length ? 'api_retained_after_web_failure' : 'stable_only_after_web_failure',
         candidateType: 'none',
         queryResultGate: true,
         authorityAfterRelevance: true,
@@ -605,10 +608,13 @@ async function deepTurn(body, env, requestSignal, decision) {
     answerSynthesisError = 'external_evidence_unavailable_stable_only';
     try {
       answer = await runModel(env, [
-        { role: 'system', content: CASUAL_PROMPT + '\n外部検索では十分な根拠を取得できなかった。質問のうち、時間で変化しない一般的な判断基準・仕組み・注意点だけは具体的に答える。現在の価格、在庫、最新版、時刻、現行制度などは断定しない。' },
+        { role: 'system', content: CASUAL_PROMPT + '\n今回の外部取得では十分な根拠が得られなかった。検索機能が無効・禁止・使えないとは絶対に説明しない。質問のうち、時間で変化しない一般的な判断基準・仕組み・注意点だけを具体的に答える。現在の価格、在庫、最新版、時刻、現行制度などは断定しない。現在情報が必要な部分は「今回の取得では確認できなかった」とだけ述べる。' },
         ...historyOf(normalizedBody?.history).slice(-8),
         { role: 'user', content: text },
-      ], 420, 0.12, 5000);
+      ], 420, 0.12, 6500);
+      answer.text = clean(answer?.text, 9000)
+        .replace(/外部検索を使わない設定(?:のため|なので)?[、,]?/g, '今回の外部取得では十分な根拠を確認できなかったため、')
+        .replace(/検索機能(?:が|は)(?:無効|禁止|使えない)[^。]*。?/g, '今回の外部取得では十分な根拠を確認できませんでした。');
     } catch (error) {
       answerSynthesisError = clean(error?.message || error, 240);
       answer = { text: '外部の現在情報は確認できませんでした。一般論として回答できる部分も生成できなかったため、推測はしません。', ms: 0 };
