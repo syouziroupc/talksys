@@ -1,0 +1,44 @@
+name: Fix v45 lazy shell once
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: contains(github.event.head_commit.message, '[fix-v45-lazy-shell]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Remove static Cloudflare shell import
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/worker-v44.js')
+          s=p.read_text()
+          s=s.replace("import shellWorker from './worker.js';\n", '')
+          marker='async function parseJsonClone(response) {'
+          helper="""async function fetchShell(request, env, ctx) {
+            const { default: shellWorker } = await import('./worker.js');
+            return shellWorker.fetch(request, env, ctx);
+          }
+
+          """
+          if 'async function fetchShell(' not in s:
+              s=s.replace(marker, helper + marker)
+          s=s.replace('await shellWorker.fetch(request, env, ctx)', 'await fetchShell(request, env, ctx)')
+          assert "import shellWorker from './worker.js'" not in s
+          assert 'worker-v43' not in s
+          p.write_text(s)
+          PY
+          node --check src/worker-v44.js
+      - name: Commit fix
+        run: |
+          git config user.name talksys-router-fix-bot
+          git config user.email actions@users.noreply.github.com
+          git add src/worker-v44.js
+          git commit -m 'Fix v45 shell loading for Node tests'
+          git push
