@@ -16,13 +16,14 @@ import {
   __test as search,
 } from '../src/search-v44.js';
 
-test('v44 searches substantive turns by default', () => {
+test('v45 routes substantive turns by intent instead of blanket search', () => {
   assert.equal(worker.shouldSearchByDefault('中古のジャイロキャノピーで強力な添加剤は何がいい？'), true);
   assert.equal(worker.shouldSearchByDefault('バナナはおやつに入る？'), false);
   assert.equal(worker.shouldSearchByDefault('この修理、買い替えたほうがいいかな'), true);
+  assert.equal(worker.shouldSearchByDefault('RAMとSSDの違いを説明して'), false);
 });
 
-test('v44 keeps zero-value social and memory turns local', () => {
+test('v45 keeps zero-value social and memory turns local', () => {
   assert.equal(worker.shouldSearchByDefault('こんにちは'), false);
   assert.equal(worker.shouldSearchByDefault('ありがとう'), false);
   assert.equal(worker.shouldSearchByDefault('今日は疲れた'), false);
@@ -30,10 +31,10 @@ test('v44 keeps zero-value social and memory turns local', () => {
   assert.equal(worker.shouldSearchByDefault('検索できるの？'), false);
 });
 
-test('v45 sends weather and transit to API-first routing while preserving phone lookup specialization', () => {
+test('v45 has no legacy specialized turn delegation', () => {
   assert.equal(worker.shouldPreserveSpecializedTurn('明日の別府の天気は？', []), false);
   assert.equal(worker.shouldPreserveSpecializedTurn('大分から別府まで次の電車は？', []), false);
-  assert.equal(worker.shouldPreserveSpecializedTurn('どこで買えばいい？', [{ role: 'user', content: '安いスマホがほしい' }]), true);
+  assert.equal(worker.shouldPreserveSpecializedTurn('どこで買えばいい？', [{ role: 'user', content: '安いスマホがほしい' }]), false);
   assert.equal(worker.shouldPreserveSpecializedTurn('どこで買えばいい？', [{ role: 'user', content: '安いノートPCがほしい' }]), false);
   assert.equal(worker.shouldPreserveSpecializedTurn('FCR-062とPEA系添加剤を比較して', []), false);
 });

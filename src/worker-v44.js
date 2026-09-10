@@ -1,4 +1,4 @@
-import baseWorker from './worker-v43-finalcandidate.js';
+import shellWorker from './worker.js';
 import {
   runDeepSearchV44,
   SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
@@ -15,7 +15,6 @@ import {
 } from './search-v44.js';
 import { persistTalkLog } from './log-v42.js';
 import {
-  apiEvidenceText,
   detectApiIntents,
   FREE_API_REVISION,
   publicApiRegistry,
@@ -28,22 +27,31 @@ import {
   runKnowledgeApiTools,
 } from './free-api-knowledge-v45.js';
 
-const REVISION = 'talksys-v45-api-first-parallel-free-tools-knowledge';
+const REVISION = 'talksys-v45-unified-router-no-v43-turn-delegation';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
 
 const TRIVIAL_RE = /^(?:もしもし|おはよう(?:ございます)?|こんにちは|こんばんは|ありがとう(?:ございます)?|ありがと|どうも|はい|うん|ううん|へえ|なるほど|そうなんだ|了解|わかった|分かった|OK|オーケー|じゃあね|またね)[。！!？?…\s]*$/i;
-const FEELING_ONLY_RE = /^(?:今日は|今日も|今は|なんか|ちょっと|かなり|すごく|めっちゃ|もう)?\s*(?:疲れた|つかれた|眠い|ねむい|腹減った|お腹すいた|暇|しんどい|つらい|嬉しい|うれしい|悲しい|かなしい|楽しい|たのしい|元気)[。！!？?…〜ー\s]*$/i;
-const MEMORY_ONLY_RE = /^(?:さっき|先ほど|前に|前の話|今の話|この会話).{0,30}(?:何|なんて|どう|覚えて|言った|話した|答えた).{0,30}[。！!？?…\s]*$/i;
+const FEELING_ONLY_RE = /^(?:今日は|今日も|今は|なんか|ちょっと|かなり|すごく|めっちゃ|もう)?\s*(?:疲れた|つかれた|眠い|ねむい|腹減った|お腹すいた|暇|しんどい|つらい|嬉しい|うれしい|悲しい|かなしい|楽しい|たのしい|元気|だるい)[。！!？?…〜ー\s]*$/i;
+const MEMORY_ONLY_RE = /^(?:さっき|先ほど|前に|前の話|今の話|この会話|今まで).{0,40}(?:何|なんて|どう|覚えて|言った|話した|答えた).{0,40}[。！!？?…\s]*$/i;
 const SUBJECTIVE_RE = /(バナナ.{0,12}おやつ.{0,8}入る|どう思う|どうおもう|どっちが好み|好き(?:です|なの|か)?|嫌い(?:です|なの|か)?)/i;
 const CAPABILITY_RE = /(?:検索|調べ).{0,20}(?:できる|出来る|使える|あるの|あるだろ|できない|出来ない)|(?:できる|出来る|使える).{0,20}(?:検索|調べ)/i;
-const WEATHER_RE = /(天気|天候|気温|降水|雨|晴|曇|雪|予報)/i;
-const TRANSIT_RE = /(電車|鉄道|乗換|乗り換え|経路|行き方|何に乗|何を乗|所要時間|運賃|時刻表|次の電車|何時発)/i;
-const PHONE_RE = /(スマホ|スマートフォン|携帯|Android|アンドロイド|iPhone|Xperia|Pixel|Galaxy|AQUOS|arrows|OPPO|Xiaomi|Redmi|motorola)/i;
-const EXPLICIT_LOOKUP_RE = /(検索|調べ|探して|探せ|見つけ|在庫|実売|価格|値段|相場|いくら|どこで買|販売店|店舗|通販|具体的|おすすめ|最新|現在)/i;
+const NO_EXTERNAL_RE = /(?:(?:web|ウェブ)?\s*検索(?:は|を)?\s*(?:使わない(?:で)?|しない(?:で)?|禁止|なし)|外部(?:アクセス|接続|検索)(?:は|を)?\s*(?:禁止|しない(?:で)?|使わない(?:で)?)|調べ(?:ないで|なくていい))/i;
+const EXPLICIT_LOOKUP_RE = /(検索|調べ|探して|探せ|見つけ|確認して|在庫|実売|価格|値段|相場|いくら|どこで買|販売店|店舗|通販|おすすめ|何がいい|どれがいい|買い替え)/i;
+const DYNAMIC_FACT_RE = /(最新|現在|今(?:の|この|すぐ|何時|いくら)|今日|明日|昨日|価格|値段|相場|在庫|発売|販売中|BIOS|UEFI|ファームウェア|ドライバ|法律|法令|制度|社長|CEO|首相|大統領|ニュース|運行|遅延|運休|時刻表|天気|天候|為替|地震|祝日|中古(?:PC|パソコン|ノート|スマホ)|営業時間|バージョン)/i;
+const NON_API_FACT_RE = /(BIOS|UEFI|ファームウェア|ドライバ|Windows|macOS|Linux|古物|法律|法令|社長|CEO|首相|大統領|ニュース|中古(?:PC|パソコン)|スマホ|型番|仕様|公式配布|配布元)/i;
 
 function clean(value, max = 9000) {
   return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+export function canonicalizeInput(value, max = 9000) {
+  return clean(String(value ?? '').normalize('NFKC'), max)
+    .replace(/べっぷ(?=市|の|[、,。\s]|$)/gi, '別府')
+    .replace(/きょう/gi, '今日')
+    .replace(/あした/gi, '明日')
+    .replace(/あさって/gi, '明後日')
+    .replace(/[‐‑‒–—―]/g, '-');
 }
 
 function json(data, status = 200) {
@@ -66,7 +74,10 @@ function wrap(response) {
 
 function historyOf(value) {
   return Array.isArray(value)
-    ? value.slice(-18).map((x) => ({ role: x?.role === 'assistant' ? 'assistant' : 'user', content: clean(x?.content, 2000) })).filter((x) => x.content)
+    ? value.slice(-18).map((x) => ({
+        role: x?.role === 'assistant' ? 'assistant' : 'user',
+        content: canonicalizeInput(x?.content, 2000),
+      })).filter((x) => x.content)
     : [];
 }
 
@@ -92,18 +103,120 @@ function readModelText(result) {
   return clean(result.choices?.[0]?.text || '', 9000);
 }
 
-export function shouldSearchByDefault(text) {
-  const value = clean(text, 1800);
-  if (!value) return false;
-  if (TRIVIAL_RE.test(value) || FEELING_ONLY_RE.test(value) || MEMORY_ONLY_RE.test(value) || SUBJECTIVE_RE.test(value) || CAPABILITY_RE.test(value)) return false;
-  return true;
+function formatNumber(value) {
+  if (!Number.isFinite(value)) return '';
+  if (Number.isInteger(value)) return String(value);
+  return String(Math.round(value * 1e8) / 1e8);
 }
 
-const NON_API_FACT_RE = /(BIOS|UEFI|ファームウェア|ドライバ|Windows|macOS|Linux|古物|法律|法令|社長|CEO|首相|大統領|ニュース|中古(?:PC|パソコン)|スマホ|型番|仕様|公式配布|配布元)/i;
+function isLeapYear(year) {
+  return year % 400 === 0 || (year % 4 === 0 && year % 100 !== 0);
+}
+
+function daysInMonth(year, month) {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  if ([4, 6, 9, 11].includes(month)) return 30;
+  return 31;
+}
+
+export function localDeterministicAnswer(text) {
+  const value = canonicalizeInput(text, 1800);
+
+  let m = value.match(/2進数\s*([01]+).*?(?:10進数|十進数)/i);
+  if (m) {
+    const n = Number.parseInt(m[1], 2);
+    return { kind: 'binary', answer: `2進数${m[1]}は10進数で${n}です。` };
+  }
+
+  m = value.match(/([\d,]+(?:\.\d+)?)\s*円(?:を|の)?\s*(\d+(?:\.\d+)?)\s*%\s*引き/i);
+  if (m) {
+    const price = Number(m[1].replace(/,/g, ''));
+    const pct = Number(m[2]);
+    if (Number.isFinite(price) && Number.isFinite(pct) && pct >= 0 && pct <= 100) {
+      const result = price * (1 - pct / 100);
+      return { kind: 'discount', answer: `${m[1]}円の${formatNumber(pct)}%引きは${Math.round(result).toLocaleString('ja-JP')}円です。` };
+    }
+  }
+
+  m = value.match(/華氏\s*(-?\d+(?:\.\d+)?)\s*度.*?(?:摂氏|何度)/i);
+  if (m) {
+    const f = Number(m[1]);
+    const c = (f - 32) * 5 / 9;
+    return { kind: 'temperature', answer: `華氏${formatNumber(f)}度は摂氏${formatNumber(c)}度です。` };
+  }
+
+  m = value.match(/(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日.*?(?:存在|ある|実在)/);
+  if (m) {
+    const year = Number(m[1]), month = Number(m[2]), day = Number(m[3]);
+    const exists = month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month);
+    return {
+      kind: 'date',
+      answer: exists
+        ? `${year}年${month}月${day}日は存在します。`
+        : `${year}年${month}月${day}日は存在しません。${month === 2 && day === 29 ? `${year}年は${isLeapYear(year) ? 'うるう年です' : 'うるう年ではありません'}。` : ''}`,
+    };
+  }
+
+  m = value.match(/(-?\d+(?:\.\d+)?)\s*(÷|\/|×|\*|\+|-)\s*(-?\d+(?:\.\d+)?)/);
+  if (m) {
+    const a = Number(m[1]), b = Number(m[3]), op = m[2];
+    if (op === '÷' || op === '/') {
+      if (b === 0) return { kind: 'arithmetic', answer: '0で割ることはできません。' };
+      return { kind: 'arithmetic', answer: `${m[1]}${op}${m[3]}は${formatNumber(a / b)}です。` };
+    }
+    if (op === '×' || op === '*') return { kind: 'arithmetic', answer: `${m[1]}${op}${m[3]}は${formatNumber(a * b)}です。` };
+    if (op === '+') return { kind: 'arithmetic', answer: `${m[1]}+${m[3]}は${formatNumber(a + b)}です。` };
+    if (op === '-') return { kind: 'arithmetic', answer: `${m[1]}-${m[3]}は${formatNumber(a - b)}です。` };
+  }
+
+  return null;
+}
+
+function ambiguousLocation(text) {
+  const value = canonicalizeInput(text, 1800);
+  if (!/中央区/.test(value)) return false;
+  return !/(東京都|東京23区|大阪市|大阪府|札幌市|札幌|神戸市|神戸|福岡市|福岡県|千葉市|さいたま市|相模原市|新潟市|浜松市|熊本市)/.test(value);
+}
+
+export function classifyTurn(text, history = []) {
+  const value = canonicalizeInput(text, 1800);
+  const hist = historyOf(history);
+  const noExternal = NO_EXTERNAL_RE.test(value);
+  const deterministic = localDeterministicAnswer(value);
+  if (deterministic) return { mode: 'deterministic', webSearch: false, noExternal, deterministic, reason: 'local_deterministic' };
+  if (/^[+-]?\d+(?:\.\d+)?$/.test(value)) return { mode: 'clarify', webSearch: false, noExternal, reason: 'bare_number' };
+  if (ambiguousLocation(value)) return { mode: 'clarify', webSearch: false, noExternal, reason: 'ambiguous_location' };
+  if (noExternal) return { mode: 'casual', webSearch: false, noExternal: true, reason: 'user_disabled_external_lookup' };
+  if (TRIVIAL_RE.test(value) || FEELING_ONLY_RE.test(value) || MEMORY_ONLY_RE.test(value) || SUBJECTIVE_RE.test(value) || CAPABILITY_RE.test(value)) {
+    return { mode: 'casual', webSearch: false, noExternal: false, reason: 'conversation_local' };
+  }
+  const apiIntents = [...new Set([...detectApiIntents(value, hist), ...detectKnowledgeApiIntents(value, hist)])];
+  if (apiIntents.length) return { mode: 'external', webSearch: false, noExternal: false, apiIntents, reason: 'structured_api_intent' };
+  if (EXPLICIT_LOOKUP_RE.test(value) || DYNAMIC_FACT_RE.test(value)) {
+    return { mode: 'external', webSearch: true, noExternal: false, apiIntents: [], reason: 'current_or_explicit_lookup' };
+  }
+  return { mode: 'casual', webSearch: false, noExternal: false, reason: 'stable_or_conversational' };
+}
+
+export function shouldSearchByDefault(text, history = []) {
+  const decision = classifyTurn(text, history);
+  return decision.mode === 'external' && decision.webSearch === true;
+}
+
+function shouldPreserveSpecializedTurn() {
+  return false;
+}
+
+function fallbackResolvedQuestion(text, history = []) {
+  const value = canonicalizeInput(text, 1800);
+  if (value.length >= 42) return value;
+  const users = userHistory(history).map((x) => canonicalizeInput(x.content, 700)).slice(-4);
+  return clean(`${users.join(' ')} ${value}`, 2200) || value;
+}
 
 function structuredCoverageIsWholeQuestion(text, bundle) {
   if (bundle?.sufficient !== true) return false;
-  const value = clean(text, 2200);
+  const value = canonicalizeInput(text, 2200);
   const clauses = value
     .split(/(?:と[、,]?(?=[A-Za-z0-9一-龠ぁ-んァ-ヶ])|そして|それから|加えて|。|；|;)/)
     .map((x) => clean(x, 1000))
@@ -117,32 +230,36 @@ function structuredCoverageIsWholeQuestion(text, bundle) {
   return !NON_API_FACT_RE.test(value);
 }
 
-function shouldPreserveSpecializedTurn(text, history = []) {
-  const userContext = clean(`${userHistory(history).map((x) => x.content).join(' ')} ${text}`, 6500);
-  // Weather and transit now go through the v45 API-first router. Keep only the
-  // phone-specific legacy path that the base worker still handles specially.
-  return PHONE_RE.test(userContext) && EXPLICIT_LOOKUP_RE.test(text);
+function localPlan(text, decision, history = []) {
+  return {
+    ok: true,
+    search: false,
+    externalLookup: false,
+    topic: clean(text, 90),
+    resolvedQuestion: fallbackResolvedQuestion(text, history),
+    searchInstruction: '',
+    ack: '',
+    planner: 'unified-router-v45',
+    plannerMs: 0,
+    searchMode: decision.mode,
+    routeReason: decision.reason,
+  };
 }
 
-function fallbackResolvedQuestion(text, history = []) {
-  const value = clean(text, 1800);
-  if (value.length >= 42) return value;
-  const users = userHistory(history).map((x) => clean(x.content, 700)).slice(-4);
-  return clean(`${users.join(' ')} ${value}`, 2200) || value;
-}
-
-function deepPlan(text, history = []) {
+function deepPlan(text, history = [], decision = { webSearch: true }) {
   const resolvedQuestion = fallbackResolvedQuestion(text, history);
   return {
     ok: true,
-    search: true,
+    search: decision.webSearch === true,
+    externalLookup: true,
     topic: clean(resolvedQuestion, 90),
     resolvedQuestion,
-    searchInstruction: 'Web検索を既定で全面利用する。複数の検索語、一次情報、独立した別ソース、ページ本文、比較・反証を使い、根拠が不足すれば検索語を変えて最大3ラウンドまで追加調査する。検索エンジンが空振り・タイムアウトした場合は別エンジンへ自動再試行する。現在性がある情報は新しい一次情報を優先する。',
-    ack: '詳しく調べます。少し時間かかります。',
-    planner: 'deep-search-v44',
+    searchInstruction: '構造化APIを先に使い、Webが必要な場合だけ複数検索語・一次情報・独立ソースで検証する。根拠が足りない場合だけ追加検索する。',
+    ack: '確認します。',
+    planner: 'unified-router-v45',
     plannerMs: 0,
-    searchMode: 'exhaustive-default',
+    searchMode: decision.webSearch ? 'web-research' : 'structured-api-first',
+    routeReason: decision.reason,
   };
 }
 
@@ -152,32 +269,153 @@ function evidenceBlock(search) {
   }).join('\n\n');
 }
 
-const GROUNDED_PROMPT = `あなたはTalkSysの日本語電話相談AIです。今回のターンでは構造化APIを優先し、必要に応じてWebも調査済みです。\n\n絶対ルール:\n- まず利用者の質問へ直接答える。検索手順の説明から始めない。\n- 天気、為替、地震、祝日、経路など構造化APIで取得できた項目はAPI根拠を優先する。Webは補足、例外、障害、未取得事項の確認に使う。\n- API根拠にAttributionがある場合は、回答末尾に短く出典名を残す。\n- Crossrefの is-referenced-by-count は一般的な総被引用数ではなく「Crossref上の被引用参照数」と明示する。\n- 現在の価格、在庫、日時、時刻、法律、制度、人物、ニュース、現行仕様など変化し得る事実は取得根拠にある範囲だけ使う。\n- 重要な具体的事実は、可能なら公式・一次情報と独立した別ソースの一致を優先する。根拠が食い違う場合は断定しない。\n- assistantの過去発言は会話対象の復元には使えるが、外部事実の証拠にはしない。\n- 安定した一般知識、論理、利用者自身が述べた条件は補助的に使ってよい。\n- 根拠が一部足りなくても回答全体を拒否しない。確認できたことと未確認部分を分けて、役立つ結論まで進める。\n- 「自分で検索してください」「ホームページを確認してください」と調査を利用者へ押し戻さない。\n- 根拠にない店名、価格、住所、型番、数値を新しく作らない。\n- 電話で聞きやすい自然な日本語で、通常3〜6文。URLや検索回数は読み上げない。`;
+const CASUAL_PROMPT = `あなたはTalkSysの日本語電話相談AIです。
+- 今回は外部検索結果を使っていない。安定した一般知識、論理、会話履歴だけで答える。
+- 現在の価格、在庫、時刻、ニュース、現行制度など変化し得る事実を、確認したふりをして断定しない。
+- 利用者が検索禁止・外部アクセス禁止を指定した場合は必ず守る。
+- まず質問へ直接答える。通常2〜4文。不要な前置き、URL、Markdownは避ける。
+- 会話履歴の内容は会話対象の復元に使ってよい。
+- 分からない対象を勝手に具体化しない。`;
+
+const GROUNDED_PROMPT = `あなたはTalkSysの日本語電話相談AIです。今回のターンでは構造化APIを優先し、必要な場合だけWebも調査済みです。
+絶対ルール:
+- まず利用者の質問へ直接答える。検索手順の説明から始めない。
+- 構造化APIで取得できた項目はAPI根拠を優先する。
+- 現在の価格、在庫、日時、時刻、法律、制度、人物、ニュース、現行仕様など変化し得る事実は取得根拠にある範囲だけ使う。
+- assistantの過去発言は外部事実の証拠にしない。
+- 根拠が一部足りなくても、確認できたことと未確認部分を分ける。
+- 「もう一度聞いて」「後で確認」「自分で検索して」と調査を利用者へ押し戻さない。
+- 根拠にない店名、価格、住所、型番、数値を作らない。
+- 電話で聞きやすい自然な日本語で通常3〜6文。URLや検索回数は読み上げない。`;
+
+async function runModel(env, messages, max = 520, temperature = 0.08) {
+  const started = Date.now();
+  const result = await env.AI.run(MODEL, {
+    messages,
+    stream: false,
+    modalities: ['text'],
+    max_completion_tokens: max,
+    temperature,
+    reasoning_effort: 'low',
+  });
+  const text = readModelText(result);
+  if (!text) throw new Error('empty model answer');
+  return { text, ms: Date.now() - started };
+}
+
+async function casualTurn(body, env, { fallbackError = '' } = {}) {
+  const started = Date.now();
+  const text = canonicalizeInput(body?.text, 1800);
+  const history = historyOf(body?.history).slice(-10);
+  const extra = fallbackError
+    ? '\n外部調査処理は失敗した。現在情報を捏造せず、安定した一般知識で役立つ範囲だけ答え、再試行を利用者へ要求しない。'
+    : '';
+  try {
+    const answer = await runModel(env, [
+      { role: 'system', content: CASUAL_PROMPT + extra },
+      ...history,
+      { role: 'user', content: text },
+    ], 420, 0.16);
+    return {
+      ok: true,
+      answer: answer.text,
+      search: Boolean(fallbackError),
+      searchUseful: false,
+      searchFallback: Boolean(fallbackError),
+      route: fallbackError ? 'research-fallback-local-v45' : 'local-conversation-v45',
+      resolvedQuestion: fallbackResolvedQuestion(text, history),
+      queries: [],
+      sources: [],
+      timings: { totalMs: Date.now() - started, glmMs: answer.ms },
+      model: MODEL,
+      planner: 'unified-router-v45',
+      languageMode: 'ja-only',
+      ...(fallbackError ? { deepSearchError: clean(fallbackError, 280) } : {}),
+    };
+  } catch (error) {
+    return {
+      ok: true,
+      answer: fallbackError
+        ? '外部情報の取得と回答生成の両方に失敗したため、現在情報は断定しません。'
+        : '回答生成に失敗しました。検索は行っていません。',
+      search: Boolean(fallbackError),
+      searchUseful: false,
+      searchFallback: Boolean(fallbackError),
+      route: 'local-mechanical-fallback-v45',
+      resolvedQuestion: text,
+      queries: [],
+      sources: [],
+      timings: { totalMs: Date.now() - started, glmMs: 0 },
+      model: 'mechanical-guard',
+      planner: 'unified-router-v45',
+      languageMode: 'ja-only',
+      localError: clean(error?.message || error, 220),
+    };
+  }
+}
+
+function deterministicTurn(body, decision) {
+  const answer = decision.deterministic?.answer || '';
+  return {
+    ok: true,
+    answer,
+    search: false,
+    searchUseful: false,
+    route: 'deterministic-v45',
+    resolvedQuestion: canonicalizeInput(body?.text, 1800),
+    queries: [],
+    sources: [],
+    timings: { totalMs: 0, glmMs: 0 },
+    model: 'local-deterministic',
+    planner: 'unified-router-v45',
+    languageMode: 'ja-only',
+    deterministicKind: decision.deterministic?.kind || '',
+  };
+}
+
+function clarificationTurn(body, decision) {
+  const text = canonicalizeInput(body?.text, 1800);
+  const answer = decision.reason === 'bare_number'
+    ? `「${text}」だけでは何について知りたいのか特定できません。単位や対象を一言足してください。`
+    : '「中央区」は複数の都市にあります。東京都中央区、大阪市中央区など、どの中央区か教えてください。';
+  return {
+    ok: true,
+    answer,
+    search: false,
+    searchUseful: false,
+    route: 'clarification-v45',
+    clarificationRequired: true,
+    resolvedQuestion: text,
+    queries: [],
+    sources: [],
+    timings: { totalMs: 0, glmMs: 0 },
+    model: 'local-clarifier',
+    planner: 'unified-router-v45',
+    languageMode: 'ja-only',
+  };
+}
 
 async function synthesizeGroundedAnswer(env, body, search) {
   const hist = historyOf(body?.history).slice(-10);
   const resolved = clean(search?.plan?.resolvedQuestion || body?.text, 2200);
   const evidence = evidenceBlock(search);
   const coverage = search?.coverage || {};
-  const prompt = `利用者の質問: ${clean(body?.text, 1800)}\n解決した調査課題: ${resolved}\n検索の十分性: ${coverage.sufficient === true ? '十分と判定' : '不足の可能性あり'} ${clean(coverage.reason, 260)}\n\n取得根拠:\n${evidence || '(直接使えるWeb根拠は取得できなかった)'}\n\n上のルールに従って利用者へ直接答えてください。`;
-  const started = Date.now();
-  const result = await env.AI.run(MODEL, {
-    messages: [{ role: 'system', content: GROUNDED_PROMPT }, ...hist, { role: 'user', content: prompt }],
-    stream: false,
-    modalities: ['text'],
-    max_completion_tokens: 620,
-    temperature: 0.05,
-    reasoning_effort: 'low',
-  });
-  const text = readModelText(result);
-  if (!text) throw new Error('empty grounded answer');
-  return { text, ms: Date.now() - started };
+  const prompt = `利用者の質問: ${canonicalizeInput(body?.text, 1800)}
+解決した調査課題: ${resolved}
+検索の十分性: ${coverage.sufficient === true ? '十分と判定' : '不足の可能性あり'} ${clean(coverage.reason, 260)}
+
+取得根拠:
+${evidence || '(直接使える根拠は取得できなかった)'}
+
+上のルールに従って利用者へ直接答えてください。`;
+  return runModel(env, [{ role: 'system', content: GROUNDED_PROMPT }, ...hist, { role: 'user', content: prompt }], 620, 0.05);
 }
 
-async function deepTurn(body, env, requestSignal) {
+async function deepTurn(body, env, requestSignal, decision) {
   const started = Date.now();
   const history = historyOf(body?.history);
-  const text = clean(body?.text, 1800);
+  const text = canonicalizeInput(body?.text, 1800);
+  const normalizedBody = { ...body, text, history };
 
   const apiStarted = Date.now();
   const [coreApiBundle, knowledgeApiBundle] = await Promise.all([
@@ -188,9 +426,11 @@ async function deepTurn(body, env, requestSignal) {
   const apiMs = Date.now() - apiStarted;
   const apiOk = (apiBundle?.results || []).filter((x) => x?.ok);
 
-  let webFallbackUsed = apiBundle?.sufficient !== true || !structuredCoverageIsWholeQuestion(text, apiBundle);
+  const structuredEnough = apiBundle?.sufficient === true && structuredCoverageIsWholeQuestion(text, apiBundle);
+  let webFallbackUsed = decision.webSearch === true || !structuredEnough;
   let search;
   let searchMs = 0;
+
   if (webFallbackUsed) {
     const searchStarted = Date.now();
     search = await runDeepSearchV44(env.AI, text, history, requestSignal);
@@ -230,7 +470,7 @@ async function deepTurn(body, env, requestSignal) {
   search.results = [...apiResults, ...(search.results || [])].slice(0, SEARCH_V44_SOURCE_LIMIT);
   if (apiResults.length) search.evidenceUseful = true;
 
-  const answer = await synthesizeGroundedAnswer(env, body, search);
+  const answer = await synthesizeGroundedAnswer(env, normalizedBody, search);
   const sources = (search.results || []).slice(0, SEARCH_V44_SOURCE_LIMIT).map((x) => ({
     title: clean(x?.title, 220),
     url: clean(x?.url, 700),
@@ -242,6 +482,7 @@ async function deepTurn(body, env, requestSignal) {
     sourceUrl: clean(x?.sourceUrl, 700),
     attribution: clean(x?.attribution, 220),
   }));
+
   return {
     ok: true,
     answer: answer.text,
@@ -271,7 +512,10 @@ async function deepTurn(body, env, requestSignal) {
       apiFailureCount: Math.max(0, (apiBundle?.results || []).length - apiOk.length),
       webFallbackUsed,
       elapsedMs: apiMs,
-      failures: (apiBundle?.results || []).filter((x) => !x?.ok).map((x) => ({ tool: clean(x?.tool, 80), reason: clean(x?.reason, 160) })).slice(0, 8),
+      failures: (apiBundle?.results || []).filter((x) => !x?.ok).map((x) => ({
+        tool: clean(x?.tool, 80),
+        reason: clean(x?.reason, 160),
+      })).slice(0, 8),
     },
     searchDiagnostics: {
       searchRevision: search.revision || SEARCH_V44_REVISION,
@@ -315,15 +559,21 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === '/voice-health') {
-      const response = await baseWorker.fetch(request, env, ctx);
+      const response = await shellWorker.fetch(request, env, ctx);
       const data = await parseJsonClone(response);
       if (!data) return wrap(response);
       return json({
         ...data,
         revision: REVISION,
         voiceRevision: REVISION,
+        unifiedTurnRouter: true,
+        legacyV43TurnDelegation: false,
+        localDeterministic: true,
+        ambiguityGate: true,
+        explicitNoExternalGuard: true,
+        inputCanonicalization: 'NFKC+spoken-ja',
         webSearch: true,
-        webSearchPolicy: 'default-exhaustive-resilient-multi-engine-v44',
+        webSearchPolicy: 'intent-routed-api-first-v45',
         searchRevision: SEARCH_V44_REVISION,
         weatherDirect: 'jma-api-first-with-met-norway-fallback',
         apiFirst: true,
@@ -332,14 +582,12 @@ export default {
         freeApiRegistry: { ...publicApiRegistry(), ...publicKnowledgeApiRegistry() },
         searchDirectorModel: SEARCH_DIRECTOR_MODEL,
         openMeteoExcluded: true,
-        searchDefault: 'all-substantive-turns',
+        searchDefault: 'intent-routed-v45',
         searchMaxQueries: SEARCH_V44_MAX_QUERIES,
         searchMaxRecoveryQueries: SEARCH_V44_MAX_RECOVERY_QUERIES,
         searchMaxTotalQueries: SEARCH_V44_MAX_TOTAL_QUERIES,
         searchMaxRounds: SEARCH_V44_MAX_ROUNDS,
         searchSourceLimit: SEARCH_V44_SOURCE_LIMIT,
-        searchPageEnrichment: true,
-        searchCoverageAudit: true,
         searchQuestionFirstPlanning: true,
         searchGapDrivenFollowups: true,
         searchResearchStateMachine: true,
@@ -358,65 +606,57 @@ export default {
         searchSubrequestBudgetAware: true,
         searchExternalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
         searchExternalSubrequestWorstTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
-        specializedSearchRoutesPreserved: true,
+        specializedSearchRoutesPreserved: false,
       }, response.status);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/plan') {
       let body;
       try { body = await request.clone().json(); } catch { return json({ ok: false, error: 'invalid json' }, 400); }
-      const text = clean(body?.text, 1800);
+      const text = canonicalizeInput(body?.text, 1800);
       const history = historyOf(body?.history);
       if (!text) return json({ ok: false, error: 'text required' }, 400);
-
-      if (shouldPreserveSpecializedTurn(text, history) || !shouldSearchByDefault(text)) {
-        return wrap(await baseWorker.fetch(request, env, ctx));
-      }
-
-      const data = deepPlan(text, history);
-      schedule(ctx, env, { request, body, result: data, event: 'plan', status: 200 });
+      const decision = classifyTurn(text, history);
+      const data = decision.mode === 'external' ? deepPlan(text, history, decision) : localPlan(text, decision, history);
+      schedule(ctx, env, { request, body: { ...body, text }, result: data, event: 'plan', status: 200 });
       return json(data);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/turn') {
       let body;
       try { body = await request.clone().json(); } catch { return json({ ok: false, error: 'invalid json' }, 400); }
-      const text = clean(body?.text, 1800);
+      const text = canonicalizeInput(body?.text, 1800);
       const history = historyOf(body?.history);
       if (!text) return json({ ok: false, error: 'text required' }, 400);
+      const normalizedBody = { ...body, text, history };
+      const decision = classifyTurn(text, history);
 
-      if (shouldPreserveSpecializedTurn(text, history) || !shouldSearchByDefault(text)) {
-        return wrap(await baseWorker.fetch(request, env, ctx));
-      }
-
-      try {
-        const data = await deepTurn(body, env, request.signal);
-        schedule(ctx, env, { request, body, result: data, event: 'turn', status: 200 });
-        return json(data);
-      } catch (error) {
-        const fallback = await baseWorker.fetch(request.clone(), env, ctx);
-        const fallbackData = await parseJsonClone(fallback);
-        if (fallbackData?.ok) {
-          const data = {
-            ...fallbackData,
-            search: true,
-            searchUseful: false,
-            searchFallback: true,
-            route: `deep-search-v44-fallback-${clean(fallbackData.route || 'base', 100)}`,
-            deepSearchError: clean(error?.message || error, 280),
-          };
-          schedule(ctx, env, { request, body, result: data, event: 'turn-search-fallback', status: fallback.status });
-          return json(data, fallback.status);
+      let data;
+      if (decision.mode === 'deterministic') {
+        data = deterministicTurn(normalizedBody, decision);
+      } else if (decision.mode === 'clarify') {
+        data = clarificationTurn(normalizedBody, decision);
+      } else if (decision.mode === 'casual') {
+        data = await casualTurn(normalizedBody, env);
+      } else {
+        try {
+          data = await deepTurn(normalizedBody, env, request.signal, decision);
+        } catch (error) {
+          data = await casualTurn(normalizedBody, env, { fallbackError: error?.message || error });
         }
-        return wrap(fallback);
       }
+      schedule(ctx, env, { request, body: normalizedBody, result: data, event: 'turn', status: 200 });
+      return json(data);
     }
 
-    return wrap(await baseWorker.fetch(request, env, ctx));
+    return wrap(await shellWorker.fetch(request, env, ctx));
   },
 };
 
 export const __test = {
+  canonicalizeInput,
+  classifyTurn,
+  localDeterministicAnswer,
   shouldSearchByDefault,
   shouldPreserveSpecializedTurn,
   fallbackResolvedQuestion,
