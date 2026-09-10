@@ -8,7 +8,8 @@ test('shopping comparison remains shopping in deterministic director fallback', 
   assert.equal(p.intent, 'shopping');
   assert.equal(p.researchMode, 'discover_then_verify');
   assert.equal(p.candidateType, 'product_model');
-  assert.ok(p.queries.some(q => /3万円以下.*中古.*ノートパソコン.*型番/.test(q)));
+  assert.ok(p.queries.some(q => /3万円以下.*中古.*ノートパソコン/.test(q)));
+  assert.ok(p.queries.every(q => !/型番/.test(q)));
 });
 
 test('simple known-model BIOS lookup is compact and manufacturer-scoped', () => {
