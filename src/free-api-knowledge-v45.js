@@ -1,4 +1,11 @@
-export const KNOWLEDGE_API_REVISION = 'free-knowledge-api-v45';
+import {
+  EXTRA_KNOWLEDGE_API_CATEGORIES,
+  detectExtraKnowledgeApiIntents,
+  publicExtraKnowledgeApiRegistry,
+  runExtraKnowledgeApiIntent,
+} from './free-api-knowledge-extra-v45.js';
+
+export const KNOWLEDGE_API_REVISION = 'free-knowledge-api-v45.1';
 
 export const KNOWLEDGE_API_REGISTRY = Object.freeze({
   crossref: {
@@ -96,7 +103,8 @@ export function detectKnowledgeApiIntents(text, history = []) {
   const out = [];
   if (SCHOLARLY_RE.test(context)) out.push('scholarly_metadata');
   if (MACRO_RE.test(context) && COUNTRIES.some(([, re]) => re.test(context))) out.push('macro_indicator');
-  return out;
+  out.push(...detectExtraKnowledgeApiIntents(text, history));
+  return [...new Set(out)];
 }
 
 function doiFrom(text) {
@@ -197,6 +205,7 @@ async function runIntent(intent, text, history, signal, fetchImpl) {
   const context = userContext(text, history);
   if (intent === 'scholarly_metadata') return runCrossref(context, signal, fetchImpl);
   if (intent === 'macro_indicator') return runWorldBank(context, signal, fetchImpl);
+  if (EXTRA_KNOWLEDGE_API_CATEGORIES.has(intent)) return runExtraKnowledgeApiIntent(intent, context, signal, fetchImpl);
   return { ok: false, tool: intent, category: intent, reason: 'unsupported_intent' };
 }
 
@@ -251,14 +260,17 @@ export function mergeApiBundles(...bundles) {
 }
 
 export function publicKnowledgeApiRegistry() {
-  return Object.fromEntries(Object.entries(KNOWLEDGE_API_REGISTRY).map(([id, item]) => [id, {
-    label: item.label,
-    category: item.category,
-    free: item.free === true,
-    keyRequired: item.keyRequired === true,
-    commercialUse: item.commercialUse === true,
-    attribution: item.attribution,
-    termsUrl: item.termsUrl,
-    notes: item.notes,
-  }]));
+  return {
+    ...Object.fromEntries(Object.entries(KNOWLEDGE_API_REGISTRY).map(([id, item]) => [id, {
+      label: item.label,
+      category: item.category,
+      free: item.free === true,
+      keyRequired: item.keyRequired === true,
+      commercialUse: item.commercialUse === true,
+      attribution: item.attribution,
+      termsUrl: item.termsUrl,
+      notes: item.notes,
+    }])),
+    ...publicExtraKnowledgeApiRegistry(),
+  };
 }
