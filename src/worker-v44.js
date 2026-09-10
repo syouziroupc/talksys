@@ -20,8 +20,13 @@ import {
   publicApiRegistry,
   runFreeApiTools,
 } from './free-api-tools-v45.js';
+import {
+  mergeApiBundles,
+  publicKnowledgeApiRegistry,
+  runKnowledgeApiTools,
+} from './free-api-knowledge-v45.js';
 
-const REVISION = 'talksys-v45-api-first-parallel-free-tools';
+const REVISION = 'talksys-v45-api-first-parallel-free-tools-knowledge';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
 
@@ -154,7 +159,11 @@ async function deepTurn(body, env, requestSignal) {
   const text = clean(body?.text, 1800);
 
   const apiStarted = Date.now();
-  const apiBundle = await runFreeApiTools(text, history, env, requestSignal);
+  const [coreApiBundle, knowledgeApiBundle] = await Promise.all([
+    runFreeApiTools(text, history, env, requestSignal),
+    runKnowledgeApiTools(text, history, requestSignal),
+  ]);
+  const apiBundle = mergeApiBundles(coreApiBundle, knowledgeApiBundle);
   const apiMs = Date.now() - apiStarted;
   const apiOk = (apiBundle?.results || []).filter((x) => x?.ok);
 
@@ -298,7 +307,7 @@ export default {
         apiFirst: true,
         apiParallel: true,
         freeApiRevision: FREE_API_REVISION,
-        freeApiRegistry: publicApiRegistry(),
+        freeApiRegistry: { ...publicApiRegistry(), ...publicKnowledgeApiRegistry() },
         searchDirectorModel: SEARCH_DIRECTOR_MODEL,
         openMeteoExcluded: true,
         searchDefault: 'all-substantive-turns',
