@@ -4,6 +4,7 @@ import {
   searchBingRss,
   searchOpenStreetMapLocal,
 } from './search-fallbacks.js';
+import { fetchDirectPrimarySources } from './direct-primary-v45.js';
 
 export const SEARCH_V44_REVISION = 'deep-search-v45-single-provider-staged-evidence';
 export const SEARCH_V44_MAX_QUERIES = 6;
@@ -396,9 +397,15 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   firstFacets = firstFacets.slice(0,2);
 
   const r1 = Date.now();
-  const first = await Promise.all(firstFacets.map(f => searchOne(f, deadline)));
+  // A known manufacturer/model should not depend on a search index to discover
+  // its own official page. Direct primary-source resolution runs beside the
+  // single search index and never counts as a second search engine.
+  const [first, directPrimary] = await Promise.all([
+    Promise.all(firstFacets.map(f => searchOne(f, deadline))),
+    fetchDirectPrimarySources(plan.resolvedQuestion, deadline),
+  ]);
   diagnostics.push(...first.map(x => x.diag));
-  let merged = first.flatMap(x => x.results);
+  let merged = [...(directPrimary.results || []), ...first.flatMap(x => x.results)];
   let candidates = plan.candidateType === 'product_model' ? extractCandidates(merged,4) : [];
   timings.round1Ms = Date.now() - r1;
   let rounds = 1;
@@ -428,7 +435,14 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   let ranked = diversify(merged, SEARCH_V44_SOURCE_LIMIT);
   ranked = await enrichTop(ranked, deadline, 2);
   const hostCount = new Set(ranked.map(x => hostOf(x?.url)).filter(Boolean)).size;
-  const evidenceUseful = ranked.length >= 2 || (ranked.length === 1 && ranked[0].queryGateScore >= 6);
+  const baseEvidenceUseful = ranked.length >= 2 || (ranked.length === 1 && ranked[0].queryGateScore >= 6);
+  const requiresCurrentFirmwareVersion = /(最新|現在).*(BIOS|UEFI|ファームウェア)|(?:BIOS|UEFI|ファームウェア).*(最新|現在)/i.test(plan.resolvedQuestion);
+  const hasCurrentFirmwareVersionEvidence = ranked.some((item) => {
+    const body = `${item?.title || ''} ${item?.excerpt || item?.snippet || ''}`;
+    const official = item?.primarySource === true || ['official_spec','official_support'].includes(item?.sourceRole);
+    return official && /(?:version|ver\.?|バージョン|BIOS)\s*[:：v]?\s*[a-z]?\d+(?:[.\-][a-z0-9]+)+/i.test(body);
+  });
+  const evidenceUseful = baseEvidenceUseful && (!requiresCurrentFirmwareVersion || hasCurrentFirmwareVersionEvidence);
   const sufficient = plan.researchMode === 'discover_then_verify'
     ? Boolean(candidates.length && evidenceUseful)
     : evidenceUseful;
@@ -467,6 +481,11 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     hostCount,
     probeFailures: diagnostics.filter(x => !x.ok).length,
     probeDiagnostics: diagnostics,
+    directPrimarySourceCount: (directPrimary.results || []).length,
+    directPrimaryDiagnostics: directPrimary.diagnostics || [],
+    directPrimaryTargets: (directPrimary.targets || []).map(x => ({ resolver: x.resolver, role: x.role, url: x.url, model: x.model })),
+    requiresCurrentFirmwareVersion,
+    hasCurrentFirmwareVersionEvidence,
     timings,
   };
 }
