@@ -20,29 +20,30 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Dump retrieval samples
+      - name: Probe Japanese Bing RSS variants
         shell: bash
         run: |
           node --input-type=module <<'NODE'
-          import { searchBingRss } from './src/search-fallbacks.js';
-          import { stageEvidence } from './src/search-v45.js';
-          for (const q of ['3万円以下 中古 ノートパソコン 型番','3万円以下 中古 ノートパソコン 販売']) {
-            const rows = await searchBingRss(q,{limit:12,timeoutMs:5000});
-            console.log('\nQUERY',q,'COUNT',rows.length);
-            rows.forEach((r,i)=>console.log(JSON.stringify({i,title:r.title,url:r.url,snippet:r.snippet?.slice(0,300),gate:stageEvidence(q,r,'discovery','seller')})));
-          }
-          for (const url of [
-            'https://jp.msi.com/Motherboard/X79A-GD45/Specification',
-            'https://www.msi.com/Motherboard/X79A-GD45/Specification',
-            'https://jp.msi.com/Motherboard/X79A-GD45/support',
-            'https://www.msi.com/Motherboard/X79A-GD45/support',
-            'https://download.msi.com/bos_exe/mb/7735v28.zip'
-          ]) {
+          import { parseBingRss } from './src/search-fallbacks.js';
+          const queries = [
+            '3万円以下 中古 ノートパソコン 型番',
+            '中古ノートパソコン 30000円',
+            '中古 ノートPC 30000円',
+            '中古ノートPC 3万円',
+            '中古ノートパソコン 8GB SSD',
+            '中古ノートパソコン Let’s note ThinkPad Latitude',
+          ];
+          const variants = [
+            ['base','format=rss&setlang=ja-JP&cc=jp'],
+            ['market','format=rss&mkt=ja-JP&setlang=ja-JP&cc=jp'],
+            ['market-only','format=rss&mkt=ja-JP'],
+          ];
+          for (const q of queries) for (const [label,params] of variants) {
+            const u=`https://www.bing.com/search?${params}&q=${encodeURIComponent(q)}`;
             try {
-              const r=await fetch(url,{redirect:'follow',headers:{'user-agent':'Mozilla/5.0 TalkSys-Diagnostics/45','accept':'*/*'}});
-              console.log('URLCHECK',JSON.stringify({url,status:r.status,ct:r.headers.get('content-type'),len:r.headers.get('content-length'),final:r.url}));
-              if(r.ok && /text|html|json/i.test(r.headers.get('content-type')||'')) console.log((await r.text()).slice(0,500).replace(/\s+/g,' '));
-              else if(r.body) await r.body.cancel();
-            } catch(e) { console.log('URLCHECK_ERROR',url,e?.name,e?.message); }
+              const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36','accept':'application/rss+xml,application/xml,text/xml'}});
+              const rows=parseBingRss(await r.text(),5);
+              console.log('BING',JSON.stringify({q,label,status:r.status,rows:rows.map(x=>({title:x.title,url:x.url}))}));
+            } catch(e) { console.log('BINGERR',q,label,e?.message); }
           }
           NODE
