@@ -1,0 +1,48 @@
+name: Diagnose v45 retrieval once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-v45-retrieval-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Dump retrieval samples
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { searchBingRss } from './src/search-fallbacks.js';
+          import { stageEvidence } from './src/search-v45.js';
+          for (const q of ['3万円以下 中古 ノートパソコン 型番','3万円以下 中古 ノートパソコン 販売']) {
+            const rows = await searchBingRss(q,{limit:12,timeoutMs:5000});
+            console.log('\nQUERY',q,'COUNT',rows.length);
+            rows.forEach((r,i)=>console.log(JSON.stringify({i,title:r.title,url:r.url,snippet:r.snippet?.slice(0,300),gate:stageEvidence(q,r,'discovery','seller')})));
+          }
+          for (const url of [
+            'https://jp.msi.com/Motherboard/X79A-GD45/Specification',
+            'https://www.msi.com/Motherboard/X79A-GD45/Specification',
+            'https://jp.msi.com/Motherboard/X79A-GD45/support',
+            'https://www.msi.com/Motherboard/X79A-GD45/support',
+            'https://download.msi.com/bos_exe/mb/7735v28.zip'
+          ]) {
+            try {
+              const r=await fetch(url,{redirect:'follow',headers:{'user-agent':'Mozilla/5.0 TalkSys-Diagnostics/45','accept':'*/*'}});
+              console.log('URLCHECK',JSON.stringify({url,status:r.status,ct:r.headers.get('content-type'),len:r.headers.get('content-length'),final:r.url}));
+              if(r.ok && /text|html|json/i.test(r.headers.get('content-type')||'')) console.log((await r.text()).slice(0,500).replace(/\s+/g,' '));
+              else if(r.body) await r.body.cancel();
+            } catch(e) { console.log('URLCHECK_ERROR',url,e?.name,e?.message); }
+          }
+          NODE
