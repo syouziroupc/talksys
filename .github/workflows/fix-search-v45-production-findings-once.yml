@@ -133,11 +133,11 @@ jobs:
           if old not in s: raise SystemExit('web catch block not found')
           s=s.replace(old,new)
 
-          old="""        { role: 'system', content: CASUAL_PROMPT + '\\n外部検索では十分な根拠を取得できなかった。質問のうち、時間で変化しない一般的な判断基準・仕組み・注意点だけは具体的に答える。現在の価格、在庫、最新版、時刻、現行制度などは断定しない。' },
+          old="""        { role: 'system', content: CASUAL_PROMPT + '\n外部検索では十分な根拠を取得できなかった。質問のうち、時間で変化しない一般的な判断基準・仕組み・注意点だけは具体的に答える。現在の価格、在庫、最新版、時刻、現行制度などは断定しない。' },
         ...historyOf(normalizedBody?.history).slice(-8),
         { role: 'user', content: text },
       ], 420, 0.12, 5000);"""
-          new="""        { role: 'system', content: CASUAL_PROMPT + '\\n今回の外部取得では十分な根拠が得られなかった。検索機能が無効・禁止・使えないとは絶対に説明しない。質問のうち、時間で変化しない一般的な判断基準・仕組み・注意点だけを具体的に答える。現在の価格、在庫、最新版、時刻、現行制度などは断定しない。現在情報が必要な部分は「今回の取得では確認できなかった」とだけ述べる。' },
+          new="""        { role: 'system', content: CASUAL_PROMPT + '\n今回の外部取得では十分な根拠が得られなかった。検索機能が無効・禁止・使えないとは絶対に説明しない。質問のうち、時間で変化しない一般的な判断基準・仕組み・注意点だけを具体的に答える。現在の価格、在庫、最新版、時刻、現行制度などは断定しない。現在情報が必要な部分は「今回の取得では確認できなかった」とだけ述べる。' },
         ...historyOf(normalizedBody?.history).slice(-8),
         { role: 'user', content: text },
       ], 420, 0.12, 6500);
@@ -204,3 +204,5 @@ jobs:
           git add src/search-v45.js src/worker-v44.js tests/search-v45-production-findings.test.mjs
           git commit -m 'Fix v45 fallback intent and evidence failure handling'
           git push origin HEAD:main
+
+# retrigger existing workflow after initial registration
