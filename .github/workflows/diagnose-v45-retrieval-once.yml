@@ -20,30 +20,27 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Probe Japanese Bing RSS variants
+      - name: Probe Bing RSS exact phrases
         shell: bash
         run: |
           node --input-type=module <<'NODE'
           import { parseBingRss } from './src/search-fallbacks.js';
           const queries = [
-            '3万円以下 中古 ノートパソコン 型番',
-            '中古ノートパソコン 30000円',
-            '中古 ノートPC 30000円',
-            '中古ノートPC 3万円',
-            '中古ノートパソコン 8GB SSD',
-            '中古ノートパソコン Let’s note ThinkPad Latitude',
+            '"中古ノートパソコン"',
+            '"中古ノートパソコン" 30000',
+            '"中古ノートパソコン" SSD',
+            '"中古ノートPC"',
+            'site:jp "中古ノートパソコン"',
+            'site:iosys.co.jp ノートパソコン 中古',
+            'site:pcwrap.com ノートパソコン 中古',
+            'site:janpara.co.jp ノートパソコン 中古'
           ];
-          const variants = [
-            ['base','format=rss&setlang=ja-JP&cc=jp'],
-            ['market','format=rss&mkt=ja-JP&setlang=ja-JP&cc=jp'],
-            ['market-only','format=rss&mkt=ja-JP'],
-          ];
-          for (const q of queries) for (const [label,params] of variants) {
-            const u=`https://www.bing.com/search?${params}&q=${encodeURIComponent(q)}`;
+          for (const q of queries) {
+            const u=`https://www.bing.com/search?format=rss&mkt=ja-JP&setlang=ja-JP&cc=jp&q=${encodeURIComponent(q)}`;
             try {
               const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36','accept':'application/rss+xml,application/xml,text/xml'}});
-              const rows=parseBingRss(await r.text(),5);
-              console.log('BING',JSON.stringify({q,label,status:r.status,rows:rows.map(x=>({title:x.title,url:x.url}))}));
-            } catch(e) { console.log('BINGERR',q,label,e?.message); }
+              const rows=parseBingRss(await r.text(),8);
+              console.log('BING',JSON.stringify({q,status:r.status,rows:rows.map(x=>({title:x.title,url:x.url}))}));
+            } catch(e) { console.log('BINGERR',q,e?.message); }
           }
           NODE
