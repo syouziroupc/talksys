@@ -1,0 +1,40 @@
+name: Diagnose English Bing RSS once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-v45-english-rss-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Probe English and site-restricted queries
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { searchBingRss } from './src/search-fallbacks.js';
+          for (const q of [
+            'used laptop Japan under 30000 yen',
+            'used notebook PC Japan 30000 yen',
+            'used laptop 8GB SSD Japan',
+            'site:iosys.co.jp laptop used',
+            'site:pcwrap.com laptop used',
+            'site:janpara.co.jp laptop used',
+            'MSI X79A-GD45 BIOS',
+            'MSI X79A-GD45 BIOS site:msi.com'
+          ]) {
+            const rows=await searchBingRss(q,{limit:10,timeoutMs:5000});
+            console.log('Q',q);
+            for(const r of rows) console.log(JSON.stringify({title:r.title,url:r.url,snippet:r.snippet?.slice(0,180)}));
+          }
+          NODE
