@@ -1,4 +1,4 @@
-name: Fix v45 lazy shell once
+name: Fix v45 model timeout once
 
 on:
   push:
@@ -9,36 +9,107 @@ permissions:
 
 jobs:
   fix:
-    if: contains(github.event.head_commit.message, '[fix-v45-lazy-shell]')
+    if: contains(github.event.head_commit.message, '[fix-v45-model-timeout]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Remove static Cloudflare shell import
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Bound model calls and add regression test
         run: |
           python - <<'PY'
           from pathlib import Path
           p=Path('src/worker-v44.js')
           s=p.read_text()
-          s=s.replace("import shellWorker from './worker.js';\n", '')
-          marker='async function parseJsonClone(response) {'
-          helper="""async function fetchShell(request, env, ctx) {
-            const { default: shellWorker } = await import('./worker.js');
-            return shellWorker.fetch(request, env, ctx);
+          s=s.replace("const MODEL = '@cf/zai-org/glm-5.3-flash';\n", "const MODEL = '@cf/zai-org/glm-5.3-flash';\nconst MODEL_TIMEOUT_MS = 12000;\n")
+          old="""async function runModel(env, messages, max = 520, temperature = 0.08) {
+            const started = Date.now();
+            const result = await env.AI.run(MODEL, {
+              messages,
+              stream: false,
+              modalities: ['text'],
+              max_completion_tokens: max,
+              temperature,
+              reasoning_effort: 'low',
+            });
+            const text = readModelText(result);
+            if (!text) throw new Error('empty model answer');
+            return { text, ms: Date.now() - started };
+          }
+          """
+          new="""export async function boundedPromise(promise, timeoutMs, label = 'operation') {
+            const ms = Math.max(1, Number(timeoutMs) || 1);
+            let timer;
+            try {
+              return await Promise.race([
+                Promise.resolve(promise),
+                new Promise((_, reject) => {
+                  timer = setTimeout(() => reject(new Error(`${label}_timeout_${ms}ms`)), ms);
+                }),
+              ]);
+            } finally {
+              if (timer) clearTimeout(timer);
+            }
           }
 
+          async function runModel(env, messages, max = 520, temperature = 0.08, timeoutMs = MODEL_TIMEOUT_MS) {
+            const started = Date.now();
+            const controller = new AbortController();
+            const abortTimer = setTimeout(() => controller.abort(new Error('model_timeout')), timeoutMs);
+            try {
+              const result = await boundedPromise(env.AI.run(MODEL, {
+                messages,
+                stream: false,
+                modalities: ['text'],
+                max_completion_tokens: max,
+                temperature,
+                reasoning_effort: 'low',
+              }, { signal: controller.signal }), timeoutMs + 250, 'model');
+              const text = readModelText(result);
+              if (!text) throw new Error('empty model answer');
+              return { text, ms: Date.now() - started };
+            } finally {
+              clearTimeout(abortTimer);
+            }
+          }
           """
-          if 'async function fetchShell(' not in s:
-              s=s.replace(marker, helper + marker)
-          s=s.replace('await shellWorker.fetch(request, env, ctx)', 'await fetchShell(request, env, ctx)')
-          assert "import shellWorker from './worker.js'" not in s
+          if old not in s:
+              raise SystemExit('runModel target not found')
+          s=s.replace(old,new)
+          s=s.replace("        localDeterministic: true,\n", "        localDeterministic: true,\n        modelTimeoutMs: MODEL_TIMEOUT_MS,\n        modelTimeoutFallback: true,\n")
+          if 'boundedPromise,' not in s:
+              s=s.replace("  canonicalizeInput,\n", "  canonicalizeInput,\n  boundedPromise,\n")
           assert 'worker-v43' not in s
           p.write_text(s)
+
+          t=Path('tests/v45-model-timeout.test.mjs')
+          t.write_text("""import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import { boundedPromise, __test as worker } from '../src/worker-v44.js';
+
+          test('boundedPromise rejects a hung model call instead of hanging the turn', async () => {
+            const started = Date.now();
+            await assert.rejects(boundedPromise(new Promise(() => {}), 20, 'model'), /model_timeout_20ms/);
+            assert.ok(Date.now() - started < 1000);
+          });
+
+          test('unified router still keeps deterministic and stable knowledge local', () => {
+            assert.equal(worker.classifyTurn('12345÷15', []).mode, 'deterministic');
+            assert.equal(worker.classifyTurn('RAMとSSDの違いを短く説明して', []).mode, 'casual');
+            assert.equal(worker.classifyTurn('別府市の今日の天気は？', []).mode, 'external');
+          });
+          """)
           PY
           node --check src/worker-v44.js
-      - name: Commit fix
+          node --test tests/v45-model-timeout.test.mjs tests/v45-unified-router.test.mjs tests/v44-deep-search-default.test.mjs tests/v45-production-smoke-fixes.test.mjs
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Commit verified fix
         run: |
           git config user.name talksys-router-fix-bot
           git config user.email actions@users.noreply.github.com
-          git add src/worker-v44.js
-          git commit -m 'Fix v45 shell loading for Node tests'
+          git add src/worker-v44.js tests/v45-model-timeout.test.mjs
+          git commit -m 'Bound v45 model calls and prevent hung turns'
           git push
