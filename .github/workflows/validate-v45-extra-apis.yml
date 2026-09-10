@@ -1,0 +1,34 @@
+name: Validate v45 extra APIs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/free-api-knowledge-v45.js'
+      - 'src/free-api-knowledge-extra-v45.js'
+      - 'tests/v45-extra-free-knowledge-api.test.mjs'
+      - 'scripts/smoke-extra-free-apis-v45.mjs'
+      - '.github/workflows/validate-v45-extra-apis.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: Syntax and full regression suite
+        run: |
+          node --check src/free-api-knowledge-extra-v45.js
+          node --check src/free-api-knowledge-v45.js
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Live keyless API smoke
+        run: node scripts/smoke-extra-free-apis-v45.mjs
