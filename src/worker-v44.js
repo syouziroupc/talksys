@@ -11,7 +11,10 @@ import {
   SEARCH_V44_PROBE_CONCURRENCY,
   SEARCH_V44_REVISION,
   SEARCH_V44_SOURCE_LIMIT,
-} from './search-v44.js';
+  SEARCH_V45_TOTAL_BUDGET_MS,
+  SEARCH_V45_DIRECTOR_TIMEOUT_MS,
+  SEARCH_V45_PROVIDER,
+} from './search-v45.js';
 import { persistTalkLog } from './log-v42.js';
 import {
   detectApiIntents,
@@ -26,7 +29,7 @@ import {
   runKnowledgeApiTools,
 } from './free-api-knowledge-v45.js';
 
-const REVISION = 'talksys-v45-unified-router-no-v43-turn-delegation';
+const REVISION = 'talksys-v45-api-first-single-search-provider';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
 const MODEL_TIMEOUT_MS = 12000;
@@ -597,12 +600,27 @@ async function deepTurn(body, env, requestSignal, decision) {
   let answer;
   let answerSynthesisFallback = false;
   let answerSynthesisError = '';
-  try {
-    answer = await synthesizeGroundedAnswer(env, normalizedBody, search);
-  } catch (error) {
+  if (!apiOk.length && !search.evidenceUseful) {
     answerSynthesisFallback = true;
-    answerSynthesisError = clean(error?.message || error, 240);
-    answer = { text: mechanicalGroundedAnswer(apiOk, search, text), ms: 0 };
+    answerSynthesisError = 'external_evidence_unavailable_stable_only';
+    try {
+      answer = await runModel(env, [
+        { role: 'system', content: CASUAL_PROMPT + '\n外部検索では十分な根拠を取得できなかった。質問のうち、時間で変化しない一般的な判断基準・仕組み・注意点だけは具体的に答える。現在の価格、在庫、最新版、時刻、現行制度などは断定しない。' },
+        ...historyOf(normalizedBody?.history).slice(-8),
+        { role: 'user', content: text },
+      ], 420, 0.12, 5000);
+    } catch (error) {
+      answerSynthesisError = clean(error?.message || error, 240);
+      answer = { text: '外部の現在情報は確認できませんでした。一般論として回答できる部分も生成できなかったため、推測はしません。', ms: 0 };
+    }
+  } else {
+    try {
+      answer = await synthesizeGroundedAnswer(env, normalizedBody, search);
+    } catch (error) {
+      answerSynthesisFallback = true;
+      answerSynthesisError = clean(error?.message || error, 240);
+      answer = { text: mechanicalGroundedAnswer(apiOk, search, text), ms: 0 };
+    }
   }
   const sources = (search.results || []).slice(0, SEARCH_V44_SOURCE_LIMIT).map((x) => ({
     title: clean(x?.title, 220),
@@ -636,7 +654,7 @@ async function deepTurn(body, env, requestSignal, decision) {
     searchPasses: Number(search.rounds) || 0,
     maxSearchPasses: SEARCH_V44_MAX_ROUNDS,
     searchCoverage: search.coverage || null,
-    sourceQuality: apiOk.length ? 'structured-api-priority-plus-web-v45' : 'sequential-candidate-verified-query-gated-v44',
+    sourceQuality: apiOk.length ? 'structured-api-priority-plus-web-v45' : 'single-provider-staged-evidence-v45',
     searchMode: webFallbackUsed ? 'api-first-web-supplement' : 'structured-api-only',
     historyPolicy: 'assistant-context-not-evidence',
     subrequestBudgetAware: Boolean(search.subrequestBudgetAware),
@@ -679,7 +697,7 @@ async function deepTurn(body, env, requestSignal, decision) {
     },
     timings: { totalMs: Date.now() - started, apiMs, searchMs, glmMs: answer.ms, ...(search.timings || {}) },
     model: MODEL,
-    planner: apiOk.length ? 'free-api-router-v45' : 'deep-search-v44',
+    planner: apiOk.length ? 'free-api-router-v45' : 'search-v45',
     languageMode: 'ja-only',
   };
 }
@@ -737,7 +755,7 @@ export default {
         searchMaxRounds: SEARCH_V44_MAX_ROUNDS,
         searchSourceLimit: SEARCH_V44_SOURCE_LIMIT,
         searchQuestionFirstPlanning: true,
-        searchGapDrivenFollowups: true,
+        searchGapDrivenFollowups: false,
         searchResearchStateMachine: true,
         searchSequentialDiscovery: true,
         searchQueryResultGate: true,
@@ -745,9 +763,14 @@ export default {
         searchTypedResearchStrategy: true,
         searchSourceRoleAware: true,
         searchIndependentSources: true,
-        searchEngineRotation: true,
-        searchEngineRetry: true,
+        searchEngineRotation: false,
+        searchEngineRetry: false,
         searchMaxEngineRetries: SEARCH_V44_MAX_ENGINE_RETRIES,
+        searchProvider: SEARCH_V45_PROVIDER,
+        searchSingleProvider: true,
+        searchStageAwareGate: true,
+        searchTotalBudgetMs: SEARCH_V45_TOTAL_BUDGET_MS,
+        searchDirectorTimeoutMs: SEARCH_V45_DIRECTOR_TIMEOUT_MS,
         searchHostDiversity: true,
         searchMaxPerHost: SEARCH_V44_MAX_PER_HOST,
         searchProbeConcurrency: SEARCH_V44_PROBE_CONCURRENCY,
