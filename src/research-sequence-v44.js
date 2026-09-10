@@ -92,7 +92,13 @@ export function discoveryQueries(plan, limit = 2) {
   const selected = explicit.length ? explicit : facets.filter((f) => DISCOVERY_HINT_RE.test(`${f?.id || ''} ${f?.question || ''}`));
   const type = candidateTypeForPlan(plan);
   const hint = candidateHint(type);
-  const queries = selected.map((f) => clean(`${f?.primaryQuery || ''} ${hint}`, 320)).filter(Boolean);
+  const queries = selected.map((f) => {
+    const base = clean(f?.primaryQuery || '', 280);
+    const alreadyTyped = type === 'product_model' ? /(型番|機種|モデル)/i.test(base)
+      : type === 'store' ? /(店舗|店名|販売店|ショップ)/i.test(base)
+        : false;
+    return clean(`${base} ${alreadyTyped ? '' : hint}`, 320);
+  }).filter(Boolean);
   if (queries.length) return unique(queries, limit);
   return unique([clean(`${plan?.resolvedQuestion || ''} ${hint}`, 320)], limit);
 }
