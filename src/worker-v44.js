@@ -14,6 +14,7 @@ import {
   SEARCH_V45_TOTAL_BUDGET_MS,
   SEARCH_V45_DIRECTOR_TIMEOUT_MS,
   SEARCH_V45_PROVIDER,
+  SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED,
 } from './search-v45.js';
 import { persistTalkLog } from './log-v42.js';
 import {
@@ -28,8 +29,9 @@ import {
   publicKnowledgeApiRegistry,
   runKnowledgeApiTools,
 } from './free-api-knowledge-v45.js';
+import { publicShoppingApiRegistry, SHOPPING_API_REVISION } from './free-shopping-api-v45.js';
 
-const REVISION = 'talksys-v45-api-first-single-search-provider';
+const REVISION = 'talksys-v45-formal-api-primary-safe-fallback';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
 const MODEL_TIMEOUT_MS = 12000;
@@ -480,14 +482,30 @@ export function mechanicalGroundedAnswer(apiResults = [], search = {}, question 
     const facts = web.map((x) => `${clean(x?.title, 180)}: ${clean(x?.excerpt || x?.snippet, 420)}`).filter(Boolean).join(' / ');
     return `回答生成がタイムアウトしたため、取得済みのWeb根拠だけを返します。${facts}`;
   }
-  return '外部情報を取得できなかったため、現在情報は断定しません。';
+  return deterministicStableFallback(question, search);
+}
+
+export function deterministicStableFallback(question, search = {}) {
+  const q = canonicalizeInput(question, 1800);
+  const partial = Array.isArray(search?.results) && search.results.length > 0;
+  if (/(?:中古|新品).*(?:ノート|パソコン|PC)|(?:ノート|パソコン|PC).*(?:中古|新品)/i.test(q)) {
+    const video = /動画|YouTube|視聴|配信/.test(q);
+    const criteria = video
+      ? '動画視聴用なら、メモリ8GB以上、SSD、フルHD級の画面を優先し、バッテリー状態、ACアダプター、映像出力端子、保証の有無も確認してください。'
+      : '中古PCなら、用途に必要なCPU性能、メモリ8GB以上、SSD、バッテリー状態、ACアダプター、保証の有無を確認してください。';
+    return `${partial ? '取得できた外部根拠だけでは現行候補を確定できませんでした。' : '今回の取得では現行の価格・在庫を確認できませんでした。'}${criteria}現在の販売候補は十分な根拠がないため断定しません。`;
+  }
+  if (/(BIOS|UEFI|ファームウェア)/i.test(q)) {
+    return `${partial ? 'メーカー一次情報の一部は取得できましたが、' : '今回の取得では'}最新BIOS/UEFIのバージョンを確認できませんでした。型番一致のメーカー公式サポートを優先し、現在のBIOSバージョンと更新対象を照合してから適用してください。未確認の最新版番号は推測しません。`;
+  }
+  return `${partial ? '取得できた外部根拠だけでは質問全体の現在情報を確定できませんでした。' : '今回の外部取得では現在情報を確認できませんでした。'}確認できない現在値は推測しません。`;
 }
 
 function researchFailureTurn(body, error) {
   const text = canonicalizeInput(body?.text, 1800);
   return {
     ok: true,
-    answer: '外部情報を取得できなかったため、現在情報は断定しません。',
+    answer: deterministicStableFallback(text),
     search: true,
     searchUseful: false,
     searchFallback: true,
@@ -543,7 +561,7 @@ async function deepTurn(body, env, requestSignal, decision) {
   if (webFallbackUsed) {
     const searchStarted = Date.now();
     try {
-      search = await runDeepSearchV44(env.AI, text, history, requestSignal);
+      search = await runDeepSearchV44(env.AI, text, history, requestSignal, { env });
     } catch (error) {
       webResearchError = clean(error?.message || error, 240);
       // Retrieval failure is evidence absence, not an application exception.
@@ -621,7 +639,7 @@ async function deepTurn(body, env, requestSignal, decision) {
         .replace(/検索機能(?:が|は)(?:無効|禁止|使えない)[^。]*。?/g, '今回の外部取得では十分な根拠を確認できませんでした。');
     } catch (error) {
       answerSynthesisError = clean(error?.message || error, 240);
-      answer = { text: '外部の現在情報は確認できませんでした。一般論として回答できる部分も生成できなかったため、推測はしません。', ms: 0 };
+      answer = { text: deterministicStableFallback(text, search), ms: 0 };
     }
   } else {
     try {
@@ -751,15 +769,26 @@ export default {
         ambiguityGate: true,
         explicitNoExternalGuard: true,
         inputCanonicalization: 'NFKC+spoken-ja',
-        webSearch: true,
-        webSearchPolicy: 'intent-routed-api-first-v45',
+        webSearch: false,
+        webRetrieval: true,
+        webSearchPolicy: 'formal-api-and-direct-primary-v45',
+        webSearchEngine: 'none-general; formal-api+direct-primary',
+        generalWebSearchProvider: 'none',
+        generalWebSearchDisabledReason: 'previous RSS provider failed relevance and site-restriction diagnostics',
+        generalWebScraping: false,
+        bingRssEnabled: false,
         searchRevision: SEARCH_V44_REVISION,
         weatherDirect: 'jma-api-first-with-met-norway-fallback',
         apiFirst: true,
         apiParallel: true,
         freeApiRevision: FREE_API_REVISION,
-        freeApiRegistry: { ...publicApiRegistry(), ...publicKnowledgeApiRegistry() },
+        freeApiRegistry: { ...publicApiRegistry(), ...publicKnowledgeApiRegistry(), ...publicShoppingApiRegistry() },
+        shoppingApiRevision: SHOPPING_API_REVISION,
+        shoppingApiRegistry: publicShoppingApiRegistry(),
+        shoppingApiFirst: true,
         searchDirectorModel: SEARCH_DIRECTOR_MODEL,
+        searchQueryPlanner: SEARCH_DIRECTOR_MODEL,
+        searchFillerModel: 'none',
         openMeteoExcluded: true,
         searchDefault: 'intent-routed-v45',
         searchMaxQueries: SEARCH_V44_MAX_QUERIES,
@@ -780,7 +809,8 @@ export default {
         searchEngineRetry: false,
         searchMaxEngineRetries: SEARCH_V44_MAX_ENGINE_RETRIES,
         searchProvider: SEARCH_V45_PROVIDER,
-        searchSingleProvider: true,
+        searchSingleProvider: false,
+        searchGeneralWebEnabled: SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED,
         searchDirectPrimaryResolver: true,
         searchPartialEvidenceAnswering: true,
         searchStageAwareGate: true,

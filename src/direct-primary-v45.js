@@ -3,7 +3,7 @@
 // a resolver may only emit URLs whose structure is known for that vendor, and a
 // fetched page is admitted only when it contains the requested model string.
 
-const UA = 'TalkSys/45 (+https://talksys.syouziroupc.workers.dev)';
+const UA = 'Mozilla/5.0 TalkSys/45 (+https://talksys.syouziroupc.workers.dev)';
 
 function clean(value, max = 3000) {
   return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);

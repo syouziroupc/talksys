@@ -1,12 +1,11 @@
 import {
   dedupeSearchResults,
-  hasUsefulSearchEvidence,
-  searchBingRss,
   searchOpenStreetMapLocal,
 } from './search-fallbacks.js';
 import { fetchDirectPrimarySources } from './direct-primary-v45.js';
+import { searchFormalShoppingApis, SHOPPING_API_REVISION } from './free-shopping-api-v45.js';
 
-export const SEARCH_V44_REVISION = 'deep-search-v45-single-provider-staged-evidence';
+export const SEARCH_V44_REVISION = 'deep-search-v45-formal-api-primary-only';
 export const SEARCH_V44_MAX_QUERIES = 6;
 export const SEARCH_V44_MAX_RECOVERY_QUERIES = 2;
 export const SEARCH_V44_MAX_TOTAL_QUERIES = 8;
@@ -20,7 +19,8 @@ export const SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET = 14;
 export const SEARCH_V45_TOTAL_BUDGET_MS = 6500;
 export const SEARCH_V45_QUERY_TIMEOUT_MS = 1900;
 export const SEARCH_V45_DIRECTOR_TIMEOUT_MS = 2200;
-export const SEARCH_V45_PROVIDER = 'bing-rss-keyless-single-index';
+export const SEARCH_V45_PROVIDER = 'formal-structured-apis+direct-primary';
+export const SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED = false;
 
 const DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const DIRECTOR_TOOL = {
@@ -110,9 +110,12 @@ export function needsSearchDirector(text) {
   const value = clean(text, 1800);
   if (!value) return false;
   const genericShopping = SHOPPING_RE.test(value) && /(おすすめ|選ん|選ぶ|どれ|何がいい|候補|比較)/.test(value) && !MODEL_RE.test(value);
+  // Routine shopping is already typed deterministically and should not spend
+  // 2.2 s on a planner before hitting a structured commerce API.
+  if (genericShopping) return false;
   const multiConstraint = (value.match(/(?:以下|以上|以内|用途|予算|かつ|なおかつ|ただし|除外|比較|条件)/g) || []).length >= 2;
   const multiEntityComparison = /比較|どっち/.test(value) && (value.match(/[A-Za-z]{2,}[A-Za-z0-9-]*\d+[A-Za-z0-9-]*/g) || []).length >= 2;
-  return genericShopping || multiConstraint || multiEntityComparison;
+  return multiConstraint || multiEntityComparison;
 }
 
 function officialDomainHint(value) {
@@ -154,8 +157,7 @@ function simplePlan(text, history) {
   if (intent === 'shopping' && !known) {
     researchMode = 'discover_then_verify'; candidateType = 'product_model';
     if (/ノート|パソコン|PC/i.test(resolved)) {
-      queries.push(`${budget ? `${budget} ` : ''}中古 ノートパソコン 型番`);
-      queries.push(`${budget ? `${budget} ` : ''}中古 ノートパソコン 販売`);
+      queries.push(`${budget ? `${budget} ` : ''}中古 ノートパソコン`);
     } else {
       queries.push(compactSubject(resolved));
     }
@@ -302,17 +304,23 @@ function filterStage(query, raw, stage, sourceRole, limit = 10) {
 }
 
 async function searchOne(facet, deadline) {
-  const remaining = deadline - Date.now();
-  if (remaining < 350) return { results: [], diag: { engine: SEARCH_V45_PROVIDER, query: facet.primaryQuery, ok: false, count: 0, error: 'budget_exhausted', elapsedMs: 0 } };
-  const timeoutMs = Math.max(500, Math.min(SEARCH_V45_QUERY_TIMEOUT_MS, remaining - 100));
-  const started = Date.now();
-  try {
-    const raw = await searchBingRss(facet.primaryQuery, { limit: 12, timeoutMs });
-    const results = filterStage(facet.primaryQuery, raw, facet.stage, facet.sourceRole, 10);
-    return { results, diag: { engine: SEARCH_V45_PROVIDER, query: facet.primaryQuery, stage: facet.stage, sourceRole: facet.sourceRole, ok: results.length > 0, rawCount: raw.length, count: results.length, error: results.length ? '' : (raw.length ? 'stage_gate_rejected' : 'empty_results'), elapsedMs: Date.now()-started } };
-  } catch (error) {
-    return { results: [], diag: { engine: SEARCH_V45_PROVIDER, query: facet.primaryQuery, stage: facet.stage, sourceRole: facet.sourceRole, ok: false, count: 0, error: clean(error?.name || error?.message || error, 100), elapsedMs: Date.now()-started } };
-  }
+  // General web search is deliberately disabled: the previously used Bing RSS
+  // endpoint returned unrelated results even with site: restrictions. Current
+  // facts now come from formal APIs or deterministic primary-source resolvers.
+  return {
+    results: [],
+    diag: {
+      engine: 'general-web-search-disabled',
+      query: facet.primaryQuery,
+      stage: facet.stage,
+      sourceRole: facet.sourceRole,
+      ok: false,
+      rawCount: 0,
+      count: 0,
+      error: 'general_web_search_disabled_quality_terms',
+      elapsedMs: 0,
+    },
+  };
 }
 
 function extractCandidates(results, limit = 4) {
@@ -400,12 +408,19 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   // A known manufacturer/model should not depend on a search index to discover
   // its own official page. Direct primary-source resolution runs beside the
   // single search index and never counts as a second search engine.
-  const [first, directPrimary] = await Promise.all([
-    Promise.all(firstFacets.map(f => searchOne(f, deadline))),
+  const firstPromise = SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED
+    ? Promise.all(firstFacets.map(f => searchOne(f, deadline)))
+    : Promise.resolve([]);
+  const shoppingPromise = plan.intent === 'shopping'
+    ? searchFormalShoppingApis(plan.resolvedQuestion, options.env || {}, deadline)
+    : Promise.resolve({ revision: SHOPPING_API_REVISION, results: [], diagnostics: [], configuredCount: 0, successfulCount: 0 });
+  const [first, directPrimary, shopping] = await Promise.all([
+    firstPromise,
     fetchDirectPrimarySources(plan.resolvedQuestion, deadline),
+    shoppingPromise,
   ]);
-  diagnostics.push(...first.map(x => x.diag));
-  let merged = [...(directPrimary.results || []), ...first.flatMap(x => x.results)];
+  diagnostics.push(...first.map(x => x.diag), ...(shopping.diagnostics || []));
+  let merged = [...(directPrimary.results || []), ...(shopping.results || []), ...first.flatMap(x => x.results)];
   let candidates = plan.candidateType === 'product_model' ? extractCandidates(merged,4) : [];
   timings.round1Ms = Date.now() - r1;
   let rounds = 1;
@@ -421,7 +436,7 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     timings.localMs = Date.now()-t;
   }
 
-  if (plan.researchMode === 'discover_then_verify' && candidates.length && deadline - Date.now() > 1000) {
+  if (SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED && plan.researchMode === 'discover_then_verify' && candidates.length && deadline - Date.now() > 1000) {
     const vf = verificationFacets(candidates, plan).slice(0,2);
     const t = Date.now();
     const second = await Promise.all(vf.map(f => searchOne(f, deadline)));
@@ -470,8 +485,15 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     queryResultGate: true,
     stageAwareGate: true,
     authorityAfterRelevance: true,
-    singleSearchProvider: true,
+    singleSearchProvider: false,
     searchProvider: SEARCH_V45_PROVIDER,
+    generalWebSearchEnabled: SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED,
+    generalWebScraping: false,
+    bingRssEnabled: false,
+    shoppingApiRevision: shopping.revision || SHOPPING_API_REVISION,
+    shoppingApiConfiguredCount: shopping.configuredCount || 0,
+    shoppingApiSuccessfulCount: shopping.successfulCount || 0,
+    shoppingApiDiagnostics: shopping.diagnostics || [],
     searchEngineRotation: false,
     subrequestBudgetAware: true,
     externalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
