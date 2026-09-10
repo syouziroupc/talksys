@@ -18,8 +18,15 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - name: Syntax
-        run: node --check src/worker-v44.js
+        run: |
+          node --check src/worker-v44.js
+          node --check src/search-v44.js
+          node --check src/search-probes-v44.js
+          node --check src/free-api-tools-v45.js
+          node --check src/free-api-knowledge-v45.js
       - name: Unified router smoke
         run: node --test tests/v45-unified-router.test.mjs tests/v44-deep-search-default.test.mjs tests/v45-production-smoke-fixes.test.mjs
+      - name: Full test suite
+        run: npm test
       - name: Wrangler bundle
         run: npx wrangler deploy --dry-run
