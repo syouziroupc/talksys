@@ -1,0 +1,68 @@
+name: Upgrade API-first free tools v45
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/upgrade-api-router-v45-once.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci; else npm install; fi
+
+      - name: Apply API-first migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/apply-api-router-v45.py
+          grep -q "@cf/qwen/qwen3-30b-a3b-fp8" src/search-v44.js
+          grep -q "talksys-v45-api-first-parallel-free-tools" src/worker-v44.js
+          grep -q "provider_specific_license_review_required" src/free-api-tools-v45.js
+
+      - name: Run full regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+
+      - name: Wrangler dry run
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --dry-run --outdir=dist-api-v45
+
+      - name: Commit validated migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/search-v44.js src/worker-v44.js src/free-api-tools-v45.js
+          if git diff --cached --quiet; then
+            echo "No migration changes to commit."
+            exit 0
+          fi
+          git commit -m "Wire API-first free tools and Qwen search director"
+          git push origin HEAD:main
