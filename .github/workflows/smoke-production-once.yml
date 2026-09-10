@@ -1,0 +1,95 @@
+name: Smoke TalkSys production once
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: contains(github.event.head_commit.message, '[smoke-production]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      URL: https://talksys.syouziroupc.workers.dev
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Verify production health contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(curl -fsS --max-time 25 "$URL/voice-health")"
+          echo "$body"
+          BODY="$body" node <<'NODE'
+          const d = JSON.parse(process.env.BODY || '{}');
+          const ok = d.voiceRevision === 'talksys-v45-unified-router-no-v43-turn-delegation'
+            && d.unifiedTurnRouter === true
+            && d.legacyV43TurnDelegation === false
+            && d.localDeterministic === true
+            && d.modelTimeoutMs === 12000
+            && d.modelTimeoutFallback === true
+            && d.groundedEvidenceFallback === true
+            && d.externalFailureUsesCasualModel === false
+            && d.ambiguityGate === true
+            && d.explicitNoExternalGuard === true
+            && d.apiFirst === true
+            && d.apiParallel === true
+            && d.searchDirectorModel === '@cf/qwen/qwen3-30b-a3b-fp8'
+            && d.searchDefault === 'intent-routed-v45';
+          if (!ok) throw new Error(JSON.stringify(d));
+          NODE
+
+      - name: Verify local routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          call() {
+            local text="$1" max="$2"
+            local payload
+            payload="$(node -e 'process.stdout.write(JSON.stringify({text:process.argv[1],history:[]}))' "$text")"
+            curl -fsS --max-time "$max" -H 'content-type: application/json' --data "$payload" "$URL/api/turn"
+          }
+          out="$(call '12345÷15' 20)"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='deterministic-v45'||d.search!==false||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
+          out="$(call '42' 20)"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='clarification-v45'||d.search!==false||d.clarificationRequired!==true)throw new Error(process.env.OUT);"
+          out="$(call 'Web検索は使わないで。RAMとSSDの違いを短く説明して' 25)"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.search!==false||!['local-conversation-v45','local-mechanical-fallback-v45'].includes(d.route))throw new Error(process.env.OUT);"
+
+      - name: Verify structured API routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke() {
+            local text="$1" expected="$2"
+            local payload out
+            payload="$(node -e 'process.stdout.write(JSON.stringify({text:process.argv[1],history:[]}))' "$text")"
+            out="$(curl -fsS --max-time 80 -H 'content-type: application/json' --data "$payload" "$URL/api/turn")"
+            OUT="$out" EXPECTED="$expected" node -e "const d=JSON.parse(process.env.OUT||'{}');const t=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||d.apiFirst!==true||!t.includes(process.env.EXPECTED))throw new Error(JSON.stringify({route:d.route,apiSources:d.apiSources,apiDiagnostics:d.apiDiagnostics,answer:d.answer,error:d.error}));"
+          }
+          smoke '別府市の今日の天気は？' jma_weather
+          smoke '100米ドルは日本円でいくら？' frankfurter
+          smoke '日本の一人当たりGDPは？' world_bank_wdi
+
+      - name: Verify Qwen-directed web route
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload='{"text":"3万円以下の中古ノートPCを動画視聴用に選ぶなら何を確認して探すべき？","history":[]}'
+          out="$(curl -fsS --max-time 100 -H 'content-type: application/json' --data "$payload" "$URL/api/turn")"
+          echo "$out"
+          OUT="$out" node <<'NODE'
+          const d = JSON.parse(process.env.OUT || '{}');
+          const x = d.searchDiagnostics || {};
+          const bad = (d.sources || []).filter(s => /results\.vote\.wa\.gov|accounts\.google\.com|gamewith\.jp/i.test(String(s.url || '')));
+          if (!d.ok || d.route !== 'api-first-v45' || d.search !== true
+              || x.searchDirectorModel !== '@cf/qwen/qwen3-30b-a3b-fp8'
+              || x.queryResultGate !== true || x.authorityAfterRelevance !== true || bad.length) {
+            throw new Error(JSON.stringify({route:d.route,error:d.error,diagnostics:x,badSources:bad,sources:(d.sources||[]).slice(0,8)}));
+          }
+          NODE
