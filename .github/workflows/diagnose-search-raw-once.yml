@@ -1,0 +1,52 @@
+name: Diagnose raw shopping search once
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: contains(github.event.head_commit.message, '[diagnose-search-raw]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Inspect Bing raw results and gate decisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { searchBingRss } from './src/search-fallbacks.js';
+          import { parseBingHtml } from './src/web-search.js';
+          import { queryResultEvidence } from './src/query-result-gate-v44.js';
+
+          const queries = [
+            '中古 ノートPC 3万円以下 動画視聴 型番 機種',
+            '中古 ノートパソコン 3万円以下 型番',
+            '中古 ノートパソコン 30000円以下',
+            '中古 ノートパソコン 3万円以下 Panasonic ThinkPad LIFEBOOK',
+          ];
+          for (const q of queries) {
+            console.log('\n=== QUERY', q, '===');
+            const rss = await searchBingRss(q, { limit: 10, timeoutMs: 5000 });
+            console.log('BING_RSS raw=', rss.length);
+            for (const [i,r] of rss.entries()) console.log(JSON.stringify({i,title:r.title,url:r.url,snippet:r.snippet?.slice(0,240),gate:queryResultEvidence(q,r)}));
+
+            try {
+              const resp = await fetch(`https://www.bing.com/search?setlang=ja-JP&cc=jp&mkt=ja-JP&q=${encodeURIComponent(q)}`, {
+                headers: {'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36','accept-language':'ja,en;q=0.7'},
+                signal: AbortSignal.timeout(5000),
+              });
+              const html = resp.ok ? await resp.text() : '';
+              const rows = html ? parseBingHtml(html, 10, 'bing-html') : [];
+              console.log('BING_HTML status=',resp.status,'raw=',rows.length);
+              for (const [i,r] of rows.entries()) console.log(JSON.stringify({i,title:r.title,url:r.url,snippet:r.snippet?.slice(0,240),gate:queryResultEvidence(q,r)}));
+            } catch (e) { console.log('BING_HTML_ERROR', e?.name, e?.message); }
+          }
+          NODE
