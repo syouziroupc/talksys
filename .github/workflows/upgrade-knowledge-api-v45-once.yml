@@ -1,0 +1,78 @@
+name: Upgrade free knowledge APIs v45
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/upgrade-knowledge-api-v45-once.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci; else npm install; fi
+
+      - name: Wire additional free APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/apply-knowledge-api-v45.py
+          grep -q "free-api-knowledge-v45" src/worker-v44.js
+          grep -q "Promise.all" src/worker-v44.js
+          grep -q "world_bank_wdi" src/free-api-knowledge-v45.js
+          grep -q "crossref" src/free-api-knowledge-v45.js
+
+      - name: Run full regression suite
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee knowledge-api-v45-test-output.log
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowledge-api-v45-regression-${{ github.run_id }}
+          path: knowledge-api-v45-test-output.log
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Wrangler dry run
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --dry-run --outdir=dist-knowledge-api-v45
+
+      - name: Commit validated wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/worker-v44.js
+          if git diff --cached --quiet; then
+            echo "No wiring changes to commit."
+            exit 0
+          fi
+          git commit -m "Add Crossref and World Bank to API-first routing"
+          git push origin HEAD:main
