@@ -1,0 +1,154 @@
+from pathlib import Path
+
+p = Path('src/search-v45.js')
+s = p.read_text()
+
+old = """function inferIntent(value) {
+  if (LOCAL_RE.test(value)) return 'local';
+  if (/比較|どっち|違い/.test(value)) return 'comparison';
+  if (SHOPPING_RE.test(value)) return 'shopping';
+  if (/ニュース/.test(value)) return 'news';
+  if (CURRENT_RE.test(value)) return 'current';
+  return 'general';
+}"""
+new = """function inferIntent(value) {
+  if (LOCAL_RE.test(value)) return 'local';
+  // Shopping remains the domain even when the requested operation is comparison.
+  // This keeps deterministic fallback correct when the AI director times out.
+  if (SHOPPING_RE.test(value)) return 'shopping';
+  if (/比較|どっち|違い/.test(value)) return 'comparison';
+  if (/ニュース/.test(value)) return 'news';
+  if (CURRENT_RE.test(value)) return 'current';
+  return 'general';
+}"""
+if old not in s:
+    raise SystemExit('inferIntent block not found')
+s = s.replace(old, new)
+
+old = """  } else {
+    const subject = compactSubject(resolved);
+    if (domain && /(BIOS|UEFI|ファームウェア|ドライバ|仕様|サポート)/i.test(resolved)) {
+      queries.push(`${subject} site:${domain}`);
+    }
+    queries.push(subject);
+  }"""
+new = """  } else {
+    const subject = compactSubject(resolved);
+    if (domain && known && /(BIOS|UEFI|ファームウェア|ドライバ|仕様|サポート)/i.test(resolved)) {
+      const kind = /BIOS|UEFI/i.test(resolved) ? 'BIOS' : /ドライバ/i.test(resolved) ? 'ドライバ' : /仕様/i.test(resolved) ? '仕様' : 'サポート';
+      queries.push(`${known} ${kind} site:${domain}`);
+      queries.push(`${known} ${kind}`);
+    } else {
+      queries.push(subject);
+    }
+  }"""
+if old not in s:
+    raise SystemExit('simplePlan lookup block not found')
+s = s.replace(old, new)
+
+old = """  const requestedSite = String(query).match(/site:([^\\s]+)/i)?.[1]?.toLowerCase() || '';
+  const siteMatch = requestedSite && (host === requestedSite || host.endsWith(`.${requestedSite}`));"""
+new = """  const requestedSite = String(query).match(/site:([^\\s]+)/i)?.[1]?.toLowerCase() || '';
+  const expectedOfficialHost = ['official_spec','official_support'].includes(sourceRole) ? officialDomainHint(query) : '';
+  const expectedHost = requestedSite || expectedOfficialHost;
+  const siteMatch = expectedHost && (host === expectedHost || host.endsWith(`.${expectedHost}`));"""
+if old not in s:
+    raise SystemExit('site match block not found')
+s = s.replace(old, new)
+s = s.replace("if (['official_spec','official_support'].includes(sourceRole) && requestedSite) relevant = relevant && Boolean(siteMatch);", "if (['official_spec','official_support'].includes(sourceRole) && expectedHost) relevant = relevant && Boolean(siteMatch);")
+p.write_text(s)
+
+p = Path('src/worker-v44.js')
+s = p.read_text()
+old = """    } catch (error) {
+      webResearchError = clean(error?.message || error, 240);
+      if (!apiOk.length) throw error;
+      search = {
+        revision: SEARCH_V44_REVISION,
+        evidenceUseful: true,
+        results: [],
+        rounds: 0,
+        coverage: { sufficient: true, reason: 'structured API evidence retained after web research failure' },
+        plan: { resolvedQuestion: text, queries: [], facets: [] },
+        researchMode: 'api_retained_after_web_failure',
+        candidateType: 'none',
+        queryResultGate: true,
+        authorityAfterRelevance: true,
+        subrequestBudgetAware: true,
+      };
+    }"""
+new = """    } catch (error) {
+      webResearchError = clean(error?.message || error, 240);
+      // Retrieval failure is evidence absence, not an application exception.
+      search = {
+        revision: SEARCH_V44_REVISION,
+        evidenceUseful: apiOk.length > 0,
+        results: [],
+        rounds: 0,
+        coverage: {
+          sufficient: apiOk.length > 0,
+          reason: apiOk.length ? 'structured API evidence retained after web research failure' : 'web_retrieval_failed_no_evidence',
+        },
+        plan: { resolvedQuestion: text, queries: [], facets: [] },
+        researchMode: apiOk.length ? 'api_retained_after_web_failure' : 'stable_only_after_web_failure',
+        candidateType: 'none',
+        queryResultGate: true,
+        authorityAfterRelevance: true,
+        subrequestBudgetAware: true,
+      };
+    }"""
+if old not in s:
+    raise SystemExit('web catch block not found')
+s = s.replace(old, new)
+
+old = """        { role: 'system', content: CASUAL_PROMPT + '\\n外部検索では十分な根拠を取得できなかった。質問のうち、時間で変化しない一般的な判断基準・仕組み・注意点だけは具体的に答える。現在の価格、在庫、最新版、時刻、現行制度などは断定しない。' },
+        ...historyOf(normalizedBody?.history).slice(-8),
+        { role: 'user', content: text },
+      ], 420, 0.12, 5000);"""
+new = """        { role: 'system', content: CASUAL_PROMPT + '\\n今回の外部取得では十分な根拠が得られなかった。検索機能が無効・禁止・使えないとは絶対に説明しない。質問のうち、時間で変化しない一般的な判断基準・仕組み・注意点だけを具体的に答える。現在の価格、在庫、最新版、時刻、現行制度などは断定しない。現在情報が必要な部分は「今回の取得では確認できなかった」とだけ述べる。' },
+        ...historyOf(normalizedBody?.history).slice(-8),
+        { role: 'user', content: text },
+      ], 420, 0.12, 6500);
+      answer.text = clean(answer?.text, 9000)
+        .replace(/外部検索を使わない設定(?:のため|なので)?[、,]?/g, '今回の外部取得では十分な根拠を確認できなかったため、')
+        .replace(/検索機能(?:が|は)(?:無効|禁止|使えない)[^。]*。?/g, '今回の外部取得では十分な根拠を確認できませんでした。');"""
+if old not in s:
+    raise SystemExit('stable-only model block not found')
+s = s.replace(old, new)
+p.write_text(s)
+
+Path('tests/search-v45-production-findings.test.mjs').write_text(r'''import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { needsSearchDirector, stageEvidence, __test } from '../src/search-v45.js';
+
+test('shopping comparison remains shopping in deterministic director fallback', () => {
+  const p = __test.simplePlan('3万円以下で動画視聴用の中古ノートPCを候補から比較して選んで', []);
+  assert.equal(p.intent, 'shopping');
+  assert.equal(p.researchMode, 'discover_then_verify');
+  assert.equal(p.candidateType, 'product_model');
+  assert.ok(p.queries.some(q => /3万円以下.*中古.*ノートパソコン.*型番/.test(q)));
+});
+
+test('simple known-model BIOS lookup is compact and manufacturer-scoped', () => {
+  assert.equal(needsSearchDirector('MSI X79A-GD45の最新BIOSを公式で確認して'), false);
+  const p = __test.simplePlan('MSI X79A-GD45の最新BIOSを公式で確認して', []);
+  assert.equal(p.plannerTransport, 'deterministic-simple');
+  assert.ok(p.queries.includes('X79A-GD45 BIOS site:msi.com'));
+  assert.ok(p.queries.includes('X79A-GD45 BIOS'));
+});
+
+test('official support evidence never accepts a non-manufacturer host', () => {
+  const bad = stageEvidence('X79A-GD45 BIOS', { title:'X79A-GD45 BIOS download', snippet:'BIOS archive', url:'https://example.com/x79' }, 'verification', 'official_support');
+  assert.equal(bad.relevant, false);
+  const good = stageEvidence('X79A-GD45 BIOS', { title:'Support for X79A-GD45', snippet:'BIOS Driver Utility', url:'https://www.msi.com/Motherboard/X79A-GD45/support' }, 'verification', 'official_support');
+  assert.equal(good.relevant, true);
+});
+
+test('retrieval failure flows to stable-only answer instead of throwing to old research failure', () => {
+  const worker = fs.readFileSync(new URL('../src/worker-v44.js', import.meta.url), 'utf8');
+  assert.match(worker, /web_retrieval_failed_no_evidence/);
+  assert.doesNotMatch(worker, /if \(!apiOk\.length\) throw error/);
+  assert.match(worker, /検索機能が無効・禁止・使えないとは絶対に説明しない/);
+});
+''')
