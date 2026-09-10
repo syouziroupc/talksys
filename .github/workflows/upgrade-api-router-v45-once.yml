@@ -44,8 +44,17 @@ jobs:
       - name: Run full regression suite
         shell: bash
         run: |
-          set -euo pipefail
-          npm test
+          set -o pipefail
+          npm test 2>&1 | tee api-v45-test-output.log
+
+      - name: Upload regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-v45-regression-${{ github.run_id }}
+          path: api-v45-test-output.log
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Wrangler dry run
         shell: bash
