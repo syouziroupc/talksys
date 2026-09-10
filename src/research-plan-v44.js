@@ -76,6 +76,22 @@ export function normalizeResearchFacets(rawFacets, resolvedQuestion, intent = 'g
   return out.length ? out : heuristicResearchFacets(resolvedQuestion, intent);
 }
 
+
+export function shoppingDiscoveryBase(resolvedQuestion) {
+  const q = clean(resolvedQuestion, 900);
+  const state = q.match(/(中古|新品|整備済(?:み)?|リファービッシュ)/i)?.[1] || '';
+  const budget = q.match(/(\d+(?:\.\d+)?(?:万|千)?円(?:以下|以内|まで|未満)?)/)?.[1] || '';
+  let category = '';
+  if (/(?:ノート\s*(?:pc|パソコン)|ラップトップ)/i.test(q)) category = 'ノートパソコン';
+  else if (/(?:デスクトップ\s*(?:pc|パソコン))/i.test(q)) category = 'デスクトップパソコン';
+  else if (/(?:スマホ|スマートフォン)/i.test(q)) category = 'スマートフォン';
+  else if (/(?:タブレット|ipad)/i.test(q)) category = 'タブレット';
+  else if (/(?:イヤホン|ヘッドホン)/i.test(q)) category = /イヤホン/i.test(q) ? 'イヤホン' : 'ヘッドホン';
+  else if (/(?:モニター|ディスプレイ)/i.test(q)) category = 'モニター';
+  const compact = [state, category, budget].filter(Boolean).join(' ');
+  return clean(compact, 320) || q;
+}
+
 export function heuristicResearchFacets(resolvedQuestion, intent = 'general', location = '') {
   const q = clean(resolvedQuestion, 900);
   const loc = clean(location, 100);
@@ -85,10 +101,11 @@ export function heuristicResearchFacets(resolvedQuestion, intent = 'general', lo
   };
 
   if (intent === 'shopping') {
-    add('candidate', defaultFacetQuestion(q, '条件に合う具体的な候補は何か'), '条件を満たす候補の存在', `${q} 型番 候補`, [`${q} モデル`, `${q} 商品`], ['販売ページ', 'メーカー'], 5, 'discovery', 'seller');
-    add('price', defaultFacetQuestion(q, '現在いくらで入手できるか'), '候補ごとの現在価格と販売元', `${q} 実売価格`, [`${q} 在庫 価格`], ['販売店', '公式ストア'], 5, 'verification', 'seller');
-    add('fit', defaultFacetQuestion(q, '用途・条件を本当に満たすか'), '候補ごとの仕様・適合条件', `${q} 仕様`, [`${q} 対応 仕様`], ['メーカー', '仕様書'], 5, 'verification', 'official_spec');
-    add('risk', defaultFacetQuestion(q, '弱点・不適合・注意点は何か'), '候補の欠点、制約、反証', `${q} 問題 注意点`, [`${q} 不具合 評判`], ['メーカーサポート', '独立レビュー'], 3, 'verification', 'independent_review');
+    const discoveryBase = shoppingDiscoveryBase(q);
+    add('candidate', defaultFacetQuestion(q, '条件に合う具体的な候補は何か'), '条件を満たす候補の存在', `${discoveryBase} 型番 機種`, [`${discoveryBase} モデル`, `${discoveryBase} 販売`], ['販売ページ', 'メーカー'], 5, 'discovery', 'seller');
+    add('price', defaultFacetQuestion(q, '現在いくらで入手できるか'), '候補ごとの現在価格と販売元', `${discoveryBase} 価格 在庫`, [`${discoveryBase} 実売価格`], ['販売店', '公式ストア'], 5, 'verification', 'seller');
+    add('fit', defaultFacetQuestion(q, '用途・条件を本当に満たすか'), '候補ごとの仕様・適合条件', `${discoveryBase} 仕様`, [`${discoveryBase} 対応 仕様`], ['メーカー', '仕様書'], 5, 'verification', 'official_spec');
+    add('risk', defaultFacetQuestion(q, '弱点・不適合・注意点は何か'), '候補の欠点、制約、反証', `${discoveryBase} 注意点`, [`${discoveryBase} 不具合 評判`], ['メーカーサポート', '独立レビュー'], 3, 'verification', 'independent_review');
   } else if (intent === 'comparison') {
     add('criteria', defaultFacetQuestion(q, '比較を決める評価軸は何か'), '比較対象ごとの同一指標', `${q} 仕様 比較`, [`${q} 公式 仕様`], ['公式仕様'], 5, 'verification', 'official_spec');
     add('difference', defaultFacetQuestion(q, '実質的な差は何か'), '差が結論を変える根拠', `${q} 違い`, [`${q} 比較 レビュー`], ['一次情報', '独立レビュー'], 5, 'verification', 'mixed');

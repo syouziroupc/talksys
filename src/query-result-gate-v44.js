@@ -7,8 +7,12 @@ function clean(value, max = 2000) {
   return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+
 function normalize(value) {
-  return clean(value, 4000).toLowerCase().normalize('NFKC');
+  return clean(value, 4000).toLowerCase().normalize('NFKC')
+    .replace(/ノート\s*pc/gi, 'ノートパソコン')
+    .replace(/デスクトップ\s*pc/gi, 'デスクトップパソコン')
+    .replace(/中古\s*pc/gi, '中古パソコン');
 }
 
 function addTerm(out, seen, value) {

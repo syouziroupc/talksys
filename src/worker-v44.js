@@ -656,6 +656,9 @@ async function deepTurn(body, env, requestSignal, decision) {
     searchDiagnostics: {
       searchRevision: search.revision || SEARCH_V44_REVISION,
       searchDirectorModel: SEARCH_DIRECTOR_MODEL,
+      plannerPlanned: search.plannerPlanned === true,
+      plannerTransport: search.plannerTransport || '',
+      plannerError: clean(search.plannerError || '', 180),
       questionFirstPlanning: search.questionFirstPlanning === true,
       gapDrivenFollowups: search.gapDrivenFollowups === true,
       researchFacetCount: Array.isArray(search.plan?.facets) ? search.plan.facets.length : 0,

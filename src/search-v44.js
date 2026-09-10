@@ -46,6 +46,42 @@ export const SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET = 30;
 export const SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET = 35;
 
 const PLANNER_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
+
+const SEARCH_DIRECTOR_TOOL_NAME = 'submit_research_plan';
+const SEARCH_DIRECTOR_TOOL = {
+  name: SEARCH_DIRECTOR_TOOL_NAME,
+  description: 'Return the structured research plan that TalkSys should execute. Do not answer the user.',
+  parameters: {
+    type: 'object',
+    properties: {
+      resolved_question: { type: 'string' },
+      intent: { type: 'string', enum: ['shopping', 'local', 'current', 'comparison', 'general', 'news', 'other'] },
+      research_mode: { type: 'string', enum: ['direct_fact', 'discover_then_verify', 'compare_known_entities', 'local_discovery', 'current_status'] },
+      candidate_type: { type: 'string', enum: ['product_model', 'store', 'place', 'company', 'service', 'person', 'document', 'none'] },
+      location: { type: 'string' },
+      must_include: { type: 'array', items: { type: 'string' }, maxItems: 10 },
+      facets: {
+        type: 'array', minItems: 1, maxItems: 6,
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            stage: { type: 'string', enum: ['discovery', 'verification', 'context'] },
+            question: { type: 'string' },
+            evidence_needed: { type: 'string' },
+            source_role: { type: 'string', enum: ['primary', 'official_spec', 'official_support', 'seller', 'marketplace', 'map', 'news', 'independent_review', 'reference', 'mixed'] },
+            preferred_sources: { type: 'array', items: { type: 'string' }, maxItems: 5 },
+            primary_query: { type: 'string' },
+            backup_queries: { type: 'array', items: { type: 'string' }, maxItems: 2 },
+            priority: { type: 'integer', minimum: 1, maximum: 5 },
+          },
+          required: ['id', 'stage', 'question', 'evidence_needed', 'source_role', 'primary_query', 'priority'],
+        },
+      },
+    },
+    required: ['resolved_question', 'intent', 'research_mode', 'candidate_type', 'facets'],
+  },
+};
 const CURRENT_OR_HIGH_STAKES_RE = /(最新|現在|今日|明日|今|価格|値段|在庫|営業時間|法律|制度|規制|ニュース|発売|販売|予定|日程|時刻|時刻表|天気|株価|為替|相場|選挙|首相|大統領|CEO|仕様|バージョン|アップデート)/i;
 const LOCAL_RE = /(?:都|道|府|県|市|区|町|村).*(?:店|店舗|販売店|病院|ホテル|飲食|行き方|アクセス|近く|周辺)|(?:店|店舗|販売店|病院|ホテル|飲食|近く|周辺).*(?:都|道|府|県|市|区|町|村)/i;
 const SHOPPING_RE = /(買|購入|おすすめ|比較|価格|値段|在庫|販売店|店舗|通販|中古|新品|製品|商品)/i;
@@ -109,6 +145,25 @@ function parseJsonObject(text) {
   try { return JSON.parse(candidate); } catch { return null; }
 }
 
+
+function readToolArguments(result, expectedName = SEARCH_DIRECTOR_TOOL_NAME) {
+  const calls = [
+    ...(Array.isArray(result?.tool_calls) ? result.tool_calls : []),
+    ...(Array.isArray(result?.choices?.[0]?.message?.tool_calls) ? result.choices[0].message.tool_calls : []),
+  ];
+  for (const call of calls) {
+    const name = clean(call?.name || call?.function?.name, 80);
+    if (name !== expectedName) continue;
+    const raw = call?.arguments ?? call?.function?.arguments;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+    if (typeof raw === 'string' && raw.trim()) {
+      const parsed = parseJsonObject(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  }
+  return null;
+}
+
 function deterministicQueries(resolved, history) {
   const base = buildDeterministicSearchQueries(resolved, history) || [];
   const year = new Date().getFullYear();
@@ -122,20 +177,25 @@ async function planDeepSearch(ai, text, history, signal) {
   const fallback = fallbackResolvedQuestion(text, history);
   const recent = contextHistory(history).map((x) => `${x.role}: ${clean(x.content, 900)}`).join('\n');
   const year = new Date().getFullYear();
+  let plannerError = '';
   try {
     const result = await ai.run(PLANNER_MODEL, {
       messages: [
         {
           role: 'system',
-          content: `あなたはTalkSysの調査設計者です。検索語を大量生成する役ではありません。まず「この質問に正しく答えるには、何が分かれば結論が決まるか」と「どの順序で調べる必要があるか」を設計してください。\n\n手順:\n1. 今回の発話を会話から自己完結した調査課題へ復元する。\n2. 調査モードを決める。direct_fact=既知対象の事実確認、discover_then_verify=未知候補を見つけてから候補別検証、compare_known_entities=既知対象比較、local_discovery=店舗/場所発見後に営業等検証、current_status=最新状態確認。\n3. 候補探索が必要なら candidate_type を product_model|store|place|company|service|person|document のどれかに固定する。不要なら none。商品選定では販売店ではなく product_model、近隣店舗探索では store を選ぶ。\n4. 結論を左右する独立した論点を3〜6個に分ける。各論点に stage=discovery|verification と source_role を付ける。source_role は primary|official_spec|official_support|seller|marketplace|map|news|independent_review|reference|mixed。\n5. discoveryは候補そのものを実在確認する検索、verificationは発見した候補の価格・仕様・適合性・弱点等を確認する検索にする。候補が未知なのにverificationを先に一般論で大量検索しない。\n6. 各論点について必要証拠、最適情報源、最初の短い検索語を1本、必要なら予備検索語を最大2本だけ作る。検索語は固有名詞・条件・知りたい事実を中心にし、「公式」「比較」「最新」を機械的に付け足さない。\n7. ユーザーが述べた地域、予算、型番、日時、用途、数量、除外条件を落とさない。assistantの過去発言は対象復元には使えるが外部事実の根拠にはしない。\n8. 価格・在庫・法律・制度・時刻・ニュース・現行仕様など変動情報は${year}年の現在性を確認する。実在未確認の固有名詞を作らない。検索本数に最低数はない。\n\nJSONだけを返す: {"resolved_question":"...","intent":"shopping|local|current|comparison|general|news|other","research_mode":"direct_fact|discover_then_verify|compare_known_entities|local_discovery|current_status","candidate_type":"product_model|store|place|company|service|person|document|none","location":"...","must_include":["..."],"facets":[{"id":"短いID","stage":"discovery|verification","question":"答えを決める小問","evidence_needed":"必要証拠","source_role":"primary|official_spec|official_support|seller|marketplace|map|news|independent_review|reference|mixed","preferred_sources":["最適な情報源種別"],"primary_query":"最初の検索語","backup_queries":["予備1","予備2"],"priority":1-5}]}`,
+          content: `あなたはTalkSysの調査設計者です。検索語を大量生成する役ではありません。まず「この質問に正しく答えるには、何が分かれば結論が決まるか」と「どの順序で調べる必要があるか」を設計してください。\n\n手順:\n1. 今回の発話を会話から自己完結した調査課題へ復元する。\n2. 調査モードを決める。direct_fact=既知対象の事実確認、discover_then_verify=未知候補を見つけてから候補別検証、compare_known_entities=既知対象比較、local_discovery=店舗/場所発見後に営業等検証、current_status=最新状態確認。\n3. 候補探索が必要なら candidate_type を product_model|store|place|company|service|person|document のどれかに固定する。不要なら none。商品選定では販売店ではなく product_model、近隣店舗探索では store を選ぶ。\n4. 結論を左右する独立した論点を3〜6個に分ける。各論点に stage=discovery|verification と source_role を付ける。source_role は primary|official_spec|official_support|seller|marketplace|map|news|independent_review|reference|mixed。\n5. discoveryは候補そのものを実在確認する検索、verificationは発見した候補の価格・仕様・適合性・弱点等を確認する検索にする。候補が未知なのにverificationを先に一般論で大量検索しない。\n6. 各論点について必要証拠、最適情報源、最初の短い検索語を1本、必要なら予備検索語を最大2本だけ作る。検索語は固有名詞・条件・知りたい事実を中心にし、「公式」「比較」「最新」を機械的に付け足さない。\n7. ユーザーが述べた地域、予算、型番、日時、用途、数量、除外条件を落とさない。assistantの過去発言は対象復元には使えるが外部事実の根拠にはしない。\n8. 価格・在庫・法律・制度・時刻・ニュース・現行仕様など変動情報は${year}年の現在性を確認する。実在未確認の固有名詞を作らない。検索本数に最低数はない。\n\nsubmit_research_plan ツールを必ず1回呼び出す。ツール呼び出しが利用できない場合だけJSON本文を返す: {"resolved_question":"...","intent":"shopping|local|current|comparison|general|news|other","research_mode":"direct_fact|discover_then_verify|compare_known_entities|local_discovery|current_status","candidate_type":"product_model|store|place|company|service|person|document|none","location":"...","must_include":["..."],"facets":[{"id":"短いID","stage":"discovery|verification","question":"答えを決める小問","evidence_needed":"必要証拠","source_role":"primary|official_spec|official_support|seller|marketplace|map|news|independent_review|reference|mixed","preferred_sources":["最適な情報源種別"],"primary_query":"最初の検索語","backup_queries":["予備1","予備2"],"priority":1-5}]}`,
         },
         { role: 'user', content: `直近の会話:\n${recent || '(なし)'}\n\n今回の発話:\n${clean(text, 1800)}` },
       ],
+      tools: [SEARCH_DIRECTOR_TOOL],
       stream: false,
       max_tokens: 1250,
       temperature: 0.02,
     }, signal ? { signal } : undefined);
-    const data = parseJsonObject(readModelText(result));
+    const toolData = readToolArguments(result);
+    const textData = toolData ? null : parseJsonObject(readModelText(result));
+    const data = toolData || textData;
+    const plannerTransport = toolData ? 'tool_call' : (textData ? 'text_json' : 'none');
     if (data && typeof data === 'object') {
       const resolvedQuestion = clean(data.resolved_question || data.resolvedQuestion || fallback, 2200) || fallback;
       const inferredIntent = SHOPPING_RE.test(resolvedQuestion) ? 'shopping' : (LOCAL_RE.test(resolvedQuestion) ? 'local' : (CURRENT_OR_HIGH_STAKES_RE.test(resolvedQuestion) ? 'current' : 'general'));
@@ -169,11 +229,16 @@ async function planDeepSearch(ai, text, history, signal) {
           queries,
           planned: true,
           plannerModel: PLANNER_MODEL,
+          plannerTransport,
+          plannerError: '',
           researchPlanRevision: RESEARCH_PLAN_V44_REVISION,
         };
       }
     }
-  } catch {}
+    plannerError = 'invalid_planner_output';
+  } catch (error) {
+    plannerError = clean(error?.message || error?.name || error, 180) || 'planner_failed';
+  }
   const intent = SHOPPING_RE.test(fallback) ? 'shopping' : (LOCAL_RE.test(fallback) ? 'local' : (CURRENT_OR_HIGH_STAKES_RE.test(fallback) ? 'current' : 'general'));
   const facets = heuristicResearchFacets(fallback, intent, '');
   const seed = { resolvedQuestion: fallback, intent, location: '', mustInclude: [], facets };
@@ -186,6 +251,8 @@ async function planDeepSearch(ai, text, history, signal) {
     queries: facetPlanQueries({ ...seed, researchMode, candidateType }, SEARCH_V44_MAX_QUERIES),
     planned: false,
     plannerModel: null,
+    plannerTransport: 'heuristic',
+    plannerError: plannerError || 'planner_unavailable',
     researchPlanRevision: RESEARCH_PLAN_V44_REVISION,
   };
 }
@@ -680,6 +747,9 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   const hostCount = new Set((ranked || []).map((x) => hostOf(x?.url || '')).filter(Boolean)).size;
   return {
     revision: SEARCH_V44_REVISION,
+    plannerPlanned: plan.planned === true,
+    plannerTransport: plan.plannerTransport || (plan.planned ? 'unknown' : 'heuristic'),
+    plannerError: clean(plan.plannerError || '', 180),
     plan: { ...plan, queries: uniqueQueries(allQueries, SEARCH_V44_MAX_TOTAL_QUERIES), candidates },
     rawResults: merged,
     results: ranked,
@@ -717,6 +787,7 @@ export const __test = {
   extractPageExcerpt,
   diversifyHosts,
   hostOf,
+  readToolArguments,
   planDeepSearch,
   assessCoverage,
   compileInitialQueries,
