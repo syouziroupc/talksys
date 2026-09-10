@@ -37,6 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/apply-api-router-v45.py
+          python3 scripts/fix-api-v45-regressions.py
           grep -q "@cf/qwen/qwen3-30b-a3b-fp8" src/search-v44.js
           grep -q "talksys-v45-api-first-parallel-free-tools" src/worker-v44.js
           grep -q "provider_specific_license_review_required" src/free-api-tools-v45.js
