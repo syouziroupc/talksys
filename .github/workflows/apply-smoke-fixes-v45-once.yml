@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'scripts/apply-smoke-fixes-v45.py'
+      - 'scripts/apply-smoke-fixes-v45-2.py'
 
 permissions:
   contents: write
@@ -23,7 +24,9 @@ jobs:
         with:
           node-version: 22
       - name: Apply smoke fixes
-        run: python3 scripts/apply-smoke-fixes-v45.py
+        run: |
+          python3 scripts/apply-smoke-fixes-v45.py
+          if [[ -f scripts/apply-smoke-fixes-v45-2.py ]]; then python3 scripts/apply-smoke-fixes-v45-2.py; fi
       - name: Install and validate
         run: |
           if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
