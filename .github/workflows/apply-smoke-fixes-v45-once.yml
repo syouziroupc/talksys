@@ -1,0 +1,47 @@
+name: Apply v45 smoke fixes once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/apply-smoke-fixes-v45.py'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: contains(github.event.head_commit.message, '[apply-smoke-fixes-v45]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Apply smoke fixes
+        run: python3 scripts/apply-smoke-fixes-v45.py
+      - name: Install and validate
+        run: |
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+          node --check src/free-api-tools-v45.js
+          node --check src/free-api-knowledge-extra-v45.js
+          node --check src/worker-v44.js
+          node --check src/search-v44.js
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Commit generated runtime fixes
+        run: |
+          set -euo pipefail
+          git config user.name 'talksys-smoke-fix-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add src tests
+          if git diff --cached --quiet; then
+            echo 'No generated changes'
+            exit 0
+          fi
+          git commit -m 'Fix v45 production smoke failures'
+          git push origin HEAD:main
