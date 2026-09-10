@@ -416,6 +416,90 @@ function clarificationTurn(body, decision) {
   };
 }
 
+function evidenceNumber(value, maximumFractionDigits = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return clean(value, 80);
+  return new Intl.NumberFormat('ja-JP', { maximumFractionDigits }).format(n);
+}
+
+export function mechanicalGroundedAnswer(apiResults = [], search = {}, question = '') {
+  const ok = (apiResults || []).filter((x) => x?.ok);
+  for (const item of ok) {
+    const data = item?.data || {};
+    if (item.tool === 'world_bank_wdi' && data.latest) {
+      const x = data.latest;
+      const labels = {
+        'NY.GDP.PCAP.CD': '一人当たりGDP',
+        'NY.GDP.MKTP.CD': 'GDP',
+        'SP.POP.TOTL': '人口',
+        'SL.UEM.TOTL.ZS': '失業率',
+        'FP.CPI.TOTL.ZG': 'インフレ率',
+        'SP.DYN.LE00.IN': '平均寿命',
+        'SP.DYN.TFRT.IN': '合計特殊出生率',
+      };
+      const units = {
+        'NY.GDP.PCAP.CD': '米ドル',
+        'NY.GDP.MKTP.CD': '米ドル',
+        'SP.POP.TOTL': '人',
+        'SL.UEM.TOTL.ZS': '%',
+        'FP.CPI.TOTL.ZG': '%',
+        'SP.DYN.LE00.IN': '年',
+      };
+      const label = labels[x.indicatorCode] || clean(x.indicator, 100) || '値';
+      const unit = clean(x.unit, 40) || units[x.indicatorCode] || '';
+      return `${clean(x.year, 20)}年の${clean(x.country, 100) || clean(x.countryCode, 20)}の${label}は${evidenceNumber(x.value)}${unit}です。${clean(item.attribution, 180) || 'World Bank Open Data'}`;
+    }
+    if (item.tool === 'frankfurter' && Number.isFinite(Number(data.converted))) {
+      return `${clean(data.date, 30)}のレートでは、${evidenceNumber(data.amount, 4)} ${clean(data.base, 10)}は${evidenceNumber(data.converted, 4)} ${clean(data.quote, 10)}です。1 ${clean(data.base, 10)}=${evidenceNumber(data.rate, 6)} ${clean(data.quote, 10)}です。${clean(item.attribution, 180)}`;
+    }
+    if (item.tool === 'jma_weather' && Array.isArray(data.periods) && data.periods.length) {
+      const first = data.periods[0] || {};
+      const pop = Array.isArray(data.precipitation) ? data.precipitation.find((x) => clean(x?.probabilityPercent, 10)) : null;
+      const temp = Array.isArray(data.temperatures) ? data.temperatures.find((x) => clean(x?.celsius, 10)) : null;
+      const extras = [pop ? `降水確率${clean(pop.probabilityPercent, 10)}%` : '', temp ? `気温${clean(temp.celsius, 10)}度` : ''].filter(Boolean).join('、');
+      return `気象庁の取得データでは、${clean(data.targetArea, 100) || '対象地域'}の予報は「${clean(first.weather, 220)}」です。${extras ? `${extras}です。` : ''}${clean(item.attribution, 180)}`;
+    }
+    if (item.tool === 'nager_holidays' && Array.isArray(data.holidays) && data.holidays.length) {
+      const named = data.holidays.find((x) => clean(question, 800).includes(clean(x?.localName, 120))) || data.holidays[0];
+      return `${clean(named.localName || named.name, 160)}は${clean(named.date, 30)}です。${clean(item.attribution, 180)}`;
+    }
+    if (item.tool === 'crossref' && Array.isArray(data.works) && data.works.length) {
+      const work = data.works[0];
+      return `Crossrefで確認できた先頭の文献は「${clean(work.title, 400)}」です。${work.doi ? `DOIは${clean(work.doi, 180)}です。` : ''}${clean(item.attribution, 180)}`;
+    }
+  }
+  if (ok.length) {
+    const item = ok[0];
+    return `構造化APIから根拠は取得できました。取得値は ${clean(JSON.stringify(item.data ?? {}), 1200)}。${clean(item.attribution, 180)}`;
+  }
+  const web = (search?.results || []).filter((x) => !x?.structuredApi).slice(0, 3);
+  if (web.length) {
+    const facts = web.map((x) => `${clean(x?.title, 180)}: ${clean(x?.excerpt || x?.snippet, 420)}`).filter(Boolean).join(' / ');
+    return `回答生成がタイムアウトしたため、取得済みのWeb根拠だけを返します。${facts}`;
+  }
+  return '外部情報を取得できなかったため、現在情報は断定しません。';
+}
+
+function researchFailureTurn(body, error) {
+  const text = canonicalizeInput(body?.text, 1800);
+  return {
+    ok: true,
+    answer: '外部情報を取得できなかったため、現在情報は断定しません。',
+    search: true,
+    searchUseful: false,
+    searchFallback: true,
+    route: 'research-failure-v45',
+    resolvedQuestion: text,
+    queries: [],
+    sources: [],
+    timings: { totalMs: 0, glmMs: 0 },
+    model: 'mechanical-guard',
+    planner: 'unified-router-v45',
+    languageMode: 'ja-only',
+    researchError: clean(error?.message || error, 280),
+  };
+}
+
 async function synthesizeGroundedAnswer(env, body, search) {
   const hist = historyOf(body?.history).slice(-10);
   const resolved = clean(search?.plan?.resolvedQuestion || body?.text, 2200);
@@ -452,9 +536,28 @@ async function deepTurn(body, env, requestSignal, decision) {
   let search;
   let searchMs = 0;
 
+  let webResearchError = '';
   if (webFallbackUsed) {
     const searchStarted = Date.now();
-    search = await runDeepSearchV44(env.AI, text, history, requestSignal);
+    try {
+      search = await runDeepSearchV44(env.AI, text, history, requestSignal);
+    } catch (error) {
+      webResearchError = clean(error?.message || error, 240);
+      if (!apiOk.length) throw error;
+      search = {
+        revision: SEARCH_V44_REVISION,
+        evidenceUseful: true,
+        results: [],
+        rounds: 0,
+        coverage: { sufficient: true, reason: 'structured API evidence retained after web research failure' },
+        plan: { resolvedQuestion: text, queries: [], facets: [] },
+        researchMode: 'api_retained_after_web_failure',
+        candidateType: 'none',
+        queryResultGate: true,
+        authorityAfterRelevance: true,
+        subrequestBudgetAware: true,
+      };
+    }
     searchMs = Date.now() - searchStarted;
   } else {
     search = {
@@ -491,7 +594,16 @@ async function deepTurn(body, env, requestSignal, decision) {
   search.results = [...apiResults, ...(search.results || [])].slice(0, SEARCH_V44_SOURCE_LIMIT);
   if (apiResults.length) search.evidenceUseful = true;
 
-  const answer = await synthesizeGroundedAnswer(env, normalizedBody, search);
+  let answer;
+  let answerSynthesisFallback = false;
+  let answerSynthesisError = '';
+  try {
+    answer = await synthesizeGroundedAnswer(env, normalizedBody, search);
+  } catch (error) {
+    answerSynthesisFallback = true;
+    answerSynthesisError = clean(error?.message || error, 240);
+    answer = { text: mechanicalGroundedAnswer(apiOk, search, text), ms: 0 };
+  }
   const sources = (search.results || []).slice(0, SEARCH_V44_SOURCE_LIMIT).map((x) => ({
     title: clean(x?.title, 220),
     url: clean(x?.url, 700),
@@ -512,6 +624,9 @@ async function deepTurn(body, env, requestSignal, decision) {
     apiRevision: apiBundle?.revision || FREE_API_REVISION,
     apiIntents: Array.isArray(apiBundle?.intents) ? apiBundle.intents : [],
     apiSources,
+    answerSynthesisFallback,
+    answerSynthesisError,
+    webResearchError,
     search: webFallbackUsed,
     route: 'api-first-v45',
     searchUseful: Boolean(search.evidenceUseful),
@@ -597,6 +712,8 @@ export default {
         localDeterministic: true,
         modelTimeoutMs: MODEL_TIMEOUT_MS,
         modelTimeoutFallback: true,
+        groundedEvidenceFallback: true,
+        externalFailureUsesCasualModel: false,
         ambiguityGate: true,
         explicitNoExternalGuard: true,
         inputCanonicalization: 'NFKC+spoken-ja',
@@ -670,7 +787,7 @@ export default {
         try {
           data = await deepTurn(normalizedBody, env, request.signal, decision);
         } catch (error) {
-          data = await casualTurn(normalizedBody, env, { fallbackError: error?.message || error });
+          data = researchFailureTurn(normalizedBody, error);
         }
       }
       schedule(ctx, env, { request, body: normalizedBody, result: data, event: 'turn', status: 200 });
@@ -684,6 +801,7 @@ export default {
 export const __test = {
   canonicalizeInput,
   boundedPromise,
+  mechanicalGroundedAnswer,
   classifyTurn,
   localDeterministicAnswer,
   shouldSearchByDefault,
