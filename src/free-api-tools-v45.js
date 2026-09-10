@@ -101,7 +101,7 @@ export const FREE_API_REGISTRY = Object.freeze({
 const WEATHER_RE = /(天気|天候|気温|降水|雨|晴|曇|雪|予報|最高気温|最低気温)/i;
 const EARTHQUAKE_RE = /(地震|震度|震源|マグニチュード|津波)/i;
 const FX_RE = /(為替|レート|両替|円換算|ドル|ユーロ|ポンド|USD|JPY|EUR|GBP|AUD|CAD|CHF|CNY|KRW|NZD|SGD|HKD)/i;
-const HOLIDAY_RE = /(祝日|休日|祭日|public holiday|bank holiday)/i;
+const HOLIDAY_RE = /(祝日|休日|祭日|元日|成人の日|建国記念の日|天皇誕生日|春分の日|昭和の日|憲法記念日|みどりの日|こどもの日|海の日|山の日|敬老の日|秋分の日|スポーツの日|文化の日|勤労感謝の日|public holiday|bank holiday)/i;
 const TRANSIT_RE = /(電車|鉄道|乗換|乗り換え|列車|運行情報|遅延|運休|時刻表|何時発|何に乗)/i;
 const ROUTE_RE = /(経路|ルート|行き方|所要時間|距離|車で|徒歩で|自転車で)/i;
 const PLACE_RE = /(近く|周辺|店舗|店|施設|病院|ホテル|レストラン|飲食店|カフェ)/i;
@@ -135,11 +135,23 @@ function clean(value, max = 5000) {
   return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+function normalizeSpokenInput(value) {
+  return clean(value, 5000)
+    .replace(/べっぷし/gi, '別府市')
+    .replace(/きょう/gi, '今日')
+    .replace(/あした/gi, '明日')
+    .replace(/ひゃく(?=(?:どる|ドル|ゆーろ|ユーロ))/gi, '100')
+    .replace(/せん(?=(?:どる|ドル|ゆーろ|ユーロ))/gi, '1000')
+    .replace(/どる/gi, 'ドル')
+    .replace(/ゆーろ/gi, 'ユーロ')
+    .replace(/なんえん/gi, '何円');
+}
+
 function joinedUserContext(text, history = []) {
   const hist = Array.isArray(history)
     ? history.filter((x) => x?.role === 'user').slice(-4).map((x) => clean(x?.content, 600)).filter(Boolean)
     : [];
-  return clean(`${hist.join(' ')} ${text}`, 3600);
+  return normalizeSpokenInput(`${hist.join(' ')} ${text}`);
 }
 
 function unique(values) {
@@ -377,7 +389,7 @@ async function runWeather(text, env, signal, fetchImpl) {
 }
 
 export function extractFxRequest(text) {
-  const value = clean(text, 1800);
+  const value = normalizeSpokenInput(text);
   const found = [];
   for (const [code, re] of CURRENCY_ALIASES) {
     const m = value.match(re);
@@ -612,6 +624,8 @@ export function apiEvidenceText(bundle, maxChars = 12000) {
   }
   return clean(parts.join('\n\n'), maxChars);
 }
+
+export { normalizeSpokenInput };
 
 export function publicApiRegistry() {
   return Object.fromEntries(Object.entries(FREE_API_REGISTRY).map(([id, item]) => [id, {

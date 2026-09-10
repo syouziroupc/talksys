@@ -18,7 +18,7 @@ import {
 
 test('v44 searches substantive turns by default', () => {
   assert.equal(worker.shouldSearchByDefault('中古のジャイロキャノピーで強力な添加剤は何がいい？'), true);
-  assert.equal(worker.shouldSearchByDefault('バナナはおやつに入る？'), true);
+  assert.equal(worker.shouldSearchByDefault('バナナはおやつに入る？'), false);
   assert.equal(worker.shouldSearchByDefault('この修理、買い替えたほうがいいかな'), true);
 });
 
@@ -55,8 +55,9 @@ test('v44 leaves external-subrequest and connection headroom', () => {
 });
 
 test('v44 rotates independent search engines and retries on another engine', () => {
-  const firstFive = Array.from({ length: 5 }, (_, i) => engineForIndex(i));
-  assert.deepEqual(firstFive, SEARCH_PROBE_ENGINES);
+  const firstCycle = Array.from({ length: SEARCH_PROBE_ENGINES.length }, (_, i) => engineForIndex(i));
+  assert.deepEqual(firstCycle, SEARCH_PROBE_ENGINES);
+  assert.equal(SEARCH_PROBE_ENGINES.includes('google'), false);
   for (const engine of SEARCH_PROBE_ENGINES) assert.notEqual(fallbackEngine(engine), engine);
 });
 

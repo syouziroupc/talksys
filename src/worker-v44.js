@@ -16,11 +16,13 @@ import {
 import { persistTalkLog } from './log-v42.js';
 import {
   apiEvidenceText,
+  detectApiIntents,
   FREE_API_REVISION,
   publicApiRegistry,
   runFreeApiTools,
 } from './free-api-tools-v45.js';
 import {
+  detectKnowledgeApiIntents,
   mergeApiBundles,
   publicKnowledgeApiRegistry,
   runKnowledgeApiTools,
@@ -32,7 +34,8 @@ const MODEL = '@cf/zai-org/glm-5.3-flash';
 
 const TRIVIAL_RE = /^(?:もしもし|おはよう(?:ございます)?|こんにちは|こんばんは|ありがとう(?:ございます)?|ありがと|どうも|はい|うん|ううん|へえ|なるほど|そうなんだ|了解|わかった|分かった|OK|オーケー|じゃあね|またね)[。！!？?…\s]*$/i;
 const FEELING_ONLY_RE = /^(?:今日は|今日も|今は|なんか|ちょっと|かなり|すごく|めっちゃ|もう)?\s*(?:疲れた|つかれた|眠い|ねむい|腹減った|お腹すいた|暇|しんどい|つらい|嬉しい|うれしい|悲しい|かなしい|楽しい|たのしい|元気)[。！!？?…〜ー\s]*$/i;
-const MEMORY_ONLY_RE = /^(?:さっき|先ほど|前に|前の話|今の話|この会話).{0,30}(?:何|なんて|どう|覚えて|言った|話した|答えた)[。！!？?…\s]*$/i;
+const MEMORY_ONLY_RE = /^(?:さっき|先ほど|前に|前の話|今の話|この会話).{0,30}(?:何|なんて|どう|覚えて|言った|話した|答えた).{0,30}[。！!？?…\s]*$/i;
+const SUBJECTIVE_RE = /(バナナ.{0,12}おやつ.{0,8}入る|どう思う|どうおもう|どっちが好み|好き(?:です|なの|か)?|嫌い(?:です|なの|か)?)/i;
 const CAPABILITY_RE = /(?:検索|調べ).{0,20}(?:できる|出来る|使える|あるの|あるだろ|できない|出来ない)|(?:できる|出来る|使える).{0,20}(?:検索|調べ)/i;
 const WEATHER_RE = /(天気|天候|気温|降水|雨|晴|曇|雪|予報)/i;
 const TRANSIT_RE = /(電車|鉄道|乗換|乗り換え|経路|行き方|何に乗|何を乗|所要時間|運賃|時刻表|次の電車|何時発)/i;
@@ -92,8 +95,26 @@ function readModelText(result) {
 export function shouldSearchByDefault(text) {
   const value = clean(text, 1800);
   if (!value) return false;
-  if (TRIVIAL_RE.test(value) || FEELING_ONLY_RE.test(value) || MEMORY_ONLY_RE.test(value) || CAPABILITY_RE.test(value)) return false;
+  if (TRIVIAL_RE.test(value) || FEELING_ONLY_RE.test(value) || MEMORY_ONLY_RE.test(value) || SUBJECTIVE_RE.test(value) || CAPABILITY_RE.test(value)) return false;
   return true;
+}
+
+const NON_API_FACT_RE = /(BIOS|UEFI|ファームウェア|ドライバ|Windows|macOS|Linux|古物|法律|法令|社長|CEO|首相|大統領|ニュース|中古(?:PC|パソコン)|スマホ|型番|仕様|公式配布|配布元)/i;
+
+function structuredCoverageIsWholeQuestion(text, bundle) {
+  if (bundle?.sufficient !== true) return false;
+  const value = clean(text, 2200);
+  const clauses = value
+    .split(/(?:と[、,]?(?=[A-Za-z0-9一-龠ぁ-んァ-ヶ])|そして|それから|加えて|。|；|;)/)
+    .map((x) => clean(x, 1000))
+    .filter((x) => x.length >= 2);
+  const recognized = (clause) => [
+    ...detectApiIntents(clause, []),
+    ...detectKnowledgeApiIntents(clause, []),
+  ].length > 0;
+  if (clauses.length > 1) return clauses.every(recognized);
+  if (!recognized(value)) return false;
+  return !NON_API_FACT_RE.test(value);
 }
 
 function shouldPreserveSpecializedTurn(text, history = []) {
@@ -131,7 +152,7 @@ function evidenceBlock(search) {
   }).join('\n\n');
 }
 
-const GROUNDED_PROMPT = `あなたはTalkSysの日本語電話相談AIです。今回のターンでは構造化APIを優先し、必要に応じてWebも調査済みです。\n\n絶対ルール:\n- まず利用者の質問へ直接答える。検索手順の説明から始めない。\n- 天気、為替、地震、祝日、経路など構造化APIで取得できた項目はAPI根拠を優先する。Webは補足、例外、障害、未取得事項の確認に使う。\n- API根拠にAttributionがある場合は、回答末尾に短く出典名を残す。\n- 現在の価格、在庫、日時、時刻、法律、制度、人物、ニュース、現行仕様など変化し得る事実は取得根拠にある範囲だけ使う。\n- 重要な具体的事実は、可能なら公式・一次情報と独立した別ソースの一致を優先する。根拠が食い違う場合は断定しない。\n- assistantの過去発言は会話対象の復元には使えるが、外部事実の証拠にはしない。\n- 安定した一般知識、論理、利用者自身が述べた条件は補助的に使ってよい。\n- 根拠が一部足りなくても回答全体を拒否しない。確認できたことと未確認部分を分けて、役立つ結論まで進める。\n- 「自分で検索してください」「ホームページを確認してください」と調査を利用者へ押し戻さない。\n- 根拠にない店名、価格、住所、型番、数値を新しく作らない。\n- 電話で聞きやすい自然な日本語で、通常3〜6文。URLや検索回数は読み上げない。`;
+const GROUNDED_PROMPT = `あなたはTalkSysの日本語電話相談AIです。今回のターンでは構造化APIを優先し、必要に応じてWebも調査済みです。\n\n絶対ルール:\n- まず利用者の質問へ直接答える。検索手順の説明から始めない。\n- 天気、為替、地震、祝日、経路など構造化APIで取得できた項目はAPI根拠を優先する。Webは補足、例外、障害、未取得事項の確認に使う。\n- API根拠にAttributionがある場合は、回答末尾に短く出典名を残す。\n- Crossrefの is-referenced-by-count は一般的な総被引用数ではなく「Crossref上の被引用参照数」と明示する。\n- 現在の価格、在庫、日時、時刻、法律、制度、人物、ニュース、現行仕様など変化し得る事実は取得根拠にある範囲だけ使う。\n- 重要な具体的事実は、可能なら公式・一次情報と独立した別ソースの一致を優先する。根拠が食い違う場合は断定しない。\n- assistantの過去発言は会話対象の復元には使えるが、外部事実の証拠にはしない。\n- 安定した一般知識、論理、利用者自身が述べた条件は補助的に使ってよい。\n- 根拠が一部足りなくても回答全体を拒否しない。確認できたことと未確認部分を分けて、役立つ結論まで進める。\n- 「自分で検索してください」「ホームページを確認してください」と調査を利用者へ押し戻さない。\n- 根拠にない店名、価格、住所、型番、数値を新しく作らない。\n- 電話で聞きやすい自然な日本語で、通常3〜6文。URLや検索回数は読み上げない。`;
 
 async function synthesizeGroundedAnswer(env, body, search) {
   const hist = historyOf(body?.history).slice(-10);
@@ -167,7 +188,7 @@ async function deepTurn(body, env, requestSignal) {
   const apiMs = Date.now() - apiStarted;
   const apiOk = (apiBundle?.results || []).filter((x) => x?.ok);
 
-  let webFallbackUsed = apiBundle?.sufficient !== true;
+  let webFallbackUsed = apiBundle?.sufficient !== true || !structuredCoverageIsWholeQuestion(text, apiBundle);
   let search;
   let searchMs = 0;
   if (webFallbackUsed) {
@@ -304,6 +325,7 @@ export default {
         webSearch: true,
         webSearchPolicy: 'default-exhaustive-resilient-multi-engine-v44',
         searchRevision: SEARCH_V44_REVISION,
+        weatherDirect: 'jma-api-first-with-met-norway-fallback',
         apiFirst: true,
         apiParallel: true,
         freeApiRevision: FREE_API_REVISION,
@@ -398,5 +420,6 @@ export const __test = {
   shouldSearchByDefault,
   shouldPreserveSpecializedTurn,
   fallbackResolvedQuestion,
+  structuredCoverageIsWholeQuestion,
   deepPlan,
 };

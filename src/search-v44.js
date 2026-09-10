@@ -36,7 +36,7 @@ export const SEARCH_V44_SOURCE_LIMIT = 18;
 export const SEARCH_V44_TOTAL_BUDGET_MS = 30000;
 export const SEARCH_V44_QUERY_TIMEOUT_MS = 6200;
 export const SEARCH_V44_PROBE_CONCURRENCY = 4;
-export const SEARCH_V44_MAX_ENGINE_RETRIES = 5;
+export const SEARCH_V44_MAX_ENGINE_RETRIES = 3;
 export const SEARCH_V44_MAX_PER_HOST = 2;
 // Baseline external fetch target: 14 distributed probes + one 6-source cross-check +
 // 3 page reads + up to 2 local lookups + 5 recovery probes = about 30.
@@ -49,6 +49,7 @@ const PLANNER_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const CURRENT_OR_HIGH_STAKES_RE = /(最新|現在|今日|明日|今|価格|値段|在庫|営業時間|法律|制度|規制|ニュース|発売|販売|予定|日程|時刻|時刻表|天気|株価|為替|相場|選挙|首相|大統領|CEO|仕様|バージョン|アップデート)/i;
 const LOCAL_RE = /(?:都|道|府|県|市|区|町|村).*(?:店|店舗|販売店|病院|ホテル|飲食|行き方|アクセス|近く|周辺)|(?:店|店舗|販売店|病院|ホテル|飲食|近く|周辺).*(?:都|道|府|県|市|区|町|村)/i;
 const SHOPPING_RE = /(買|購入|おすすめ|比較|価格|値段|在庫|販売店|店舗|通販|中古|新品|製品|商品)/i;
+const LOW_VALUE_RESEARCH_HOST_RE = /(?:^|\.)(?:gamewith\.jp)$/i;
 
 function clean(value, max = 4000) {
   return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -369,6 +370,7 @@ async function enrichTopResults(results, question, ai, signal, timeoutMs, count 
 async function rankExpanded(ai, question, results, signal, limit = SEARCH_V44_SOURCE_LIMIT) {
   const unique = dedupeSearchResults(results, 120)
     .filter((item) => isQueryRelevantResult(item?.probeQuery || question, item))
+    .filter((item) => !LOW_VALUE_RESEARCH_HOST_RE.test(hostOf(item?.url || '')))
     .map((item) => ({ item, score: relevanceScore(question, item) + (Number(item?.queryGateScore) || 0) * 2 }))
     .sort((a, b) => b.score - a.score)
     .map((x) => x.item)
@@ -391,6 +393,53 @@ function evidenceSummary(results, limit = SEARCH_V44_SOURCE_LIMIT) {
     const host = hostOf(item?.url || '');
     return `[${index + 1}] ${clean(item?.title, 220)}\n${host}\n${clean(item?.excerpt || item?.snippet, 1200)}`;
   }).join('\n\n');
+}
+
+function heuristicCandidatesFromResults(plan, results, limit = 4) {
+  const candidateType = candidateTypeForPlan(plan);
+  const out = [];
+  const seen = new Set();
+  const push = (name, evidence) => {
+    const value = clean(name, 120).replace(/^[\s「『【\[]+|[\s」』】\]]+$/g, '').trim();
+    if (!value || seen.has(value.toLowerCase())) return;
+    seen.add(value.toLowerCase());
+    out.push({ name: value, type: candidateType, evidence: clean(evidence, 220) });
+  };
+  for (const item of results || []) {
+    const title = clean(`${item?.title || ''} ${item?.excerpt || item?.snippet || ''}`, 1500);
+    if (!title) continue;
+    if (candidateType === 'product_model') {
+      const patterns = [
+        /CF-[A-Z]{1,4}\d{1,4}[A-Z0-9-]*/gi,
+        /ThinkPad\s+(?:X|T|L|E|P)\d{3,4}(?:\s+Gen\s+\d+)?/gi,
+        /Latitude\s+\d{4}/gi,
+        /(?:EliteBook|ProBook)\s+\d{3,4}\s+G\d+/gi,
+        /LIFEBOOK\s+[A-Z]\d{3,4}[A-Z0-9-]*/gi,
+        /dynabook\s+[A-Z]\d{2,4}[A-Z0-9-]*/gi,
+        /VAIO\s+[A-Z]{1,3}\d{2,4}[A-Z0-9-]*/gi,
+        /iPhone\s+(?:SE(?:\s*\d)?|\d{1,2})(?:\s+(?:Pro|Plus|mini|Max))?/gi,
+        /Pixel\s+\d+[a-z]?(?:\s+Pro)?/gi,
+        /Galaxy\s+[A-Z]\d{2,3}[A-Z0-9-]*/gi,
+        /AQUOS\s+(?:sense|wish|R)\d+[A-Z0-9-]*/gi,
+      ];
+      for (const re of patterns) {
+        for (const m of title.matchAll(re)) push(m[0], item?.title || title);
+      }
+    } else if (candidateType === 'store') {
+      const patterns = [
+        /パソコン工房[^|｜–—]{0,30}?店/g,
+        /(?:PC\s*DEPOT|ピーシーデポ)[^|｜–—]{0,30}?店/gi,
+        /じゃんぱら[^|｜–—]{0,30}?店/g,
+        /ハードオフ[^|｜–—]{0,30}?店/g,
+        /ソフマップ[^|｜–—]{0,30}?店/g,
+      ];
+      for (const re of patterns) {
+        for (const m of title.matchAll(re)) push(m[0], item?.title || title);
+      }
+    }
+    if (out.length >= limit) break;
+  }
+  return out.slice(0, limit);
 }
 
 async function extractSupportedCandidates(ai, plan, results, signal) {
@@ -422,9 +471,10 @@ async function extractSupportedCandidates(ai, plan, results, signal) {
       temperature: 0.01,
     }, signal ? { signal } : undefined);
     const data = parseJsonObject(readModelText(result));
-    return normalizeCandidates(data?.candidates, evidence, 4, candidateType);
+    const typed = normalizeCandidates(data?.candidates, evidence, 4, candidateType);
+    return typed.length ? typed : heuristicCandidatesFromResults(plan, results, 4);
   } catch {
-    return [];
+    return heuristicCandidatesFromResults(plan, results, 4);
   }
 }
 
@@ -439,6 +489,7 @@ async function assessCoverage(ai, plan, results, history, signal) {
       queries: compileFollowupQueries(plan, { sufficient: false, missingFacets: (plan?.facets || []).map((f) => f.id), queries: [] }, [], SEARCH_V44_MAX_RECOVERY_QUERIES),
     };
   }
+  const coverageSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(2600)]) : AbortSignal.timeout(2600);
   try {
     const result = await ai.run(PLANNER_MODEL, {
       messages: [
@@ -454,7 +505,7 @@ async function assessCoverage(ai, plan, results, history, signal) {
       stream: false,
       max_tokens: 650,
       temperature: 0.01,
-    }, signal ? { signal } : undefined);
+    }, { signal: coverageSignal });
     const data = parseJsonObject(readModelText(result));
     if (data && typeof data === 'object') {
       const facetStatus = Array.isArray(data.facet_status || data.facetStatus)
@@ -473,10 +524,10 @@ async function assessCoverage(ai, plan, results, history, signal) {
     }
   } catch {}
   const hosts = new Set((results || []).map((x) => hostOf(x?.url || '')).filter(Boolean));
-  const sufficient = hasUsefulSearchEvidence(results, 7) && hosts.size >= 3;
+  const sufficient = hasUsefulSearchEvidence(results, 4) && hosts.size >= 2;
   return {
     sufficient,
-    reason: 'coverage_model_unavailable',
+    reason: sufficient ? 'deterministic_evidence_coverage' : 'deterministic_evidence_gap',
     facetStatus: [],
     missingFacets: sufficient ? [] : (plan?.facets || []).map((f) => f.id),
     queries: [],

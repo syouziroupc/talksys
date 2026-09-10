@@ -104,8 +104,17 @@ function japanMetric(text) {
 }
 
 function japanRegionName(text) {
-  const matches = [...clean(text, 2200).matchAll(/([一-龠ぁ-んァ-ヶー]{1,16}(?:都|道|府|県|市|区|町|村))/g)].map((m) => m[1]);
-  return matches.at(-1) || (/(?:日本|全国)/.test(text) ? '全国' : '');
+  const value = clean(text, 2200);
+  const city = value.match(/([一-龠ぁ-んァ-ヶー]{1,12}市)/g)?.at(-1);
+  const ward = value.match(/([一-龠ぁ-んァ-ヶー]{1,12}区)/g)?.at(-1);
+  const town = value.match(/([一-龠ぁ-んァ-ヶー]{1,12}町)/g)?.at(-1);
+  const village = value.match(/([一-龠ぁ-んァ-ヶー]{1,12}村)/g)?.at(-1);
+  const prefecture = value.match(/([一-龠ぁ-んァ-ヶー]{1,12}(?:都|道|府|県))/g)?.at(-1);
+  const picked = city || ward || town || village || prefecture || '';
+  if (!picked) return /(?:日本|全国)/.test(value) ? '全国' : '';
+  // If a prefecture name is glued in front of a city (e.g. 大分県別府市), keep
+  // only the most specific administrative unit.
+  return picked.replace(/^.*?(?:都|道|府|県)(?=.+(?:市|区|町|村)$)/, '');
 }
 
 function collectObjects(value, out = [], depth = 0) {
