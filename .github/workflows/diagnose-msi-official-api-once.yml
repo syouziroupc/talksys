@@ -1,0 +1,70 @@
+name: Diagnose MSI official support endpoints once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-msi-official-api-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Inspect MSI support network surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 TalkSys/45'
+          mkdir -p /tmp/msi
+          for u in \
+            'https://www.msi.com/Motherboard/X79A-GD45/support' \
+            'https://jp.msi.com/Motherboard/X79A-GD45/support' \
+            'https://www.msi.com/Motherboard/X79A-GD45/Specification' \
+            'https://download.msi.com/bos_exe/mb/7735v28.zip'; do
+            echo "=== HEAD $u ==="
+            curl -L -sS -A "$UA" -o /dev/null -w 'status=%{http_code} type=%{content_type} final=%{url_effective}\n' --max-time 15 "$u" || true
+          done
+          curl -L -sS -A "$UA" --max-time 20 'https://www.msi.com/Motherboard/X79A-GD45/support' -o /tmp/msi/support.html || true
+          echo '=== script src ==='
+          python - <<'PY'
+          import re
+          from urllib.parse import urljoin
+          html=open('/tmp/msi/support.html',encoding='utf-8',errors='ignore').read()
+          scripts=[]
+          for src in re.findall(r'<script[^>]+src=["\']([^"\']+)', html, re.I):
+              u=urljoin('https://www.msi.com/Motherboard/X79A-GD45/support',src)
+              if u not in scripts: scripts.append(u)
+          print('\n'.join(scripts[:30]))
+          open('/tmp/msi/scripts.txt','w').write('\n'.join(scripts[:30]))
+          print('HTML_BYTES',len(html),'SCRIPTS',len(scripts))
+          # Also show obvious API/data references embedded directly in HTML.
+          pats=sorted(set(re.findall(r'https?://[^"\'<> ]+|/[A-Za-z0-9_./?=&%-]*(?:api|support|download|product)[A-Za-z0-9_./?=&%-]*',html,re.I)))
+          print('=== HTML API-like refs ===')
+          for x in pats[:80]: print(x[:500])
+          PY
+          echo '=== JS API-like refs ==='
+          n=0
+          while IFS= read -r u; do
+            [ -n "$u" ] || continue
+            n=$((n+1)); [ "$n" -le 20 ] || break
+            f="/tmp/msi/js$n.js"
+            curl -L -sS -A "$UA" --max-time 15 "$u" -o "$f" || continue
+            python - "$u" "$f" <<'PY'
+          import re,sys
+          u,f=sys.argv[1:]
+          s=open(f,encoding='utf-8',errors='ignore').read()
+          hits=[]
+          for p in [r'https?://[^"\'`<> ]+',r'["\'](/[^"\']*(?:api|download|support|bios|driver)[^"\']*)["\']']:
+              for m in re.finditer(p,s,re.I):
+                  x=m.group(1) if m.lastindex else m.group(0)
+                  if x not in hits: hits.append(x)
+          if hits:
+              print('SCRIPT',u,'BYTES',len(s))
+              for x in hits[:60]: print(x[:500])
+          PY
+          done < /tmp/msi/scripts.txt
