@@ -40,3 +40,5 @@ jobs:
           git add src/search-v45.js src/worker-v44.js tests/direct-primary-v45.test.mjs
           git commit -m 'Add direct primary-source resolution to search v45'
           git push origin HEAD:main
+
+# trigger
