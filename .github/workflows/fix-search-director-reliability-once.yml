@@ -1,0 +1,273 @@
+name: Fix Search Director reliability once
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: contains(github.event.head_commit.message, '[fix-search-director]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Apply Search Director reliability fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path('src/search-v44.js')
+          s = p.read_text()
+
+          marker = "const PLANNER_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';\n"
+          assert marker in s
+          tool = r'''const SEARCH_DIRECTOR_TOOL_NAME = 'submit_research_plan';
+          const SEARCH_DIRECTOR_TOOL = {
+            name: SEARCH_DIRECTOR_TOOL_NAME,
+            description: 'Return the structured research plan that TalkSys should execute. Do not answer the user.',
+            parameters: {
+              type: 'object',
+              properties: {
+                resolved_question: { type: 'string' },
+                intent: { type: 'string', enum: ['shopping', 'local', 'current', 'comparison', 'general', 'news', 'other'] },
+                research_mode: { type: 'string', enum: ['direct_fact', 'discover_then_verify', 'compare_known_entities', 'local_discovery', 'current_status'] },
+                candidate_type: { type: 'string', enum: ['product_model', 'store', 'place', 'company', 'service', 'person', 'document', 'none'] },
+                location: { type: 'string' },
+                must_include: { type: 'array', items: { type: 'string' }, maxItems: 10 },
+                facets: {
+                  type: 'array', minItems: 1, maxItems: 6,
+                  items: {
+                    type: 'object',
+                    properties: {
+                      id: { type: 'string' },
+                      stage: { type: 'string', enum: ['discovery', 'verification', 'context'] },
+                      question: { type: 'string' },
+                      evidence_needed: { type: 'string' },
+                      source_role: { type: 'string', enum: ['primary', 'official_spec', 'official_support', 'seller', 'marketplace', 'map', 'news', 'independent_review', 'reference', 'mixed'] },
+                      preferred_sources: { type: 'array', items: { type: 'string' }, maxItems: 5 },
+                      primary_query: { type: 'string' },
+                      backup_queries: { type: 'array', items: { type: 'string' }, maxItems: 2 },
+                      priority: { type: 'integer', minimum: 1, maximum: 5 },
+                    },
+                    required: ['id', 'stage', 'question', 'evidence_needed', 'source_role', 'primary_query', 'priority'],
+                  },
+                },
+              },
+              required: ['resolved_question', 'intent', 'research_mode', 'candidate_type', 'facets'],
+            },
+          };
+          '''
+          s = s.replace(marker, marker + tool, 1)
+
+          marker = "function deterministicQueries(resolved, history) {"
+          assert marker in s
+          helper = r'''function readToolArguments(result, expectedName = SEARCH_DIRECTOR_TOOL_NAME) {
+            const calls = [
+              ...(Array.isArray(result?.tool_calls) ? result.tool_calls : []),
+              ...(Array.isArray(result?.choices?.[0]?.message?.tool_calls) ? result.choices[0].message.tool_calls : []),
+            ];
+            for (const call of calls) {
+              const name = clean(call?.name || call?.function?.name, 80);
+              if (name !== expectedName) continue;
+              const raw = call?.arguments ?? call?.function?.arguments;
+              if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+              if (typeof raw === 'string' && raw.trim()) {
+                const parsed = parseJsonObject(raw);
+                if (parsed && typeof parsed === 'object') return parsed;
+              }
+            }
+            return null;
+          }
+
+          '''
+          s = s.replace(marker, helper + marker, 1)
+
+          old = "  const year = new Date().getFullYear();\n  try {\n    const result = await ai.run(PLANNER_MODEL, {"
+          new = "  const year = new Date().getFullYear();\n  let plannerError = '';\n  try {\n    const result = await ai.run(PLANNER_MODEL, {"
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = "      stream: false,\n      max_tokens: 1250,"
+          new = "      tools: [SEARCH_DIRECTOR_TOOL],\n      stream: false,\n      max_tokens: 1250,"
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = "    const data = parseJsonObject(readModelText(result));\n    if (data && typeof data === 'object') {"
+          new = "    const toolData = readToolArguments(result);\n    const textData = toolData ? null : parseJsonObject(readModelText(result));\n    const data = toolData || textData;\n    const plannerTransport = toolData ? 'tool_call' : (textData ? 'text_json' : 'none');\n    if (data && typeof data === 'object') {"
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = "          planned: true,\n          plannerModel: PLANNER_MODEL,\n          researchPlanRevision: RESEARCH_PLAN_V44_REVISION,"
+          new = "          planned: true,\n          plannerModel: PLANNER_MODEL,\n          plannerTransport,\n          plannerError: '',\n          researchPlanRevision: RESEARCH_PLAN_V44_REVISION,"
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = "  } catch {}\n  const intent = SHOPPING_RE.test(fallback)"
+          new = "    plannerError = 'invalid_planner_output';\n  } catch (error) {\n    plannerError = clean(error?.message || error?.name || error, 180) || 'planner_failed';\n  }\n  const intent = SHOPPING_RE.test(fallback)"
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = "    planned: false,\n    plannerModel: null,\n    researchPlanRevision: RESEARCH_PLAN_V44_REVISION,"
+          new = "    planned: false,\n    plannerModel: null,\n    plannerTransport: 'heuristic',\n    plannerError: plannerError || 'planner_unavailable',\n    researchPlanRevision: RESEARCH_PLAN_V44_REVISION,"
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = "    revision: SEARCH_V44_REVISION,\n    plan: { ...plan, queries: uniqueQueries(allQueries, SEARCH_V44_MAX_TOTAL_QUERIES), candidates },"
+          new = "    revision: SEARCH_V44_REVISION,\n    plannerPlanned: plan.planned === true,\n    plannerTransport: plan.plannerTransport || (plan.planned ? 'unknown' : 'heuristic'),\n    plannerError: clean(plan.plannerError || '', 180),\n    plan: { ...plan, queries: uniqueQueries(allQueries, SEARCH_V44_MAX_TOTAL_QUERIES), candidates },"
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = "  planDeepSearch,\n  assessCoverage,"
+          new = "  readToolArguments,\n  planDeepSearch,\n  assessCoverage,"
+          assert old in s
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('src/research-plan-v44.js')
+          s = p.read_text()
+          marker = "export function heuristicResearchFacets(resolvedQuestion, intent = 'general', location = '') {"
+          assert marker in s
+          helper = r'''export function shoppingDiscoveryBase(resolvedQuestion) {
+            const q = clean(resolvedQuestion, 900);
+            const state = q.match(/(中古|新品|整備済(?:み)?|リファービッシュ)/i)?.[1] || '';
+            const budget = q.match(/(\d+(?:\.\d+)?(?:万|千)?円(?:以下|以内|まで|未満)?)/)?.[1] || '';
+            let category = '';
+            if (/(?:ノート\s*(?:pc|パソコン)|ラップトップ)/i.test(q)) category = 'ノートパソコン';
+            else if (/(?:デスクトップ\s*(?:pc|パソコン))/i.test(q)) category = 'デスクトップパソコン';
+            else if (/(?:スマホ|スマートフォン)/i.test(q)) category = 'スマートフォン';
+            else if (/(?:タブレット|ipad)/i.test(q)) category = 'タブレット';
+            else if (/(?:イヤホン|ヘッドホン)/i.test(q)) category = q.match(/イヤホン/i) ? 'イヤホン' : 'ヘッドホン';
+            else if (/(?:モニター|ディスプレイ)/i.test(q)) category = 'モニター';
+            const compact = [state, category, budget].filter(Boolean).join(' ');
+            return clean(compact, 320) || q;
+          }
+
+          '''
+          s = s.replace(marker, helper + marker, 1)
+          old = "  if (intent === 'shopping') {\n    add('candidate', defaultFacetQuestion(q, '条件に合う具体的な候補は何か'), '条件を満たす候補の存在', `${q} 型番 候補`, [`${q} モデル`, `${q} 商品`], ['販売ページ', 'メーカー'], 5, 'discovery', 'seller');\n    add('price', defaultFacetQuestion(q, '現在いくらで入手できるか'), '候補ごとの現在価格と販売元', `${q} 実売価格`, [`${q} 在庫 価格`], ['販売店', '公式ストア'], 5, 'verification', 'seller');\n    add('fit', defaultFacetQuestion(q, '用途・条件を本当に満たすか'), '候補ごとの仕様・適合条件', `${q} 仕様`, [`${q} 対応 仕様`], ['メーカー', '仕様書'], 5, 'verification', 'official_spec');\n    add('risk', defaultFacetQuestion(q, '弱点・不適合・注意点は何か'), '候補の欠点、制約、反証', `${q} 問題 注意点`, [`${q} 不具合 評判`], ['メーカーサポート', '独立レビュー'], 3, 'verification', 'independent_review');"
+          new = "  if (intent === 'shopping') {\n    const discoveryBase = shoppingDiscoveryBase(q);\n    add('candidate', defaultFacetQuestion(q, '条件に合う具体的な候補は何か'), '条件を満たす候補の存在', `${discoveryBase} 型番 機種`, [`${discoveryBase} モデル`, `${discoveryBase} 販売`], ['販売ページ', 'メーカー'], 5, 'discovery', 'seller');\n    add('price', defaultFacetQuestion(q, '現在いくらで入手できるか'), '候補ごとの現在価格と販売元', `${discoveryBase} 価格 在庫`, [`${discoveryBase} 実売価格`], ['販売店', '公式ストア'], 5, 'verification', 'seller');\n    add('fit', defaultFacetQuestion(q, '用途・条件を本当に満たすか'), '候補ごとの仕様・適合条件', `${discoveryBase} 仕様`, [`${discoveryBase} 対応 仕様`], ['メーカー', '仕様書'], 5, 'verification', 'official_spec');\n    add('risk', defaultFacetQuestion(q, '弱点・不適合・注意点は何か'), '候補の欠点、制約、反証', `${discoveryBase} 注意点`, [`${discoveryBase} 不具合 評判`], ['メーカーサポート', '独立レビュー'], 3, 'verification', 'independent_review');"
+          assert old in s
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('src/query-result-gate-v44.js')
+          s = p.read_text()
+          old = "function normalize(value) {\n  return clean(value, 4000).toLowerCase().normalize('NFKC');\n}"
+          new = "function normalize(value) {\n  return clean(value, 4000).toLowerCase().normalize('NFKC')\n    .replace(/ノート\\s*pc/gi, 'ノートパソコン')\n    .replace(/デスクトップ\\s*pc/gi, 'デスクトップパソコン')\n    .replace(/中古\\s*pc/gi, '中古パソコン');\n}"
+          assert old in s
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('src/worker-v44.js')
+          s = p.read_text()
+          old = "      searchDirectorModel: SEARCH_DIRECTOR_MODEL,\n      questionFirstPlanning: search.questionFirstPlanning === true,"
+          new = "      searchDirectorModel: SEARCH_DIRECTOR_MODEL,\n      plannerPlanned: search.plannerPlanned === true,\n      plannerTransport: search.plannerTransport || '',\n      plannerError: clean(search.plannerError || '', 180),\n      questionFirstPlanning: search.questionFirstPlanning === true,"
+          assert old in s
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          Path('tests/v45-search-director-reliability.test.mjs').write_text(r'''import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import { __test as search } from '../src/search-v44.js';
+          import { queryResultEvidence } from '../src/query-result-gate-v44.js';
+
+          test('Search Director accepts native Workers AI top-level tool calls', async () => {
+            const ai = {
+              run: async (_model, input) => {
+                assert.equal(input.tools?.[0]?.name, 'submit_research_plan');
+                return {
+                  tool_calls: [{
+                    name: 'submit_research_plan',
+                    arguments: {
+                      resolved_question: '3万円以下の中古ノートPCを動画視聴用に選ぶ',
+                      intent: 'shopping',
+                      research_mode: 'discover_then_verify',
+                      candidate_type: 'product_model',
+                      location: '',
+                      must_include: ['3万円以下', '中古', '動画視聴'],
+                      facets: [{
+                        id: 'candidate', stage: 'discovery', question: '条件内の実在機種は何か',
+                        evidence_needed: '販売ページ上の具体的な型番', source_role: 'seller',
+                        preferred_sources: ['中古PC販売店'], primary_query: '中古 ノートパソコン 3万円以下 型番',
+                        backup_queries: ['中古 ノートパソコン 3万円以下 機種'], priority: 5,
+                      }],
+                    },
+                  }],
+                };
+              },
+            };
+            const plan = await search.planDeepSearch(ai, '3万円以下の中古ノートPCを動画視聴用に選ぶなら？', []);
+            assert.equal(plan.planned, true);
+            assert.equal(plan.plannerTransport, 'tool_call');
+            assert.equal(plan.plannerError, '');
+            assert.equal(plan.candidateType, 'product_model');
+            assert.equal(plan.queries[0], '中古 ノートパソコン 3万円以下 型番');
+          });
+
+          test('tool-call parser also accepts OpenAI-style nested calls with string arguments', () => {
+            const data = search.readToolArguments({ choices: [{ message: { tool_calls: [{ function: {
+              name: 'submit_research_plan', arguments: '{"resolved_question":"x","intent":"general"}'
+            }}] }}] });
+            assert.equal(data.resolved_question, 'x');
+            assert.equal(data.intent, 'general');
+          });
+
+          test('planner failure falls back to compact shopping discovery queries', async () => {
+            const ai = { run: async () => { throw new Error('planner offline'); } };
+            const question = '3万円以下の中古ノートPCを動画視聴用に選ぶなら何を確認して探すべき？';
+            const plan = await search.planDeepSearch(ai, question, []);
+            assert.equal(plan.planned, false);
+            assert.equal(plan.plannerTransport, 'heuristic');
+            assert.match(plan.plannerError, /planner offline/);
+            assert.match(plan.queries[0], /中古/);
+            assert.match(plan.queries[0], /ノートパソコン/);
+            assert.match(plan.queries[0], /3万円以下/);
+            assert.match(plan.queries[0], /型番|機種/);
+            assert.doesNotMatch(plan.queries[0], /何を確認して探すべき/);
+            assert.ok(plan.queries[0].length < question.length);
+          });
+
+          test('query relevance gate normalizes ノートPC and ノートパソコン aliases', () => {
+            const evidence = queryResultEvidence('中古 ノートPC 3万円以下 型番', {
+              title: '中古ノートパソコン ThinkPad X280 を販売',
+              snippet: '中古ノートパソコンを多数掲載しています。',
+              url: 'https://example.jp/x280',
+            });
+            assert.equal(evidence.relevant, true);
+            assert.ok(evidence.matched.includes('ノートパソコン'));
+          });
+          ''').replace(/^          /gm, ''))
+          PY
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Validate patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check
+          node --test tests/v45-search-director-reliability.test.mjs tests/v44-query-quality.test.mjs tests/v44-search-sequencing.test.mjs tests/v45-production-smoke-fixes.test.mjs
+          npm test
+          npx wrangler deploy --dry-run
+
+      - name: Commit validated fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name syouziroupc
+          git config user.email syouziroupc@gmail.com
+          git add src/search-v44.js src/research-plan-v44.js src/query-result-gate-v44.js src/worker-v44.js tests/v45-search-director-reliability.test.mjs
+          git commit -m 'Harden Search Director planning and shopping discovery'
+          git push origin HEAD:main
