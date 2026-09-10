@@ -2,7 +2,11 @@ import { parseBingHtml, parseDuckHtml, parseGoogleHtml, parseRss } from './web-s
 import { searchBingRss } from './search-fallbacks.js';
 import { filterQueryRelevantResults } from './query-result-gate-v44.js';
 
-export const SEARCH_PROBE_ENGINES = ['bing-rss', 'google', 'duckduckgo', 'bing-html', 'google-news'];
+// Google HTML repeatedly returned HTTP 429 in production smoke tests. Keep the
+// implementation below for an explicit future opt-in, but do not put it in the
+// automatic rotation/retry chain. Google News RSS remains because it is a
+// different public feed and did not show the same failure pattern.
+export const SEARCH_PROBE_ENGINES = ['bing-rss', 'duckduckgo', 'bing-html', 'google-news'];
 
 const SEARCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36 TalkSys/44';
 
@@ -66,6 +70,8 @@ export async function searchProbe(engine, query, options = {}) {
     let fetched;
     let parsed = [];
     if (engine === 'google') {
+      // Explicit compatibility path only. engineForIndex/fallbackEngine never
+      // select this engine after the v45 production smoke findings.
       fetched = await fetchText(`https://www.google.com/search?hl=ja&gl=jp&num=10&filter=0&q=${encodeURIComponent(value)}`, timeoutMs);
       parsed = fetched.text ? parseGoogleHtml(fetched.text, Math.min(12, limit + 2)) : [];
     } else if (engine === 'duckduckgo') {
