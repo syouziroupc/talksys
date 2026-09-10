@@ -455,7 +455,11 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   const hasCurrentFirmwareVersionEvidence = ranked.some((item) => {
     const body = `${item?.title || ''} ${item?.excerpt || item?.snippet || ''}`;
     const official = item?.primarySource === true || ['official_spec','official_support'].includes(item?.sourceRole);
-    return official && /(?:version|ver\.?|バージョン|BIOS)\s*[:：v]?\s*[a-z]?\d+(?:[.\-][a-z0-9]+)+/i.test(body);
+    // A static archive proves that a version exists on the vendor CDN, but it
+    // does not establish that no newer version exists.  Only evidence explicitly
+    // marked as current-version-confirming may satisfy a "latest/current" claim.
+    const confirmsCurrent = item?.currentFirmwareVersionConfirmed === true;
+    return official && confirmsCurrent && /(?:version|ver\.?|バージョン|BIOS)\s*[:：v]?\s*[a-z]?\d+(?:[.\-][a-z0-9]+)+/i.test(body);
   });
   const evidenceUseful = baseEvidenceUseful && (!requiresCurrentFirmwareVersion || hasCurrentFirmwareVersionEvidence);
   const sufficient = plan.researchMode === 'discover_then_verify'
@@ -505,7 +509,7 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     probeDiagnostics: diagnostics,
     directPrimarySourceCount: (directPrimary.results || []).length,
     directPrimaryDiagnostics: directPrimary.diagnostics || [],
-    directPrimaryTargets: (directPrimary.targets || []).map(x => ({ resolver: x.resolver, role: x.role, url: x.url, model: x.model })),
+    directPrimaryTargets: (directPrimary.targets || []).map(x => ({ resolver: x.resolver, role: x.role, url: x.url, model: x.model, version: x.version || '', currentFirmwareVersionConfirmed: x.currentFirmwareVersionConfirmed === true })),
     requiresCurrentFirmwareVersion,
     hasCurrentFirmwareVersionEvidence,
     timings,

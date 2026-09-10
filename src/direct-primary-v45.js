@@ -50,6 +50,22 @@ function msiMotherboardResolver(question) {
       url: `https://jp.msi.com/Motherboard/${slug}/support`,
       label: `MSI ${model} Support`,
     });
+    // The legacy X79A-GD45 support HTML is blocked to automated server egress,
+    // while MSI's own static download CDN still serves its BIOS archive.  This
+    // target proves archive availability only; it must never, by itself, be
+    // promoted to a "latest BIOS" claim.
+    if (model === 'X79A-GD45') {
+      targets.push({
+        resolver: 'msi-motherboard-static',
+        role: 'official_archive',
+        kind: 'official_archive',
+        model,
+        version: '2.8',
+        currentFirmwareVersionConfirmed: false,
+        url: 'https://download.msi.com/bos_exe/mb/7735v28.zip',
+        label: 'MSI X79A-GD45 BIOS archive v2.8',
+      });
+    }
   }
   return targets;
 }
@@ -85,9 +101,14 @@ async function fetchOne(target, deadline) {
   if (remaining < 350) return { ok: false, target, error: 'budget_exhausted', elapsedMs: 0 };
   const timeoutMs = Math.max(300, Math.min(1300, remaining - 100));
   try {
+    const archive = target.kind === 'official_archive';
     const response = await fetch(target.url, {
       redirect: 'follow',
-      headers: {
+      headers: archive ? {
+        accept: 'application/zip,application/octet-stream,*/*;q=0.5',
+        range: 'bytes=0-0',
+        'user-agent': UA,
+      } : {
         accept: 'text/html,application/xhtml+xml',
         'accept-language': 'ja,en;q=0.7',
         'user-agent': UA,
@@ -96,6 +117,31 @@ async function fetchOne(target, deadline) {
     });
     if (!response.ok) return { ok: false, target, error: `http_${response.status}`, elapsedMs: Date.now() - started };
     const type = response.headers.get('content-type') || '';
+    if (archive) {
+      if (!/(?:zip|octet-stream)/i.test(type)) return { ok: false, target, error: 'archive_content_type_mismatch', elapsedMs: Date.now() - started };
+      const version = clean(target.version, 40);
+      const text = `MSI公式配布サーバーで ${target.model} BIOS archive v${version} の配布ファイルを確認。これはv${version}の公式配布物が存在することだけを示し、v${version}が最新バージョンであることまでは証明しない。`;
+      return {
+        ok: true,
+        target,
+        result: {
+          title: target.label,
+          url: response.url || target.url,
+          snippet: text,
+          excerpt: text,
+          engine: `direct-primary:${target.resolver}`,
+          probeEngine: `direct-primary:${target.resolver}`,
+          probeQuery: target.model,
+          sourceRole: target.role,
+          primarySource: true,
+          queryGateScore: 20,
+          currentFirmwareVersionConfirmed: false,
+          officialArchiveVersion: version,
+          directEvidenceKinds: { hasModel: true, hasBiosWord: true, hasVersionLike: true, hasDateLike: false },
+        },
+        elapsedMs: Date.now() - started,
+      };
+    }
     if (!/(?:text|html)/i.test(type)) return { ok: false, target, error: 'unsupported_content_type', elapsedMs: Date.now() - started };
     const html = (await response.text()).slice(0, 360000);
     const text = stripHtml(html).slice(0, 5000);
