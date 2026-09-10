@@ -1,0 +1,63 @@
+name: Fix Search Director reliability v4 once
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: contains(github.event.head_commit.message, '[fix-search-director-v4]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Apply corrected Search Director patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'EXTRACT'
+          from pathlib import Path
+          wf = Path('.github/workflows/fix-search-director-reliability-v2-once.yml').read_text()
+          start = "          python3 <<'PY'\n"
+          end = "\n          PY\n"
+          assert start in wf and end in wf
+          body = wf.split(start, 1)[1].split(end, 1)[0]
+          body = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines()) + '\n'
+          body = body.replace("dedent(r'''\\\n", "dedent(r'''\n")
+          Path('/tmp/apply-search-director.py').write_text(body)
+          EXTRACT
+          python3 /tmp/apply-search-director.py
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+      - name: Validate patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check
+          node --test tests/v45-search-director-reliability.test.mjs tests/v44-query-quality.test.mjs tests/v44-search-sequencing.test.mjs tests/v45-production-smoke-fixes.test.mjs
+          npm test
+          npx wrangler deploy --dry-run
+
+      - name: Commit validated fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name syouziroupc
+          git config user.email syouziroupc@gmail.com
+          git add src/search-v44.js src/research-plan-v44.js src/query-result-gate-v44.js src/worker-v44.js tests/v45-search-director-reliability.test.mjs
+          git commit -m 'Harden Search Director planning and shopping discovery'
+          git push origin HEAD:main
