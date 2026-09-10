@@ -45,7 +45,7 @@ export const SEARCH_V44_MAX_PER_HOST = 2;
 export const SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET = 30;
 export const SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET = 35;
 
-const PLANNER_MODEL = '@cf/zai-org/glm-5.3-flash';
+const PLANNER_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const CURRENT_OR_HIGH_STAKES_RE = /(最新|現在|今日|明日|今|価格|値段|在庫|営業時間|法律|制度|規制|ニュース|発売|販売|予定|日程|時刻|時刻表|天気|株価|為替|相場|選挙|首相|大統領|CEO|仕様|バージョン|アップデート)/i;
 const LOCAL_RE = /(?:都|道|府|県|市|区|町|村).*(?:店|店舗|販売店|病院|ホテル|飲食|行き方|アクセス|近く|周辺)|(?:店|店舗|販売店|病院|ホテル|飲食|近く|周辺).*(?:都|道|府|県|市|区|町|村)/i;
 const SHOPPING_RE = /(買|購入|おすすめ|比較|価格|値段|在庫|販売店|店舗|通販|中古|新品|製品|商品)/i;
@@ -131,9 +131,8 @@ async function planDeepSearch(ai, text, history, signal) {
         { role: 'user', content: `直近の会話:\n${recent || '(なし)'}\n\n今回の発話:\n${clean(text, 1800)}` },
       ],
       stream: false,
-      max_completion_tokens: 1250,
+      max_tokens: 1250,
       temperature: 0.02,
-      reasoning_effort: 'low',
     }, signal ? { signal } : undefined);
     const data = parseJsonObject(readModelText(result));
     if (data && typeof data === 'object') {
@@ -419,9 +418,8 @@ async function extractSupportedCandidates(ai, plan, results, signal) {
         },
       ],
       stream: false,
-      max_completion_tokens: 460,
+      max_tokens: 460,
       temperature: 0.01,
-      reasoning_effort: 'low',
     }, signal ? { signal } : undefined);
     const data = parseJsonObject(readModelText(result));
     return normalizeCandidates(data?.candidates, evidence, 4, candidateType);
@@ -454,9 +452,8 @@ async function assessCoverage(ai, plan, results, history, signal) {
         },
       ],
       stream: false,
-      max_completion_tokens: 650,
+      max_tokens: 650,
       temperature: 0.01,
-      reasoning_effort: 'low',
     }, signal ? { signal } : undefined);
     const data = parseJsonObject(readModelText(result));
     if (data && typeof data === 'object') {

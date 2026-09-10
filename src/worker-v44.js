@@ -14,8 +14,15 @@ import {
   SEARCH_V44_SOURCE_LIMIT,
 } from './search-v44.js';
 import { persistTalkLog } from './log-v42.js';
+import {
+  apiEvidenceText,
+  FREE_API_REVISION,
+  publicApiRegistry,
+  runFreeApiTools,
+} from './free-api-tools-v45.js';
 
-const REVISION = 'talksys-v44-default-exhaustive-search';
+const REVISION = 'talksys-v45-api-first-parallel-free-tools';
+const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
 
 const TRIVIAL_RE = /^(?:もしもし|おはよう(?:ございます)?|こんにちは|こんばんは|ありがとう(?:ございます)?|ありがと|どうも|はい|うん|ううん|へえ|なるほど|そうなんだ|了解|わかった|分かった|OK|オーケー|じゃあね|またね)[。！!？?…\s]*$/i;
@@ -86,9 +93,9 @@ export function shouldSearchByDefault(text) {
 
 function shouldPreserveSpecializedTurn(text, history = []) {
   const userContext = clean(`${userHistory(history).map((x) => x.content).join(' ')} ${text}`, 6500);
-  if (WEATHER_RE.test(userContext) || TRANSIT_RE.test(userContext)) return true;
-  if (PHONE_RE.test(userContext) && EXPLICIT_LOOKUP_RE.test(text)) return true;
-  return false;
+  // Weather and transit now go through the v45 API-first router. Keep only the
+  // phone-specific legacy path that the base worker still handles specially.
+  return PHONE_RE.test(userContext) && EXPLICIT_LOOKUP_RE.test(text);
 }
 
 function fallbackResolvedQuestion(text, history = []) {
@@ -119,7 +126,7 @@ function evidenceBlock(search) {
   }).join('\n\n');
 }
 
-const GROUNDED_PROMPT = `あなたはTalkSysの日本語電話相談AIです。今回のターンではWebを深掘り検索済みです。\n\n絶対ルール:\n- まず利用者の質問へ直接答える。検索手順の説明から始めない。\n- 現在の価格、在庫、日時、時刻、法律、制度、人物、ニュース、現行仕様など変化し得る事実は取得根拠にある範囲だけ使う。\n- 重要な具体的事実は、可能なら公式・一次情報と独立した別ソースの一致を優先する。根拠が食い違う場合は断定しない。\n- assistantの過去発言は会話対象の復元には使えるが、外部事実の証拠にはしない。\n- 安定した一般知識、論理、利用者自身が述べた条件は補助的に使ってよい。\n- 根拠が一部足りなくても回答全体を拒否しない。確認できたことと未確認部分を分けて、役立つ結論まで進める。\n- 「自分で検索してください」「ホームページを確認してください」と調査を利用者へ押し戻さない。\n- 根拠にない店名、価格、住所、型番、数値を新しく作らない。\n- 電話で聞きやすい自然な日本語で、通常3〜6文。URLや検索回数は読み上げない。`;
+const GROUNDED_PROMPT = `あなたはTalkSysの日本語電話相談AIです。今回のターンでは構造化APIを優先し、必要に応じてWebも調査済みです。\n\n絶対ルール:\n- まず利用者の質問へ直接答える。検索手順の説明から始めない。\n- 天気、為替、地震、祝日、経路など構造化APIで取得できた項目はAPI根拠を優先する。Webは補足、例外、障害、未取得事項の確認に使う。\n- API根拠にAttributionがある場合は、回答末尾に短く出典名を残す。\n- 現在の価格、在庫、日時、時刻、法律、制度、人物、ニュース、現行仕様など変化し得る事実は取得根拠にある範囲だけ使う。\n- 重要な具体的事実は、可能なら公式・一次情報と独立した別ソースの一致を優先する。根拠が食い違う場合は断定しない。\n- assistantの過去発言は会話対象の復元には使えるが、外部事実の証拠にはしない。\n- 安定した一般知識、論理、利用者自身が述べた条件は補助的に使ってよい。\n- 根拠が一部足りなくても回答全体を拒否しない。確認できたことと未確認部分を分けて、役立つ結論まで進める。\n- 「自分で検索してください」「ホームページを確認してください」と調査を利用者へ押し戻さない。\n- 根拠にない店名、価格、住所、型番、数値を新しく作らない。\n- 電話で聞きやすい自然な日本語で、通常3〜6文。URLや検索回数は読み上げない。`;
 
 async function synthesizeGroundedAnswer(env, body, search) {
   const hist = historyOf(body?.history).slice(-10);
@@ -145,33 +152,100 @@ async function deepTurn(body, env, requestSignal) {
   const started = Date.now();
   const history = historyOf(body?.history);
   const text = clean(body?.text, 1800);
-  const searchStarted = Date.now();
-  const search = await runDeepSearchV44(env.AI, text, history, requestSignal);
-  const searchMs = Date.now() - searchStarted;
+
+  const apiStarted = Date.now();
+  const apiBundle = await runFreeApiTools(text, history, env, requestSignal);
+  const apiMs = Date.now() - apiStarted;
+  const apiOk = (apiBundle?.results || []).filter((x) => x?.ok);
+
+  let webFallbackUsed = apiBundle?.sufficient !== true;
+  let search;
+  let searchMs = 0;
+  if (webFallbackUsed) {
+    const searchStarted = Date.now();
+    search = await runDeepSearchV44(env.AI, text, history, requestSignal);
+    searchMs = Date.now() - searchStarted;
+  } else {
+    search = {
+      revision: SEARCH_V44_REVISION,
+      evidenceUseful: true,
+      results: [],
+      rounds: 0,
+      coverage: { sufficient: true, reason: 'structured free API evidence sufficient' },
+      plan: { resolvedQuestion: text, queries: [], facets: [] },
+      questionFirstPlanning: false,
+      gapDrivenFollowups: false,
+      sequentialDiscovery: false,
+      researchMode: 'api_direct',
+      candidateType: 'none',
+      queryResultGate: true,
+      authorityAfterRelevance: true,
+      retryCount: 0,
+      crossEngineCount: 0,
+      hostCount: 0,
+      probeFailures: 0,
+      subrequestBudgetAware: true,
+      timings: {},
+    };
+  }
+
+  const apiResults = apiOk.map((x) => ({
+    title: `Structured API: ${clean(x.tool, 120)}`,
+    url: clean(x.sourceUrl, 700),
+    excerpt: clean(`${x.attribution || ''} ${JSON.stringify(x.data ?? {})}`, 4200),
+    snippet: clean(`${x.attribution || ''} ${JSON.stringify(x.data ?? {})}`, 4200),
+    engine: `api:${clean(x.tool, 80)}`,
+    structuredApi: true,
+  }));
+  search.results = [...apiResults, ...(search.results || [])].slice(0, SEARCH_V44_SOURCE_LIMIT);
+  if (apiResults.length) search.evidenceUseful = true;
+
   const answer = await synthesizeGroundedAnswer(env, body, search);
   const sources = (search.results || []).slice(0, SEARCH_V44_SOURCE_LIMIT).map((x) => ({
     title: clean(x?.title, 220),
     url: clean(x?.url, 700),
     engine: clean(x?.engine, 80),
   }));
+  const apiSources = apiOk.map((x) => ({
+    tool: clean(x?.tool, 100),
+    category: clean(x?.category, 80),
+    sourceUrl: clean(x?.sourceUrl, 700),
+    attribution: clean(x?.attribution, 220),
+  }));
   return {
     ok: true,
     answer: answer.text,
-    search: true,
-    route: 'deep-search-v44',
+    apiFirst: true,
+    apiUsed: apiOk.length > 0,
+    apiRevision: apiBundle?.revision || FREE_API_REVISION,
+    apiIntents: Array.isArray(apiBundle?.intents) ? apiBundle.intents : [],
+    apiSources,
+    search: webFallbackUsed,
+    route: 'api-first-v45',
     searchUseful: Boolean(search.evidenceUseful),
     resolvedQuestion: search.plan?.resolvedQuestion || text,
     queries: (search.plan?.queries || []).slice(0, SEARCH_V44_MAX_TOTAL_QUERIES),
     sources,
-    searchPasses: Number(search.rounds) || 1,
+    searchPasses: Number(search.rounds) || 0,
     maxSearchPasses: SEARCH_V44_MAX_ROUNDS,
     searchCoverage: search.coverage || null,
-    sourceQuality: 'sequential-candidate-verified-query-gated-v44',
-    searchMode: 'exhaustive-default',
+    sourceQuality: apiOk.length ? 'structured-api-priority-plus-web-v45' : 'sequential-candidate-verified-query-gated-v44',
+    searchMode: webFallbackUsed ? 'api-first-web-supplement' : 'structured-api-only',
     historyPolicy: 'assistant-context-not-evidence',
     subrequestBudgetAware: Boolean(search.subrequestBudgetAware),
+    apiDiagnostics: {
+      recognized: apiBundle?.recognized === true,
+      sufficient: apiBundle?.sufficient === true,
+      parallelApiExecution: apiBundle?.parallelApiExecution === true,
+      apiCount: apiOk.length,
+      apiFailureCount: Math.max(0, (apiBundle?.results || []).length - apiOk.length),
+      webFallbackUsed,
+      elapsedMs: apiMs,
+      failures: (apiBundle?.results || []).filter((x) => !x?.ok).map((x) => ({ tool: clean(x?.tool, 80), reason: clean(x?.reason, 160) })).slice(0, 8),
+    },
     searchDiagnostics: {
       searchRevision: search.revision || SEARCH_V44_REVISION,
+      searchDirectorModel: SEARCH_DIRECTOR_MODEL,
       questionFirstPlanning: search.questionFirstPlanning === true,
       gapDrivenFollowups: search.gapDrivenFollowups === true,
       researchFacetCount: Array.isArray(search.plan?.facets) ? search.plan.facets.length : 0,
@@ -190,9 +264,9 @@ async function deepTurn(body, env, requestSignal) {
       externalSubrequestWorstTarget: Number(search.externalSubrequestWorstTarget) || SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
       probes: Array.isArray(search.probeDiagnostics) ? search.probeDiagnostics.slice(0, 24) : [],
     },
-    timings: { totalMs: Date.now() - started, searchMs, glmMs: answer.ms, ...(search.timings || {}) },
+    timings: { totalMs: Date.now() - started, apiMs, searchMs, glmMs: answer.ms, ...(search.timings || {}) },
     model: MODEL,
-    planner: 'deep-search-v44',
+    planner: apiOk.length ? 'free-api-router-v45' : 'deep-search-v44',
     languageMode: 'ja-only',
   };
 }
@@ -221,6 +295,12 @@ export default {
         webSearch: true,
         webSearchPolicy: 'default-exhaustive-resilient-multi-engine-v44',
         searchRevision: SEARCH_V44_REVISION,
+        apiFirst: true,
+        apiParallel: true,
+        freeApiRevision: FREE_API_REVISION,
+        freeApiRegistry: publicApiRegistry(),
+        searchDirectorModel: SEARCH_DIRECTOR_MODEL,
+        openMeteoExcluded: true,
         searchDefault: 'all-substantive-turns',
         searchMaxQueries: SEARCH_V44_MAX_QUERIES,
         searchMaxRecoveryQueries: SEARCH_V44_MAX_RECOVERY_QUERIES,

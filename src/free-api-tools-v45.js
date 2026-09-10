@@ -81,7 +81,8 @@ export const FREE_API_REGISTRY = Object.freeze({
     commercialUse: true,
     attribution: '公共交通オープンデータセンター提供データ',
     termsUrl: 'https://developer.odpt.org/terms',
-    notes: 'ユーザー登録・トークン必須。各データ提供者の個別利用条件にも従う。動的データは生成時刻を併記する。',
+    notes: 'ユーザー登録・トークン必須。各データ提供者の個別利用条件にも従う。動的データは生成時刻を併記する。個別ライセンス確認後のみ有効化。',
+    adapterEnabled: false,
   },
   navitime_market: {
     label: 'NAVITIME API Market BASIC',
@@ -483,7 +484,8 @@ async function runHolidays(text, signal, fetchImpl) {
 function cleanRoutePart(value) {
   return clean(value, 180)
     .replace(/^(?:現在地|ここ)\s*/i, '')
-    .replace(/(?:まで|へ|に)(?:車|徒歩|自転車)?(?:で)?(?:行|向).*/i, '')
+    .replace(/まで.*$/i, '')
+    .replace(/(?:へ|に)(?:車|徒歩|自転車)?(?:で)?(?:行|向).*/i, '')
     .replace(/(?:車|徒歩|自転車)(?:で)?(?:の)?(?:経路|ルート|行き方|所要時間).*/i, '')
     .replace(/[？?。！!]/g, '')
     .trim();
@@ -532,6 +534,7 @@ async function runGeoapifyRoute(text, env, signal, fetchImpl) {
 }
 
 async function runOdptStatus(env, signal, fetchImpl) {
+  if (String(env?.ODPT_ENABLE || '') !== '1') return { ok: false, tool: 'odpt', reason: 'provider_specific_license_review_required' };
   const token = clean(env?.ODPT_API_TOKEN, 500);
   if (!token) return { ok: false, tool: 'odpt', reason: 'ODPT_API_TOKEN_missing' };
   const url = `https://api.odpt.org/api/v4/odpt:TrainInformation?acl:consumerKey=${encodeURIComponent(token)}`;
