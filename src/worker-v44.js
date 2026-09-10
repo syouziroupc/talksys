@@ -1,4 +1,3 @@
-import shellWorker from './worker.js';
 import {
   runDeepSearchV44,
   SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
@@ -545,6 +544,11 @@ async function deepTurn(body, env, requestSignal, decision) {
   };
 }
 
+async function fetchShell(request, env, ctx) {
+  const { default: shellWorker } = await import('./worker.js');
+  return shellWorker.fetch(request, env, ctx);
+}
+
 async function parseJsonClone(response) {
   try {
     if (!(response.headers.get('content-type') || '').includes('application/json')) return null;
@@ -559,7 +563,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === '/voice-health') {
-      const response = await shellWorker.fetch(request, env, ctx);
+      const response = await fetchShell(request, env, ctx);
       const data = await parseJsonClone(response);
       if (!data) return wrap(response);
       return json({
@@ -649,7 +653,7 @@ export default {
       return json(data);
     }
 
-    return wrap(await shellWorker.fetch(request, env, ctx));
+    return wrap(await fetchShell(request, env, ctx));
   },
 };
 
