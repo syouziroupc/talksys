@@ -40,3 +40,5 @@ jobs:
           git add src/search-v45.js src/direct-primary-v45.js src/worker-v44.js src/free-shopping-api-v45.js tests/v45-formal-retrieval.test.mjs
           git commit -m 'Replace broken RSS search with formal retrieval paths'
           git push origin HEAD:main
+
+# rerun marker: 2026-09-11 formal-retrieval-v2
