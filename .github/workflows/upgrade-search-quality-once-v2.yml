@@ -20,9 +20,9 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
-      - name: Apply sequential candidate evidence search
-        run: python scripts/apply-sequential-search-v44.py
-      - name: Validate sequential search architecture
+      - name: Apply typed research strategy
+        run: python scripts/apply-typed-research-strategy-v44.py
+      - name: Validate typed research architecture
         run: |
           node --check src/query-result-gate-v44.js
           node --check src/research-sequence-v44.js
@@ -35,14 +35,12 @@ jobs:
           node --test tests/v44-deep-search-default.test.mjs
           npm test
           npx wrangler deploy --dry-run
-      - name: Commit sequential search architecture
+      - name: Commit typed research architecture
         shell: bash
         run: |
           set -euo pipefail
           git config user.name syouziroupc
           git config user.email syouziroupc@gmail.com
-          git add src/search-v44.js src/worker-v44.js
-          git commit -m 'Sequence candidate discovery before evidence verification'
+          git add src/search-v44.js src/research-sequence-v44.js src/worker-v44.js
+          git commit -m 'Make search strategy entity-type and source-role aware'
           git push origin HEAD:main
-
-# retry: discovery facets now exclude spec/price verification wording
