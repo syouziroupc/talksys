@@ -1,0 +1,42 @@
+name: Add MSI static archive v45 once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/add-msi-static-archive-v45-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Apply MSI static archive resolver
+        run: python scripts/add-msi-static-archive-v45.py
+      - name: Validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+          find src -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Commit validated runtime changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name talksys-automation
+          git config user.email actions@users.noreply.github.com
+          git add src/direct-primary-v45.js src/search-v45.js tests/v45-msi-static-archive.test.mjs
+          git commit -m 'Use MSI official static BIOS archive as partial primary evidence'
+          git push origin HEAD:main
