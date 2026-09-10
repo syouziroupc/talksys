@@ -41,4 +41,4 @@ jobs:
           git commit -m 'Add direct primary-source resolution to search v45'
           git push origin HEAD:main
 
-# trigger
+# trigger: diagnostics-anchor-fix-v2
