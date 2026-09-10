@@ -1,156 +1,77 @@
-name: Validate, Deploy and Verify
+name: Deploy TalkSys production
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: talksys-production
+  cancel-in-progress: false
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.WRANGLER_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
-      CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY || secrets.CF_API_KEY }}
-      CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL || secrets.CF_EMAIL }}
-      CLOUDFLARE_DEPLOY_HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK || secrets.CF_DEPLOY_HOOK || secrets.DEPLOY_HOOK_URL }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
-      EXPECTED_REVISION: talksys-v44-default-exhaustive-search
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
-      - run: npm install --no-audit --no-fund
-
-      - name: Validate current production path
+      - name: Verify required Cloudflare credentials
+        shell: bash
         run: |
-          node --check src/search-probes-v44.js
-          node --check src/search-v44.js
-          node --check src/worker-v44.js
-          node --test tests/v44-deep-search-default.test.mjs
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+      - name: Validate exact revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check
           npm test
           npx wrangler deploy --dry-run
 
-      - name: Recover Cloudflare authentication path
-        id: cf_auth
+      - name: Deploy exact validated revision
         shell: bash
-        run: |
-          set +e
-          method="none"
-          if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
-            method="token"
-            if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-              who="$(npx wrangler whoami 2>&1)"
-              account="$(printf '%s\n' "$who" | grep -Eo '[0-9a-fA-F]{32}' | head -1 || true)"
-              if [ -n "$account" ]; then
-                echo "CLOUDFLARE_ACCOUNT_ID=$account" >> "$GITHUB_ENV"
-                echo "Recovered Cloudflare account id from Wrangler authentication."
-              fi
-            fi
-          elif [ -n "$CLOUDFLARE_API_KEY" ] && [ -n "$CLOUDFLARE_EMAIL" ]; then
-            method="global-key"
-          elif [ -n "$CLOUDFLARE_DEPLOY_HOOK" ]; then
-            method="deploy-hook"
-          fi
-          echo "method=$method" >> "$GITHUB_OUTPUT"
-          case "$method" in
-            token) echo "Cloudflare API-token authentication path found." ;;
-            global-key) echo "Cloudflare legacy global-key authentication path found." ;;
-            deploy-hook) echo "Cloudflare deploy-hook path found." ;;
-            none) echo "No repository Cloudflare auth alias detected; probing production after the push." ;;
-          esac
+        run: npx wrangler deploy
 
-      - name: Deploy v44 through Wrangler token
-        if: ${{ steps.cf_auth.outputs.method == 'token' }}
+      - name: Verify v45 production contract
         shell: bash
         run: |
           set -euo pipefail
-          npx wrangler deploy
-
-      - name: Deploy v44 through legacy Cloudflare global key
-        if: ${{ steps.cf_auth.outputs.method == 'global-key' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          npx wrangler deploy
-
-      - name: Trigger Cloudflare deploy hook
-        if: ${{ steps.cf_auth.outputs.method == 'deploy-hook' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsS --max-time 30 -X POST "$CLOUDFLARE_DEPLOY_HOOK" >/dev/null
-
-      - name: Verify v44 production contract
-        shell: bash
-        run: |
-          if [ "${{ steps.cf_auth.outputs.method }}" != "none" ]; then
-            attempts=30
-          else
-            attempts=8
-          fi
           body=""
-          current=""
-          for attempt in $(seq 1 "$attempts"); do
+          for attempt in $(seq 1 20); do
             body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
-            current="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.voiceRevision||d.revision||''))")"
-            [ "$current" = "$EXPECTED_REVISION" ] && break
-            [ "$attempt" -eq "$attempts" ] && {
-              echo "$body"
-              echo "::error::Expected $EXPECTED_REVISION but production returned ${current:-no revision}."
-              exit 1
-            }
+            ok="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(Boolean(d.voiceRevision==='talksys-v45-unified-router-no-v43-turn-delegation'&&d.unifiedTurnRouter===true&&d.legacyV43TurnDelegation===false&&d.apiFirst===true&&d.apiParallel===true&&d.groundedEvidenceFallback===true&&d.externalFailureUsesCasualModel===false&&d.modelTimeoutMs===12000&&d.searchDirectorModel==='@cf/qwen/qwen3-30b-a3b-fp8'&&d.searchDefault==='intent-routed-v45')))" )"
+            [[ "$ok" == "true" ]] && break
+            [[ "$attempt" -eq 20 ]] && { echo "$body"; exit 1; }
             sleep 3
           done
-          BODY="$body" node <<'NODE'
-          const d = JSON.parse(process.env.BODY || '{}');
-          if (d.voiceRevision !== 'talksys-v44-default-exhaustive-search') throw new Error('v44 revision missing');
-          if (d.webSearch !== true) throw new Error('web search disabled');
-          if (d.searchDefault !== 'all-substantive-turns') throw new Error('default exhaustive search missing');
-          if (d.searchMaxQueries !== 14 || d.searchMaxRecoveryQueries !== 5 || d.searchMaxTotalQueries !== 19) throw new Error('v44 query budget mismatch');
-          if (d.searchMaxRounds !== 3 || d.searchSourceLimit !== 18) throw new Error('v44 depth limits mismatch');
-          if (d.searchPageEnrichment !== true || d.searchCoverageAudit !== true || d.searchIndependentSources !== true) throw new Error('v44 quality controls missing');
-          if (d.searchEngineRotation !== true || d.searchEngineRetry !== true || d.searchMaxEngineRetries !== 5) throw new Error('v44 resilient engine retry missing');
-          if (d.searchHostDiversity !== true || d.searchMaxPerHost !== 2) throw new Error('v44 host diversity missing');
-          if (d.searchProbeConcurrency !== 4) throw new Error('v44 probe concurrency mismatch');
-          if (d.searchSubrequestBudgetAware !== true || d.searchExternalSubrequestWorstTarget >= 50) throw new Error('v44 subrequest headroom missing');
-          if (d.specializedSearchRoutesPreserved !== true) throw new Error('specialized search routes not preserved');
-          NODE
+          echo "$body"
 
-      - name: Verify default deep-search planning
+      - name: Production smoke
+        shell: bash
         run: |
-          payload='{"text":"Cloudflare Workersとは何？","history":[]}'
-          out="$(curl -fsS --max-time 30 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/plan")"
-          echo "$out"
-          OUT="$out" node <<'NODE'
-          const d = JSON.parse(process.env.OUT || '{}');
-          if (!d.ok || d.search !== true) throw new Error('substantive turn was not routed to search');
-          if (d.planner !== 'deep-search-v44') throw new Error(`unexpected planner: ${d.planner}`);
-          if (d.searchMode !== 'exhaustive-default') throw new Error('exhaustive search mode missing');
-          NODE
+          set -euo pipefail
+          payload='{"text":"12345÷15","history":[]}'
+          out="$(curl -fsS --max-time 20 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='deterministic-v45'||d.search!==false||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
 
-      - name: Verify resilient deep-search turn
-        run: |
-          payload='{"text":"Cloudflare Workersの外部サブリクエスト制限を現在の情報で短く教えて","history":[],"searchPlan":{"planner":"deep-search-v44"}}'
-          out="$(curl -fsS --max-time 60 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node <<'NODE'
-          const d = JSON.parse(process.env.OUT || '{}');
-          if (!d.ok || d.route !== 'deep-search-v44') throw new Error(`deep-search turn failed: ${d.route || d.error || 'unknown'}`);
-          if (!Array.isArray(d.sources) || d.sources.length < 1) throw new Error('deep-search returned no sources');
-          if (!d.searchDiagnostics || !Number.isFinite(d.searchDiagnostics.hostCount)) throw new Error('search diagnostics missing');
-          if (d.searchDiagnostics.externalSubrequestWorstTarget >= 50) throw new Error('search request budget too high');
-          console.log(JSON.stringify({route:d.route, sourceCount:d.sources.length, diagnostics:d.searchDiagnostics, timings:d.timings}));
-          NODE
-
-      - name: Verify specialized weather route remains available
-        run: |
-          payload='{"text":"明日の別府市の天気は？","history":[]}'
-          out="$(curl -fsS --max-time 30 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/plan")"
-          echo "$out"
-          OUT="$out" node <<'NODE'
-          const d = JSON.parse(process.env.OUT || '{}');
-          if (!d.ok || d.search !== true) throw new Error('weather route did not search');
-          if (!String(d.planner || '').includes('weather')) throw new Error(`weather specialized planner lost: ${d.planner}`);
-          NODE
+          payload='{"text":"別府市の今日の天気は？","history":[]}'
+          out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather'))throw new Error(process.env.OUT);"

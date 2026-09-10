@@ -5,26 +5,33 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: talksys-validate-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - run: npm install --no-audit --no-fund
-      - name: Check current JavaScript syntax
+      - name: Install dependencies
+        shell: bash
         run: |
-          node --check src/search-probes-v44.js
-          node --check src/search-v44.js
-          node --check src/worker-v44.js
-          node --check src/worker-v43-finalcandidate.js
-          node --check src/worker-v43-reviewfix.js
-          node --check tests/v44-deep-search-default.test.mjs
-      - name: Run v44 targeted tests
-        run: node --test tests/v44-deep-search-default.test.mjs
-      - name: Run full test suite
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Check all source JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Run full regression suite
         run: npm test
       - name: Check Wrangler bundle
         run: npx wrangler deploy --dry-run
