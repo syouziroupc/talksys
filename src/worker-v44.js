@@ -127,6 +127,10 @@ function daysInMonth(year, month) {
 export function localDeterministicAnswer(text) {
   const value = canonicalizeInput(text, 1800);
 
+  // DOI identifiers contain hyphenated digit groups that resemble subtraction.
+  // They are external scholarly identifiers, never local arithmetic expressions.
+  if (/\bDOI\b/i.test(value) || /\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i.test(value)) return null;
+
   let m = value.match(/2進数\s*([01]+).*?(?:10進数|十進数)/i);
   if (m) {
     const n = Number.parseInt(m[1], 2);
