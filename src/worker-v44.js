@@ -29,6 +29,7 @@ import {
 const REVISION = 'talksys-v45-unified-router-no-v43-turn-delegation';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
+const MODEL_TIMEOUT_MS = 12000;
 
 const TRIVIAL_RE = /^(?:もしもし|おはよう(?:ございます)?|こんにちは|こんばんは|ありがとう(?:ございます)?|ありがと|どうも|はい|うん|ううん|へえ|なるほど|そうなんだ|了解|わかった|分かった|OK|オーケー|じゃあね|またね)[。！!？?…\s]*$/i;
 const FEELING_ONLY_RE = /^(?:今日は|今日も|今は|なんか|ちょっと|かなり|すごく|めっちゃ|もう)?\s*(?:疲れた|つかれた|眠い|ねむい|腹減った|お腹すいた|暇|しんどい|つらい|嬉しい|うれしい|悲しい|かなしい|楽しい|たのしい|元気|だるい)[。！!？?…〜ー\s]*$/i;
@@ -287,19 +288,40 @@ const GROUNDED_PROMPT = `あなたはTalkSysの日本語電話相談AIです。�
 - 根拠にない店名、価格、住所、型番、数値を作らない。
 - 電話で聞きやすい自然な日本語で通常3〜6文。URLや検索回数は読み上げない。`;
 
-async function runModel(env, messages, max = 520, temperature = 0.08) {
+export async function boundedPromise(promise, timeoutMs, label = 'operation') {
+  const ms = Math.max(1, Number(timeoutMs) || 1);
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label}_timeout_${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function runModel(env, messages, max = 520, temperature = 0.08, timeoutMs = MODEL_TIMEOUT_MS) {
   const started = Date.now();
-  const result = await env.AI.run(MODEL, {
-    messages,
-    stream: false,
-    modalities: ['text'],
-    max_completion_tokens: max,
-    temperature,
-    reasoning_effort: 'low',
-  });
-  const text = readModelText(result);
-  if (!text) throw new Error('empty model answer');
-  return { text, ms: Date.now() - started };
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => controller.abort(new Error('model_timeout')), timeoutMs);
+  try {
+    const result = await boundedPromise(env.AI.run(MODEL, {
+      messages,
+      stream: false,
+      modalities: ['text'],
+      max_completion_tokens: max,
+      temperature,
+      reasoning_effort: 'low',
+    }, { signal: controller.signal }), timeoutMs + 250, 'model');
+    const text = readModelText(result);
+    if (!text) throw new Error('empty model answer');
+    return { text, ms: Date.now() - started };
+  } finally {
+    clearTimeout(abortTimer);
+  }
 }
 
 async function casualTurn(body, env, { fallbackError = '' } = {}) {
@@ -573,6 +595,8 @@ export default {
         unifiedTurnRouter: true,
         legacyV43TurnDelegation: false,
         localDeterministic: true,
+        modelTimeoutMs: MODEL_TIMEOUT_MS,
+        modelTimeoutFallback: true,
         ambiguityGate: true,
         explicitNoExternalGuard: true,
         inputCanonicalization: 'NFKC+spoken-ja',
@@ -659,6 +683,7 @@ export default {
 
 export const __test = {
   canonicalizeInput,
+  boundedPromise,
   classifyTurn,
   localDeterministicAnswer,
   shouldSearchByDefault,
