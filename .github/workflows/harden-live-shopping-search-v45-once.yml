@@ -31,15 +31,19 @@ jobs:
           p = Path('scripts/harden-live-shopping-search-v45.mjs')
           s = p.read_text()
 
-          a = s.index('const helpers = `')
+          prefix = 'const helpers = `'
+          a = s.index(prefix)
           b = s.index('`;\nsearch = replaceOnce(search, helperMarker', a)
-          seg = s[a:b].replace('${', r'\${').replace(r'\${helperMarker}', '${helperMarker}')
-          s = s[:a] + seg + s[b:]
+          body = s[a + len(prefix):b]
+          body = body.replace('`', r'\`').replace('${', r'\${').replace(r'\${helperMarker}', '${helperMarker}')
+          s = s[:a] + prefix + body + s[b:]
 
-          a = s.index('const enrichReplacement = `')
+          prefix = 'const enrichReplacement = `'
+          a = s.index(prefix)
           b = s.index('`;\nsearch = search.slice(0, enrichStart)', a)
-          seg = s[a:b].replace('${', r'\${')
-          s = s[:a] + seg + s[b:]
+          body = s[a + len(prefix):b]
+          body = body.replace('`', r'\`').replace('${', r'\${')
+          s = s[:a] + prefix + body + s[b:]
 
           p.write_text(s)
           PY
