@@ -18,8 +18,11 @@ jobs:
     timeout-minutes: 35
     environment: production
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY || secrets.CF_API_KEY }}
+      CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL || secrets.CF_EMAIL }}
+      CLOUDFLARE_DEPLOY_HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK || secrets.CF_DEPLOY_HOOK || secrets.DEPLOY_HOOK_URL }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -28,6 +31,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+
+      - name: Normalize repair generator escaping
+        run: python scripts/fix-v45-repair-escaping.py
 
       - name: Apply UI and voice repair
         run: python scripts/repair-v45-ui-voice.py
@@ -52,7 +58,7 @@ jobs:
           set -euo pipefail
           git config user.name talksys-automation
           git config user.email actions@users.noreply.github.com
-          git add src/worker-v44.js src/ui-v45.js src/talk-client-v45.js src/stt-v45.js tests/v45-shell-regression.test.mjs .github/workflows/deploy.yml
+          git add scripts/repair-v45-ui-voice.py scripts/fix-v45-repair-escaping.py src/worker-v44.js src/ui-v45.js src/talk-client-v45.js src/stt-v45.js tests/v45-shell-regression.test.mjs .github/workflows/deploy.yml
           if git diff --cached --quiet; then
             echo 'Repair already applied; nothing to commit.'
           else
@@ -60,27 +66,59 @@ jobs:
             git push origin HEAD:main
           fi
 
-      - name: Verify Cloudflare deployment credentials
+      - name: Recover Cloudflare authentication path
+        id: cf_auth
+        shell: bash
+        run: |
+          set +e
+          method='none'
+          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            method='token'
+            if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+              who="$(npx wrangler whoami 2>&1)"
+              account="$(printf '%s\n' "$who" | grep -Eo '[0-9a-fA-F]{32}' | head -1 || true)"
+              if [ -n "$account" ]; then
+                echo "CLOUDFLARE_ACCOUNT_ID=$account" >> "$GITHUB_ENV"
+              fi
+            fi
+          elif [ -n "${CLOUDFLARE_API_KEY:-}" ] && [ -n "${CLOUDFLARE_EMAIL:-}" ]; then
+            method='global-key'
+          elif [ -n "${CLOUDFLARE_DEPLOY_HOOK:-}" ]; then
+            method='deploy-hook'
+          fi
+          echo "method=$method" >> "$GITHUB_OUTPUT"
+          echo "Cloudflare auth path: $method"
+
+      - name: Deploy repaired v45 through Wrangler
+        if: ${{ steps.cf_auth.outputs.method == 'token' || steps.cf_auth.outputs.method == 'global-key' }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${CLOUDFLARE_API_TOKEN:-}"
-          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx wrangler deploy
 
-      - name: Deploy repaired v45
+      - name: Trigger configured Cloudflare deploy hook
+        if: ${{ steps.cf_auth.outputs.method == 'deploy-hook' }}
         shell: bash
-        run: npx wrangler deploy
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 30 -X POST "$CLOUDFLARE_DEPLOY_HOOK" >/dev/null
+
+      - name: Require a deploy route
+        if: ${{ steps.cf_auth.outputs.method == 'none' }}
+        run: |
+          echo 'No Cloudflare authentication or deploy hook is available in this repository/environment.'
+          exit 1
 
       - name: Verify repaired production shell
         shell: bash
         run: |
           set -euo pipefail
           health=''
-          for attempt in $(seq 1 20); do
+          for attempt in $(seq 1 25); do
             health="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
             ok="$(HEALTH="$health" node -e "let d={};try{d=JSON.parse(process.env.HEALTH||'{}')}catch{};process.stdout.write(String(Boolean(d.revision==='talksys-v45-formal-api-primary-safe-fallback'&&d.voiceRevision==='talksys-v45-http-adaptive-vad'&&d.uiRevision==='talksys-v45-ui-restored-20260911'&&d.sttRevision==='talksys-v45-hardened-whisper'&&d.legacyWebSocketVoice===false&&d.legacyAgentRoute===false&&d.apiFirst===true)))")"
             [[ "$ok" == 'true' ]] && break
-            [[ "$attempt" -eq 20 ]] && { echo "$health"; exit 1; }
+            [[ "$attempt" -eq 25 ]] && { echo "$health"; exit 1; }
             sleep 3
           done
           echo "$health"
@@ -93,11 +131,15 @@ jobs:
           client="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v45.js")"
           grep -F 'getUserMedia' <<< "$client"
           grep -F '/api/transcribe' <<< "$client"
+          grep -F '/api/turn' <<< "$client"
           grep -F 'noiseBoost' <<< "$client"
           if grep -E 'new[[:space:]]+WebSocket|/agents/' <<< "$client"; then
             echo 'legacy websocket/agent path is still present'
             exit 1
           fi
+
+          telephony="$(curl -fsS --max-time 20 "$PRODUCTION_URL/telephony-health")"
+          TELEPHONY="$telephony" node -e "const d=JSON.parse(process.env.TELEPHONY||'{}');if(d.provider!=='Foonz'||d.connected!==false||d.status!=='planned-not-wired')throw new Error(process.env.TELEPHONY);"
 
           payload='{"text":"12345÷15","history":[]}'
           out="$(curl -fsS --max-time 20 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
@@ -106,3 +148,5 @@ jobs:
           payload='{"text":"別府市の今日の天気は？","history":[]}'
           out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
           OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather'))throw new Error(process.env.OUT);"
+
+# rerun marker: escape-normalization-auth-recovery-v2
