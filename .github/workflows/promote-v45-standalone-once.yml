@@ -58,3 +58,5 @@ jobs:
             git commit -m 'Cut legacy runtime and promote standalone v45'
             git push origin HEAD:main
           fi
+
+# retry: answer-contract-generator-fix
