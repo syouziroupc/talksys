@@ -14,18 +14,18 @@ import {
   stageEvidence,
 } from '../src/search-v45.js';
 
-test('v45 disables unreliable general RSS search and uses formal APIs plus direct primary sources', () => {
-  assert.equal(SEARCH_V45_PROVIDER, 'formal-structured-apis+direct-primary');
-  assert.equal(SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED, false);
-  assert.equal(SEARCH_V44_MAX_ENGINE_RETRIES, 0);
-  assert.ok(SEARCH_V44_MAX_QUERIES <= 6);
-  assert.ok(SEARCH_V44_MAX_ROUNDS <= 2);
-  assert.ok(SEARCH_V45_TOTAL_BUDGET_MS <= 6500);
+test('v45 keeps formal APIs and direct primary first with resilient rotating web fallback', () => {
+  assert.equal(SEARCH_V45_PROVIDER, 'formal-structured-apis+direct-primary+rotating-web');
+  assert.equal(SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED, true);
+  assert.equal(SEARCH_V44_MAX_ENGINE_RETRIES, 2);
+  assert.ok(SEARCH_V44_MAX_QUERIES <= 8);
+  assert.ok(SEARCH_V44_MAX_ROUNDS <= 3);
+  assert.ok(SEARCH_V45_TOTAL_BUDGET_MS <= 12000);
   assert.ok(SEARCH_V45_DIRECTOR_TIMEOUT_MS <= 2200);
-  assert.match(SEARCH_V44_REVISION, /formal-api-primary-only/);
+  assert.match(SEARCH_V44_REVISION, /api-primary-multi-engine-web/);
   const worker = fs.readFileSync(new URL('../src/worker-v44.js', import.meta.url), 'utf8');
   assert.match(worker, /from '\.\/search-v45\.js'/);
-  assert.match(worker, /searchEngineRotation: false/);
+  assert.match(worker, /searchEngineRotation: true/);
   assert.match(worker, /searchSingleProvider: false/);
   assert.match(worker, /searchGeneralWebEnabled: SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED/);
 });
