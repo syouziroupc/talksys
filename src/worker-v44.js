@@ -30,6 +30,9 @@ import {
   runKnowledgeApiTools,
 } from './free-api-knowledge-v45.js';
 import { publicShoppingApiRegistry, SHOPPING_API_REVISION } from './free-shopping-api-v45.js';
+import { TALK_CLIENT_V45, CLIENT_REVISION } from './talk-client-v45.js';
+import { TALK_HTML_V45, UI_REVISION } from './ui-v45.js';
+import { transcribeV45, STT_MODEL, STT_REVISION } from './stt-v45.js';
 
 const REVISION = 'talksys-v45-formal-api-primary-safe-fallback';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
@@ -737,32 +740,65 @@ async function deepTurn(body, env, requestSignal, decision) {
   };
 }
 
-async function fetchShell(request, env, ctx) {
-  const { default: shellWorker } = await import('./worker.js');
-  return shellWorker.fetch(request, env, ctx);
+function htmlResponse(html) {
+  return new Response(html, {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-talksys-revision': REVISION,
+      'x-talksys-ui-revision': UI_REVISION,
+    },
+  });
 }
 
-async function parseJsonClone(response) {
-  try {
-    if (!(response.headers.get('content-type') || '').includes('application/json')) return null;
-    return await response.clone().json();
-  } catch {
-    return null;
-  }
+function scriptResponse(script) {
+  return new Response(script, {
+    headers: {
+      'content-type': 'text/javascript; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-talksys-revision': REVISION,
+      'x-talksys-voice-revision': CLIENT_REVISION,
+    },
+  });
 }
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    if (request.method === 'GET' && url.pathname === '/voice-health') {
-      const response = await fetchShell(request, env, ctx);
-      const data = await parseJsonClone(response);
-      if (!data) return wrap(response);
+    if (request.method === 'GET' && url.pathname === '/') return htmlResponse(TALK_HTML_V45);
+    if (request.method === 'GET' && ['/talk-v45.js', '/talk-v43.js', '/talk-v42.js'].includes(url.pathname)) return scriptResponse(TALK_CLIENT_V45);
+    if (request.method === 'POST' && url.pathname === '/api/transcribe') return transcribeV45(request, env);
+
+    if (request.method === 'GET' && url.pathname === '/telephony-health') {
       return json({
-        ...data,
+        ok: true,
+        provider: 'Foonz',
+        integration: 'external-telephony-gateway',
+        status: 'planned-not-wired',
+        connected: false,
+        browserVoiceIndependent: true,
+        note: 'Foonz gateway credentials and a production bridge are not present in this repository. Browser voice remains the active verification path.',
+      });
+    }
+
+    if (request.method === 'GET' && url.pathname === '/voice-health') {
+      return json({
+        ok: true,
         revision: REVISION,
-        voiceRevision: REVISION,
+        voiceRevision: CLIENT_REVISION,
+        uiRevision: UI_REVISION,
+        sttRevision: STT_REVISION,
+        sttModel: STT_MODEL,
+        voiceArchitecture: 'http-turns-client-vad-v45',
+        adaptiveNoiseVad: true,
+        ambientCalibration: true,
+        falseNoiseLearning: true,
+        legacyWebSocketVoice: false,
+        durableObjectVoice: false,
+        legacyAgentRoute: false,
+        telephonyProvider: 'Foonz',
+        telephonyStatus: 'planned-not-wired',
         unifiedTurnRouter: true,
         legacyV43TurnDelegation: false,
         localDeterministic: true,
@@ -827,7 +863,7 @@ export default {
         searchExternalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
         searchExternalSubrequestWorstTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
         specializedSearchRoutesPreserved: false,
-      }, response.status);
+      });
     }
 
     if (request.method === 'POST' && url.pathname === '/api/plan') {
@@ -869,7 +905,7 @@ export default {
       return json(data);
     }
 
-    return wrap(await fetchShell(request, env, ctx));
+    return new Response('Not Found', { status: 404, headers: { 'cache-control': 'no-store', 'x-talksys-revision': REVISION } });
   },
 };
 

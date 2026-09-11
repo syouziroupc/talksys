@@ -68,7 +68,7 @@ let client = TALK_CLIENT_V43
 
 client = client.replace(
   "'use strict';",
-  "'use strict';\\nwindow.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';",
+  "'use strict';\nwindow.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';",
 );
 
 export const TALK_CLIENT_V45 = client;
@@ -78,7 +78,7 @@ export const __test = {
   httpTurns: client.includes('/api/turn'),
   adaptiveNoise: client.includes('noiseBoost'),
   ambientCalibration: client.includes('calibrationUntil'),
-  legacyWebSocket: /new\\s+WebSocket|\\/agents\\//.test(client),
+  legacyWebSocket: client.includes('new WebSocket') || client.includes('/agents/'),
 };
 '''
 
@@ -97,7 +97,7 @@ function json(data, status = 200) {
 }
 
 function clean(value, max = 1600) {
-  return String(value ?? '').replace(/\\s+/g, ' ').trim().slice(0, max);
+  return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
 function base64FromBytes(bytes) {
@@ -155,7 +155,7 @@ export function isLikelySttHallucination(text, metrics) {
   if (!value) return true;
   if (/^(?:ご視聴ありがとうございました|ご清聴ありがとうございました|最後までご視聴ありがとうございました|チャンネル登録(?:を)?(?:お願い(?:します|いたします)|よろしくお願いします)|字幕(?:をご覧いただき)?ありがとうございました)[。．.!！?？]*$/u.test(value)
       && (!metrics?.valid || metrics.rms < 0.010 || metrics.activeMs < 650 || metrics.activeRatio < 0.24)) return true;
-  if (/^(?:えー|あー|うー|んー|…|\\.\\.\\.)$/u.test(value) && weakSpeechSignal(metrics)) return true;
+  if (/^(?:えー|あー|うー|んー|…|\.\.\.)$/u.test(value) && weakSpeechSignal(metrics)) return true;
   return false;
 }
 
