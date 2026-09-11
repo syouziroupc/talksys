@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-09-11T06:09:06Z",
-  "failures": 3,
+  "generatedAt": "2026-09-11T06:11:38Z",
+  "failures": 6,
   "health": {
     "ok": true,
     "revision": "talksys-v45-formal-api-primary-safe-fallback",
@@ -290,7 +290,7 @@
   "tests": {
     "weather": {
       "ok": true,
-      "answer": "別府市を含む大分県中部の今日の天気は、気象庁の発表によりますと、くもりで夜は晴れ、所により昼過ぎから夜のはじめ頃にかけて雨が降る見込みです。降水確率は昼と夜ともに20パーセントです。気温は日中28度、夜は23度程度の予想で、北東の風から後は南の風が吹く見込みです。雨が降る可能性がありますので、お出かけの際は傘があると安心です。",
+      "answer": "気象庁の取得データでは、中部の予報は「くもり 夜 晴れ 所により 昼過ぎ から 夜のはじめ頃 雨」です。降水確率20%、気温28度です。出典：気象庁ホームページ",
       "apiFirst": true,
       "apiUsed": true,
       "apiRevision": "free-api-router-v45-terms-aware+free-knowledge-api-v45.1",
@@ -305,8 +305,8 @@
           "attribution": "出典：気象庁ホームページ"
         }
       ],
-      "answerSynthesisFallback": false,
-      "answerSynthesisError": "",
+      "answerSynthesisFallback": true,
+      "answerSynthesisError": "model_timeout",
       "webResearchError": "",
       "search": false,
       "route": "api-first-v45",
@@ -337,7 +337,7 @@
         "apiCount": 1,
         "apiFailureCount": 0,
         "webFallbackUsed": false,
-        "elapsedMs": 99,
+        "elapsedMs": 410,
         "failures": []
       },
       "searchDiagnostics": {
@@ -368,10 +368,10 @@
         "probes": []
       },
       "timings": {
-        "totalMs": 3140,
-        "apiMs": 99,
+        "totalMs": 12410,
+        "apiMs": 410,
         "searchMs": 0,
-        "glmMs": 3041
+        "glmMs": 0
       },
       "model": "@cf/zai-org/glm-5.3-flash",
       "planner": "free-api-router-v45",
@@ -379,7 +379,7 @@
     },
     "fx": {
       "ok": true,
-      "answer": "100米ドルは、2026年9月11日時点のレートで1ドル153.87円として、日本円で15,387円です。なお、為替レートは常に変動していますので、実際に両替される際の金額はこの数値と異なる場合があります。",
+      "answer": "100米ドルは、2026年9月11日時点の為替レート1ドル153.87円で、15,387円です。なお、為替レートは常に変動していますので、実際に両替される際の金額は、手数料やその時点のレートによって変わる場合があります。",
       "apiFirst": true,
       "apiUsed": true,
       "apiRevision": "free-api-router-v45-terms-aware+free-knowledge-api-v45.1",
@@ -426,7 +426,7 @@
         "apiCount": 1,
         "apiFailureCount": 0,
         "webFallbackUsed": false,
-        "elapsedMs": 75,
+        "elapsedMs": 49,
         "failures": []
       },
       "searchDiagnostics": {
@@ -457,10 +457,10 @@
         "probes": []
       },
       "timings": {
-        "totalMs": 1983,
-        "apiMs": 75,
+        "totalMs": 7470,
+        "apiMs": 49,
         "searchMs": 0,
-        "glmMs": 1908
+        "glmMs": 7421
       },
       "model": "@cf/zai-org/glm-5.3-flash",
       "planner": "free-api-router-v45",
@@ -468,7 +468,7 @@
     },
     "gdp": {
       "ok": true,
-      "answer": "日本の一人当たりGDPは、世界銀行のデータによりますと、最新の2025年で約3万5951米ドルです。前年の2024年は約3万3797ドル、2023年は約3万5215ドルでした。なお、これは名目ベースの米ドル換算値ですので、為替の影響で年ごとに変動しています。",
+      "answer": "日本の一人当たりGDPは、世界銀行のデータによりますと、2025年は約3万5,951米ドルです。前年の2024年は約3万3,797ドルでしたので、やや増加しています。なお、これは名目ベースの米ドル換算の数値で、為替レートの影響を受けやすい点にはご注意ください。",
       "apiFirst": true,
       "apiUsed": true,
       "apiRevision": "free-api-router-v45-terms-aware+free-knowledge-api-v45.1",
@@ -515,7 +515,7 @@
         "apiCount": 1,
         "apiFailureCount": 0,
         "webFallbackUsed": false,
-        "elapsedMs": 51,
+        "elapsedMs": 29,
         "failures": []
       },
       "searchDiagnostics": {
@@ -546,10 +546,10 @@
         "probes": []
       },
       "timings": {
-        "totalMs": 2057,
-        "apiMs": 51,
+        "totalMs": 1939,
+        "apiMs": 29,
         "searchMs": 0,
-        "glmMs": 2006
+        "glmMs": 1910
       },
       "model": "@cf/zai-org/glm-5.3-flash",
       "planner": "free-api-router-v45",
@@ -557,14 +557,14 @@
     },
     "currentWeb": {
       "ok": true,
-      "answer": "申し訳ありませんが、今回の取得ではOpenAIの今日のニュースを確認できませんでした。最新の発表や出来事は日々変化するため、ここで推測してご紹介することは避けたいと思います。 一般的な補足として、OpenAI関連のニュースを確認される場合は、公式の発表ページやブログ、信頼できるテック系報道機関をご覧になるのが確実です。お手数ですが、最新情報の確認はそちらでお願いいたします。",
+      "answer": "今回の外部取得では現在情報を確認できませんでした。確認できない現在値は推測しません。",
       "apiFirst": true,
       "apiUsed": false,
       "apiRevision": "free-api-router-v45-terms-aware+free-knowledge-api-v45.1",
       "apiIntents": [],
       "apiSources": [],
       "answerSynthesisFallback": true,
-      "answerSynthesisError": "external_evidence_unavailable_stable_only",
+      "answerSynthesisError": "model_timeout",
       "webResearchError": "",
       "search": true,
       "route": "api-first-v45",
@@ -628,7 +628,7 @@
         "totalMs": 0,
         "apiMs": 0,
         "searchMs": 0,
-        "glmMs": 2587,
+        "glmMs": 0,
         "plannerMs": 0,
         "round1Ms": 0
       },
@@ -636,9 +636,9 @@
       "planner": "search-v45",
       "languageMode": "ja-only"
     },
-    "firmware": {
+    "firmwareImplicit": {
       "ok": true,
-      "answer": "申し訳ありませんが、今回の取得ではX79A-GD45の最新BIOSバージョンを公式情報から確認できませんでした。BIOSのバージョンやリリース状況は時間で変化するため、推測で断定することはできません。 一般的な確認方法としては、MSI公式サイトのサポートページで製品名「X79A-GD45」を検索し、BIOSカテゴリから最新版とリリースノートを確認するのが確実です。ダウンロードの際は、マザーボードのリビジョン(Rev.1.xなど)が自分の製品と一致しているかも併せて確認することをおすすめします。",
+      "answer": "申し訳ありませんが、今回の取得ではX79A-GD45の最新BIOSバージョンを公式情報から確認できませんでした。BIOSのバージョンやリリース状況は時間で変化するため、推測でお答えすることは避けます。 一般的な確認方法として、MSI公式サイトのサポートページで製品名「X79A-GD45」を検索し、「BIOS」カテゴリから最新版とリリースノートを確認するのが確実です。アップデートの際は、現在のバージョンとの差分や更新内容を必ず確認し、手順書に従って実施してください。",
       "apiFirst": true,
       "apiUsed": false,
       "apiRevision": "free-api-router-v45-terms-aware+free-knowledge-api-v45.1",
@@ -711,7 +711,7 @@
         "totalMs": 0,
         "apiMs": 0,
         "searchMs": 0,
-        "glmMs": 3210,
+        "glmMs": 3181,
         "plannerMs": 0,
         "round1Ms": 0
       },
@@ -719,9 +719,483 @@
       "planner": "search-v45",
       "languageMode": "ja-only"
     },
+    "firmwareExplicit": {
+      "ok": true,
+      "answer": "MSI X79A-GD45のBIOSについて、今回の取得で確認できたのは、MSI公式配布サーバーで「BIOS archive v2.8」の配布ファイル（7735v28.zip）が存在することまでです。v2.8が最新バージョンかどうかは、今回の取得では確認できませんでした。 最新版の確実な確認方法としては、MSI公式サイトの製品ページ「サポート」→「BIOS」でX79A-GD45を検索するか、MSI CenterやLive Updateなどの公式ユーティリティで確認するのが確実です。アップデートの際は、現在のバージョンと配布ページの更新日を比較してから実施してください。",
+      "apiFirst": true,
+      "apiUsed": false,
+      "apiRevision": "free-api-router-v45-terms-aware+free-knowledge-api-v45.1",
+      "apiIntents": [],
+      "apiSources": [],
+      "answerSynthesisFallback": true,
+      "answerSynthesisError": "partial_external_evidence_stable_answer",
+      "webResearchError": "",
+      "search": true,
+      "route": "api-first-v45",
+      "searchUseful": false,
+      "resolvedQuestion": "MSI X79A-GD45の最新BIOSを公式情報から確認して",
+      "queries": [
+        "X79A-GD45 BIOS site:msi.com",
+        "X79A-GD45 BIOS"
+      ],
+      "sources": [
+        {
+          "title": "MSI X79A-GD45 BIOS archive v2.8",
+          "url": "https://download-2.msi.com/bos_exe/mb/7735v28.zip",
+          "engine": "direct-primary:msi-motherboard-static"
+        }
+      ],
+      "searchPasses": 1,
+      "maxSearchPasses": 2,
+      "searchCoverage": {
+        "sufficient": false,
+        "reason": "partial_evidence",
+        "missingFacets": [
+          "f1",
+          "f2"
+        ]
+      },
+      "sourceQuality": "single-provider-staged-evidence-v45",
+      "searchMode": "api-first-web-supplement",
+      "historyPolicy": "assistant-context-not-evidence",
+      "subrequestBudgetAware": true,
+      "apiDiagnostics": {
+        "recognized": false,
+        "sufficient": false,
+        "parallelApiExecution": true,
+        "apiCount": 0,
+        "apiFailureCount": 0,
+        "webFallbackUsed": true,
+        "elapsedMs": 0,
+        "failures": []
+      },
+      "searchDiagnostics": {
+        "searchRevision": "deep-search-v45-formal-api-primary-only",
+        "searchDirectorModel": "@cf/qwen/qwen3-30b-a3b-fp8",
+        "plannerPlanned": false,
+        "plannerTransport": "deterministic-simple",
+        "plannerError": "",
+        "questionFirstPlanning": true,
+        "gapDrivenFollowups": false,
+        "researchFacetCount": 2,
+        "sequentialDiscovery": false,
+        "researchMode": "direct_fact",
+        "candidateType": "none",
+        "candidateCount": 0,
+        "candidateNames": [],
+        "queryResultGate": true,
+        "authorityAfterRelevance": true,
+        "retryCount": 0,
+        "crossEngineCount": 0,
+        "hostCount": 1,
+        "probeFailures": 0,
+        "directPrimarySourceCount": 1,
+        "directPrimaryDiagnostics": [
+          {
+            "engine": "direct-primary:msi-motherboard",
+            "query": "X79A-GD45",
+            "role": "official_spec",
+            "url": "https://jp.msi.com/Motherboard/X79A-GD45/Specification",
+            "ok": false,
+            "count": 0,
+            "error": "http_403",
+            "elapsedMs": 327
+          },
+          {
+            "engine": "direct-primary:msi-motherboard",
+            "query": "X79A-GD45",
+            "role": "official_support",
+            "url": "https://jp.msi.com/Motherboard/X79A-GD45/support",
+            "ok": false,
+            "count": 0,
+            "error": "http_403",
+            "elapsedMs": 344
+          },
+          {
+            "engine": "direct-primary:msi-motherboard-static",
+            "query": "X79A-GD45",
+            "role": "official_archive",
+            "url": "https://download.msi.com/bos_exe/mb/7735v28.zip",
+            "ok": true,
+            "count": 1,
+            "error": "",
+            "elapsedMs": 661
+          }
+        ],
+        "directPrimaryTargets": [
+          {
+            "resolver": "msi-motherboard",
+            "role": "official_spec",
+            "url": "https://jp.msi.com/Motherboard/X79A-GD45/Specification",
+            "model": "X79A-GD45",
+            "version": "",
+            "currentFirmwareVersionConfirmed": false
+          },
+          {
+            "resolver": "msi-motherboard",
+            "role": "official_support",
+            "url": "https://jp.msi.com/Motherboard/X79A-GD45/support",
+            "model": "X79A-GD45",
+            "version": "",
+            "currentFirmwareVersionConfirmed": false
+          },
+          {
+            "resolver": "msi-motherboard-static",
+            "role": "official_archive",
+            "url": "https://download.msi.com/bos_exe/mb/7735v28.zip",
+            "model": "X79A-GD45",
+            "version": "2.8",
+            "currentFirmwareVersionConfirmed": false
+          }
+        ],
+        "externalSubrequestBaseTarget": 10,
+        "externalSubrequestWorstTarget": 14,
+        "probes": []
+      },
+      "timings": {
+        "totalMs": 666,
+        "apiMs": 0,
+        "searchMs": 666,
+        "glmMs": 3151,
+        "plannerMs": 0,
+        "round1Ms": 661
+      },
+      "model": "@cf/zai-org/glm-5.3-flash",
+      "planner": "search-v45",
+      "languageMode": "ja-only"
+    },
+    "firmwareArchive": {
+      "ok": true,
+      "answer": "回答生成がタイムアウトしたため、取得済みのWeb根拠だけを返します。MSI X79A-GD45 BIOS archive v2.8: MSI公式配布サーバーで X79A-GD45 BIOS archive v2.8 の配布ファイルを確認。これはv2.8の公式配布物が存在することだけを示し、v2.8が最新バージョンであることまでは証明しない。",
+      "apiFirst": true,
+      "apiUsed": false,
+      "apiRevision": "free-api-router-v45-terms-aware+free-knowledge-api-v45.1",
+      "apiIntents": [],
+      "apiSources": [],
+      "answerSynthesisFallback": true,
+      "answerSynthesisError": "model_timeout",
+      "webResearchError": "",
+      "search": true,
+      "route": "api-first-v45",
+      "searchUseful": true,
+      "resolvedQuestion": "MSI X79A-GD45のBIOS 2.8が公式配布物として存在するか確認して",
+      "queries": [
+        "X79A-GD45 BIOS site:msi.com",
+        "X79A-GD45 BIOS"
+      ],
+      "sources": [
+        {
+          "title": "MSI X79A-GD45 BIOS archive v2.8",
+          "url": "https://download-2.msi.com/bos_exe/mb/7735v28.zip",
+          "engine": "direct-primary:msi-motherboard-static"
+        }
+      ],
+      "searchPasses": 1,
+      "maxSearchPasses": 2,
+      "searchCoverage": {
+        "sufficient": true,
+        "reason": "staged_evidence_sufficient",
+        "missingFacets": []
+      },
+      "sourceQuality": "single-provider-staged-evidence-v45",
+      "searchMode": "api-first-web-supplement",
+      "historyPolicy": "assistant-context-not-evidence",
+      "subrequestBudgetAware": true,
+      "apiDiagnostics": {
+        "recognized": false,
+        "sufficient": false,
+        "parallelApiExecution": true,
+        "apiCount": 0,
+        "apiFailureCount": 0,
+        "webFallbackUsed": true,
+        "elapsedMs": 0,
+        "failures": []
+      },
+      "searchDiagnostics": {
+        "searchRevision": "deep-search-v45-formal-api-primary-only",
+        "searchDirectorModel": "@cf/qwen/qwen3-30b-a3b-fp8",
+        "plannerPlanned": false,
+        "plannerTransport": "deterministic-simple",
+        "plannerError": "",
+        "questionFirstPlanning": true,
+        "gapDrivenFollowups": false,
+        "researchFacetCount": 2,
+        "sequentialDiscovery": false,
+        "researchMode": "direct_fact",
+        "candidateType": "none",
+        "candidateCount": 0,
+        "candidateNames": [],
+        "queryResultGate": true,
+        "authorityAfterRelevance": true,
+        "retryCount": 0,
+        "crossEngineCount": 0,
+        "hostCount": 1,
+        "probeFailures": 0,
+        "directPrimarySourceCount": 1,
+        "directPrimaryDiagnostics": [
+          {
+            "engine": "direct-primary:msi-motherboard",
+            "query": "X79A-GD45",
+            "role": "official_spec",
+            "url": "https://jp.msi.com/Motherboard/X79A-GD45/Specification",
+            "ok": false,
+            "count": 0,
+            "error": "http_403",
+            "elapsedMs": 308
+          },
+          {
+            "engine": "direct-primary:msi-motherboard",
+            "query": "X79A-GD45",
+            "role": "official_support",
+            "url": "https://jp.msi.com/Motherboard/X79A-GD45/support",
+            "ok": false,
+            "count": 0,
+            "error": "http_403",
+            "elapsedMs": 308
+          },
+          {
+            "engine": "direct-primary:msi-motherboard-static",
+            "query": "X79A-GD45",
+            "role": "official_archive",
+            "url": "https://download.msi.com/bos_exe/mb/7735v28.zip",
+            "ok": true,
+            "count": 1,
+            "error": "",
+            "elapsedMs": 234
+          }
+        ],
+        "directPrimaryTargets": [
+          {
+            "resolver": "msi-motherboard",
+            "role": "official_spec",
+            "url": "https://jp.msi.com/Motherboard/X79A-GD45/Specification",
+            "model": "X79A-GD45",
+            "version": "",
+            "currentFirmwareVersionConfirmed": false
+          },
+          {
+            "resolver": "msi-motherboard",
+            "role": "official_support",
+            "url": "https://jp.msi.com/Motherboard/X79A-GD45/support",
+            "model": "X79A-GD45",
+            "version": "",
+            "currentFirmwareVersionConfirmed": false
+          },
+          {
+            "resolver": "msi-motherboard-static",
+            "role": "official_archive",
+            "url": "https://download.msi.com/bos_exe/mb/7735v28.zip",
+            "model": "X79A-GD45",
+            "version": "2.8",
+            "currentFirmwareVersionConfirmed": false
+          }
+        ],
+        "externalSubrequestBaseTarget": 10,
+        "externalSubrequestWorstTarget": 14,
+        "probes": []
+      },
+      "timings": {
+        "totalMs": 312,
+        "apiMs": 0,
+        "searchMs": 312,
+        "glmMs": 0,
+        "plannerMs": 0,
+        "round1Ms": 308
+      },
+      "model": "@cf/zai-org/glm-5.3-flash",
+      "planner": "search-v45",
+      "languageMode": "ja-only"
+    },
+    "shopping": {
+      "ok": true,
+      "answer": "申し訳ありませんが、今回の取得ではCF-SV8の現在の中古価格を確認できませんでした。最新の価格や在庫状況については、お手数ですが中古相場サイトやフリマアプリ、量販店の中古コーナーで直接ご確認いただくのが確実です。 一般的な目安として、Let's note CF-SV8の中古価格はスペック(CPU、メモリ、ストレージ)や状態、付属品の有無で大きく変わります。比較の際は、動作確認の有無、バッテリーの劣化度、保証の有無をチェックすると、安価な候補でも失敗しにくいです。",
+      "apiFirst": true,
+      "apiUsed": false,
+      "apiRevision": "free-api-router-v45-terms-aware+free-knowledge-api-v45.1",
+      "apiIntents": [],
+      "apiSources": [],
+      "answerSynthesisFallback": true,
+      "answerSynthesisError": "external_evidence_unavailable_stable_only",
+      "webResearchError": "",
+      "search": true,
+      "route": "api-first-v45",
+      "searchUseful": false,
+      "resolvedQuestion": "CF-SV8の現在の中古価格を調べて、安い候補を教えて",
+      "queries": [
+        "CF-SV8の現在の中古価格を調べて、安い候補を"
+      ],
+      "sources": [],
+      "searchPasses": 1,
+      "maxSearchPasses": 2,
+      "searchCoverage": {
+        "sufficient": false,
+        "reason": "no_results",
+        "missingFacets": [
+          "f1"
+        ]
+      },
+      "sourceQuality": "single-provider-staged-evidence-v45",
+      "searchMode": "api-first-web-supplement",
+      "historyPolicy": "assistant-context-not-evidence",
+      "subrequestBudgetAware": true,
+      "apiDiagnostics": {
+        "recognized": false,
+        "sufficient": false,
+        "parallelApiExecution": true,
+        "apiCount": 0,
+        "apiFailureCount": 0,
+        "webFallbackUsed": true,
+        "elapsedMs": 0,
+        "failures": []
+      },
+      "searchDiagnostics": {
+        "searchRevision": "deep-search-v45-formal-api-primary-only",
+        "searchDirectorModel": "@cf/qwen/qwen3-30b-a3b-fp8",
+        "plannerPlanned": false,
+        "plannerTransport": "deterministic-simple",
+        "plannerError": "",
+        "questionFirstPlanning": true,
+        "gapDrivenFollowups": false,
+        "researchFacetCount": 1,
+        "sequentialDiscovery": false,
+        "researchMode": "direct_fact",
+        "candidateType": "none",
+        "candidateCount": 0,
+        "candidateNames": [],
+        "queryResultGate": true,
+        "authorityAfterRelevance": true,
+        "retryCount": 0,
+        "crossEngineCount": 0,
+        "hostCount": 0,
+        "probeFailures": 2,
+        "directPrimarySourceCount": 0,
+        "directPrimaryDiagnostics": [],
+        "directPrimaryTargets": [],
+        "externalSubrequestBaseTarget": 10,
+        "externalSubrequestWorstTarget": 14,
+        "probes": [
+          {
+            "engine": "api:yahoo_jp_shopping",
+            "provider": "yahoo_jp_shopping",
+            "ok": false,
+            "count": 0,
+            "error": "operator_opt_in_required",
+            "elapsedMs": 0
+          },
+          {
+            "engine": "api:rakuten_ichiba",
+            "provider": "rakuten_ichiba",
+            "ok": false,
+            "count": 0,
+            "error": "operator_opt_in_required",
+            "elapsedMs": 0
+          }
+        ]
+      },
+      "timings": {
+        "totalMs": 0,
+        "apiMs": 0,
+        "searchMs": 0,
+        "glmMs": 3433,
+        "plannerMs": 0,
+        "round1Ms": 0
+      },
+      "model": "@cf/zai-org/glm-5.3-flash",
+      "planner": "search-v45",
+      "languageMode": "ja-only"
+    },
+    "localSearch": {
+      "ok": true,
+      "answer": "今回の外部取得では現在情報を確認できませんでした。確認できない現在値は推測しません。",
+      "apiFirst": true,
+      "apiUsed": false,
+      "apiRevision": "free-api-router-v45-terms-aware+free-knowledge-api-v45.1",
+      "apiIntents": [
+        "places"
+      ],
+      "apiSources": [],
+      "answerSynthesisFallback": true,
+      "answerSynthesisError": "model_timeout",
+      "webResearchError": "",
+      "search": true,
+      "route": "api-first-v45",
+      "searchUseful": false,
+      "resolvedQuestion": "別府市でパソコン修理店を3つ探して",
+      "queries": [
+        "別府市でパソコン修理店を3つ"
+      ],
+      "sources": [],
+      "searchPasses": 1,
+      "maxSearchPasses": 2,
+      "searchCoverage": {
+        "sufficient": false,
+        "reason": "no_results",
+        "missingFacets": [
+          "f1"
+        ]
+      },
+      "sourceQuality": "single-provider-staged-evidence-v45",
+      "searchMode": "api-first-web-supplement",
+      "historyPolicy": "assistant-context-not-evidence",
+      "subrequestBudgetAware": true,
+      "apiDiagnostics": {
+        "recognized": true,
+        "sufficient": false,
+        "parallelApiExecution": true,
+        "apiCount": 0,
+        "apiFailureCount": 1,
+        "webFallbackUsed": true,
+        "elapsedMs": 0,
+        "failures": [
+          {
+            "tool": "geoapify_places",
+            "reason": "GEOAPIFY_API_KEY_missing"
+          }
+        ]
+      },
+      "searchDiagnostics": {
+        "searchRevision": "deep-search-v45-formal-api-primary-only",
+        "searchDirectorModel": "@cf/qwen/qwen3-30b-a3b-fp8",
+        "plannerPlanned": false,
+        "plannerTransport": "deterministic-simple",
+        "plannerError": "",
+        "questionFirstPlanning": true,
+        "gapDrivenFollowups": false,
+        "researchFacetCount": 1,
+        "sequentialDiscovery": false,
+        "researchMode": "local_discovery",
+        "candidateType": "store",
+        "candidateCount": 0,
+        "candidateNames": [],
+        "queryResultGate": true,
+        "authorityAfterRelevance": true,
+        "retryCount": 0,
+        "crossEngineCount": 0,
+        "hostCount": 0,
+        "probeFailures": 0,
+        "directPrimarySourceCount": 0,
+        "directPrimaryDiagnostics": [],
+        "directPrimaryTargets": [],
+        "externalSubrequestBaseTarget": 10,
+        "externalSubrequestWorstTarget": 14,
+        "probes": []
+      },
+      "timings": {
+        "totalMs": 536,
+        "apiMs": 0,
+        "searchMs": 536,
+        "glmMs": 0,
+        "plannerMs": 0,
+        "round1Ms": 0,
+        "localMs": 536
+      },
+      "model": "@cf/zai-org/glm-5.3-flash",
+      "planner": "search-v45",
+      "languageMode": "ja-only"
+    },
     "context": {
       "ok": true,
-      "answer": "申し訳ありませんが、私は外部検索を使っていないため、現在の実売価格や在庫を確認できず、具体的な「最安の商品」を挙げることはできません。 一般論として、2万円以下の中古ノートならさらに安い帯域(1万円前後)でも中古市場には出品が多いですが、その分バッテリー劣化や動作の重さなどのリスクが高まります。メルカリ、ヤフオク、中古パソコン専門店の「アウトレット・ワケあり」コーナーなどで、価格順に並べて条件(メモリ8GB以上、SSD搭載など)を絞って探すのがおすすめです。",
+      "answer": "申し訳ありませんが、外部検索を使っていないため、現在の具体的な商品や価格を確認・断定できません。前回の「候補を確認します」という返答は誤りで、実際の候補を挙げられないまま進めてしまいました。 一般的な目安として、2万円以下の中古ノートPCはフリマアプリや中古PC専門店で見つかることが多く、さらに安くするなら型落ちの業務用モデルやバッテリー劣品を選ぶ方法があります。最新の出品状況は、実際の中古販売サイトで「2万円以下 ノートPC」などで検索してご確認ください。",
       "search": false,
       "searchUseful": false,
       "searchFallback": false,
@@ -730,8 +1204,8 @@
       "queries": [],
       "sources": [],
       "timings": {
-        "totalMs": 4935,
-        "glmMs": 4935
+        "totalMs": 2594,
+        "glmMs": 2594
       },
       "model": "@cf/zai-org/glm-5.3-flash",
       "planner": "unified-router-v45",
