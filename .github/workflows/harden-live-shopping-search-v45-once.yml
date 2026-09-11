@@ -85,5 +85,6 @@ jobs:
             exit 0
           fi
           git commit -m 'Harden live shopping price retrieval in TalkSys v45'
+          git restore scripts/harden-live-shopping-search-v45.mjs
           git pull --rebase origin main
           git push origin HEAD:main
