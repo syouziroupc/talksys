@@ -1,0 +1,64 @@
+name: Harden TalkSys live shopping search once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/harden-live-shopping-search-v45-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Apply live search hardening
+        run: node scripts/harden-live-shopping-search-v45.mjs
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate hardened runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/search-v45.js
+          node --check src/worker-v44.js
+          node --check tests/v45-live-search-hardening.test.mjs
+          npm test
+          npx wrangler deploy --dry-run
+
+      - name: Static hardening checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F "requiresPriceEvidence" src/search-v45.js
+          grep -F "hasPriceEvidence" src/search-v45.js
+          grep -F "priceRecoveryFacets" src/search-v45.js
+          grep -F "sanitizeUserFacingAnswer" src/worker-v44.js
+          grep -F "talksys-v45-api-primary-multi-engine-search-r2" src/worker-v44.js
+
+      - name: Commit hardened runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name talksys-automation
+          git config user.email actions@users.noreply.github.com
+          git add src/search-v45.js src/worker-v44.js tests/v45-live-search-hardening.test.mjs
+          if git diff --cached --quiet; then
+            echo 'Live search hardening already current.'
+            exit 0
+          fi
+          git commit -m 'Harden live shopping price retrieval in TalkSys v45'
+          git pull --rebase origin main
+          git push origin HEAD:main
