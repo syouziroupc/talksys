@@ -57,12 +57,37 @@ jobs:
           body=""
           for attempt in $(seq 1 20); do
             body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
-            ok="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(Boolean(d.voiceRevision==='talksys-v45-unified-router-no-v43-turn-delegation'&&d.unifiedTurnRouter===true&&d.legacyV43TurnDelegation===false&&d.apiFirst===true&&d.apiParallel===true&&d.groundedEvidenceFallback===true&&d.externalFailureUsesCasualModel===false&&d.modelTimeoutMs===12000&&d.searchDirectorModel==='@cf/qwen/qwen3-30b-a3b-fp8'&&d.searchDefault==='intent-routed-v45')))" )"
+            ok="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(Boolean(d.revision==='talksys-v45-formal-api-primary-safe-fallback'&&d.voiceRevision==='talksys-v45-http-adaptive-vad'&&d.uiRevision==='talksys-v45-ui-restored-20260911'&&d.sttRevision==='talksys-v45-hardened-whisper'&&d.voiceArchitecture==='http-turns-client-vad-v45'&&d.adaptiveNoiseVad===true&&d.ambientCalibration===true&&d.legacyWebSocketVoice===false&&d.durableObjectVoice===false&&d.legacyAgentRoute===false&&d.unifiedTurnRouter===true&&d.legacyV43TurnDelegation===false&&d.apiFirst===true&&d.apiParallel===true&&d.groundedEvidenceFallback===true&&d.externalFailureUsesCasualModel===false&&d.modelTimeoutMs===12000&&d.searchDirectorModel==='@cf/qwen/qwen3-30b-a3b-fp8'&&d.searchDefault==='intent-routed-v45')))" )"
             [[ "$ok" == "true" ]] && break
             [[ "$attempt" -eq 20 ]] && { echo "$body"; exit 1; }
             sleep 3
           done
           echo "$body"
+
+      - name: Verify live UI and microphone client
+        shell: bash
+        run: |
+          set -euo pipefail
+          page="$(curl -fsS --max-time 20 "$PRODUCTION_URL/")"
+          grep -F 'talksys-v45-ui-restored-20260911' <<< "$page"
+          grep -F '/talk-v45.js' <<< "$page"
+          grep -F '非常用の文字入力' <<< "$page"
+          grep -F 'Foonz' <<< "$page"
+
+          client="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v45.js")"
+          grep -F 'talksys-v45-http-adaptive-vad' <<< "$client"
+          grep -F 'getUserMedia' <<< "$client"
+          grep -F '/api/transcribe' <<< "$client"
+          grep -F '/api/turn' <<< "$client"
+          grep -F 'noiseBoost' <<< "$client"
+          grep -F 'calibrationUntil' <<< "$client"
+          if grep -E 'new[[:space:]]+WebSocket|/agents/' <<< "$client"; then
+            echo 'legacy websocket/agent voice path returned'
+            exit 1
+          fi
+
+          telephony="$(curl -fsS --max-time 20 "$PRODUCTION_URL/telephony-health")"
+          TELEPHONY="$telephony" node -e "const d=JSON.parse(process.env.TELEPHONY||'{}');if(d.provider!=='Foonz'||d.connected!==false||d.status!=='planned-not-wired')throw new Error(process.env.TELEPHONY);"
 
       - name: Production smoke
         shell: bash
