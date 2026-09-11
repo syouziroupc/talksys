@@ -23,7 +23,28 @@ jobs:
           node-version: 22
 
       - name: Apply live search hardening
-        run: node scripts/harden-live-shopping-search-v45.mjs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/harden-live-shopping-search-v45.mjs')
+          s = p.read_text()
+
+          a = s.index('const helpers = `')
+          b = s.index('`;\nsearch = replaceOnce(search, helperMarker', a)
+          seg = s[a:b].replace('${', r'\${').replace(r'\${helperMarker}', '${helperMarker}')
+          s = s[:a] + seg + s[b:]
+
+          a = s.index('const enrichReplacement = `')
+          b = s.index('`;\nsearch = search.slice(0, enrichStart)', a)
+          seg = s[a:b].replace('${', r'\${')
+          s = s[:a] + seg + s[b:]
+
+          p.write_text(s)
+          PY
+          node --check scripts/harden-live-shopping-search-v45.mjs
+          node scripts/harden-live-shopping-search-v45.mjs
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
