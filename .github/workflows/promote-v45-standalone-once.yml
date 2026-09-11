@@ -1,0 +1,60 @@
+name: Promote TalkSys to standalone v45 once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/promote-v45-standalone-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Generate standalone v45 runtime
+        run: node scripts/promote-v45-standalone.mjs
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate standalone v45 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check
+          npm test
+          npx wrangler deploy --dry-run
+
+      - name: Assert no legacy runtime dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F '"main": "src/worker-v45.js"' wrangler.jsonc
+          ! grep -E "from './(worker-v(4[0-3]|[0-3][0-9])|talk-client-v(4[0-3]|[0-3][0-9])|log-v(4[0-3]|[0-3][0-9]))\\.js'" src/worker-v45.js src/talk-client-v45.js src/log-v45.js
+          ! grep -E 'new[[:space:]]+WebSocket|/agents/' src/talk-client-v45.js
+          ! grep -E '"@cloudflare/voice"|"agents"' package.json
+
+      - name: Commit validated standalone runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name talksys-automation
+          git config user.email actions@users.noreply.github.com
+          git add src/talk-client-v45.js src/log-v45.js src/worker-v45.js wrangler.jsonc package.json package-lock.json tests
+          if git diff --cached --quiet; then
+            echo 'Standalone v45 runtime already current.'
+          else
+            git commit -m 'Cut legacy runtime and promote standalone v45'
+            git push origin HEAD:main
+          fi
