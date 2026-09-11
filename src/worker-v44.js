@@ -34,7 +34,7 @@ import { TALK_CLIENT_V45, CLIENT_REVISION } from './talk-client-v45.js';
 import { TALK_HTML_V45, UI_REVISION } from './ui-v45.js';
 import { transcribeV45, STT_MODEL, STT_REVISION } from './stt-v45.js';
 
-const REVISION = 'talksys-v45-formal-api-primary-safe-fallback';
+const REVISION = 'talksys-v45-api-primary-multi-engine-search';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
 const MODEL_TIMEOUT_MS = 12000;
@@ -45,7 +45,7 @@ const MEMORY_ONLY_RE = /^(?:さっき|先ほど|前に|前の話|今の話|こ�
 const SUBJECTIVE_RE = /(バナナ.{0,12}おやつ.{0,8}入る|どう思う|どうおもう|どっちが好み|好き(?:です|なの|か)?|嫌い(?:です|なの|か)?)/i;
 const CAPABILITY_RE = /(?:検索|調べ).{0,20}(?:できる|出来る|使える|あるの|あるだろ|できない|出来ない)|(?:できる|出来る|使える).{0,20}(?:検索|調べ)/i;
 const NO_EXTERNAL_RE = /(?:(?:web|ウェブ)?\s*検索(?:は|を)?\s*(?:使わない(?:で)?|しない(?:で)?|禁止|なし)|外部(?:アクセス|接続|検索)(?:は|を)?\s*(?:禁止|しない(?:で)?|使わない(?:で)?)|調べ(?:ないで|なくていい))/i;
-const EXPLICIT_LOOKUP_RE = /(検索|調べ|探して|探せ|見つけ|確認して|在庫|実売|価格|値段|相場|いくら|どこで買|販売店|店舗|通販|おすすめ|何がいい|どれがいい|買い替え)/i;
+const EXPLICIT_LOOKUP_RE = /(検索|調べ|探して|探せ|見つけ|確認して|在庫|実売|価格|値段|相場|いくら|どこで買|販売店|店舗|通販|おすすめ|何がいい|どれがいい|買い替え|もっと安|安いの|最安|他にある|ほかにある)/i;
 const DYNAMIC_FACT_RE = /(最新|現在|今(?:の|この|すぐ|何時|いくら)|今日|明日|昨日|価格|値段|相場|在庫|発売|販売中|BIOS|UEFI|ファームウェア|ドライバ|法律|法令|制度|社長|CEO|首相|大統領|ニュース|運行|遅延|運休|時刻表|天気|天候|為替|地震|祝日|中古(?:PC|パソコン|ノート|スマホ)|営業時間|バージョン)/i;
 const NON_API_FACT_RE = /(BIOS|UEFI|ファームウェア|ドライバ|Windows|macOS|Linux|古物|法律|法令|社長|CEO|首相|大統領|ニュース|中古(?:PC|パソコン)|スマホ|型番|仕様|公式配布|配布元)/i;
 
@@ -204,6 +204,13 @@ export function classifyTurn(text, history = []) {
   }
   const apiIntents = [...new Set([...detectApiIntents(value, hist), ...detectKnowledgeApiIntents(value, hist)])];
   if (apiIntents.length) return { mode: 'external', webSearch: false, noExternal: false, apiIntents, reason: 'structured_api_intent' };
+  const resolvedContext = fallbackResolvedQuestion(value, hist);
+  const contextualLookup = value.length <= 48
+    && /(その|それ|これ|この中|その中|候補|もっと|他|ほか|どこ|いくら|安い|高い|在庫|買うなら|どれ)/i.test(value)
+    && (EXPLICIT_LOOKUP_RE.test(resolvedContext) || DYNAMIC_FACT_RE.test(resolvedContext));
+  if (contextualLookup) {
+    return { mode: 'external', webSearch: true, noExternal: false, apiIntents: [], reason: 'contextual_external_followup' };
+  }
   if (EXPLICIT_LOOKUP_RE.test(value) || DYNAMIC_FACT_RE.test(value)) {
     return { mode: 'external', webSearch: true, noExternal: false, apiIntents: [], reason: 'current_or_explicit_lookup' };
   }
@@ -809,14 +816,14 @@ export default {
         ambiguityGate: true,
         explicitNoExternalGuard: true,
         inputCanonicalization: 'NFKC+spoken-ja',
-        webSearch: false,
+        webSearch: true,
         webRetrieval: true,
-        webSearchPolicy: 'formal-api-and-direct-primary-v45',
-        webSearchEngine: 'none-general; formal-api+direct-primary',
-        generalWebSearchProvider: 'none',
-        generalWebSearchDisabledReason: 'previous RSS provider failed relevance and site-restriction diagnostics',
-        generalWebScraping: false,
-        bingRssEnabled: false,
+        webSearchPolicy: 'api-first-multi-engine-web-v45',
+        webSearchEngine: 'duckduckgo+bing-html+bing-rss+google-news; formal-api+direct-primary',
+        generalWebSearchProvider: 'rotating-multi-engine-v45',
+        generalWebSearchDisabledReason: '',
+        generalWebScraping: true,
+        bingRssEnabled: true,
         searchRevision: SEARCH_V44_REVISION,
         weatherDirect: 'jma-api-first-with-met-norway-fallback',
         apiFirst: true,
@@ -837,7 +844,7 @@ export default {
         searchMaxRounds: SEARCH_V44_MAX_ROUNDS,
         searchSourceLimit: SEARCH_V44_SOURCE_LIMIT,
         searchQuestionFirstPlanning: true,
-        searchGapDrivenFollowups: false,
+        searchGapDrivenFollowups: true,
         searchResearchStateMachine: true,
         searchSequentialDiscovery: true,
         searchQueryResultGate: true,
@@ -845,8 +852,8 @@ export default {
         searchTypedResearchStrategy: true,
         searchSourceRoleAware: true,
         searchIndependentSources: true,
-        searchEngineRotation: false,
-        searchEngineRetry: false,
+        searchEngineRotation: true,
+        searchEngineRetry: true,
         searchMaxEngineRetries: SEARCH_V44_MAX_ENGINE_RETRIES,
         searchProvider: SEARCH_V45_PROVIDER,
         searchSingleProvider: false,
@@ -862,7 +869,7 @@ export default {
         searchSubrequestBudgetAware: true,
         searchExternalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
         searchExternalSubrequestWorstTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
-        specializedSearchRoutesPreserved: false,
+        specializedSearchRoutesPreserved: true,
       });
     }
 

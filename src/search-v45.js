@@ -4,23 +4,24 @@ import {
 } from './search-fallbacks.js';
 import { fetchDirectPrimarySources } from './direct-primary-v45.js';
 import { searchFormalShoppingApis, SHOPPING_API_REVISION } from './free-shopping-api-v45.js';
+import { searchProbe } from './search-probes-v44.js';
 
-export const SEARCH_V44_REVISION = 'deep-search-v45-formal-api-primary-only';
-export const SEARCH_V44_MAX_QUERIES = 6;
-export const SEARCH_V44_MAX_RECOVERY_QUERIES = 2;
-export const SEARCH_V44_MAX_TOTAL_QUERIES = 8;
-export const SEARCH_V44_MAX_ROUNDS = 2;
-export const SEARCH_V44_SOURCE_LIMIT = 10;
-export const SEARCH_V44_PROBE_CONCURRENCY = 2;
-export const SEARCH_V44_MAX_ENGINE_RETRIES = 0;
+export const SEARCH_V44_REVISION = 'deep-search-v45-api-primary-multi-engine-web';
+export const SEARCH_V44_MAX_QUERIES = 8;
+export const SEARCH_V44_MAX_RECOVERY_QUERIES = 3;
+export const SEARCH_V44_MAX_TOTAL_QUERIES = 11;
+export const SEARCH_V44_MAX_ROUNDS = 3;
+export const SEARCH_V44_SOURCE_LIMIT = 12;
+export const SEARCH_V44_PROBE_CONCURRENCY = 3;
+export const SEARCH_V44_MAX_ENGINE_RETRIES = 2;
 export const SEARCH_V44_MAX_PER_HOST = 2;
-export const SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET = 10;
-export const SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET = 14;
-export const SEARCH_V45_TOTAL_BUDGET_MS = 6500;
-export const SEARCH_V45_QUERY_TIMEOUT_MS = 1900;
+export const SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET = 16;
+export const SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET = 24;
+export const SEARCH_V45_TOTAL_BUDGET_MS = 12000;
+export const SEARCH_V45_QUERY_TIMEOUT_MS = 3200;
 export const SEARCH_V45_DIRECTOR_TIMEOUT_MS = 2200;
-export const SEARCH_V45_PROVIDER = 'formal-structured-apis+direct-primary';
-export const SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED = false;
+export const SEARCH_V45_PROVIDER = 'formal-structured-apis+direct-primary+rotating-web';
+export const SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED = true;
 
 const DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const DIRECTOR_TOOL = {
@@ -154,12 +155,17 @@ function simplePlan(text, history) {
   const queries = [];
   let researchMode = 'direct_fact';
   let candidateType = 'none';
-  if (intent === 'shopping' && !known) {
-    researchMode = 'discover_then_verify'; candidateType = 'product_model';
-    if (/ノート|パソコン|PC/i.test(resolved)) {
-      queries.push(`${budget ? `${budget} ` : ''}中古 ノートパソコン`);
+  if (intent === 'shopping') {
+    if (known) {
+      researchMode = 'direct_fact'; candidateType = 'none';
+      queries.push(`${known} 中古 価格 在庫`);
     } else {
-      queries.push(compactSubject(resolved));
+      researchMode = 'discover_then_verify'; candidateType = 'product_model';
+      if (/ノート|パソコン|PC/i.test(resolved)) {
+        queries.push(`${budget ? `${budget} ` : ''}中古 ノートパソコン`);
+      } else {
+        queries.push(compactSubject(resolved));
+      }
     }
   } else if (intent === 'local') {
     researchMode = 'local_discovery'; candidateType = 'store';
@@ -179,7 +185,12 @@ function simplePlan(text, history) {
     intent,
     researchMode,
     candidateType,
-    facets: queries.slice(0, 2).map((q, i) => ({ id: `f${i+1}`, stage: researchMode === 'discover_then_verify' ? 'discovery' : 'verification', sourceRole: domain ? 'official_support' : (intent === 'shopping' ? 'seller' : 'primary'), primaryQuery: q })),
+    facets: queries.slice(0, 2).map((q, i) => ({
+      id: `f${i+1}`,
+      stage: researchMode === 'discover_then_verify' ? 'discovery' : 'verification',
+      sourceRole: intent === 'shopping' ? 'seller' : intent === 'news' ? 'news' : intent === 'local' ? 'map' : (domain ? 'official_support' : 'primary'),
+      primaryQuery: q,
+    })),
     queries: unique(queries, 3),
     planned: false,
     plannerModel: null,
@@ -261,7 +272,7 @@ function queryTerms(query) {
   const out = [];
   for (const piece of pieces) {
     if (piece.length >= 2 && !generic.has(piece)) out.push(piece);
-    for (const p of piece.match(/[a-z]+[-]?[a-z0-9-]*\d+[a-z0-9-]*|[\p{Script=Han}]{2,}|[\p{Script=Katakana}ー]{3,}/giu) || []) {
+    for (const p of piece.match(/[a-z][a-z0-9._+-]{1,}|[\p{Script=Han}]{2,}|[\p{Script=Katakana}ー]{3,}/giu) || []) {
       if (p.length >= 2 && !generic.has(p)) out.push(p.toLowerCase());
     }
   }
@@ -287,6 +298,11 @@ export function stageEvidence(query, result, stage = 'verification', sourceRole 
   if (stage === 'discovery') {
     // Discovery optimizes recall: one concrete model or one meaningful category hit is enough.
     relevant = Boolean(model) || matched.length >= 1 || siteMatch;
+  } else if (sourceRole === 'news') {
+    // News snippets are short; one strong entity/topic hit is enough before freshness is checked by synthesis.
+    relevant = matched.length >= 1 || Boolean(model) || siteMatch;
+  } else if (['seller','marketplace','map'].includes(sourceRole)) {
+    relevant = Boolean(model) || matched.length >= 1 || siteMatch;
   } else {
     // Verification optimizes precision: exact model/site, or two independent query concepts.
     relevant = Boolean(siteMatch) || Boolean(model && terms.some(t => normalize(model).includes(t) || hay.includes(t))) || matched.length >= 2;
@@ -300,25 +316,64 @@ function filterStage(query, raw, stage, sourceRole, limit = 10) {
     .filter(x => x.gate.relevant)
     .sort((a,b) => b.gate.score - a.gate.score)
     .slice(0, limit)
-    .map(x => ({ ...x.item, probeEngine: SEARCH_V45_PROVIDER, probeQuery: query, queryGateScore: x.gate.score, queryGateMatched: x.gate.matched }));
+    .map(x => ({ ...x.item, probeEngine: x.item?.probeEngine || x.item?.engine || SEARCH_V45_PROVIDER, probeQuery: query, queryGateScore: x.gate.score, queryGateMatched: x.gate.matched }));
+}
+
+function enginesForFacet(facet) {
+  const q = clean(facet?.primaryQuery, 300);
+  const role = clean(facet?.sourceRole, 60);
+  if (role === 'news' || /ニュース|速報|発表|今日|最新/.test(q)) return ['google-news', 'duckduckgo', 'bing-html'];
+  if (['official_spec','official_support','primary'].includes(role) || /site:/.test(q)) return ['duckduckgo', 'bing-html', 'bing-rss'];
+  if (['seller','marketplace'].includes(role)) return ['bing-html', 'duckduckgo', 'bing-rss'];
+  if (role === 'map') return ['duckduckgo', 'bing-html', 'bing-rss'];
+  return ['duckduckgo', 'bing-html', 'bing-rss'];
 }
 
 async function searchOne(facet, deadline) {
-  // General web search is deliberately disabled: the previously used Bing RSS
-  // endpoint returned unrelated results even with site: restrictions. Current
-  // facts now come from formal APIs or deterministic primary-source resolvers.
+  const startedAt = Date.now();
+  const query = clean(facet?.primaryQuery, 300);
+  const attempts = [];
+  let collected = [];
+  const engines = enginesForFacet(facet).slice(0, 1 + SEARCH_V44_MAX_ENGINE_RETRIES);
+
+  for (const engine of engines) {
+    const remaining = deadline - Date.now();
+    if (remaining < 650) break;
+    const timeoutMs = Math.max(550, Math.min(SEARCH_V45_QUERY_TIMEOUT_MS, remaining - 120));
+    const probe = await searchProbe(engine, query, { timeoutMs, limit: 10 });
+    const gated = filterStage(query, probe.results || [], facet.stage, facet.sourceRole, 10);
+    attempts.push({
+      engine,
+      ok: gated.length > 0,
+      rawCount: Number(probe.rawCount) || (probe.results || []).length,
+      count: gated.length,
+      error: gated.length ? '' : (probe.error || 'no_relevant_results'),
+      status: Number(probe.status) || 0,
+      elapsedMs: Number(probe.elapsedMs) || 0,
+    });
+    collected.push(...gated);
+    collected = dedupeSearchResults(collected, 16);
+    const enough = ['official_spec','official_support'].includes(facet.sourceRole)
+      ? collected.length >= 1
+      : facet.sourceRole === 'news'
+        ? collected.length >= 2
+        : collected.length >= 3;
+    if (enough) break;
+  }
+
   return {
-    results: [],
+    results: collected.slice(0, 10),
     diag: {
-      engine: 'general-web-search-disabled',
-      query: facet.primaryQuery,
+      engine: attempts.map(x => x.engine).join('+') || 'none',
+      query,
       stage: facet.stage,
       sourceRole: facet.sourceRole,
-      ok: false,
-      rawCount: 0,
-      count: 0,
-      error: 'general_web_search_disabled_quality_terms',
-      elapsedMs: 0,
+      ok: collected.length > 0,
+      rawCount: attempts.reduce((n, x) => n + x.rawCount, 0),
+      count: collected.length,
+      error: collected.length ? '' : attempts.map(x => `${x.engine}:${x.error}`).join(';'),
+      elapsedMs: Date.now() - startedAt,
+      attempts,
     },
   };
 }
@@ -390,7 +445,7 @@ function diversify(results, limit = SEARCH_V44_SOURCE_LIMIT) {
 
 export async function runDeepSearchV44(ai, text, history = [], signal, options = {}) {
   const startedAt = Date.now();
-  const maxBudgetMs = Math.max(3500, Math.min(8000, Number(options.totalBudgetMs) || SEARCH_V45_TOTAL_BUDGET_MS));
+  const maxBudgetMs = Math.max(4500, Math.min(14000, Number(options.totalBudgetMs) || SEARCH_V45_TOTAL_BUDGET_MS));
   const deadline = startedAt + maxBudgetMs;
   const timings = {};
   const diagnostics = [];
@@ -480,7 +535,7 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     evidenceUseful,
     researchStateMachine: true,
     questionFirstPlanning: true,
-    gapDrivenFollowups: false,
+    gapDrivenFollowups: true,
     sequentialDiscovery: plan.researchMode === 'discover_then_verify',
     researchMode: plan.researchMode,
     candidateType: plan.candidateType,
@@ -492,18 +547,18 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     singleSearchProvider: false,
     searchProvider: SEARCH_V45_PROVIDER,
     generalWebSearchEnabled: SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED,
-    generalWebScraping: false,
-    bingRssEnabled: false,
+    generalWebScraping: true,
+    bingRssEnabled: true,
     shoppingApiRevision: shopping.revision || SHOPPING_API_REVISION,
     shoppingApiConfiguredCount: shopping.configuredCount || 0,
     shoppingApiSuccessfulCount: shopping.successfulCount || 0,
     shoppingApiDiagnostics: shopping.diagnostics || [],
-    searchEngineRotation: false,
+    searchEngineRotation: true,
     subrequestBudgetAware: true,
     externalSubrequestBaseTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_BASE_TARGET,
     externalSubrequestWorstTarget: SEARCH_V44_EXTERNAL_SUBREQUEST_WORST_TARGET,
-    retryCount: 0,
-    crossEngineCount: 0,
+    retryCount: diagnostics.reduce((n, d) => n + Math.max(0, (Array.isArray(d.attempts) ? d.attempts.length : 1) - 1), 0),
+    crossEngineCount: new Set(diagnostics.flatMap(d => Array.isArray(d.attempts) ? d.attempts.map(a => a.engine) : [d.engine]).filter(Boolean)).size,
     hostCount,
     probeFailures: diagnostics.filter(x => !x.ok).length,
     probeDiagnostics: diagnostics,

@@ -29,7 +29,7 @@ function stripHtml(html) {
 
 function msiMotherboardResolver(question) {
   const match = clean(question).match(/\b(X79A-[A-Z0-9-]+)\b/i);
-  if (!match || !/\bMSI\b/i.test(question)) return [];
+  if (!match) return [];
   const model = match[1].toUpperCase();
   const slug = encodeURIComponent(model);
   const wantsFirmware = /(BIOS|UEFI|ファームウェア|ドライバ|support|サポート)/i.test(question);
