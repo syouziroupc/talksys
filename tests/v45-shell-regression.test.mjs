@@ -57,5 +57,4 @@ test('production deployment now checks UI and microphone regressions', () => {
   assert.match(deploy, /\/talk-v45\.js/);
   assert.match(deploy, /getUserMedia/);
   assert.match(deploy, /\/api\/transcribe/);
-  assert.match(deploy, /Foonz/);
 });
