@@ -1,0 +1,88 @@
+name: Audit TalkSys search system once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/search-system-audit-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Audit production search stack
+        shell: bash
+        run: |
+          set -uo pipefail
+          BASE='https://talksys.syouziroupc.workers.dev'
+          failures=0
+
+          turn() {
+            local name="$1"
+            local text="$2"
+            local history_json="${3:-[]}"
+            jq -nc --arg text "$text" --argjson history "$history_json" '{text:$text,history:$history}' \
+              | curl -fsS --retry 2 --retry-delay 1 -H 'content-type: application/json' --data-binary @- "$BASE/api/turn" \
+              > "/tmp/${name}.json"
+            echo "===== ${name} ====="
+            jq '{ok,answer,route,apiUsed,apiIntents,apiSources,search,searchUseful,searchMode,resolvedQuestion,queries,sources,searchCoverage,searchDiagnostics,apiDiagnostics,timings}' "/tmp/${name}.json"
+          }
+
+          echo '===== health ====='
+          curl -fsS --retry 2 "$BASE/voice-health" > /tmp/health.json
+          jq '{revision,searchRevision,webSearch,webRetrieval,webSearchPolicy,webSearchEngine,generalWebSearchProvider,generalWebSearchEnabled,generalWebSearchDisabledReason,bingRssEnabled,searchDirectorModel,searchDefault}' /tmp/health.json
+
+          if ! jq -e '.webRetrieval == true' /tmp/health.json >/dev/null; then
+            echo 'FAIL: production webRetrieval is not true'
+            failures=$((failures+1))
+          fi
+          if ! jq -e '.generalWebSearchEnabled == true' /tmp/health.json >/dev/null; then
+            echo 'FAIL: general web search is not enabled in production'
+            failures=$((failures+1))
+          fi
+
+          turn weather '別府市の今日の天気は？'
+          if ! jq -e '.ok == true and .apiUsed == true and ([.apiSources[].tool] | index("jma_weather") != null)' /tmp/weather.json >/dev/null; then
+            echo 'FAIL: JMA structured API route'
+            failures=$((failures+1))
+          fi
+
+          turn fx '100米ドルは日本円でいくら？'
+          if ! jq -e '.ok == true and .apiUsed == true and ([.apiSources[].tool] | index("frankfurter") != null)' /tmp/fx.json >/dev/null; then
+            echo 'FAIL: FX structured API route'
+            failures=$((failures+1))
+          fi
+
+          turn gdp '日本の一人当たりGDPは？'
+          if ! jq -e '.ok == true and .apiUsed == true and ([.apiSources[].tool] | index("world_bank_wdi") != null)' /tmp/gdp.json >/dev/null; then
+            echo 'FAIL: World Bank structured API route'
+            failures=$((failures+1))
+          fi
+
+          turn current_web 'OpenAIの今日の最新ニュースを検索して、重要なものを2件だけ教えて'
+          if ! jq -e '.ok == true and .search == true and .searchUseful == true and ((.sources // []) | length) >= 1' /tmp/current_web.json >/dev/null; then
+            echo 'FAIL: general current-web retrieval returned no useful external evidence'
+            failures=$((failures+1))
+          fi
+
+          turn firmware 'X79A-GD45の最新BIOSを公式情報から確認して'
+          if ! jq -e '.ok == true and .search == true and .searchUseful == true and ((.sources // []) | length) >= 1' /tmp/firmware.json >/dev/null; then
+            echo 'FAIL: official firmware/current-version retrieval returned no useful evidence'
+            failures=$((failures+1))
+          fi
+
+          history='[{"role":"user","content":"2万円以下で中古ノートPCを探して"},{"role":"assistant","content":"候補を確認します。"}]'
+          turn context 'その中でもっと安いのある？' "$history"
+          if ! jq -e '(.resolvedQuestion // "") | contains("中古ノートPC")' /tmp/context.json >/dev/null; then
+            echo 'FAIL: search context was not carried into resolvedQuestion'
+            failures=$((failures+1))
+          fi
+
+          echo "===== audit summary: failures=${failures} ====="
+          if [ "$failures" -ne 0 ]; then
+            exit 1
+          fi
