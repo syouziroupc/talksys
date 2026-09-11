@@ -1,0 +1,108 @@
+name: Repair v45 UI and voice regressions once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/repair-v45-ui-voice-once.yml'
+
+permissions:
+  contents: write
+
+env:
+  PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Apply UI and voice repair
+        run: python scripts/repair-v45-ui-voice.py
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+      - name: Validate complete repaired runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check
+          npm test
+          npx wrangler deploy --dry-run
+
+      - name: Commit validated repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name talksys-automation
+          git config user.email actions@users.noreply.github.com
+          git add src/worker-v44.js src/ui-v45.js src/talk-client-v45.js src/stt-v45.js tests/v45-shell-regression.test.mjs .github/workflows/deploy.yml
+          if git diff --cached --quiet; then
+            echo 'Repair already applied; nothing to commit.'
+          else
+            git commit -m 'Restore v45 UI and HTTP microphone path'
+            git push origin HEAD:main
+          fi
+
+      - name: Verify Cloudflare deployment credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+
+      - name: Deploy repaired v45
+        shell: bash
+        run: npx wrangler deploy
+
+      - name: Verify repaired production shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          health=''
+          for attempt in $(seq 1 20); do
+            health="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
+            ok="$(HEALTH="$health" node -e "let d={};try{d=JSON.parse(process.env.HEALTH||'{}')}catch{};process.stdout.write(String(Boolean(d.revision==='talksys-v45-formal-api-primary-safe-fallback'&&d.voiceRevision==='talksys-v45-http-adaptive-vad'&&d.uiRevision==='talksys-v45-ui-restored-20260911'&&d.sttRevision==='talksys-v45-hardened-whisper'&&d.legacyWebSocketVoice===false&&d.legacyAgentRoute===false&&d.apiFirst===true)))")"
+            [[ "$ok" == 'true' ]] && break
+            [[ "$attempt" -eq 20 ]] && { echo "$health"; exit 1; }
+            sleep 3
+          done
+          echo "$health"
+
+          page="$(curl -fsS --max-time 20 "$PRODUCTION_URL/")"
+          grep -F 'talksys-v45-ui-restored-20260911' <<< "$page"
+          grep -F '/talk-v45.js' <<< "$page"
+          grep -F 'Foonz' <<< "$page"
+
+          client="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v45.js")"
+          grep -F 'getUserMedia' <<< "$client"
+          grep -F '/api/transcribe' <<< "$client"
+          grep -F 'noiseBoost' <<< "$client"
+          if grep -E 'new[[:space:]]+WebSocket|/agents/' <<< "$client"; then
+            echo 'legacy websocket/agent path is still present'
+            exit 1
+          fi
+
+          payload='{"text":"12345÷15","history":[]}'
+          out="$(curl -fsS --max-time 20 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='deterministic-v45'||d.search!==false||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
+
+          payload='{"text":"別府市の今日の天気は？","history":[]}'
+          out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather'))throw new Error(process.env.OUT);"
