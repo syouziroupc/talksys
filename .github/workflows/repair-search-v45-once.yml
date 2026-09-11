@@ -64,3 +64,5 @@ jobs:
           git commit -m 'Restore robust multi-engine search in TalkSys v45'
           git pull --rebase origin main
           git push origin HEAD:main
+
+# retry after script escaping fix
