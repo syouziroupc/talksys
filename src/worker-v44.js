@@ -34,7 +34,7 @@ import { TALK_CLIENT_V45, CLIENT_REVISION } from './talk-client-v45.js';
 import { TALK_HTML_V45, UI_REVISION } from './ui-v45.js';
 import { transcribeV45, STT_MODEL, STT_REVISION } from './stt-v45.js';
 
-const REVISION = 'talksys-v45-api-primary-multi-engine-search';
+const REVISION = 'talksys-v45-api-primary-multi-engine-search-r2';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
 const MODEL_TIMEOUT_MS = 12000;
@@ -60,6 +60,35 @@ export function canonicalizeInput(value, max = 9000) {
     .replace(/あした/gi, '明日')
     .replace(/あさって/gi, '明後日')
     .replace(/[‐‑‒–—―]/g, '-');
+}
+
+function normalizedMoney(value = '') {
+  return String(value || '').normalize('NFKC').replace(/[\s,]/g, '').replace(/^¥/, '￥');
+}
+
+function moneyMentions(value = '') {
+  return clean(value, 12000).match(/(?:[¥￥]\s*\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?\s*円|\d+(?:\.\d+)?\s*万円)/g) || [];
+}
+
+export function sanitizeUserFacingAnswer(value, question = '', { hasLivePriceEvidence = true } = {}) {
+  let out = clean(value, 9000)
+    .replace(/[^。！？!?]{0,120}(?:少し|しばらく)?お待ち(?:ください|下さい|いただけますか|いただけますでしょうか)[。！？!?]?/g, '')
+    .replace(/[^。！？!?]{0,120}(?:後ほど|改めて)[^。！？!?]{0,100}(?:調べ|確認|検索)[^。！？!?]{0,80}(?:します|いたします)[。！？!?]?/g, '')
+    .replace(/[^。！？!?]{0,120}(?:ご自身で|自分で|各サイトで)[^。！？!?]{0,100}(?:検索|確認|調べ)[^。！？!?]{0,40}(?:ください|下さい)[。！？!?]?/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const q = canonicalizeInput(question, 1800);
+  const priceSensitive = /(?:価格|値段|相場|いくら|最安|もっと安|安いの|中古|新品)/i.test(q);
+  if (priceSensitive && !hasLivePriceEvidence) {
+    const allowed = new Set(moneyMentions(q).map(normalizedMoney));
+    const sentences = out.match(/[^。！？!?]+[。！？!?]?/g) || [out];
+    out = sentences.filter((sentence) => {
+      const amounts = moneyMentions(sentence).map(normalizedMoney);
+      return !amounts.some(amount => !allowed.has(amount));
+    }).join('').trim();
+  }
+  return out || deterministicStableFallback(q);
 }
 
 function json(data, status = 200) {
@@ -664,6 +693,8 @@ async function deepTurn(body, env, requestSignal, decision) {
       answer = { text: mechanicalGroundedAnswer(apiOk, search, text), ms: 0 };
     }
   }
+  answer.text = sanitizeUserFacingAnswer(answer?.text, text, { hasLivePriceEvidence: search?.hasPriceEvidence === true });
+
   const sources = (search.results || []).slice(0, SEARCH_V44_SOURCE_LIMIT).map((x) => ({
     title: clean(x?.title, 220),
     url: clean(x?.url, 700),
@@ -733,6 +764,8 @@ async function deepTurn(body, env, requestSignal, decision) {
       crossEngineCount: Number(search.crossEngineCount) || 0,
       hostCount: Number(search.hostCount) || 0,
       probeFailures: Number(search.probeFailures) || 0,
+      requiresPriceEvidence: search.requiresPriceEvidence === true,
+      hasPriceEvidence: search.hasPriceEvidence === true,
       directPrimarySourceCount: Number(search.directPrimarySourceCount) || 0,
       directPrimaryDiagnostics: Array.isArray(search.directPrimaryDiagnostics) ? search.directPrimaryDiagnostics.slice(0, 8) : [],
       directPrimaryTargets: Array.isArray(search.directPrimaryTargets) ? search.directPrimaryTargets.slice(0, 8) : [],

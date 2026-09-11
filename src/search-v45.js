@@ -378,6 +378,55 @@ async function searchOne(facet, deadline) {
   };
 }
 
+function isPriceQuestion(value = '') {
+  const q = clean(value, 900);
+  return /(?:現在|今|実売|販売|中古|新品|最安|相場).{0,24}(?:価格|値段|いくら|安)|(?:価格|値段|いくら|最安|相場).{0,24}(?:現在|今|実売|販売|中古|新品|安)/i.test(q);
+}
+
+function concreteMoneyMentions(value = '') {
+  const text = clean(value, 12000);
+  return text.match(/(?:[¥￥]\s*\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?\s*円|\d+(?:\.\d+)?\s*万円)/g) || [];
+}
+
+function moneyEvidenceWindows(text = '', modelHints = []) {
+  const plain = clean(text, 160000);
+  if (!plain) return [];
+  const out = [];
+  const re = /(?:[¥￥]\s*\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?\s*円|\d+(?:\.\d+)?\s*万円)/g;
+  for (const match of plain.matchAll(re)) {
+    const start = Math.max(0, match.index - 110);
+    const end = Math.min(plain.length, match.index + match[0].length + 110);
+    const window = clean(plain.slice(start, end), 280);
+    if (modelHints.length && !modelHints.some(h => window.toLowerCase().includes(h.toLowerCase()))) continue;
+    if (!out.includes(window)) out.push(window);
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+function hasConcretePriceEvidence(results = []) {
+  return (results || []).some((item) => {
+    if (item?.structuredApi && item?.sourceRole !== 'seller') return false;
+    const sellerish = item?.sourceRole === 'seller' || /(?:amazon|sofmap|be-stock|mercari|rakuten|yahoo|中古|販売|商品|shop|store)/i.test(`${item?.url || ''} ${item?.title || ''}`);
+    if (!sellerish) return false;
+    const body = `${item?.title || ''} ${item?.snippet || ''} ${item?.excerpt || ''} ${(item?.moneyEvidence || []).join(' ')}`;
+    return concreteMoneyMentions(body).length > 0;
+  });
+}
+
+function priceRecoveryFacets(plan, ranked = []) {
+  const models = extractCandidates(ranked, 2).map(x => x.name);
+  const subject = models[0] || clean(plan?.resolvedQuestion || '', 180)
+    .replace(/(?:現在|今|実売|販売中|最安|相場|価格|値段|いくら|調べて|検索して|探して|確認して|もっと安いのある|その中で)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const queries = unique([
+    subject ? `${subject} 中古 販売 価格 円` : '',
+    models[1] ? `${models[1]} 中古 販売 価格 円` : (subject ? `${subject} 在庫 価格 円` : ''),
+  ], 2);
+  return queries.map((primaryQuery, i) => ({ id: `price-recovery-${i + 1}`, stage: 'verification', sourceRole: 'seller', primaryQuery }));
+}
+
 function extractCandidates(results, limit = 4) {
   const out = [], seen = new Set();
   const patterns = [
@@ -422,11 +471,14 @@ async function enrichTop(results, deadline, limit = 2) {
     const remaining = deadline - Date.now();
     if (remaining < 400 || !/^https?:\/\//.test(item?.url || '')) return item;
     try {
-      const r = await fetch(item.url, { redirect:'follow', headers:{ accept:'text/html,application/xhtml+xml', 'user-agent':'TalkSys/45 (+https://talksys.syouziroupc.workers.dev)', 'accept-language':'ja,en;q=0.7' }, signal: AbortSignal.timeout(Math.max(300, Math.min(1200, remaining-100))) });
+      const r = await fetch(item.url, { redirect:'follow', headers:{ accept:'text/html,application/xhtml+xml', 'user-agent':'TalkSys/45 (+https://talksys.syouziroupc.workers.dev)', 'accept-language':'ja,en;q=0.7' }, signal: AbortSignal.timeout(Math.max(300, Math.min(1500, remaining-100))) });
       if (!r.ok || !/(?:text|html)/i.test(r.headers.get('content-type') || '')) return item;
-      const html = (await r.text()).slice(0, 240000);
-      const text = html.replace(/<script\b[\s\S]*?<\/script>/gi,' ').replace(/<style\b[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&amp;/g,' ').replace(/\s+/g,' ').trim().slice(0,2400);
-      return text.length > 80 ? { ...item, excerpt: text, engine: `${item.engine || 'bing-rss'}+page` } : item;
+      const html = (await r.text()).slice(0, 420000);
+      const fullText = html.replace(/<script\b[\s\S]*?<\/script>/gi,' ').replace(/<style\b[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&amp;/g,' ').replace(/\s+/g,' ').trim();
+      const models = extractCandidates([item], 3).map(x => x.name);
+      const moneyEvidence = moneyEvidenceWindows(fullText, models);
+      const excerpt = clean(fullText.slice(0, 3600) + (moneyEvidence.length ? ` 価格表記候補: ${moneyEvidence.join(' / ')}` : ''), 6200);
+      return excerpt.length > 80 ? { ...item, excerpt, moneyEvidence, engine: `${item.engine || 'web'}+page` } : item;
     } catch { return item; }
   }));
   const map = new Map(enriched.map(x => [x.url, x]));
@@ -503,7 +555,26 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   }
 
   let ranked = diversify(merged, SEARCH_V44_SOURCE_LIMIT);
-  ranked = await enrichTop(ranked, deadline, 2);
+  ranked = await enrichTop(ranked, deadline, 4);
+
+  const requiresPriceEvidence = isPriceQuestion(plan.resolvedQuestion);
+  let hasPriceEvidence = hasConcretePriceEvidence(ranked);
+  if (SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED && requiresPriceEvidence && !hasPriceEvidence && deadline - Date.now() > 1500) {
+    const recoveryFacets = priceRecoveryFacets(plan, ranked).slice(0, 2);
+    if (recoveryFacets.length) {
+      const t = Date.now();
+      const recovery = await Promise.all(recoveryFacets.map(f => searchOne(f, deadline)));
+      diagnostics.push(...recovery.map(x => x.diag));
+      merged.push(...recovery.flatMap(x => x.results));
+      allQueries.push(...recoveryFacets.map(f => f.primaryQuery));
+      ranked = diversify(merged, SEARCH_V44_SOURCE_LIMIT);
+      ranked = await enrichTop(ranked, deadline, 5);
+      hasPriceEvidence = hasConcretePriceEvidence(ranked);
+      timings.priceRecoveryMs = Date.now() - t;
+      rounds = Math.max(rounds, 2);
+    }
+  }
+
   const hostCount = new Set(ranked.map(x => hostOf(x?.url)).filter(Boolean)).size;
   const baseEvidenceUseful = ranked.length >= 2 || (ranked.length === 1 && ranked[0].queryGateScore >= 6);
   const requiresCurrentFirmwareVersion = /(最新|現在).*(BIOS|UEFI|ファームウェア)|(?:BIOS|UEFI|ファームウェア).*(最新|現在)/i.test(plan.resolvedQuestion);
@@ -516,7 +587,9 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     const confirmsCurrent = item?.currentFirmwareVersionConfirmed === true;
     return official && confirmsCurrent && /(?:version|ver\.?|バージョン|BIOS)\s*[:：v]?\s*[a-z]?\d+(?:[.\-][a-z0-9]+)+/i.test(body);
   });
-  const evidenceUseful = baseEvidenceUseful && (!requiresCurrentFirmwareVersion || hasCurrentFirmwareVersionEvidence);
+  const evidenceUseful = baseEvidenceUseful
+    && (!requiresCurrentFirmwareVersion || hasCurrentFirmwareVersionEvidence)
+    && (!requiresPriceEvidence || hasPriceEvidence);
   const sufficient = plan.researchMode === 'discover_then_verify'
     ? Boolean(candidates.length && evidenceUseful)
     : evidenceUseful;
@@ -531,7 +604,11 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     rawResults: dedupeSearchResults(merged, 40),
     results: ranked,
     rounds,
-    coverage: { sufficient, reason: sufficient ? 'staged_evidence_sufficient' : (ranked.length ? 'partial_evidence' : 'no_results'), missingFacets: sufficient ? [] : (plan.facets || []).map(f => f.id) },
+    coverage: {
+      sufficient,
+      reason: sufficient ? 'staged_evidence_sufficient' : (ranked.length ? 'partial_evidence' : 'no_results'),
+      missingFacets: sufficient ? [] : unique([...(requiresPriceEvidence && !hasPriceEvidence ? ['current-price'] : []), ...(plan.facets || []).map(f => f.id)], 8),
+    },
     evidenceUseful,
     researchStateMachine: true,
     questionFirstPlanning: true,
@@ -567,8 +644,10 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     directPrimaryTargets: (directPrimary.targets || []).map(x => ({ resolver: x.resolver, role: x.role, url: x.url, model: x.model, version: x.version || '', currentFirmwareVersionConfirmed: x.currentFirmwareVersionConfirmed === true })),
     requiresCurrentFirmwareVersion,
     hasCurrentFirmwareVersionEvidence,
+    requiresPriceEvidence,
+    hasPriceEvidence,
     timings,
   };
 }
 
-export const __test = { inferIntent, simplePlan, officialDomainHint, queryTerms, extractCandidates };
+export const __test = { inferIntent, simplePlan, officialDomainHint, queryTerms, extractCandidates, isPriceQuestion, concreteMoneyMentions, hasConcretePriceEvidence, priceRecoveryFacets };
