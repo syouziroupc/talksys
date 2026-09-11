@@ -65,4 +65,4 @@ jobs:
           git pull --rebase origin main
           git push origin HEAD:main
 
-# retry after script escaping fix
+# retry after aligning resilient-search regression contracts
