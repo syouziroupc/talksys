@@ -6,11 +6,14 @@ import { parseShoppingBudget, shoppingKeyword, publicShoppingApiRegistry, search
 import { __test as primaryTest } from '../src/direct-primary-v45.js';
 import { deterministicStableFallback } from '../src/worker-v44.js';
 
-test('general RSS/web scraping provider is disabled', () => {
-  assert.equal(SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED, false);
-  assert.equal(SEARCH_V45_PROVIDER, 'formal-structured-apis+direct-primary');
+test('general web fallback is enabled behind formal APIs and direct-primary retrieval', () => {
+  assert.equal(SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED, true);
+  assert.equal(SEARCH_V45_PROVIDER, 'formal-structured-apis+direct-primary+rotating-web');
   const source = fs.readFileSync(new URL('../src/search-v45.js', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /searchBingRss\(/);
+  assert.match(source, /searchProbe/);
+  assert.match(source, /duckduckgo/);
+  assert.match(source, /bing-html/);
+  assert.match(source, /google-news/);
 });
 
 test('routine generic shopping skips Qwen director', () => {
@@ -60,10 +63,12 @@ test('firmware fallback never invents current version', () => {
   assert.match(text, /推測しません/);
 });
 
-test('worker health overrides inherited stale search metadata', () => {
+test('worker health reports resilient multi-engine search without stale disabled metadata', () => {
   const source = fs.readFileSync(new URL('../src/worker-v44.js', import.meta.url), 'utf8');
-  assert.match(source, /webSearchEngine: 'none-general; formal-api\+direct-primary'/);
+  assert.match(source, /webSearchEngine: 'duckduckgo\+bing-html\+bing-rss\+google-news; formal-api\+direct-primary'/);
   assert.match(source, /searchFillerModel: 'none'/);
-  assert.match(source, /bingRssEnabled: false/);
+  assert.match(source, /bingRssEnabled: true/);
+  assert.match(source, /searchEngineRotation: true/);
+  assert.match(source, /searchEngineRetry: true/);
   assert.match(source, /shoppingApiRegistry/);
 });
