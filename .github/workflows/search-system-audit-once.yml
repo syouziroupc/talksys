@@ -43,27 +43,40 @@ jobs:
             printf '%s\n' '{"ok":false,"transportError":"curl_failed"}' > /tmp/health.json
           fi
 
-          if ! jq -e '.webRetrieval == true' /tmp/health.json >/dev/null; then failures=$((failures+1)); fi
-          if ! jq -e '.generalWebSearchEnabled == true' /tmp/health.json >/dev/null; then failures=$((failures+1)); fi
+          jq -e '.webRetrieval == true' /tmp/health.json >/dev/null || failures=$((failures+1))
+          jq -e '.generalWebSearchEnabled == true' /tmp/health.json >/dev/null || failures=$((failures+1))
 
           turn weather '別府市の今日の天気は？'
-          if ! jq -e '.ok == true and .apiUsed == true and ([.apiSources[].tool] | index("jma_weather") != null)' /tmp/weather.json >/dev/null; then failures=$((failures+1)); fi
+          jq -e '.ok == true and .apiUsed == true and ([.apiSources[].tool] | index("jma_weather") != null)' /tmp/weather.json >/dev/null || failures=$((failures+1))
 
           turn fx '100米ドルは日本円でいくら？'
-          if ! jq -e '.ok == true and .apiUsed == true and ([.apiSources[].tool] | index("frankfurter") != null)' /tmp/fx.json >/dev/null; then failures=$((failures+1)); fi
+          jq -e '.ok == true and .apiUsed == true and ([.apiSources[].tool] | index("frankfurter") != null)' /tmp/fx.json >/dev/null || failures=$((failures+1))
 
           turn gdp '日本の一人当たりGDPは？'
-          if ! jq -e '.ok == true and .apiUsed == true and ([.apiSources[].tool] | index("world_bank_wdi") != null)' /tmp/gdp.json >/dev/null; then failures=$((failures+1)); fi
+          jq -e '.ok == true and .apiUsed == true and ([.apiSources[].tool] | index("world_bank_wdi") != null)' /tmp/gdp.json >/dev/null || failures=$((failures+1))
 
           turn current_web 'OpenAIの今日の最新ニュースを検索して、重要なものを2件だけ教えて'
-          if ! jq -e '.ok == true and .search == true and .searchUseful == true and ((.sources // []) | length) >= 1' /tmp/current_web.json >/dev/null; then failures=$((failures+1)); fi
+          jq -e '.ok == true and .search == true and .searchUseful == true and ((.sources // []) | length) >= 1' /tmp/current_web.json >/dev/null || failures=$((failures+1))
 
-          turn firmware 'X79A-GD45の最新BIOSを公式情報から確認して'
-          if ! jq -e '.ok == true and .search == true and .searchUseful == true and ((.sources // []) | length) >= 1' /tmp/firmware.json >/dev/null; then failures=$((failures+1)); fi
+          turn firmware_implicit 'X79A-GD45の最新BIOSを公式情報から確認して'
+          jq -e '.ok == true and .search == true and .searchUseful == true and ((.sources // []) | length) >= 1' /tmp/firmware_implicit.json >/dev/null || failures=$((failures+1))
+
+          turn firmware_explicit 'MSI X79A-GD45の最新BIOSを公式情報から確認して'
+          jq -e '.ok == true and .search == true and ((.sources // []) | length) >= 1' /tmp/firmware_explicit.json >/dev/null || failures=$((failures+1))
+
+          turn firmware_archive 'MSI X79A-GD45のBIOS 2.8が公式配布物として存在するか確認して'
+          jq -e '.ok == true and .search == true and ((.sources // []) | length) >= 1' /tmp/firmware_archive.json >/dev/null || failures=$((failures+1))
+
+          turn shopping 'CF-SV8の現在の中古価格を調べて、安い候補を教えて'
+          jq -e '.ok == true and .search == true and .searchUseful == true and ((.sources // []) | length) >= 1' /tmp/shopping.json >/dev/null || failures=$((failures+1))
+
+          turn local_search '別府市でパソコン修理店を3つ探して'
+          jq -e '.ok == true and .search == true and .searchUseful == true and ((.sources // []) | length) >= 1' /tmp/local_search.json >/dev/null || failures=$((failures+1))
 
           history='[{"role":"user","content":"2万円以下で中古ノートPCを探して"},{"role":"assistant","content":"候補を確認します。"}]'
           turn context 'その中でもっと安いのある？' "$history"
-          if ! jq -e '(.resolvedQuestion // "") | contains("中古ノートPC")' /tmp/context.json >/dev/null; then failures=$((failures+1)); fi
+          jq -e '(.resolvedQuestion // "") | contains("中古ノートPC")' /tmp/context.json >/dev/null || failures=$((failures+1))
+          jq -e '.search == true' /tmp/context.json >/dev/null || failures=$((failures+1))
 
           jq -n \
             --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -73,9 +86,13 @@ jobs:
             --slurpfile fx /tmp/fx.json \
             --slurpfile gdp /tmp/gdp.json \
             --slurpfile currentWeb /tmp/current_web.json \
-            --slurpfile firmware /tmp/firmware.json \
+            --slurpfile firmwareImplicit /tmp/firmware_implicit.json \
+            --slurpfile firmwareExplicit /tmp/firmware_explicit.json \
+            --slurpfile firmwareArchive /tmp/firmware_archive.json \
+            --slurpfile shopping /tmp/shopping.json \
+            --slurpfile localSearch /tmp/local_search.json \
             --slurpfile context /tmp/context.json \
-            '{generatedAt:$generatedAt,failures:$failures,health:$health[0],tests:{weather:$weather[0],fx:$fx[0],gdp:$gdp[0],currentWeb:$currentWeb[0],firmware:$firmware[0],context:$context[0]}}' \
+            '{generatedAt:$generatedAt,failures:$failures,health:$health[0],tests:{weather:$weather[0],fx:$fx[0],gdp:$gdp[0],currentWeb:$currentWeb[0],firmwareImplicit:$firmwareImplicit[0],firmwareExplicit:$firmwareExplicit[0],firmwareArchive:$firmwareArchive[0],shopping:$shopping[0],localSearch:$localSearch[0],context:$context[0]}}' \
             > audit/search-system-audit-result.json
 
           echo "failures=$failures" >> "$GITHUB_OUTPUT"
@@ -91,7 +108,7 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m 'Record TalkSys search system audit result'
+          git commit -m 'Record expanded TalkSys search system audit result'
           git pull --rebase origin main
           git push origin HEAD:main
 
