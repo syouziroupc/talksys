@@ -50,21 +50,21 @@ jobs:
         shell: bash
         run: npx wrangler deploy
 
-      - name: Verify v45 production contract
+      - name: Verify standalone v45 production contract
         shell: bash
         run: |
           set -euo pipefail
           body=""
           for attempt in $(seq 1 20); do
             body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
-            ok="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(Boolean(d.revision==='talksys-v45-formal-api-primary-safe-fallback'&&d.voiceRevision==='talksys-v45-http-adaptive-vad'&&d.uiRevision==='talksys-v45-ui-restored-20260911'&&d.sttRevision==='talksys-v45-hardened-whisper'&&d.voiceArchitecture==='http-turns-client-vad-v45'&&d.adaptiveNoiseVad===true&&d.ambientCalibration===true&&d.legacyWebSocketVoice===false&&d.durableObjectVoice===false&&d.legacyAgentRoute===false&&d.unifiedTurnRouter===true&&d.legacyV43TurnDelegation===false&&d.apiFirst===true&&d.apiParallel===true&&d.groundedEvidenceFallback===true&&d.externalFailureUsesCasualModel===false&&d.modelTimeoutMs===12000&&d.searchDirectorModel==='@cf/qwen/qwen3-30b-a3b-fp8'&&d.searchDefault==='intent-routed-v45')))" )"
+            ok="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(Boolean(d.revision==='talksys-v45-standalone-answer-core'&&d.voiceRevision==='talksys-v45-standalone-http-adaptive-vad'&&d.uiRevision==='talksys-v45-ui-restored-20260911'&&d.sttRevision==='talksys-v45-hardened-whisper'&&d.runtimeGeneration==='v45-only'&&d.legacyRuntimeCutoff===true&&d.answerContract==='direct-context-grounded-v45'&&d.voiceArchitecture==='http-turns-client-vad-v45'&&d.adaptiveNoiseVad===true&&d.ambientCalibration===true&&d.legacyWebSocketVoice===false&&d.durableObjectVoice===false&&d.legacyAgentRoute===false&&d.unifiedTurnRouter===true&&d.legacyV43TurnDelegation===false&&d.apiFirst===true&&d.apiParallel===true&&d.groundedEvidenceFallback===true&&d.externalFailureUsesCasualModel===false&&d.modelTimeoutMs===12000&&d.searchDirectorModel==='@cf/qwen/qwen3-30b-a3b-fp8'&&d.searchDefault==='intent-routed-v45')))" )"
             [[ "$ok" == "true" ]] && break
             [[ "$attempt" -eq 20 ]] && { echo "$body"; exit 1; }
             sleep 3
           done
           echo "$body"
 
-      - name: Verify live UI and microphone client
+      - name: Verify live v45-only UI and microphone client
         shell: bash
         run: |
           set -euo pipefail
@@ -72,10 +72,9 @@ jobs:
           grep -F 'talksys-v45-ui-restored-20260911' <<< "$page"
           grep -F '/talk-v45.js' <<< "$page"
           grep -F '非常用の文字入力' <<< "$page"
-          grep -F 'Foonz' <<< "$page"
 
           client="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v45.js")"
-          grep -F 'talksys-v45-http-adaptive-vad' <<< "$client"
+          grep -F 'talksys-v45-standalone-http-adaptive-vad' <<< "$client"
           grep -F 'getUserMedia' <<< "$client"
           grep -F '/api/transcribe' <<< "$client"
           grep -F '/api/turn' <<< "$client"
@@ -86,10 +85,12 @@ jobs:
             exit 1
           fi
 
-          telephony="$(curl -fsS --max-time 20 "$PRODUCTION_URL/telephony-health")"
-          TELEPHONY="$telephony" node -e "const d=JSON.parse(process.env.TELEPHONY||'{}');if(d.provider!=='Foonz'||d.connected!==false||d.status!=='planned-not-wired')throw new Error(process.env.TELEPHONY);"
+          for old in talk-v43.js talk-v42.js; do
+            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$PRODUCTION_URL/$old")"
+            test "$status" = "404"
+          done
 
-      - name: Production smoke
+      - name: Production answer smoke
         shell: bash
         run: |
           set -euo pipefail
@@ -100,3 +101,7 @@ jobs:
           payload='{"text":"別府市の今日の天気は？","history":[]}'
           out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
           OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather'))throw new Error(process.env.OUT);"
+
+          payload='{"text":"どれがいい？","history":[{"role":"user","content":"大学のレポート用に中古ノートPCを探してる。予算は3万円。"},{"role":"assistant","content":"Officeとブラウザ中心ですね。"}]}'
+          out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||a.length<8||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
