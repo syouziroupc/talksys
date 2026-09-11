@@ -65,4 +65,4 @@ jobs:
           git pull --rebase origin main
           git push origin HEAD:main
 
-# retry after aligning resilient-search regression contracts
+# retry after removing stale deploy-only Foonz assertion
