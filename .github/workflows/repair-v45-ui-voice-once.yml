@@ -58,7 +58,7 @@ jobs:
           set -euo pipefail
           git config user.name talksys-automation
           git config user.email actions@users.noreply.github.com
-          git add scripts/repair-v45-ui-voice.py scripts/fix-v45-repair-escaping.py src/worker-v44.js src/ui-v45.js src/talk-client-v45.js src/stt-v45.js tests/v45-shell-regression.test.mjs .github/workflows/deploy.yml
+          git add scripts/repair-v45-ui-voice.py scripts/fix-v45-repair-escaping.py src/worker-v44.js src/ui-v45.js src/talk-client-v45.js src/stt-v45.js tests/v45-shell-regression.test.mjs
           if git diff --cached --quiet; then
             echo 'Repair already applied; nothing to commit.'
           else
@@ -149,4 +149,4 @@ jobs:
           out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
           OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather'))throw new Error(process.env.OUT);"
 
-# rerun marker: escape-normalization-auth-recovery-v2
+# rerun marker: push-runtime-without-workflow-v3
