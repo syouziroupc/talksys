@@ -52,7 +52,7 @@ test('Wrangler stays on the clean non-Durable-Object production entry', () => {
 });
 
 test('production deployment now checks UI and microphone regressions', () => {
-  assert.match(deploy, /talksys-v45-http-adaptive-vad/);
+  assert.match(deploy, /talksys-v45-standalone-http-adaptive-vad/);
   assert.match(deploy, /talksys-v45-ui-restored-20260911/);
   assert.match(deploy, /\/talk-v45\.js/);
   assert.match(deploy, /getUserMedia/);
