@@ -51,10 +51,14 @@ test('Wrangler stays on the clean non-Durable-Object production entry', () => {
   assert.doesNotMatch(wrangler, /"durable_objects"\s*:/);
 });
 
-test('production deployment now checks UI and microphone regressions', () => {
-  assert.match(deploy, /talksys-v45-standalone-http-adaptive-vad/);
+test('production deployment derives revision contract from source and checks current UI and microphone', () => {
+  assert.match(deploy, /CLIENT_REVISION/);
+  assert.match(deploy, /UI_REVISION/);
+  assert.match(deploy, /STT_REVISION/);
+  assert.match(deploy, /talksys-v45-http-adaptive-vad/);
   assert.match(deploy, /talksys-v45-ui-restored-20260911/);
   assert.match(deploy, /\/talk-v45\.js/);
   assert.match(deploy, /getUserMedia/);
   assert.match(deploy, /\/api\/transcribe/);
+  assert.doesNotMatch(deploy, /talksys-v45-standalone-http-adaptive-vad/);
 });
