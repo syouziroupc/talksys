@@ -8,6 +8,17 @@ function fail(message) {
   process.exitCode = 1;
 }
 
+function validateRepoPath(label, value) {
+  const path = String(value || '').trim();
+  if (!path) {
+    fail(`${label}: path is required`);
+    return '';
+  }
+  if (!path.startsWith('src/')) fail(`${label}: path must currently live under src/: ${path}`);
+  if (!existsSync(new URL(path, repoRoot))) fail(`${label}: file does not exist: ${path}`);
+  return path;
+}
+
 let registry;
 try {
   registry = JSON.parse(readFileSync(registryPath, 'utf8'));
@@ -22,33 +33,37 @@ if (!registry?.capabilities || typeof registry.capabilities !== 'object') {
 }
 
 const allowedStatuses = new Set(['production', 'production-supporting', 'planned', 'legacy']);
-const canonicalOwners = new Map();
+let capabilityCount = 0;
+const canonicalFiles = new Set();
 
 for (const [id, entry] of Object.entries(registry.capabilities || {})) {
-  if (!/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(id)) {
-    fail(`invalid capability id: ${id}`);
-  }
+  capabilityCount += 1;
+  if (!/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(id)) fail(`invalid capability id: ${id}`);
 
-  const canonical = String(entry?.canonical || '').trim();
+  const canonical = validateRepoPath(`${id}.canonical`, entry?.canonical);
   const responsibility = String(entry?.responsibility || '').trim();
   const status = String(entry?.status || '').trim();
 
-  if (!canonical) {
-    fail(`${id}: canonical path is required`);
-    continue;
-  }
-  if (!canonical.startsWith('src/')) fail(`${id}: canonical path must currently live under src/: ${canonical}`);
   if (!responsibility) fail(`${id}: responsibility is required`);
   if (!allowedStatuses.has(status)) fail(`${id}: invalid status '${status}'`);
+  if (canonical) canonicalFiles.add(canonical);
 
-  const fileUrl = new URL(canonical, repoRoot);
-  if (!existsSync(fileUrl)) fail(`${id}: canonical file does not exist: ${canonical}`);
+  if (entry?.companions !== undefined && !Array.isArray(entry.companions)) {
+    fail(`${id}: companions must be an array`);
+  }
+  for (const [index, companion] of (entry?.companions || []).entries()) {
+    validateRepoPath(`${id}.companions[${index}]`, companion);
+  }
+}
 
-  const previous = canonicalOwners.get(canonical);
-  if (previous) fail(`${id}: canonical file is already owned by ${previous}: ${canonical}`);
-  canonicalOwners.set(canonical, id);
+if (registry?.legacyPriorArt !== undefined && (typeof registry.legacyPriorArt !== 'object' || Array.isArray(registry.legacyPriorArt))) {
+  fail('legacyPriorArt must be an object when present');
+}
+for (const [path, note] of Object.entries(registry?.legacyPriorArt || {})) {
+  validateRepoPath(`legacyPriorArt.${path}`, path);
+  if (!String(note || '').trim()) fail(`legacyPriorArt.${path}: note is required`);
 }
 
 if (!process.exitCode) {
-  console.log(`[architecture-registry] OK: ${canonicalOwners.size} canonical capabilities validated`);
+  console.log(`[architecture-registry] OK: ${capabilityCount} capabilities across ${canonicalFiles.size} canonical files validated`);
 }
