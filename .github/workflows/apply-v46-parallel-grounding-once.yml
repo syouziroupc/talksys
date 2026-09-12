@@ -64,4 +64,4 @@ jobs:
           git pull --rebase origin tmp-v46-parallel-grounding
           git push origin HEAD:tmp-v46-parallel-grounding
 
-# retry after migration script quoting fix
+# retry 3: generated source no longer contains escaped template literals
