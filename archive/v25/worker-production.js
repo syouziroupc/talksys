@@ -1,7 +1,8 @@
-import workerV25, { TalkSysVoiceAgent } from './worker-v25.js';
-import { CLOUDFLARE_LIVE_CLIENT_V25 } from './cloudflare-live-client-v25.js';
-import { collectGroundedEvidenceV23, SEARCH_TOOL_V23_REVISION } from './search-v23.js';
-import { GLM_CONVERSATION_MODEL_V25 } from './glm-conversation-v25.js';
+// Historical TalkSys v25 production wrapper. Not part of the current production graph.
+import workerV25, { TalkSysVoiceAgent } from '../../src/worker-v25.js';
+import { CLOUDFLARE_LIVE_CLIENT_V25 } from '../../src/cloudflare-live-client-v25.js';
+import { collectGroundedEvidenceV23, SEARCH_TOOL_V23_REVISION } from '../../src/search-v23.js';
+import { GLM_CONVERSATION_MODEL_V25 } from '../../src/glm-conversation-v25.js';
 
 export { TalkSysVoiceAgent };
 

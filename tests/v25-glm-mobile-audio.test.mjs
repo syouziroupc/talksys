@@ -5,7 +5,7 @@ import { CLOUDFLARE_LIVE_CLIENT_V25 } from '../src/cloudflare-live-client-v25.js
 import { GLM_CONVERSATION_MODEL_V25 } from '../src/glm-conversation-v25.js';
 
 const worker = fs.readFileSync(new URL('../src/worker-v25.js', import.meta.url), 'utf8');
-const production = fs.readFileSync(new URL('../src/worker-v25-production.js', import.meta.url), 'utf8');
+const production = fs.readFileSync(new URL('../archive/v25/worker-production.js', import.meta.url), 'utf8');
 const runtime = fs.readFileSync(new URL('../src/glm-conversation-v25.js', import.meta.url), 'utf8');
 const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
@@ -50,8 +50,10 @@ test('v25 exposes non-audio microphone diagnostics for handset debugging', () =>
   assert.doesNotMatch(CLOUDFLARE_LIVE_CLIENT_V25, /rawAudio|audioBytes|base64Audio/);
 });
 
-test('v25 production entrypoint and health contract are selected', () => {
-  assert.match(wrangler, /"main":\s*"src\/worker-v25-production\.js"/);
+test('v25 historical production wrapper and health contract are preserved', () => {
+  assert.match(wrangler, /"main":\s*"archive\/v25\/worker-production\.js"/);
+  assert.match(wrangler, /"main":\s*"src\/worker-v44\.js"/);
+  assert.match(production, /Historical TalkSys v25 production wrapper/);
   assert.match(production, /cloudflare-agent-v25-glm-mobile-audio/);
   assert.match(production, /androidCallStartsAfterFirstMicFrame: true/);
   assert.match(production, /microphoneDiagnostics: true/);
