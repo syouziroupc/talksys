@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
 
 concurrency:
   group: talksys-production
@@ -25,6 +26,35 @@ jobs:
         with:
           node-version: 22
 
+      - name: Require main branch and successful Validate TalkSys check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Production deploy is restricted to refs/heads/main; got $GITHUB_REF"
+            exit 1
+          fi
+
+          checks="$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100")"
+
+          CHECKS_JSON="$checks" EXPECTED_SHA="$GITHUB_SHA" node <<'NODE'
+          const data = JSON.parse(process.env.CHECKS_JSON || '{}');
+          const sha = process.env.EXPECTED_SHA || '';
+          const matches = (data.check_runs || []).filter((run) => run?.name === 'validate' && run?.head_sha === sha);
+          const success = matches.some((run) => run?.status === 'completed' && run?.conclusion === 'success');
+          if (!success) {
+            const seen = matches.map((run) => `${run.status}/${run.conclusion || 'none'}`).join(', ') || 'none';
+            throw new Error(`Exact revision ${sha} has no successful Validate TalkSys check (seen: ${seen})`);
+          }
+          console.log(`Validated exact production revision ${sha}`);
+          NODE
+
       - name: Verify required Cloudflare credentials
         shell: bash
         run: |
@@ -38,11 +68,13 @@ jobs:
           set -euo pipefail
           if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 
-      - name: Validate exact revision
+      - name: Validate exact revision again before deploy
         shell: bash
         run: |
           set -euo pipefail
-          find src -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check
+          npm run architecture:check
+          npm run architecture:graph
+          find src archive -type f -name '*.js' -print0 | xargs -0 -n1 node --check
           npm test
           npx wrangler deploy --dry-run
 
