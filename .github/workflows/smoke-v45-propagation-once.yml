@@ -12,23 +12,87 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Check production after propagation
+      - name: Comprehensive production smoke
         env:
           URL: https://talksys.syouziroupc.workers.dev
         shell: bash
         run: |
           set -euo pipefail
-          call() { node -e 'process.stdout.write(JSON.stringify({text:process.argv[1],history:[]}))' "$1" | curl -fsS --max-time "$2" -H 'content-type: application/json' --data-binary @- "$URL/api/turn"; }
-          out="$(call '3万円以下で動画視聴用の中古ノートPCを候補から比較して選んで' 30)"
-          echo "COMPLEX=$out"
+
+          echo '--- health contract ---'
+          health="$(curl -fsS --max-time 25 "$URL/voice-health")"
+          HEALTH="$health" node - <<'NODE'
+          const d=JSON.parse(process.env.HEALTH||'{}');
+          const ok = d.revision==='talksys-v45-standalone-answer-core'
+            && d.voiceRevision==='talksys-v45-standalone-http-adaptive-vad'
+            && d.uiRevision==='talksys-v45-ui-restored-20260911'
+            && d.runtimeGeneration==='v45-only'
+            && d.legacyRuntimeCutoff===true
+            && d.unifiedTurnRouter===true
+            && d.apiFirst===true
+            && d.groundedEvidenceFallback===true
+            && d.externalFailureUsesCasualModel===false;
+          if(!ok) throw new Error(process.env.HEALTH);
+          console.log(JSON.stringify({revision:d.revision,voiceRevision:d.voiceRevision,uiRevision:d.uiRevision,runtimeGeneration:d.runtimeGeneration}));
+          NODE
+
+          echo '--- UI/client contract ---'
+          page="$(curl -fsS --max-time 25 "$URL/")"
+          grep -F 'talksys-v45-ui-restored-20260911' <<< "$page"
+          grep -F '/talk-v45.js' <<< "$page"
+          grep -F '非常用の文字入力' <<< "$page"
+          client="$(curl -fsS --max-time 25 "$URL/talk-v45.js")"
+          grep -F 'talksys-v45-standalone-http-adaptive-vad' <<< "$client"
+          grep -F 'getUserMedia' <<< "$client"
+          grep -F '/api/transcribe' <<< "$client"
+          grep -F '/api/turn' <<< "$client"
+          grep -F 'noiseBoost' <<< "$client"
+          grep -F 'calibrationUntil' <<< "$client"
+          if grep -E 'new[[:space:]]+WebSocket|/agents/' <<< "$client"; then
+            echo 'legacy websocket/agent voice path returned'
+            exit 1
+          fi
+          for old in talk-v43.js talk-v42.js; do
+            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/$old")"
+            test "$status" = "404"
+          done
+
+          call() {
+            local text="$1" timeout="$2" history="${3:-[]}";
+            TEXT="$text" HISTORY="$history" node -e 'process.stdout.write(JSON.stringify({text:process.env.TEXT,history:JSON.parse(process.env.HISTORY||"[]")}))' \
+              | curl -fsS --max-time "$timeout" -H 'content-type: application/json' --data-binary @- "$URL/api/turn"
+          }
+
+          echo '--- deterministic ---'
+          out="$(call '12345÷15' 20)"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='deterministic-v45'||d.search!==false||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);console.log(JSON.stringify({route:d.route,answer:d.answer}));"
+
+          echo '--- weather structured API ---'
+          out="$(call '別府市の今日の天気は？' 75)"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather'))throw new Error(process.env.OUT);console.log(JSON.stringify({route:d.route,tools,answer:d.answer}));"
+
+          echo '--- contextual follow-up ---'
+          history='[{"role":"user","content":"大学のレポート用に中古ノートPCを探してる。予算は3万円。"},{"role":"assistant","content":"Officeとブラウザ中心ですね。"}]'
+          out="$(call 'どれがいい？' 45 "$history")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||a.length<8||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);console.log(JSON.stringify({route:d.route,search:d.search,answer:a}));"
+
+          echo '--- complex shopping research ---'
+          out="$(call '3万円以下で動画視聴用の中古ノートPCを候補から比較して選んで' 60)"
           OUT="$out" node - <<'NODE'
           const d=JSON.parse(process.env.OUT||'{}'), x=d.searchDiagnostics||{};
-          console.log(JSON.stringify({queries:d.queries,plannerTransport:x.plannerTransport,plannerError:x.plannerError,researchMode:x.researchMode,candidateType:x.candidateType,searchMs:d.timings?.searchMs,answer:d.answer}));
+          if(!d.ok || !String(d.answer||'').trim()) throw new Error(process.env.OUT);
+          console.log(JSON.stringify({route:d.route,queries:d.queries,plannerTransport:x.plannerTransport,researchMode:x.researchMode,candidateType:x.candidateType,searchMs:d.timings?.searchMs,answer:d.answer}));
           NODE
-          out="$(call 'MSI X79A-GD45の最新BIOSを公式で確認して' 25)"
-          echo "BIOS=$out"
+
+          echo '--- official BIOS research ---'
+          out="$(call 'MSI X79A-GD45の最新BIOSを公式で確認して' 60)"
+          OUT="$out" node - <<'NODE'
+          const d=JSON.parse(process.env.OUT||'{}');
+          if(!d.ok || !String(d.answer||'').trim()) throw new Error(process.env.OUT);
+          console.log(JSON.stringify({route:d.route,queries:d.queries,answer:d.answer}));
+          NODE
