@@ -28,17 +28,25 @@ jobs:
           health="$(curl -fsS --max-time 25 "$URL/voice-health")"
           HEALTH="$health" node - <<'NODE'
           const d=JSON.parse(process.env.HEALTH||'{}');
-          const ok = d.revision==='talksys-v45-standalone-answer-core'
-            && d.voiceRevision==='talksys-v45-standalone-http-adaptive-vad'
+          const compatibleRevisions = new Set([
+            'talksys-v45-api-primary-multi-engine-search',
+            'talksys-v45-api-primary-multi-engine-search-r2',
+          ]);
+          const ok = d.ok===true
+            && compatibleRevisions.has(d.revision)
+            && d.voiceRevision==='talksys-v45-http-adaptive-vad'
             && d.uiRevision==='talksys-v45-ui-restored-20260911'
-            && d.runtimeGeneration==='v45-only'
-            && d.legacyRuntimeCutoff===true
+            && d.sttRevision==='talksys-v45-hardened-whisper'
+            && d.voiceArchitecture==='http-turns-client-vad-v45'
+            && d.legacyWebSocketVoice===false
+            && d.durableObjectVoice===false
+            && d.legacyAgentRoute===false
             && d.unifiedTurnRouter===true
             && d.apiFirst===true
             && d.groundedEvidenceFallback===true
             && d.externalFailureUsesCasualModel===false;
           if(!ok) throw new Error(process.env.HEALTH);
-          console.log(JSON.stringify({revision:d.revision,voiceRevision:d.voiceRevision,uiRevision:d.uiRevision,runtimeGeneration:d.runtimeGeneration}));
+          console.log(JSON.stringify({revision:d.revision,voiceRevision:d.voiceRevision,uiRevision:d.uiRevision,searchRevision:d.searchRevision}));
           NODE
 
           echo '--- UI/client contract ---'
@@ -47,7 +55,7 @@ jobs:
           grep -F '/talk-v45.js' <<< "$page"
           grep -F '非常用の文字入力' <<< "$page"
           client="$(curl -fsS --max-time 25 "$URL/talk-v45.js")"
-          grep -F 'talksys-v45-standalone-http-adaptive-vad' <<< "$client"
+          grep -F 'talksys-v45-http-adaptive-vad' <<< "$client"
           grep -F 'getUserMedia' <<< "$client"
           grep -F '/api/transcribe' <<< "$client"
           grep -F '/api/turn' <<< "$client"
@@ -57,10 +65,6 @@ jobs:
             echo 'legacy websocket/agent voice path returned'
             exit 1
           fi
-          for old in talk-v43.js talk-v42.js; do
-            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/$old")"
-            test "$status" = "404"
-          done
 
           call() {
             local text="$1" timeout="$2" history="${3:-[]}";

@@ -32,12 +32,21 @@ test('production deploy revalidates architecture, source graph, archived syntax,
   assert.match(workflow, /npx wrangler deploy\s*$/m);
 });
 
-test('production deploy keeps post-deploy contract, UI, microphone, deterministic, weather, and contextual smoke checks', () => {
-  assert.match(workflow, /Verify standalone v45 production contract/);
-  assert.match(workflow, /Verify live v45-only UI and microphone client/);
+test('post-deploy contract is derived from checked-out source instead of stale hard-coded revisions', () => {
+  assert.match(workflow, /Verify current v45 production contract/);
+  assert.match(workflow, /src\/worker-v44\.js/);
+  assert.match(workflow, /CLIENT_REVISION/);
+  assert.match(workflow, /UI_REVISION/);
+  assert.match(workflow, /STT_REVISION/);
+  assert.match(workflow, /EXPECTED_REVISION/);
+  assert.doesNotMatch(workflow, /talksys-v45-standalone-answer-core/);
+  assert.doesNotMatch(workflow, /talksys-v45-standalone-http-adaptive-vad/);
+});
+
+test('production deploy keeps UI, microphone, deterministic, weather, and contextual smoke checks', () => {
+  assert.match(workflow, /Verify live v45 UI and microphone client/);
   assert.match(workflow, /Production answer smoke/);
-  assert.match(workflow, /talksys-v45-standalone-answer-core/);
-  assert.match(workflow, /talksys-v45-standalone-http-adaptive-vad/);
+  assert.match(workflow, /talksys-v45-http-adaptive-vad/);
   assert.match(workflow, /\/api\/transcribe/);
   assert.match(workflow, /\/api\/turn/);
   assert.match(workflow, /12345÷15/);

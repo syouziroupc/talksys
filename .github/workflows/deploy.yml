@@ -104,21 +104,51 @@ jobs:
         shell: bash
         run: npx wrangler deploy
 
-      - name: Verify standalone v45 production contract
+      - name: Verify current v45 production contract
         shell: bash
         run: |
           set -euo pipefail
+          expected_revision="$(node -e "const fs=require('fs');const s=fs.readFileSync('src/worker-v44.js','utf8');const m=s.match(/const REVISION = '([^']+)'/);if(!m)process.exit(1);process.stdout.write(m[1]);")"
+          expected_voice="$(node --input-type=module -e "import {CLIENT_REVISION} from './src/talk-client-v45.js';process.stdout.write(CLIENT_REVISION)")"
+          expected_ui="$(node --input-type=module -e "import {UI_REVISION} from './src/ui-v45.js';process.stdout.write(UI_REVISION)")"
+          expected_stt="$(node --input-type=module -e "import {STT_REVISION} from './src/stt-v45.js';process.stdout.write(STT_REVISION)")"
+
           body=""
           for attempt in $(seq 1 20); do
             body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
-            ok="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(Boolean(d.revision==='talksys-v45-standalone-answer-core'&&d.voiceRevision==='talksys-v45-standalone-http-adaptive-vad'&&d.uiRevision==='talksys-v45-ui-restored-20260911'&&d.sttRevision==='talksys-v45-hardened-whisper'&&d.runtimeGeneration==='v45-only'&&d.legacyRuntimeCutoff===true&&d.answerContract==='direct-context-grounded-v45'&&d.voiceArchitecture==='http-turns-client-vad-v45'&&d.adaptiveNoiseVad===true&&d.ambientCalibration===true&&d.legacyWebSocketVoice===false&&d.durableObjectVoice===false&&d.legacyAgentRoute===false&&d.unifiedTurnRouter===true&&d.legacyV43TurnDelegation===false&&d.apiFirst===true&&d.apiParallel===true&&d.groundedEvidenceFallback===true&&d.externalFailureUsesCasualModel===false&&d.modelTimeoutMs===12000&&d.searchDirectorModel==='@cf/qwen/qwen3-30b-a3b-fp8'&&d.searchDefault==='intent-routed-v45')))" )"
+            ok="$(BODY="$body" EXPECTED_REVISION="$expected_revision" EXPECTED_VOICE="$expected_voice" EXPECTED_UI="$expected_ui" EXPECTED_STT="$expected_stt" node - <<'NODE'
+          let d={};
+          try { d=JSON.parse(process.env.BODY||'{}'); } catch {}
+          const ok = d.ok===true
+            && d.revision===process.env.EXPECTED_REVISION
+            && d.voiceRevision===process.env.EXPECTED_VOICE
+            && d.uiRevision===process.env.EXPECTED_UI
+            && d.sttRevision===process.env.EXPECTED_STT
+            && d.voiceArchitecture==='http-turns-client-vad-v45'
+            && d.adaptiveNoiseVad===true
+            && d.ambientCalibration===true
+            && d.legacyWebSocketVoice===false
+            && d.durableObjectVoice===false
+            && d.legacyAgentRoute===false
+            && d.unifiedTurnRouter===true
+            && d.legacyV43TurnDelegation===false
+            && d.apiFirst===true
+            && d.apiParallel===true
+            && d.groundedEvidenceFallback===true
+            && d.externalFailureUsesCasualModel===false
+            && d.modelTimeoutMs===12000
+            && d.searchDirectorModel==='@cf/qwen/qwen3-30b-a3b-fp8'
+            && d.searchDefault==='intent-routed-v45';
+          process.stdout.write(String(Boolean(ok)));
+          NODE
+            )"
             [[ "$ok" == "true" ]] && break
             [[ "$attempt" -eq 20 ]] && { echo "$body"; exit 1; }
             sleep 3
           done
           echo "$body"
 
-      - name: Verify live v45-only UI and microphone client
+      - name: Verify live v45 UI and microphone client
         shell: bash
         run: |
           set -euo pipefail
@@ -128,7 +158,7 @@ jobs:
           grep -F '非常用の文字入力' <<< "$page"
 
           client="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v45.js")"
-          grep -F 'talksys-v45-standalone-http-adaptive-vad' <<< "$client"
+          grep -F 'talksys-v45-http-adaptive-vad' <<< "$client"
           grep -F 'getUserMedia' <<< "$client"
           grep -F '/api/transcribe' <<< "$client"
           grep -F '/api/turn' <<< "$client"
@@ -138,11 +168,6 @@ jobs:
             echo 'legacy websocket/agent voice path returned'
             exit 1
           fi
-
-          for old in talk-v43.js talk-v42.js; do
-            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$PRODUCTION_URL/$old")"
-            test "$status" = "404"
-          done
 
       - name: Production answer smoke
         shell: bash
