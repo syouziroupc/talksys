@@ -1,2 +1,2 @@
-Retry deployment after PR #28 smoke-contract fix.
+Deploy credential-resolution fix and run production smoke tests.
 Requested: 2026-09-12 JST
