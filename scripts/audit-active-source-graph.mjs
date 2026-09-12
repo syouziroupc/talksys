@@ -59,6 +59,7 @@ function relativeImports(file) {
 function classifyReferenceFile(file) {
   if (file.startsWith('tests/')) return 'test';
   if (file.startsWith('src/')) return 'legacy-source';
+  if (file.startsWith('archive/')) return 'archive';
   if (file.startsWith('scripts/') || file.startsWith('.github/')) return 'tooling';
   if (file.startsWith('architecture/') || /(?:^|\/)(?:README|CHANGELOG|CONTRIBUTING)(?:\.|$)/i.test(file)) return 'documentation';
   return 'config-or-other';
@@ -72,8 +73,6 @@ function textualReferences(target, textFiles) {
     if (file === target) continue;
     let source = '';
     try { source = readFileSync(path.join(root, file), 'utf8'); } catch { continue; }
-    // Full repository paths catch tests/scripts/docs. Basename/stem patterns catch
-    // normal relative imports such as './worker-v20.js' and './worker-v20'.
     if (source.includes(target)
       || source.includes(basename)
       || source.includes(`./${stem}`)
@@ -90,6 +89,10 @@ while (queue.length) {
   const file = queue.shift();
   if (!file || reachable.has(file)) continue;
   if (!existsSync(path.join(root, file))) throw new Error(`runtime graph references missing file: ${file}`);
+  if (file.startsWith('archive/')) {
+    console.error(`[source-graph] production runtime must never import historical archive code: ${file}`);
+    process.exit(1);
+  }
   reachable.add(file);
   for (const imported of relativeImports(file)) if (!reachable.has(imported)) queue.push(imported);
 }
@@ -119,12 +122,12 @@ const classification = unreachable.map((file) => {
     (refsByKind[kind] ||= []).push(ref);
   }
   const protectedPriorArt = legacyPriorArt.has(file);
-  const strongRefs = refs.filter((ref) => !ref.startsWith('src/'));
-  const sourceOnly = refs.length > 0 && strongRefs.length === 0;
+  const strongRefs = refs.filter((ref) => !ref.startsWith('src/') && !ref.startsWith('archive/'));
+  const historicalOnly = refs.length > 0 && strongRefs.length === 0;
   let status = 'orphan-candidate';
   if (protectedPriorArt) status = 'prior-art-protected';
   else if (strongRefs.length) status = 'externally-referenced-legacy';
-  else if (sourceOnly) status = 'legacy-source-only';
+  else if (historicalOnly) status = 'legacy-source-only';
   return { file, status, refs, refsByKind };
 });
 
@@ -145,4 +148,4 @@ for (const item of classification) {
     .join(',');
   console.log(`[source-graph] ${item.status}: ${item.file}${refSummary ? ` (${refSummary})` : ''}`);
 }
-console.log('[source-graph] NOTE: orphan-candidate means no textual reference was found outside the file and it is not registered prior art. Deletion still requires a separate small PR plus the full test and bundle checks.');
+console.log('[source-graph] NOTE: archive references are historical-only and do not make a src file production-active. orphan-candidate means no textual reference was found outside the file and it is not registered prior art. Deletion still requires a separate small PR plus the full test and bundle checks.');
