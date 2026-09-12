@@ -6,10 +6,14 @@ import { CLOUDFLARE_LIVE_CLIENT_V23 } from '../src/cloudflare-live-client-v23.js
 import { SEARCH_TRACE_CLIENT_V23 } from '../src/search-trace-client-v23.js';
 
 const worker = fs.readFileSync(new URL('../src/worker-v23.js', import.meta.url), 'utf8');
+const archivedProductionWrapper = fs.readFileSync(new URL('../archive/v23/worker-production.js', import.meta.url), 'utf8');
 const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
-test('v23 is production entrypoint with v22 rollback base', () => {
-  assert.match(wrangler, /"main":\s*"src\/worker-v23-production\.js"/);
+test('v23 production wrapper is preserved as historical rollback evidence with v22 base', () => {
+  assert.match(wrangler, /"main":\s*"archive\/v23\/worker-production\.js"/);
+  assert.match(wrangler, /"main":\s*"src\/worker-v44\.js"/);
+  assert.match(archivedProductionWrapper, /Historical TalkSys v23 production wrapper/);
+  assert.match(archivedProductionWrapper, /workerV23\.fetch/);
   assert.match(worker, /extends TalkSysVoiceAgentV22/);
   assert.match(worker, /workerV22\.fetch/);
   assert.match(worker, /cloudflare-agent-v23-mobile-search-pc-quality/);
