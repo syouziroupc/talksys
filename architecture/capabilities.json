@@ -4,7 +4,8 @@
   "rules": {
     "defaultChangeMode": "extend",
     "newCapabilityRequiresDecisionRecord": true,
-    "versionSuffixForNewCanonicalFiles": false
+    "versionSuffixForNewCanonicalFiles": false,
+    "multipleCapabilitiesMayShareCanonicalFile": true
   },
   "capabilities": {
     "runtime.entry": {
@@ -14,52 +15,72 @@
       "migrationNote": "Legacy versioned filename. Keep as canonical until a deliberate no-behavior-change rename is performed."
     },
     "grounding.policy": {
-      "canonical": "src/grounding-policy-v22.js",
-      "status": "production-supporting",
-      "responsibility": "Grounding/search requirement policy and contextual factual-risk detection",
-      "migrationNote": "Reuse or extend this policy rather than introducing another grounding classifier."
+      "canonical": "src/worker-v44.js",
+      "status": "production",
+      "symbol": "classifyTurn",
+      "responsibility": "Current factual/external lookup routing and contextual follow-up classification",
+      "migrationNote": "The older src/grounding-policy-v22.js contains useful prior logic but is not the current canonical production implementation."
+    },
+    "answer.synthesis": {
+      "canonical": "src/worker-v44.js",
+      "status": "production",
+      "responsibility": "Top-level answer synthesis, grounded fallback behavior and user-facing sanitization",
+      "migrationNote": "v46 fail-closed answer behavior should extend this path rather than create a parallel answer controller."
     },
     "search.execution": {
       "canonical": "src/search-v45.js",
       "status": "production",
-      "responsibility": "Search planning, provider execution, recovery queries, evidence collection and search budgets",
-      "migrationNote": "v46 search work should extend this capability, not create search-v46.js."
+      "responsibility": "Search provider execution, recovery queries, search budgets and evidence collection",
+      "companions": [
+        "src/search-probes-v44.js",
+        "src/search-fallbacks.js",
+        "src/direct-primary-v45.js"
+      ],
+      "migrationNote": "v46 retrieval work should extend this capability, not create search-v46.js."
+    },
+    "search.planning": {
+      "canonical": "src/search-v45.js",
+      "status": "production",
+      "symbol": "directorPlan",
+      "responsibility": "Deterministic and model-assisted research planning for complex searches",
+      "migrationNote": "Director parallelization belongs here; do not create a second planner subsystem."
     },
     "evidence.validation": {
-      "canonical": "src/query-result-gate-v44.js",
-      "status": "production-supporting",
-      "responsibility": "Query-to-result relevance/evidence gate used to reject unrelated retrieval results",
-      "migrationNote": "General evidence/claim validation should evolve from this gate instead of adding a parallel verifier."
+      "canonical": "src/search-v45.js",
+      "status": "production",
+      "symbol": "stageEvidence",
+      "responsibility": "Current query/result evidence relevance gating during staged retrieval",
+      "migrationNote": "The older src/query-result-gate-v44.js is reusable prior art but is not the canonical production gate. v46 claim/evidence validation should extend the current path or deliberately extract it without duplicating behavior."
     },
     "structured.tools": {
       "canonical": "src/free-api-tools-v45.js",
       "status": "production",
       "responsibility": "Structured/free API intent detection and execution",
-      "migrationNote": "Add supported structured sources here or through its existing companion modules before inventing a new router."
-    },
-    "conversation.memory": {
-      "canonical": "src/conversation-memory.js",
-      "status": "production-supporting",
-      "responsibility": "Conversation memory handling and continuity support",
-      "migrationNote": "Do not create a second conversation-memory subsystem without an explicit replacement decision."
-    },
-    "search.rerank": {
-      "canonical": "src/search-rerank.js",
-      "status": "production-supporting",
-      "responsibility": "Search result reranking",
-      "migrationNote": "Ranking changes should extend this capability unless the registry is deliberately updated."
+      "companions": [
+        "src/free-api-knowledge-v45.js",
+        "src/free-api-knowledge-extra-v45.js",
+        "src/free-shopping-api-v45.js"
+      ],
+      "migrationNote": "Add supported structured sources through this capability and its companions before inventing a new router."
     },
     "speech.stt": {
       "canonical": "src/stt-v45.js",
       "status": "production",
-      "responsibility": "Current speech-to-text path used by the v45 web application",
+      "responsibility": "Current speech-to-text path imported by the production worker",
       "migrationNote": "Legacy versioned filename; future replacement requires registry update."
     },
     "ui.web": {
       "canonical": "src/ui-v45.js",
       "status": "production",
-      "responsibility": "Current web UI source",
+      "responsibility": "Current web UI imported by the production worker",
       "migrationNote": "Legacy versioned filename; future replacement requires registry update."
     }
+  },
+  "legacyPriorArt": {
+    "src/grounding-policy-v22.js": "Older grounding policy with contextual factual-risk logic; review before changing grounding behavior.",
+    "src/query-result-gate-v44.js": "Older standalone query/result relevance gate; review before extracting or redesigning evidence validation.",
+    "src/search-orchestrator.js": "Older deep-search orchestration path; review before introducing another orchestration layer.",
+    "src/conversation-memory.js": "Existing memory implementation; inspect before adding any new memory subsystem.",
+    "src/search-rerank.js": "Existing reranking implementation; inspect before adding another reranker."
   }
 }
