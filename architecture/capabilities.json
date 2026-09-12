@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Canonical registry for production TalkSys capabilities. Check this file before creating a new subsystem or version-suffixed source file.",
+  "rules": {
+    "defaultChangeMode": "extend",
+    "newCapabilityRequiresDecisionRecord": true,
+    "versionSuffixForNewCanonicalFiles": false
+  },
+  "capabilities": {
+    "runtime.entry": {
+      "canonical": "src/worker-v44.js",
+      "status": "production",
+      "responsibility": "Production HTTP/API entry point and top-level request orchestration",
+      "migrationNote": "Legacy versioned filename. Keep as canonical until a deliberate no-behavior-change rename is performed."
+    },
+    "grounding.policy": {
+      "canonical": "src/grounding-policy-v22.js",
+      "status": "production-supporting",
+      "responsibility": "Grounding/search requirement policy and contextual factual-risk detection",
+      "migrationNote": "Reuse or extend this policy rather than introducing another grounding classifier."
+    },
+    "search.execution": {
+      "canonical": "src/search-v45.js",
+      "status": "production",
+      "responsibility": "Search planning, provider execution, recovery queries, evidence collection and search budgets",
+      "migrationNote": "v46 search work should extend this capability, not create search-v46.js."
+    },
+    "evidence.validation": {
+      "canonical": "src/query-result-gate-v44.js",
+      "status": "production-supporting",
+      "responsibility": "Query-to-result relevance/evidence gate used to reject unrelated retrieval results",
+      "migrationNote": "General evidence/claim validation should evolve from this gate instead of adding a parallel verifier."
+    },
+    "structured.tools": {
+      "canonical": "src/free-api-tools-v45.js",
+      "status": "production",
+      "responsibility": "Structured/free API intent detection and execution",
+      "migrationNote": "Add supported structured sources here or through its existing companion modules before inventing a new router."
+    },
+    "conversation.memory": {
+      "canonical": "src/conversation-memory.js",
+      "status": "production-supporting",
+      "responsibility": "Conversation memory handling and continuity support",
+      "migrationNote": "Do not create a second conversation-memory subsystem without an explicit replacement decision."
+    },
+    "search.rerank": {
+      "canonical": "src/search-rerank.js",
+      "status": "production-supporting",
+      "responsibility": "Search result reranking",
+      "migrationNote": "Ranking changes should extend this capability unless the registry is deliberately updated."
+    },
+    "speech.stt": {
+      "canonical": "src/stt-v45.js",
+      "status": "production",
+      "responsibility": "Current speech-to-text path used by the v45 web application",
+      "migrationNote": "Legacy versioned filename; future replacement requires registry update."
+    },
+    "ui.web": {
+      "canonical": "src/ui-v45.js",
+      "status": "production",
+      "responsibility": "Current web UI source",
+      "migrationNote": "Legacy versioned filename; future replacement requires registry update."
+    }
+  }
+}
