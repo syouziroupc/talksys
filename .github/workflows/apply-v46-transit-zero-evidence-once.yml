@@ -60,3 +60,5 @@ jobs:
           git commit -m 'Fail closed on unsupported transit routes and add typed seed search'
           git pull --rebase origin tmp-v46-transit-zero-evidence
           git push origin HEAD:tmp-v46-transit-zero-evidence
+
+# retry after correcting the evidence-bearing regression fixture
