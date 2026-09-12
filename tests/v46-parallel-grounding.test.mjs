@@ -18,7 +18,7 @@ test('grounded synthesis excludes assistant prose from factual context', () => {
 });
 
 test('transit guard removes sentences containing unsupported rail entities', () => {
-  const search = { results: [{ title: 'JR九州 日豊本線 大分 行橋', excerpt: '大分と行橋は日豊本線の駅です。' }] };
+  const search = { evidenceUseful: true, results: [{ title: 'JR九州 日豊本線 大分 行橋', excerpt: '大分と行橋は日豊本線の駅です。' }] };
   const bad = guardUnsupportedTransitEntities('小倉で鹿児島本線に乗り換えます。', '大分から行橋まで電車で行きたい', search);
   assert.doesNotMatch(bad, /小倉|鹿児島本線/);
   const good = guardUnsupportedTransitEntities('日豊本線を利用します。', '大分から行橋まで電車で行きたい', search);
