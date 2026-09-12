@@ -59,9 +59,9 @@ export function guardUnsupportedTransitEntities(value, question = '', search = {
   if (!answer || !TRANSIT_QUERY_RE.test(q)) return answer;
 
   const evidenceText = (search?.results || []).slice(0, SEARCH_V44_SOURCE_LIMIT).map((item) =>
-    `${clean(item?.title, 300)} ${clean(item?.excerpt || item?.snippet, 2200)}`
+    \`\${clean(item?.title, 300)} \${clean(item?.excerpt || item?.snippet, 2200)}\`
   ).join(' ');
-  const allowed = canonicalizeInput(`${q} ${evidenceText}`, 30000);
+  const allowed = canonicalizeInput(\`\${q} \${evidenceText}\`, 30000);
   const generic = new Set(['路線', '電車', '鉄道', '新幹線', '特急', '快速']);
   const entityRe = /[一-龠々〆ヵヶぁ-んァ-ヴーA-Za-z0-9・]{1,18}(?:本線|新幹線|駅|線|ソニック|にちりん|かもめ|ゆふ|みずほ|さくら|のぞみ|ひかり|こだま)/gu;
   const sentences = answer.match(/[^。！？!?]+[。！？!?]?/g) || [answer];
