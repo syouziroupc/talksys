@@ -1,0 +1,62 @@
+name: Apply TalkSys transit zero-evidence hardening once
+
+on:
+  push:
+    branches: [tmp-v46-transit-zero-evidence]
+    paths:
+      - '.github/workflows/apply-v46-transit-zero-evidence-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: tmp-v46-transit-zero-evidence
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Apply hardening
+        run: node scripts/fix-transit-zero-evidence-r2.mjs
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+      - name: Validate implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/worker-v44.js
+          node --check src/search-v45.js
+          node --check tests/v46-transit-zero-evidence.test.mjs
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          npx wrangler deploy --dry-run
+
+      - name: Mark production trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'parallel-grounding-r2 %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .deploy/production-trigger.txt
+
+      - name: Commit validated implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name talksys-automation
+          git config user.email actions@users.noreply.github.com
+          git add src/worker-v44.js src/search-v45.js tests/v46-transit-zero-evidence.test.mjs .deploy/production-trigger.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Fail closed on unsupported transit routes and add typed seed search'
+          git pull --rebase origin tmp-v46-transit-zero-evidence
+          git push origin HEAD:tmp-v46-transit-zero-evidence
