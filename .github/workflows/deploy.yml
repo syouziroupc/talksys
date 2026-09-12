@@ -2,6 +2,10 @@ name: Deploy TalkSys production
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.deploy/production-trigger.txt'
 
 permissions:
   contents: read
@@ -37,23 +41,41 @@ jobs:
             exit 1
           fi
 
-          checks="$(curl -fsSL \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100")"
+          for attempt in $(seq 1 60); do
+            checks="$(curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100")"
 
-          CHECKS_JSON="$checks" EXPECTED_SHA="$GITHUB_SHA" node <<'NODE'
+            status="$(CHECKS_JSON="$checks" EXPECTED_SHA="$GITHUB_SHA" node <<'NODE'
           const data = JSON.parse(process.env.CHECKS_JSON || '{}');
           const sha = process.env.EXPECTED_SHA || '';
           const matches = (data.check_runs || []).filter((run) => run?.name === 'validate' && run?.head_sha === sha);
-          const success = matches.some((run) => run?.status === 'completed' && run?.conclusion === 'success');
-          if (!success) {
-            const seen = matches.map((run) => `${run.status}/${run.conclusion || 'none'}`).join(', ') || 'none';
-            throw new Error(`Exact revision ${sha} has no successful Validate TalkSys check (seen: ${seen})`);
+          if (matches.some((run) => run?.status === 'completed' && run?.conclusion === 'success')) {
+            process.stdout.write('success');
+          } else if (matches.some((run) => run?.status === 'completed' && run?.conclusion && run.conclusion !== 'success')) {
+            process.stdout.write('failed');
+          } else {
+            process.stdout.write('pending');
           }
-          console.log(`Validated exact production revision ${sha}`);
           NODE
+            )"
+
+            if [[ "$status" == "success" ]]; then
+              echo "Validated exact production revision $GITHUB_SHA"
+              break
+            fi
+            if [[ "$status" == "failed" ]]; then
+              echo "Validate TalkSys failed for exact revision $GITHUB_SHA"
+              exit 1
+            fi
+            if [[ "$attempt" -eq 60 ]]; then
+              echo "Timed out waiting for successful Validate TalkSys check for $GITHUB_SHA"
+              exit 1
+            fi
+            sleep 5
+          done
 
       - name: Verify required Cloudflare credentials
         shell: bash
