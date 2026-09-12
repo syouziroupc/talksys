@@ -17,6 +17,16 @@ Before adding a subsystem, helper, router, verifier, planner, memory layer, sear
 5. Prefer `REUSE` or `EXTEND`.
 6. Do not create a new `*-vNN.*` canonical source file just because the product release number changed. Product releases belong in Git history/tags/releases, not in the source filename.
 
+## CI reuse gate
+
+`npm run reuse:check` enforces the reuse-first policy for newly added source files.
+
+- New `src/*.js` files must be registered as a canonical implementation or companion.
+- New version-suffixed source files are rejected.
+- New capability IDs and canonical replacements require an ADR.
+
+This gate does not delete or rewrite historical files. It prevents the existing duplication problem from getting worse while cleanup is performed incrementally.
+
 ## Canonical does not mean one file per capability
 
 A production file may currently contain several responsibilities. For example, the current production worker contains both runtime orchestration and factual-routing logic, while the current search implementation contains planning, provider execution and evidence relevance gating.
@@ -24,6 +34,14 @@ A production file may currently contain several responsibilities. For example, t
 The registry therefore allows multiple capability IDs to point at the same canonical file. This is preferable to pretending that an older standalone helper is still the production implementation.
 
 If a capability is later extracted into its own stable module, perform that extraction as an explicit refactor and update the registry in the same change.
+
+## Production source graph
+
+`npm run architecture:graph` starts at the registered `runtime.entry` and follows local JavaScript imports.
+
+Every file registered as part of a `production` capability must be reachable from that entry. CI fails if a production capability silently drifts off the actual runtime path.
+
+Files reported as `unreachable` are **cleanup candidates only**. Static import reachability does not prove that deletion is safe: a file may still be referenced by tests, build tooling, generated HTML, documentation, or another non-production path. Before deletion, search the repository for references and run the full regression/bundle checks.
 
 ## Current migration rule
 
