@@ -28,13 +28,12 @@ try {
 }
 
 if (registry?.schemaVersion !== 1) fail('schemaVersion must be 1');
-if (!registry?.capabilities || typeof registry.capabilities !== 'object') {
-  fail('capabilities object is required');
-}
+if (!registry?.capabilities || typeof registry.capabilities !== 'object') fail('capabilities object is required');
 
 const allowedStatuses = new Set(['production', 'production-supporting', 'planned', 'legacy']);
 let capabilityCount = 0;
 const canonicalFiles = new Set();
+const activeFiles = new Set();
 
 for (const [id, entry] of Object.entries(registry.capabilities || {})) {
   capabilityCount += 1;
@@ -46,13 +45,21 @@ for (const [id, entry] of Object.entries(registry.capabilities || {})) {
 
   if (!responsibility) fail(`${id}: responsibility is required`);
   if (!allowedStatuses.has(status)) fail(`${id}: invalid status '${status}'`);
-  if (canonical) canonicalFiles.add(canonical);
-
-  if (entry?.companions !== undefined && !Array.isArray(entry.companions)) {
-    fail(`${id}: companions must be an array`);
+  if (canonical) {
+    canonicalFiles.add(canonical);
+    activeFiles.add(canonical);
   }
+
+  const symbol = String(entry?.symbol || '').trim();
+  if (symbol && canonical && existsSync(new URL(canonical, repoRoot))) {
+    const source = readFileSync(new URL(canonical, repoRoot), 'utf8');
+    if (!source.includes(symbol)) fail(`${id}: declared symbol '${symbol}' was not found in ${canonical}`);
+  }
+
+  if (entry?.companions !== undefined && !Array.isArray(entry.companions)) fail(`${id}: companions must be an array`);
   for (const [index, companion] of (entry?.companions || []).entries()) {
-    validateRepoPath(`${id}.companions[${index}]`, companion);
+    const path = validateRepoPath(`${id}.companions[${index}]`, companion);
+    if (path) activeFiles.add(path);
   }
 }
 
@@ -62,6 +69,20 @@ if (registry?.legacyPriorArt !== undefined && (typeof registry.legacyPriorArt !=
 for (const [path, note] of Object.entries(registry?.legacyPriorArt || {})) {
   validateRepoPath(`legacyPriorArt.${path}`, path);
   if (!String(note || '').trim()) fail(`legacyPriorArt.${path}: note is required`);
+  if (activeFiles.has(path)) fail(`legacyPriorArt cannot also be an active canonical/companion file: ${path}`);
+}
+
+try {
+  const wrangler = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8')
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  const wranglerMain = wrangler.match(/"main"\s*:\s*"([^"]+)"/)?.[1] || '';
+  const registryMain = String(registry?.capabilities?.['runtime.entry']?.canonical || '');
+  if (!wranglerMain) fail('wrangler.jsonc main entry could not be resolved');
+  else if (wranglerMain !== registryMain) fail(`runtime.entry mismatch: registry=${registryMain} wrangler=${wranglerMain}`);
+} catch (error) {
+  fail(`cannot verify wrangler runtime entry: ${error.message}`);
 }
 
 if (!process.exitCode) {
