@@ -4,14 +4,23 @@ import fs from 'node:fs';
 
 const workflow = fs.readFileSync(new URL('../.github/workflows/deploy.yml', import.meta.url), 'utf8');
 
-test('production deploy is restricted to main and requires a successful validate check for the exact SHA', () => {
+test('production deploy only auto-triggers from the dedicated marker on main', () => {
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /push:/);
+  assert.match(workflow, /branches:\s*\[main\]/);
+  assert.match(workflow, /\.deploy\/production-trigger\.txt/);
+});
+
+test('production deploy is restricted to main and waits for a successful validate check for the exact SHA', () => {
   assert.match(workflow, /checks:\s*read/);
   assert.match(workflow, /GITHUB_REF.*refs\/heads\/main/);
+  assert.match(workflow, /for attempt in \$\(seq 1 60\)/);
   assert.match(workflow, /commits\/\$GITHUB_SHA\/check-runs\?per_page=100/);
   assert.match(workflow, /run\?\.name === 'validate'/);
   assert.match(workflow, /run\?\.head_sha === sha/);
   assert.match(workflow, /run\?\.status === 'completed'/);
   assert.match(workflow, /run\?\.conclusion === 'success'/);
+  assert.match(workflow, /Timed out waiting for successful Validate TalkSys check/);
 });
 
 test('production deploy revalidates architecture, source graph, archived syntax, tests, and Wrangler bundle', () => {
