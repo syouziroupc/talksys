@@ -1,2 +1,2 @@
-Deploy validated TalkSys production revision after PR #27.
+Retry deployment after PR #28 smoke-contract fix.
 Requested: 2026-09-12 JST
