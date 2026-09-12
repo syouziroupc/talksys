@@ -34,11 +34,11 @@ jobs:
         run: npm run architecture:graph
       - name: Enforce reuse-first source changes
         run: npm run reuse:check
-      - name: Check all source JavaScript syntax
+      - name: Check active and archived JavaScript syntax
         shell: bash
         run: |
           set -euo pipefail
-          find src -maxdepth 1 -name '*.js' -print0 | xargs -0 -n1 node --check
+          find src archive -type f -name '*.js' -print0 | xargs -0 -n1 node --check
       - name: Run full regression suite
         run: npm test
       - name: Check Wrangler bundle
