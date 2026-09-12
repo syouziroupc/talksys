@@ -34,7 +34,7 @@ import { TALK_CLIENT_V45, CLIENT_REVISION } from './talk-client-v45.js';
 import { TALK_HTML_V45, UI_REVISION } from './ui-v45.js';
 import { transcribeV45, STT_MODEL, STT_REVISION } from './stt-v45.js';
 
-const REVISION = 'talksys-v45-api-primary-multi-engine-search-r2';
+const REVISION = 'talksys-v45-parallel-grounding-r1';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
 const MODEL_TIMEOUT_MS = 12000;
@@ -48,6 +48,7 @@ const NO_EXTERNAL_RE = /(?:(?:web|ウェブ)?\s*検索(?:は|を)?\s*(?:使わ�
 const EXPLICIT_LOOKUP_RE = /(検索|調べ|探して|探せ|見つけ|確認して|在庫|実売|価格|値段|相場|いくら|どこで買|販売店|店舗|通販|おすすめ|何がいい|どれがいい|買い替え|もっと安|安いの|最安|他にある|ほかにある)/i;
 const DYNAMIC_FACT_RE = /(最新|現在|今(?:の|この|すぐ|何時|いくら)|今日|明日|昨日|価格|値段|相場|在庫|発売|販売中|BIOS|UEFI|ファームウェア|ドライバ|法律|法令|制度|社長|CEO|首相|大統領|ニュース|運行|遅延|運休|時刻表|天気|天候|為替|地震|祝日|中古(?:PC|パソコン|ノート|スマホ)|営業時間|バージョン)/i;
 const NON_API_FACT_RE = /(BIOS|UEFI|ファームウェア|ドライバ|Windows|macOS|Linux|古物|法律|法令|社長|CEO|首相|大統領|ニュース|中古(?:PC|パソコン)|スマホ|型番|仕様|公式配布|配布元)/i;
+const TRANSIT_QUERY_RE = /(電車|鉄道|乗換|乗り換え|列車|運行情報|遅延|運休|時刻表|何時発|何に乗)/i;
 
 function clean(value, max = 9000) {
   return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -334,6 +335,7 @@ const GROUNDED_PROMPT = `あなたはTalkSysの日本語電話相談AIです。�
 - 根拠が一部足りなくても、確認できたことと未確認部分を分ける。
 - 「もう一度聞いて」「後で確認」「自分で検索して」と調査を利用者へ押し戻さない。
 - 根拠にない店名、価格、住所、型番、数値を作らない。
+- 交通経路では、取得根拠に明記されていない乗換駅・路線名・列車名・駅順を内部知識で補わない。
 - 電話で聞きやすい自然な日本語で通常3〜6文。URLや検索回数は読み上げない。`;
 
 export async function boundedPromise(promise, timeoutMs, label = 'operation') {
@@ -544,6 +546,31 @@ export function deterministicStableFallback(question, search = {}) {
   return `${partial ? '取得できた外部根拠だけでは質問全体の現在情報を確定できませんでした。' : '今回の外部取得では現在情報を確認できませんでした。'}確認できない現在値は推測しません。`;
 }
 
+
+export function guardUnsupportedTransitEntities(value, question = '', search = {}) {
+  const answer = clean(value, 9000);
+  const q = canonicalizeInput(question, 1800);
+  if (!answer || !TRANSIT_QUERY_RE.test(q)) return answer;
+
+  const evidenceText = (search?.results || []).slice(0, SEARCH_V44_SOURCE_LIMIT).map((item) =>
+    clean(item?.title, 300) + ' ' + clean(item?.excerpt || item?.snippet, 2200)
+).join(' ');
+  const allowed = canonicalizeInput(q + ' ' + evidenceText, 30000);
+  const generic = new Set(['路線', '電車', '鉄道', '新幹線', '特急', '快速']);
+  const entityRe = /[一-龠々〆ヵヶぁ-んァ-ヴーA-Za-z0-9・]{1,18}(?:本線|新幹線|駅|線|ソニック|にちりん|かもめ|ゆふ|みずほ|さくら|のぞみ|ひかり|こだま)/gu;
+  const sentences = answer.match(/[^。！？!?]+[。！？!?]?/g) || [answer];
+  const kept = sentences.filter((sentence) => {
+    const entities = [...new Set(sentence.match(entityRe) || [])].filter((x) => !generic.has(x));
+    return entities.every((entity) => {
+      if (allowed.includes(entity)) return true;
+      if (entity.endsWith('駅') && allowed.includes(entity.slice(0, -1))) return true;
+      return false;
+    });
+  });
+  const guarded = clean(kept.join(''), 9000);
+  if (guarded) return guarded;
+  return '具体的な乗換駅・路線名・列車名は、今回取得できた根拠で確認できたものだけ案内します。';
+}
 function researchFailureTurn(body, error) {
   const text = canonicalizeInput(body?.text, 1800);
   return {
@@ -565,7 +592,9 @@ function researchFailureTurn(body, error) {
 }
 
 async function synthesizeGroundedAnswer(env, body, search) {
-  const hist = historyOf(body?.history).slice(-10);
+  // Assistant prose is conversational context, not factual evidence. For grounded
+  // turns we keep only user-authored history and the freshly retrieved evidence.
+  const hist = userHistory(body?.history).slice(-8);
   const resolved = clean(search?.plan?.resolvedQuestion || body?.text, 2200);
   const evidence = evidenceBlock(search);
   const coverage = search?.coverage || {};
@@ -674,7 +703,7 @@ async function deepTurn(body, env, requestSignal, decision) {
       answer = await runModel(env, [
         { role: 'system', content: CASUAL_PROMPT + '\n今回の外部取得では質問全体を確定できるだけの根拠が得られなかった。検索機能が無効・禁止・使えないとは絶対に説明しない。部分的な外部根拠がある場合は、そこから確認できる事実だけを明示し、不足する最新版・価格・在庫・時刻などを推測しない。加えて、時間で変化しない一般的な判断基準・仕組み・注意点は具体的に答えてよい。現在情報が必要なのに根拠がない部分は「今回の取得では確認できなかった」と述べる。' },
         ...(partialEvidence ? [{ role: 'system', content: `今回取得できた部分根拠（これ以外の外部事実は推測禁止）:\n${partialEvidence}` }] : []),
-        ...historyOf(normalizedBody?.history).slice(-8),
+        ...userHistory(normalizedBody?.history).slice(-6),
         { role: 'user', content: text },
       ], 480, 0.1, 6500);
       answer.text = clean(answer?.text, 9000)
@@ -694,6 +723,7 @@ async function deepTurn(body, env, requestSignal, decision) {
     }
   }
   answer.text = sanitizeUserFacingAnswer(answer?.text, text, { hasLivePriceEvidence: search?.hasPriceEvidence === true });
+  answer.text = guardUnsupportedTransitEntities(answer.text, text, search);
 
   const sources = (search.results || []).slice(0, SEARCH_V44_SOURCE_LIMIT).map((x) => ({
     title: clean(x?.title, 220),
@@ -861,6 +891,9 @@ export default {
         weatherDirect: 'jma-api-first-with-met-norway-fallback',
         apiFirst: true,
         apiParallel: true,
+        searchDirectorParallelSeed: true,
+        groundedHistoryUserOnly: true,
+        transitEvidenceGuard: true,
         freeApiRevision: FREE_API_REVISION,
         freeApiRegistry: { ...publicApiRegistry(), ...publicKnowledgeApiRegistry(), ...publicShoppingApiRegistry() },
         shoppingApiRevision: SHOPPING_API_REVISION,
@@ -959,5 +992,6 @@ export const __test = {
   shouldPreserveSpecializedTurn,
   fallbackResolvedQuestion,
   structuredCoverageIsWholeQuestion,
+  guardUnsupportedTransitEntities,
   deepPlan,
 };

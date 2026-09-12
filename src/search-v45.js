@@ -503,35 +503,58 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   const diagnostics = [];
 
   const p0 = Date.now();
-  const plan = await directorPlan(ai, text, history, signal);
-  timings.plannerMs = Date.now() - p0;
-
-  let firstFacets = (plan.facets || []).filter(f => f.primaryQuery);
-  if (plan.researchMode === 'discover_then_verify') firstFacets = firstFacets.filter(f => f.stage === 'discovery').slice(0,2);
-  if (!firstFacets.length) firstFacets = (plan.queries || []).slice(0,2).map((q,i) => ({ id:`q${i+1}`, stage:'verification', sourceRole:'reference', primaryQuery:q }));
-  firstFacets = firstFacets.slice(0,2);
+  // Start deterministic seed retrieval immediately. The Director refines
+  // complex research while useful retrieval is already running.
+  const seedPlan = simplePlan(text, history);
+  let seedFacets = (seedPlan.facets || []).filter(f => f.primaryQuery);
+  if (seedPlan.researchMode === 'discover_then_verify') seedFacets = seedFacets.filter(f => f.stage === 'discovery').slice(0, 2);
+  if (!seedFacets.length) seedFacets = (seedPlan.queries || []).slice(0, 2).map((q, i) => ({ id: 'seed-q' + (i + 1), stage: 'verification', sourceRole: 'reference', primaryQuery: q }));
+  seedFacets = seedFacets.slice(0, 2);
 
   const r1 = Date.now();
-  // A known manufacturer/model should not depend on a search index to discover
-  // its own official page. Direct primary-source resolution runs beside the
-  // single search index and never counts as a second search engine.
-  const firstPromise = SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED
-    ? Promise.all(firstFacets.map(f => searchOne(f, deadline)))
+  const planPromise = directorPlan(ai, text, history, signal).then((plan) => {
+    timings.plannerMs = Date.now() - p0;
+    return plan;
+  });
+  const seedSearchPromise = SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED
+    ? Promise.all(seedFacets.map(f => searchOne(f, deadline)))
     : Promise.resolve([]);
-  const shoppingPromise = plan.intent === 'shopping'
-    ? searchFormalShoppingApis(plan.resolvedQuestion, options.env || {}, deadline)
+  const seedDirectPromise = fetchDirectPrimarySources(seedPlan.resolvedQuestion, deadline);
+  const seedShoppingPromise = seedPlan.intent === 'shopping'
+    ? searchFormalShoppingApis(seedPlan.resolvedQuestion, options.env || {}, deadline)
     : Promise.resolve({ revision: SHOPPING_API_REVISION, results: [], diagnostics: [], configuredCount: 0, successfulCount: 0 });
-  const [first, directPrimary, shopping] = await Promise.all([
-    firstPromise,
-    fetchDirectPrimarySources(plan.resolvedQuestion, deadline),
-    shoppingPromise,
+
+  const [plan, seedFirst, directPrimary, seedShopping] = await Promise.all([
+    planPromise,
+    seedSearchPromise,
+    seedDirectPromise,
+    seedShoppingPromise,
   ]);
+
+  let firstFacets = (plan.facets || []).filter(f => f.primaryQuery);
+  if (plan.researchMode === 'discover_then_verify') firstFacets = firstFacets.filter(f => f.stage === 'discovery').slice(0, 2);
+  if (!firstFacets.length) firstFacets = (plan.queries || []).slice(0, 2).map((q, i) => ({ id: 'q' + (i + 1), stage: 'verification', sourceRole: 'reference', primaryQuery: q }));
+  firstFacets = firstFacets.slice(0, 2);
+
+  const facetKey = (f) => clean(f?.stage, 30) + '|' + clean(f?.sourceRole, 40) + '|' + normalize(f?.primaryQuery || '');
+  const seedKeys = new Set(seedFacets.map(facetKey));
+  const supplementalFacets = firstFacets.filter((f) => !seedKeys.has(facetKey(f))).slice(0, 2);
+  const supplemental = SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED && supplementalFacets.length && deadline - Date.now() > 700
+    ? await Promise.all(supplementalFacets.map(f => searchOne(f, deadline)))
+    : [];
+  const first = [...seedFirst, ...supplemental];
+  const shopping = plan.intent === 'shopping'
+    ? (seedPlan.intent === 'shopping'
+      ? seedShopping
+      : await searchFormalShoppingApis(plan.resolvedQuestion, options.env || {}, deadline))
+    : { revision: SHOPPING_API_REVISION, results: [], diagnostics: [], configuredCount: 0, successfulCount: 0 };
+
   diagnostics.push(...first.map(x => x.diag), ...(shopping.diagnostics || []));
   let merged = [...(directPrimary.results || []), ...(shopping.results || []), ...first.flatMap(x => x.results)];
   let candidates = plan.candidateType === 'product_model' ? extractCandidates(merged,4) : [];
   timings.round1Ms = Date.now() - r1;
   let rounds = 1;
-  const allQueries = firstFacets.map(f => f.primaryQuery);
+  const allQueries = unique([...seedFacets, ...firstFacets].map(f => f.primaryQuery), SEARCH_V44_MAX_TOTAL_QUERIES);
 
   if (plan.researchMode === 'local_discovery' && deadline - Date.now() > 1200) {
     const q = clean(plan.resolvedQuestion, 220);
@@ -612,6 +635,7 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
     evidenceUseful,
     researchStateMachine: true,
     questionFirstPlanning: true,
+    directorParallelSeedSearch: true,
     gapDrivenFollowups: true,
     sequentialDiscovery: plan.researchMode === 'discover_then_verify',
     researchMode: plan.researchMode,
