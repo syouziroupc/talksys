@@ -1,0 +1,34 @@
+name: Probe TalkSys v46 production once
+
+on:
+  push:
+    branches: [tmp-v46-prod-probe]
+    paths:
+      - '.github/workflows/probe-v46-production-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Probe live health and transit behavior
+        shell: bash
+        env:
+          URL: https://talksys.syouziroupc.workers.dev
+        run: |
+          set -euo pipefail
+          echo '--- voice-health ---'
+          health="$(curl -fsS --max-time 30 "$URL/voice-health")"
+          echo "$health"
+          HEALTH="$health" node - <<'NODE'
+          const d=JSON.parse(process.env.HEALTH||'{}');
+          console.log(JSON.stringify({revision:d.revision,searchDirectorParallelSeed:d.searchDirectorParallelSeed,groundedHistoryUserOnly:d.groundedHistoryUserOnly,transitEvidenceGuard:d.transitEvidenceGuard}));
+          NODE
+
+          echo '--- transit regression probe ---'
+          payload='{"text":"大分から行橋まで電車でどうやって行けばいい？","history":[]}'
+          out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$URL/api/turn")"
+          echo "$out"
