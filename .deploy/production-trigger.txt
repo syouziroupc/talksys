@@ -1,0 +1,2 @@
+Deploy validated TalkSys production revision after PR #27.
+Requested: 2026-09-12 JST
