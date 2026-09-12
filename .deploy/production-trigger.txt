@@ -1,2 +1,1 @@
-Deploy credential-resolution fix and run production smoke tests.
-Requested: 2026-09-12 JST
+parallel-grounding-r1 2026-09-12T08:11:13Z
