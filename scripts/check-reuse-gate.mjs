@@ -13,13 +13,35 @@ function git(args) {
   catch { return ''; }
 }
 
-const parent = git(['rev-parse', 'HEAD^']);
-if (!parent) {
-  console.log('[reuse-gate] no parent commit available; static registry checks only');
+function isUsableCommit(value) {
+  const sha = String(value || '').trim();
+  if (!sha || /^0+$/.test(sha)) return false;
+  return Boolean(git(['rev-parse', '--verify', `${sha}^{commit}`]));
+}
+
+function resolveBase() {
+  const requested = String(process.env.TALKSYS_REUSE_BASE_SHA || '').trim();
+  if (isUsableCommit(requested)) {
+    return git(['merge-base', requested, 'HEAD']) || requested;
+  }
+
+  const baseRef = String(process.env.GITHUB_BASE_REF || '').trim();
+  if (baseRef) {
+    const remote = `origin/${baseRef}`;
+    if (isUsableCommit(remote)) return git(['merge-base', remote, 'HEAD']) || remote;
+  }
+
+  const parent = git(['rev-parse', 'HEAD^']);
+  return isUsableCommit(parent) ? parent : '';
+}
+
+const base = resolveBase();
+if (!base) {
+  console.log('[reuse-gate] no comparison base available; static registry checks only');
   process.exit(0);
 }
 
-const changed = git(['diff', '--name-status', parent, 'HEAD'])
+const changed = git(['diff', '--name-status', base, 'HEAD'])
   .split('\n').map((line) => line.trim()).filter(Boolean)
   .map((line) => {
     const [status, ...rest] = line.split(/\s+/);
@@ -34,7 +56,7 @@ const addedAdrs = added.filter((p) => /^architecture\/decisions\/\d{4}-.+\.md$/i
 
 let previous = null;
 try {
-  const text = execFileSync('git', ['show', `${parent}:architecture/capabilities.json`], { encoding: 'utf8' });
+  const text = execFileSync('git', ['show', `${base}:architecture/capabilities.json`], { encoding: 'utf8' });
   previous = JSON.parse(text);
 } catch {}
 
@@ -55,7 +77,7 @@ if (unregistered.length) {
   errors.push(`new src/*.js files must be registered as a canonical capability or companion before merge: ${unregistered.join(', ')}`);
 }
 if ((newCapabilities.length || replacedCanonical.length) && !addedAdrs.length) {
-  errors.push(`NEW/REPLACE architecture change requires a new ADR in the same commit (new=${newCapabilities.join(',') || '-'} replace=${replacedCanonical.join(',') || '-'})`);
+  errors.push(`NEW/REPLACE architecture change requires a new ADR in the same change range (new=${newCapabilities.join(',') || '-'} replace=${replacedCanonical.join(',') || '-'})`);
 }
 
 if (errors.length) {
@@ -63,4 +85,5 @@ if (errors.length) {
   process.exit(1);
 }
 
-console.log(`[reuse-gate] OK: ${addedSource.length} added source file(s), ${newCapabilities.length} new capability id(s), ${replacedCanonical.length} canonical replacement(s)`);
+console.log(`[reuse-gate] base=${base.slice(0, 12)} head=${git(['rev-parse', 'HEAD']).slice(0, 12)}`);
+console.log(`[reuse-gate] OK across full change range: ${addedSource.length} added source file(s), ${newCapabilities.length} new capability id(s), ${replacedCanonical.length} canonical replacement(s)`);
