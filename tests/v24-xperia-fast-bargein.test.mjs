@@ -6,7 +6,7 @@ import { resolveGroundedQuestionV22 } from '../src/search-v22.js';
 import { buildSearchQueriesV23, sourceEligibleV23 } from '../src/search-v23.js';
 
 const worker = fs.readFileSync(new URL('../src/worker-v24.js', import.meta.url), 'utf8');
-const production = fs.readFileSync(new URL('../src/worker-v24-production.js', import.meta.url), 'utf8');
+const production = fs.readFileSync(new URL('../archive/v24/worker-production.js', import.meta.url), 'utf8');
 const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
 test('Xperia handshake sends microphone pre-roll before listening acknowledgement', () => {
@@ -80,9 +80,11 @@ test('v24 defaults to concise precise replies and lower token budgets', () => {
   assert.match(worker, /maxTokens: pc \? 360 : 240/);
   assert.match(worker, /maxTokens: 260/);
   assert.match(worker, /cloudflare-agent-v24-xperia-fast-bargein/);
+  assert.match(production, /Historical TalkSys v24 production wrapper/);
   assert.match(production, /browserStreamingTtsStartsAtFirstSentence: true/);
 });
 
-test('v24 remains available as a rollback entrypoint after v25', () => {
-  assert.match(wrangler, /worker-v24-production\.js/);
+test('v24 remains preserved as historical rollback evidence after v25', () => {
+  assert.match(wrangler, /"main":\s*"archive\/v24\/worker-production\.js"/);
+  assert.match(wrangler, /"main":\s*"src\/worker-v44\.js"/);
 });
