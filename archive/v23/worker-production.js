@@ -1,6 +1,7 @@
-import workerV23, { TalkSysVoiceAgent } from './worker-v23.js';
-import { CLOUDFLARE_LIVE_CLIENT_V23_FINAL } from './cloudflare-live-client-v23-final.js';
-import { collectGroundedEvidenceV23, SEARCH_TOOL_V23_REVISION } from './search-v23.js';
+// Historical TalkSys v23 production wrapper. Not part of the current production graph.
+import workerV23, { TalkSysVoiceAgent } from '../../src/worker-v23.js';
+import { CLOUDFLARE_LIVE_CLIENT_V23_FINAL } from '../../src/cloudflare-live-client-v23-final.js';
+import { collectGroundedEvidenceV23, SEARCH_TOOL_V23_REVISION } from '../../src/search-v23.js';
 
 export { TalkSysVoiceAgent };
 
