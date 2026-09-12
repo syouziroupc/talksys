@@ -21,8 +21,10 @@ jobs:
     timeout-minutes: 30
     environment: production
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Keep compatibility with the credential names used by the previously
+      # successful TalkSys deployment workflows. Values remain GitHub secrets.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
     steps:
       - uses: actions/checkout@v6
@@ -82,7 +84,16 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${CLOUDFLARE_API_TOKEN:-}"
-          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+            account_id="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              https://api.cloudflare.com/client/v4/accounts?per_page=1 | \
+              node -e "let d=JSON.parse(require('fs').readFileSync(0,'utf8'));process.stdout.write(d.result?.[0]?.id||'')")"
+            test -n "$account_id"
+            echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
+            echo 'Recovered Cloudflare account ID from the existing API token.'
+          fi
 
       - name: Install dependencies
         shell: bash
