@@ -34,7 +34,7 @@ import { TALK_CLIENT_V45, CLIENT_REVISION } from './talk-client-v45.js';
 import { TALK_HTML_V45, UI_REVISION } from './ui-v45.js';
 import { transcribeV45, STT_MODEL, STT_REVISION } from './stt-v45.js';
 
-const REVISION = 'talksys-v45-parallel-grounding-r1';
+const REVISION = 'talksys-v45-parallel-grounding-r2';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
 const MODEL_TIMEOUT_MS = 12000;
@@ -547,14 +547,23 @@ export function deterministicStableFallback(question, search = {}) {
 }
 
 
+export function transitEvidenceFallback() {
+  return 'この経路は、具体的な乗換駅・路線名・列車名・所要時間を裏付けられる情報が揃うまで推測で断定しません。時刻を指定した場合も、確認できた経路情報だけを案内します。';
+}
+
 export function guardUnsupportedTransitEntities(value, question = '', search = {}) {
   const answer = clean(value, 9000);
   const q = canonicalizeInput(question, 1800);
   if (!answer || !TRANSIT_QUERY_RE.test(q)) return answer;
 
-  const evidenceText = (search?.results || []).slice(0, SEARCH_V44_SOURCE_LIMIT).map((item) =>
+  const evidenceItems = (search?.results || []).slice(0, SEARCH_V44_SOURCE_LIMIT).filter((item) =>
+    clean(item?.title, 300) || clean(item?.excerpt || item?.snippet, 2200)
+  );
+  if (search?.evidenceUseful !== true || evidenceItems.length === 0) return transitEvidenceFallback();
+
+  const evidenceText = evidenceItems.map((item) =>
     clean(item?.title, 300) + ' ' + clean(item?.excerpt || item?.snippet, 2200)
-).join(' ');
+  ).join(' ');
   const allowed = canonicalizeInput(q + ' ' + evidenceText, 30000);
   const generic = new Set(['路線', '電車', '鉄道', '新幹線', '特急', '快速']);
   const entityRe = /[一-龠々〆ヵヶぁ-んァ-ヴーA-Za-z0-9・]{1,18}(?:本線|新幹線|駅|線|ソニック|にちりん|かもめ|ゆふ|みずほ|さくら|のぞみ|ひかり|こだま)/gu;
@@ -569,7 +578,7 @@ export function guardUnsupportedTransitEntities(value, question = '', search = {
   });
   const guarded = clean(kept.join(''), 9000);
   if (guarded) return guarded;
-  return '具体的な乗換駅・路線名・列車名は、今回取得できた根拠で確認できたものだけ案内します。';
+  return transitEvidenceFallback();
 }
 function researchFailureTurn(body, error) {
   const text = canonicalizeInput(body?.text, 1800);
@@ -695,6 +704,12 @@ async function deepTurn(body, env, requestSignal, decision) {
   let answerSynthesisError = '';
   if (!apiOk.length && !search.evidenceUseful) {
     answerSynthesisFallback = true;
+    if (TRANSIT_QUERY_RE.test(text)) {
+      // A route question without usable route evidence must not fall through to
+      // parametric-memory prose. This path is both safer and faster than a GLM retry.
+      answerSynthesisError = 'transit_external_evidence_unavailable';
+      answer = { text: transitEvidenceFallback(), ms: 0 };
+    } else {
     const partialEvidence = (search.results || []).slice(0, 5).map((item, index) =>
       `[${index + 1}] ${clean(item?.title, 180)}\n${clean(item?.url, 500)}\n${clean(item?.excerpt || item?.snippet, 1200)}`
     ).join('\n\n');
@@ -712,6 +727,7 @@ async function deepTurn(body, env, requestSignal, decision) {
     } catch (error) {
       answerSynthesisError = clean(error?.message || error, 240);
       answer = { text: deterministicStableFallback(text, search), ms: 0 };
+    }
     }
   } else {
     try {
@@ -894,6 +910,7 @@ export default {
         searchDirectorParallelSeed: true,
         groundedHistoryUserOnly: true,
         transitEvidenceGuard: true,
+        transitZeroEvidenceFailClosed: true,
         freeApiRevision: FREE_API_REVISION,
         freeApiRegistry: { ...publicApiRegistry(), ...publicKnowledgeApiRegistry(), ...publicShoppingApiRegistry() },
         shoppingApiRevision: SHOPPING_API_REVISION,
@@ -993,5 +1010,6 @@ export const __test = {
   fallbackResolvedQuestion,
   structuredCoverageIsWholeQuestion,
   guardUnsupportedTransitEntities,
+  transitEvidenceFallback,
   deepPlan,
 };

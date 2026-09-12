@@ -31,7 +31,7 @@ const DIRECTOR_TOOL = {
     type: 'object',
     properties: {
       resolved_question: { type: 'string' },
-      intent: { type: 'string', enum: ['shopping','local','current','comparison','general','news','other'] },
+      intent: { type: 'string', enum: ['shopping','local','current','comparison','general','news','transit','other'] },
       research_mode: { type: 'string', enum: ['direct_fact','discover_then_verify','compare_known_entities','local_discovery','current_status'] },
       candidate_type: { type: 'string', enum: ['product_model','store','place','company','service','person','document','none'] },
       facets: {
@@ -55,6 +55,7 @@ const DIRECTOR_TOOL = {
 const SHOPPING_RE = /(買|購入|おすすめ|比較|価格|値段|在庫|販売|中古|新品|商品|製品|パソコン|PC|スマホ)/i;
 const LOCAL_RE = /(?:都|道|府|県|市|区|町|村).*(?:店|店舗|販売店|病院|ホテル|飲食|近く|周辺)|(?:店|店舗|販売店|近く|周辺).*(?:都|道|府|県|市|区|町|村)/i;
 const CURRENT_RE = /(最新|現在|今日|明日|今|価格|値段|在庫|営業時間|法律|制度|規制|ニュース|発売|販売|予定|日程|時刻|天気|株価|為替|BIOS|UEFI|ファームウェア|ドライバ|バージョン)/i;
+const TRANSIT_RE = /(電車|鉄道|乗換|乗り換え|列車|時刻表|何時発|何に乗|所要時間|経路)/i;
 const MODEL_RE = /(?:CF-[A-Z0-9-]{3,}|ThinkPad\s+[A-Z]\d{3,4}|Latitude\s+\d{4}|EliteBook\s+\d{3,4}|ProBook\s+\d{3,4}|LIFEBOOK\s+[A-Z0-9-]{3,}|dynabook\s+[A-Z0-9-]{3,}|VAIO\s+[A-Z0-9-]{3,}|iPhone\s+(?:SE|\d{1,2})|Pixel\s+\d+|Galaxy\s+[A-Z]\d{2,3}|AQUOS\s+(?:sense|wish|R)\d+|X79A-[A-Z0-9-]+)/i;
 const LOW_VALUE_HOST_RE = /(?:^|\.)(?:gamewith\.jp|accounts\.google\.com)$/i;
 
@@ -97,6 +98,7 @@ function unique(values, limit = SEARCH_V44_MAX_QUERIES) {
 }
 
 function inferIntent(value) {
+  if (TRANSIT_RE.test(value)) return 'transit';
   if (LOCAL_RE.test(value)) return 'local';
   // Shopping remains the domain even when the requested operation is comparison.
   // This keeps deterministic fallback correct when the AI director times out.
@@ -146,6 +148,25 @@ function budgetToken(value) {
   return yen ? `${yen[1]}円以下` : '';
 }
 
+export function transitEndpointsV46(value) {
+  const text = clean(value, 700).normalize('NFKC');
+  const token = '[一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]';
+  const pair = text.match(new RegExp('(' + token + '{1,24}?)(?:駅)?\\s*から\\s*(' + token + '{1,24}?)(?:駅)?\\s*(?:まで|へ)', 'i'));
+  if (!pair?.[1] || !pair?.[2]) return [];
+  return [clean(pair[1], 40), clean(pair[2], 40)].filter(Boolean);
+}
+
+export function transitQueriesV46(value) {
+  const endpoints = transitEndpointsV46(value);
+  if (endpoints.length < 2) return [compactSubject(value)];
+  const [from, to] = endpoints;
+  return unique([
+    `${from} ${to} 乗換案内`,
+    `${from} ${to} 電車 経路 所要時間`,
+    `${from} ${to} 直通 乗り換え`,
+  ], 3);
+}
+
 function simplePlan(text, history) {
   const resolved = resolvedQuestion(text, history);
   const intent = inferIntent(resolved);
@@ -155,7 +176,10 @@ function simplePlan(text, history) {
   const queries = [];
   let researchMode = 'direct_fact';
   let candidateType = 'none';
-  if (intent === 'shopping') {
+  if (intent === 'transit') {
+    researchMode = 'direct_fact'; candidateType = 'place';
+    queries.push(...transitQueriesV46(resolved));
+  } else if (intent === 'shopping') {
     if (known) {
       researchMode = 'direct_fact'; candidateType = 'none';
       queries.push(`${known} 中古 価格 在庫`);
@@ -188,7 +212,7 @@ function simplePlan(text, history) {
     facets: queries.slice(0, 2).map((q, i) => ({
       id: `f${i+1}`,
       stage: researchMode === 'discover_then_verify' ? 'discovery' : 'verification',
-      sourceRole: intent === 'shopping' ? 'seller' : intent === 'news' ? 'news' : intent === 'local' ? 'map' : (domain ? 'official_support' : 'primary'),
+      sourceRole: intent === 'shopping' ? 'seller' : intent === 'news' ? 'news' : intent === 'local' ? 'map' : intent === 'transit' ? 'reference' : (domain ? 'official_support' : 'primary'),
       primaryQuery: q,
     })),
     queries: unique(queries, 3),
