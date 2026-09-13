@@ -22,6 +22,30 @@ jobs:
         with:
           node-version: 22
 
+      - name: Repair migration quoting
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/apply-v46-truth-gate-r3.mjs')
+          s = p.read_text()
+          s = s.replace(
+              "    `${clean(item?.title, 300)} ${clean(item?.excerpt || item?.snippet, 2600)}`",
+              "    clean(item?.title, 300) + ' ' + clean(item?.excerpt || item?.snippet, 2600)",
+          )
+          s = s.replace(
+              "  const allowed = normalizedEvidenceAnchor(`${canonicalizeInput(question, 2200)} ${evidenceText}`);",
+              "  const allowed = normalizedEvidenceAnchor(canonicalizeInput(question, 2200) + ' ' + evidenceText);",
+          )
+          s = s.replace(
+              "    const body = normalize(`${item?.title || ''} ${item?.excerpt || item?.snippet || ''}`);",
+              "    const body = normalize((item?.title || '') + ' ' + (item?.excerpt || item?.snippet || ''));",
+          )
+          p.write_text(s)
+          PY
+          node --check scripts/apply-v46-truth-gate-r3.mjs
+
       - name: Apply r3 hardening
         run: node scripts/apply-v46-truth-gate-r3.mjs
 
