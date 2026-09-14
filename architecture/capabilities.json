@@ -9,10 +9,17 @@
   },
   "capabilities": {
     "runtime.entry": {
-      "canonical": "src/worker-v44.js",
+      "canonical": "src/entry.js",
       "status": "production",
-      "responsibility": "Production HTTP/API entry point and top-level request orchestration",
-      "migrationNote": "Legacy versioned filename. Keep as canonical until a deliberate no-behavior-change rename is performed."
+      "responsibility": "Unversioned production HTTP entry point and terminal response authorization boundary",
+      "migrationNote": "The entry delegates normal request orchestration to worker-v44.js and applies the v46 hard-facts gate before user-visible factual output."
+    },
+    "answer.authorization": {
+      "canonical": "src/entry.js",
+      "status": "production",
+      "symbol": "gateTurnPayload",
+      "responsibility": "Final claim-level fail-close policy for exact transit routes and unsupported dynamic specifics",
+      "migrationNote": "Generic web retrieval may provide context but cannot authorize an exact transit sequence; structured route evidence is required."
     },
     "grounding.policy": {
       "canonical": "src/worker-v44.js",
@@ -25,7 +32,7 @@
       "canonical": "src/worker-v44.js",
       "status": "production",
       "responsibility": "Top-level answer synthesis, grounded fallback behavior and user-facing sanitization",
-      "migrationNote": "v46 fail-closed answer behavior should extend this path rather than create a parallel answer controller."
+      "migrationNote": "Grounded synthesis remains here; final factual authorization is enforced by src/entry.js."
     },
     "search.execution": {
       "canonical": "src/search-v45.js",
@@ -36,7 +43,7 @@
         "src/search-fallbacks.js",
         "src/direct-primary-v45.js"
       ],
-      "migrationNote": "v46 retrieval work should extend this capability, not create search-v46.js."
+      "migrationNote": "Retrieval changes should extend this capability rather than create another versioned search implementation."
     },
     "search.planning": {
       "canonical": "src/search-v45.js",
@@ -50,7 +57,7 @@
       "status": "production",
       "symbol": "stageEvidence",
       "responsibility": "Current query/result evidence relevance gating during staged retrieval",
-      "migrationNote": "The older src/query-result-gate-v44.js is reusable prior art but is not the canonical production gate. v46 claim/evidence validation should extend the current path or deliberately extract it without duplicating behavior."
+      "migrationNote": "The older src/query-result-gate-v44.js is reusable prior art but is not the canonical production gate."
     },
     "structured.tools": {
       "canonical": "src/free-api-tools-v45.js",
