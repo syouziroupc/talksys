@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: talksys-validate-${{ github.ref }}
@@ -42,6 +43,30 @@ jobs:
           set -euo pipefail
           find src archive -type f -name '*.js' -print0 | xargs -0 -n1 node --check
       - name: Run full regression suite
-        run: npm test
+        id: regression
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/talksys-regression.log
+      - name: Publish regression failure diagnostic
+        if: steps.regression.outcome == 'failure' && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          {
+            echo '<!-- talksys-v46-ci-diagnostic -->'
+            echo 'V46 regression diagnostic (temporary):'
+            echo '```text'
+            tail -n 240 /tmp/talksys-regression.log
+            echo '```'
+          } > /tmp/talksys-ci-comment.md
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --method POST --raw-field body="$(cat /tmp/talksys-ci-comment.md)"
+      - name: Fail after regression diagnostic
+        if: steps.regression.outcome == 'failure'
+        run: exit 1
       - name: Check Wrangler bundle
         run: npx wrangler deploy --dry-run
