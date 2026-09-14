@@ -115,11 +115,12 @@ jobs:
         shell: bash
         run: npx wrangler deploy
 
-      - name: Verify current v45 production contract
+      - name: Verify current V45 base and V46 truth-gate contract
         shell: bash
         run: |
           set -euo pipefail
           expected_revision="$(node -e "const fs=require('fs');const s=fs.readFileSync('src/worker-v44.js','utf8');const m=s.match(/const REVISION = '([^']+)'/);if(!m)process.exit(1);process.stdout.write(m[1]);")"
+          expected_truth_gate="$(node --input-type=module -e "import {TRUTH_GATE_REVISION} from './src/entry.js';process.stdout.write(TRUTH_GATE_REVISION)")"
           expected_voice="$(node --input-type=module -e "import {CLIENT_REVISION} from './src/talk-client-v45.js';process.stdout.write(CLIENT_REVISION)")"
           expected_ui="$(node --input-type=module -e "import {UI_REVISION} from './src/ui-v45.js';process.stdout.write(UI_REVISION)")"
           expected_stt="$(node --input-type=module -e "import {STT_REVISION} from './src/stt-v45.js';process.stdout.write(STT_REVISION)")"
@@ -127,11 +128,13 @@ jobs:
           body=""
           for attempt in $(seq 1 20); do
             body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/voice-health" || true)"
-            ok="$(BODY="$body" EXPECTED_REVISION="$expected_revision" EXPECTED_VOICE="$expected_voice" EXPECTED_UI="$expected_ui" EXPECTED_STT="$expected_stt" node - <<'NODE'
+            ok="$(BODY="$body" EXPECTED_REVISION="$expected_revision" EXPECTED_TRUTH_GATE="$expected_truth_gate" EXPECTED_VOICE="$expected_voice" EXPECTED_UI="$expected_ui" EXPECTED_STT="$expected_stt" node - <<'NODE'
           let d={};
           try { d=JSON.parse(process.env.BODY||'{}'); } catch {}
           const ok = d.ok===true
             && d.revision===process.env.EXPECTED_REVISION
+            && d.truthGateRevision===process.env.EXPECTED_TRUTH_GATE
+            && d.truthGatePolicy==='claim-level-fail-close'
             && d.voiceRevision===process.env.EXPECTED_VOICE
             && d.uiRevision===process.env.EXPECTED_UI
             && d.sttRevision===process.env.EXPECTED_STT
@@ -158,6 +161,23 @@ jobs:
             sleep 3
           done
           echo "$body"
+
+      - name: Verify V46 truth-gate health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_truth_gate="$(node --input-type=module -e "import {TRUTH_GATE_REVISION} from './src/entry.js';process.stdout.write(TRUTH_GATE_REVISION)")"
+          body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/truth-gate-health")"
+          BODY="$body" EXPECTED_TRUTH_GATE="$expected_truth_gate" node - <<'NODE'
+          const d=JSON.parse(process.env.BODY||'{}');
+          if(d.ok!==true) throw new Error(process.env.BODY);
+          if(d.revision!==process.env.EXPECTED_TRUTH_GATE) throw new Error(process.env.BODY);
+          if(d.mode!=='claim-level-fail-close') throw new Error(process.env.BODY);
+          if(d.transitExactRouteRequiresStructuredEvidence!==true) throw new Error(process.env.BODY);
+          if(d.genericWebDoesNotAuthorizeTransitSequence!==true) throw new Error(process.env.BODY);
+          if(d.dynamicSpecificsFailClosedWithoutEvidence!==true) throw new Error(process.env.BODY);
+          console.log(JSON.stringify(d));
+          NODE
 
       - name: Verify live v45 UI and microphone client
         shell: bash
@@ -190,8 +210,43 @@ jobs:
 
           payload='{"text":"別府市の今日の天気は？","history":[]}'
           out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather'))throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather')||d.truthGate?.revision!=='talksys-v46-hard-facts-r1')throw new Error(process.env.OUT);"
 
           payload='{"text":"どれがいい？","history":[{"role":"user","content":"大学のレポート用に中古ノートPCを探してる。予算は3万円。"},{"role":"assistant","content":"Officeとブラウザ中心ですね。"}]}'
           out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||a.length<8||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||a.length<8||/何について|もう少し詳しく|詳しく教えて/.test(a)||d.truthGate?.revision!=='talksys-v46-hard-facts-r1')throw new Error(process.env.OUT);"
+
+      - name: Production V46 hallucination guard smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          payload='{"text":"架空商品ZXQ-99173の今日の新品価格を、具体的な円価格で教えてください。","history":[]}'
+          out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node - <<'NODE'
+          const d=JSON.parse(process.env.OUT||'{}');
+          if(!d.ok || d.truthGate?.revision!=='talksys-v46-hard-facts-r1') throw new Error(process.env.OUT);
+          const answer=String(d.answer||'');
+          const evidence=JSON.stringify(d.sources||[]);
+          const prompt='架空商品ZXQ-99173の今日の新品価格を、具体的な円価格で教えてください。';
+          for(const token of answer.match(/(?:¥|￥)?\d[\d,]*(?:円)/g)||[]) {
+            if(!evidence.includes(token) && !prompt.includes(token)) throw new Error('unsupported money token: '+token+' / '+answer);
+          }
+          NODE
+
+          payload='{"text":"架空駅ZXQから架空駅QXZまで、次の電車の発車時刻と乗換駅を具体的に教えて。","history":[]}'
+          out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node - <<'NODE'
+          const d=JSON.parse(process.env.OUT||'{}');
+          if(!d.ok || d.truthGate?.revision!=='talksys-v46-hard-facts-r1') throw new Error(process.env.OUT);
+          if(d.truthGate?.structuredTransitAuthorized===false && /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/.test(String(d.answer||''))) throw new Error(process.env.OUT);
+          NODE
+
+          payload='{"text":"大分から行橋まで電車でどうやって行けばいい？","history":[]}'
+          out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node - <<'NODE'
+          const d=JSON.parse(process.env.OUT||'{}');
+          if(!d.ok || d.truthGate?.revision!=='talksys-v46-hard-facts-r1') throw new Error(process.env.OUT);
+          const a=String(d.answer||'');
+          if(/小倉[^。]{0,40}(?:鹿児島本線|乗り換)/.test(a) || /鹿児島本線[^。]{0,40}乗り換/.test(a)) throw new Error('dangerous transit regression: '+a);
+          NODE
