@@ -37,7 +37,9 @@ import { transcribeV45, STT_MODEL, STT_REVISION } from './stt-v45.js';
 const REVISION = 'talksys-v45-parallel-grounding-r1';
 const SEARCH_DIRECTOR_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 const MODEL = '@cf/zai-org/glm-5.3-flash';
+const MODEL_FALLBACK = '@cf/zai-org/glm-4.7-flash';
 const MODEL_TIMEOUT_MS = 12000;
+const MODEL_HEDGE_DELAY_MS = 3500;
 
 const TRIVIAL_RE = /^(?:もしもし|おはよう(?:ございます)?|こんにちは|こんばんは|ありがとう(?:ございます)?|ありがと|どうも|はい|うん|ううん|へえ|なるほど|そうなんだ|了解|わかった|分かった|OK|オーケー|じゃあね|またね)[。！!？?…\s]*$/i;
 const FEELING_ONLY_RE = /^(?:今日は|今日も|今は|なんか|ちょっと|かなり|すごく|めっちゃ|もう)?\s*(?:疲れた|つかれた|眠い|ねむい|腹減った|お腹すいた|暇|しんどい|つらい|嬉しい|うれしい|悲しい|かなしい|楽しい|たのしい|元気|だるい)[。！!？?…〜ー\s]*$/i;
@@ -355,22 +357,64 @@ export async function boundedPromise(promise, timeoutMs, label = 'operation') {
 
 async function runModel(env, messages, max = 520, temperature = 0.08, timeoutMs = MODEL_TIMEOUT_MS) {
   const started = Date.now();
-  const controller = new AbortController();
-  const abortTimer = setTimeout(() => controller.abort(new Error('model_timeout')), timeoutMs);
+  const budgetMs = Math.max(250, Number(timeoutMs) || MODEL_TIMEOUT_MS);
+  const hedgeDelayMs = Math.min(MODEL_HEDGE_DELAY_MS, Math.max(50, Math.floor(budgetMs * 0.35)));
+  const primaryController = new AbortController();
+  const fallbackController = new AbortController();
+  let hedgeTimer = null;
+  let fallbackStarted = false;
+  let resolveFallback;
+  let rejectFallback;
+
+  const modelArgs = {
+    messages,
+    stream: false,
+    modalities: ['text'],
+    max_completion_tokens: max,
+    temperature,
+    reasoning_effort: 'low',
+  };
+
+  const runOne = async (model, controller) => {
+    const result = await env.AI.run(model, modelArgs, { signal: controller.signal });
+    const value = readModelText(result);
+    if (!value) throw new Error(`empty_model_answer:${model}`);
+    return { text: value, model };
+  };
+
+  const fallback = new Promise((resolve, reject) => {
+    resolveFallback = resolve;
+    rejectFallback = reject;
+  });
+  const startFallback = () => {
+    if (fallbackStarted) return;
+    fallbackStarted = true;
+    if (hedgeTimer) clearTimeout(hedgeTimer);
+    Promise.resolve()
+      .then(() => runOne(MODEL_FALLBACK, fallbackController))
+      .then(resolveFallback, rejectFallback);
+  };
+
+  hedgeTimer = setTimeout(startFallback, hedgeDelayMs);
+  const primary = Promise.resolve()
+    .then(() => runOne(MODEL, primaryController))
+    .catch((error) => {
+      startFallback();
+      throw error;
+    });
+
   try {
-    const result = await boundedPromise(env.AI.run(MODEL, {
-      messages,
-      stream: false,
-      modalities: ['text'],
-      max_completion_tokens: max,
-      temperature,
-      reasoning_effort: 'low',
-    }, { signal: controller.signal }), timeoutMs + 250, 'model');
-    const text = readModelText(result);
-    if (!text) throw new Error('empty model answer');
-    return { text, ms: Date.now() - started };
+    const winner = await boundedPromise(Promise.any([primary, fallback]), budgetMs, 'model');
+    return {
+      text: winner.text,
+      ms: Date.now() - started,
+      model: winner.model,
+      fallbackUsed: winner.model === MODEL_FALLBACK,
+    };
   } finally {
-    clearTimeout(abortTimer);
+    if (hedgeTimer) clearTimeout(hedgeTimer);
+    try { primaryController.abort(); } catch {}
+    try { fallbackController.abort(); } catch {}
   }
 }
 
@@ -525,7 +569,7 @@ export function mechanicalGroundedAnswer(apiResults = [], search = {}, question 
   const web = (search?.results || []).filter((x) => !x?.structuredApi).slice(0, 3);
   if (web.length) {
     const facts = web.map((x) => `${clean(x?.title, 180)}: ${clean(x?.excerpt || x?.snippet, 420)}`).filter(Boolean).join(' / ');
-    return `回答生成がタイムアウトしたため、取得済みのWeb根拠だけを返します。${facts}`;
+    return `取得済みのWeb根拠から確認できる範囲を返します。${facts}`;
   }
   return deterministicStableFallback(question, search);
 }
@@ -874,6 +918,8 @@ export default {
         localDeterministic: true,
         modelTimeoutMs: MODEL_TIMEOUT_MS,
         modelTimeoutFallback: true,
+        modelHedgeFallback: MODEL_FALLBACK,
+        modelHedgeDelayMs: MODEL_HEDGE_DELAY_MS,
         groundedEvidenceFallback: true,
         externalFailureUsesCasualModel: false,
         ambiguityGate: true,
@@ -985,6 +1031,7 @@ export default {
 export const __test = {
   canonicalizeInput,
   boundedPromise,
+  runModel,
   mechanicalGroundedAnswer,
   classifyTurn,
   localDeterministicAnswer,
