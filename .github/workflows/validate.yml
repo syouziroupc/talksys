@@ -42,22 +42,6 @@ jobs:
           set -euo pipefail
           find src archive -type f -name '*.js' -print0 | xargs -0 -n1 node --check
       - name: Run full regression suite
-        id: regression
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          npm test 2>&1 | tee /tmp/talksys-regression.log
-      - name: Upload regression diagnostic
-        if: steps.regression.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: talksys-regression-log
-          path: /tmp/talksys-regression.log
-          if-no-files-found: error
-          retention-days: 1
-      - name: Fail after regression diagnostic
-        if: steps.regression.outcome == 'failure'
-        run: exit 1
+        run: npm test
       - name: Check Wrangler bundle
         run: npx wrangler deploy --dry-run
