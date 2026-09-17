@@ -127,7 +127,7 @@ jobs:
           NODE
           npx wrangler deploy --secrets-file "$secrets_file"
 
-      - name: Verify current v45 production contract
+      - name: Verify current production contract
         shell: bash
         run: |
           set -euo pipefail
@@ -153,15 +153,14 @@ jobs:
             && d.legacyWebSocketVoice===false
             && d.durableObjectVoice===false
             && d.legacyAgentRoute===false
-            && d.unifiedTurnRouter===true
-            && d.legacyV43TurnDelegation===false
-            && d.apiFirst===true
-            && d.apiParallel===true
-            && d.groundedEvidenceFallback===true
-            && d.externalFailureUsesCasualModel===false
-            && d.modelTimeoutMs===12000
-            && d.searchDirectorModel==='@cf/qwen/qwen3-30b-a3b-fp8'
-            && d.searchDefault==='intent-routed-v45'
+            && d.personalizationRevision==='talksys-v55-gemini-personalization-r1'
+            && d.nativeGeminiAnswerPath===true
+            && d.nativeGoogleSearch===true
+            && d.searchDefault==='aggressive-native-google-search'
+            && d.routerFirst===false
+            && d.customTruthGateApplied===false
+            && d.blanketFailClosed===false
+            && d.speechOptimized===true
             && d.generationProvider==='gemini'
             && d.generationModel==='gemini-3.5-flash-lite'
             && d.geminiConfigured===true
@@ -178,7 +177,12 @@ jobs:
           gemini="$(curl -fsS --max-time 20 "$PRODUCTION_URL/gemini-health")"
           GEMINI_HEALTH="$gemini" node - <<'NODE'
           const d=JSON.parse(process.env.GEMINI_HEALTH||'{}');
-          if (!d.ok || !d.configured || d.provider!=='gemini' || d.model!=='gemini-3.5-flash-lite' || d.legacyGlmExecution!==false) {
+          if (!d.ok || !d.configured || d.provider!=='gemini' || d.model!=='gemini-3.5-flash-lite'
+              || d.api!=='interactions' || d.nativeGoogleSearch!==true
+              || d.searchDefault!=='aggressive-native-google-search'
+              || d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'
+              || d.speechOptimized!==true || d.promptInjectionDefense!==true
+              || d.blanketFailClosed!==false || d.legacyGlmExecution!==false) {
             throw new Error(process.env.GEMINI_HEALTH);
           }
           NODE
@@ -209,13 +213,13 @@ jobs:
         run: |
           set -euo pipefail
           payload='{"text":"12345÷15","history":[]}'
-          out="$(curl -fsS --max-time 20 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const routes=['deterministic-v45','gemini-native-interactions'];if(!d.ok||!routes.includes(d.route)||d.search!==false||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
+          out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='gemini-native-interactions'||d.nativeGoogleSearch!==true||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
 
           payload='{"text":"別府市の今日の天気は？","history":[]}'
-          out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather')||d.generationProvider!=='gemini')throw new Error(process.env.OUT);"
+          out="$(curl -fsS --max-time 90 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='gemini-native-interactions'||d.nativeGoogleSearch!==true||d.search!==true||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'||!String(d.answer||'').trim())throw new Error(process.env.OUT);"
 
           payload='{"text":"どれがいい？","history":[{"role":"user","content":"大学のレポート用に中古ノートPCを探してる。予算は3万円。"},{"role":"assistant","content":"Officeとブラウザ中心ですね。"}]}'
-          out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||a.length<8||d.generationProvider!=='gemini'||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
+          out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||d.route!=='gemini-native-interactions'||a.length<8||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"

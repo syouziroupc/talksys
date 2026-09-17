@@ -44,7 +44,7 @@ test('production deploy requires the Gemini key and uploads it only as a Worker 
 });
 
 test('post-deploy contract is derived from checked-out source instead of stale hard-coded revisions', () => {
-  assert.match(workflow, /Verify current v45 production contract/);
+  assert.match(workflow, /Verify current production contract/);
   assert.match(workflow, /src\/worker-v44\.js/);
   assert.match(workflow, /CLIENT_REVISION/);
   assert.match(workflow, /UI_REVISION/);

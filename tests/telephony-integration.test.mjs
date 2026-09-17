@@ -29,10 +29,12 @@ test('TeXML receives PCMU and returns MP3 on the same Telnyx stream', () => {
   assert.match(xml, /name="call_id" value="call-1"/);
 });
 
-test('integrated entry delegates phone turns to the existing TalkSys entry', () => {
+test('integrated entry keeps Telnyx transport but routes phone turns through the shared personalized Gemini runner', () => {
   const source = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
   assert.match(source, /import talksys from '\.\/entry\.js'/);
-  assert.match(source, /talksys\.fetch\(internalRequest, env, ctx\)/);
+  assert.match(source, /turn: \(body\) => runTalkSysTurn\(request, env, body\)/);
+  assert.match(source, /return runGeminiTurn\(body \|\| \{\}, env, request\.signal\)/);
+  assert.match(source, /return talksys\.fetch\(request, env, ctx\)/);
   assert.doesNotMatch(source, /gemini-3\.8-live/i);
   assert.doesNotMatch(source, /BidiGenerateContent/i);
 });
