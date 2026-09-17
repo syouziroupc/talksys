@@ -24,7 +24,7 @@ const FORM_HANDLER_NEW = String.raw`form.addEventListener('submit',async e=>{
 const SPOKEN_TEXT_VOICE_PATCH = String.raw`function spokenText(text){
   let v=String(text||'')
     .replace(/https?:\/\/\S+/g,'')
-    .replace(/^\s{0,3}#{1,6}\s*/gm,'')
+    .replace(/^\s{0,3}#{1,6}\s*[^\n]*\n/gm,'')
     .replace(/^\s*[-*+]\s+/gm,'')
     .replace(/^\s*\d+[.)]\s+/gm,'')
     .replace(/\*\*([^*]+)\*\*/g,'$1')
