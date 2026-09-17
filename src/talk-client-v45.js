@@ -74,11 +74,9 @@ client = client.replace(
 );
 client = client.replace(RESUME_OLD, RESUME_NEW);
 
-client = client.replace(
-  "'use strict';",
-  "'use strict';\nwindow.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';",
-);
+client = "window.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';\n" + client;
 
+if (!client.includes("window.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "'") || !client.includes("window.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "'")) throw new Error('TalkSys runtime revision markers did not apply');
 if (!client.includes('非常文字入力で現在の応答を割込み')) throw new Error('TalkSys typed-interrupt patch did not apply');
 if (!client.includes('previousInteractionId:geminiInteractionId')) throw new Error('Gemini interaction continuity patch did not apply');
 if (!client.includes("planner:'gemini-native'")) throw new Error('Gemini native planner bypass patch did not apply');
