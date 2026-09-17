@@ -1,7 +1,7 @@
 import { collectGroundedEvidenceV23 } from './search-v23.js';
 import { searchBingRss, searchOpenStreetMapLocal, dedupeSearchResults } from './search-fallbacks.js';
 
-export const SEARCH_TOOL_V26_REVISION = 'evidence-web-v26-trusted-commerce-generic-current-transit-jrkyushu';
+export const SEARCH_TOOL_V26_REVISION = 'evidence-web-v26-trusted-commerce-direct-jrkyushu';
 
 const TRANSIT_RE = /(乗り換え|乗換|経路|行き方|電車|鉄道|所要時間|運賃|時刻表|直通|次の電車|何時発|発車時刻)/i;
 const PC_RE = /(パソコン|\bPC\b|ＰＣ|ノートパソコン|ノート|Windows)/i;
@@ -14,7 +14,12 @@ const OFFICIAL_PC_SEEDS = [
   { title: 'Lenovo ノートパソコン公式ストア', url: 'https://www.lenovo.com/jp/ja/laptops/' },
   { title: 'Dell ノートパソコン公式ストア', url: 'https://www.dell.com/ja-jp/shop/dell-laptops/scr/laptops' },
 ];
-const JR_KYUSHU_HOST_RE = /(^|\.)jrkyushu-timetable\.jp$/i;
+const JR_KYUSHU_MAP_URL = 'https://www.jrkyushu-timetable.jp/sp/map_list.html';
+const JR_KYUSHU_HEADERS = {
+  accept: 'text/html,application/xhtml+xml',
+  'accept-language': 'ja-JP,ja;q=0.9',
+  'user-agent': 'Mozilla/5.0 (compatible; TalkSys/1.0; +https://talksys.syouziroupc.workers.dev)',
+};
 
 function clean(value, max = 4000) { return String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max); }
 function decodeEntities(value) { return String(value || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16))).replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))); }
@@ -58,7 +63,7 @@ function timeoutSignal(parentSignal, timeoutMs = 4200) {
   return typeof AbortSignal.any === 'function' ? AbortSignal.any([parentSignal, timeout]) : parentSignal;
 }
 async function fetchOfficialPcSeed(seed, signal) {
-  const response = await fetch(seed.url, { signal: timeoutSignal(signal, 5200), redirect: 'follow', headers: { accept: 'text/html,application/xhtml+xml', 'accept-language': 'ja-JP,ja;q=0.9', 'user-agent': 'Mozilla/5.0 (compatible; TalkSys/1.0; +https://talksys.syouziroupc.workers.dev)' } });
+  const response = await fetch(seed.url, { signal: timeoutSignal(signal, 5200), redirect: 'follow', headers: JR_KYUSHU_HEADERS });
   if (!response.ok) throw new Error(`PC official ${response.status}`);
   const text = stripHtml(await response.text());
   if (!PC_PRODUCT_SIGNAL_RE.test(text)) throw new Error('PC official page contained no product signal');
@@ -74,7 +79,7 @@ async function fetchYahooTransitRoute(from, to, signal, date = new Date()) {
   const t = jstParts(date), minute = String(t.minute).padStart(2, '0');
   const params = new URLSearchParams({ from, to, y: t.year, m: t.month, d: t.day, hh: t.hour, m1: minute[0], m2: minute[1], type: '1', ticket: 'ic', expkind: '1', userpass: '1', ws: '3', s: '0', al: '1', shin: '1', ex: '1', hb: '1', lb: '1', sr: '1' });
   const url = `https://transit.yahoo.co.jp/search/result?${params.toString()}`;
-  const response = await fetch(url, { signal: timeoutSignal(signal, 5200), redirect: 'follow', headers: { accept: 'text/html,application/xhtml+xml', 'accept-language': 'ja-JP,ja;q=0.9', 'user-agent': 'Mozilla/5.0 (compatible; TalkSys/1.0; +https://talksys.syouziroupc.workers.dev)' } });
+  const response = await fetch(url, { signal: timeoutSignal(signal, 5200), redirect: 'follow', headers: JR_KYUSHU_HEADERS });
   if (!response.ok) throw new Error(`Yahoo Transit ${response.status}`);
   const text = stripHtml(await response.text()), excerpt = usefulRouteExcerpt(text, from, to);
   if (!excerpt.includes(from) || !excerpt.includes(to)) throw new Error('Transit page endpoints did not match');
@@ -82,11 +87,31 @@ async function fetchYahooTransitRoute(from, to, signal, date = new Date()) {
   return { title: `${from}から${to}への乗換案内 - Yahoo!路線情報`, url: response.url || url, engine: 'yahoo-transit-direct-current', excerpt: `検索基準時刻 ${t.iso}。${excerpt}`, snippet: excerpt, requestedAtJst: t.iso };
 }
 
-function jrKyushuUrl(item) {
-  try {
-    const url = new URL(String(item?.url || ''));
-    return JR_KYUSHU_HOST_RE.test(url.hostname) && /(?:sp-tt_dep\.cgi|tt_dep\.cgi)/i.test(url.pathname + url.search) ? url.toString() : '';
-  } catch { return ''; }
+function anchorLinks(html) {
+  const out = [];
+  const re = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of String(html || '').matchAll(re)) {
+    const href = decodeEntities(match[1]);
+    const text = clean(stripHtml(match[2]), 240);
+    if (href && text) out.push({ href, text });
+  }
+  return out;
+}
+function stationListUrlFromMap(html, station, base = JR_KYUSHU_MAP_URL) {
+  const target = clean(station, 40).replace(/駅$/u, '');
+  const hit = anchorLinks(html).find((item) =>
+    clean(item.text, 60).replace(/駅$/u, '') === target && /sp-tt_list\.cgi/i.test(item.href)
+  );
+  if (!hit) return '';
+  try { return new URL(hit.href, base).toString(); } catch { return ''; }
+}
+function departureUrlsFromStationList(html, destination, base) {
+  const target = clean(destination, 40).replace(/駅$/u, '');
+  const urls = anchorLinks(html)
+    .filter((item) => /sp-tt_dep\.cgi/i.test(item.href) && item.text.includes(target))
+    .map((item) => { try { return new URL(item.href, base).toString(); } catch { return ''; } })
+    .filter(Boolean);
+  return [...new Set(urls)].slice(0, 6);
 }
 function parseJrKyushuDepartures(text, from, to, date = new Date()) {
   const normalized = clean(text, 90000);
@@ -109,31 +134,54 @@ function parseJrKyushuDepartures(text, from, to, date = new Date()) {
   return out.slice(0, 8);
 }
 async function fetchJrKyushuCurrentDepartures(from, to, signal, date = new Date()) {
-  const queries = [
-    `${from}駅 ${to}駅 site:jrkyushu-timetable.jp/cgi-bin/sp/sp-tt_dep.cgi`,
-    `${from}駅 ${to}駅 JR九州 駅別時刻表`,
-  ];
-  const settled = await Promise.allSettled(queries.map((q) => searchBingRss(q, { timeoutMs: 4200, limit: 10 })));
-  const hits = dedupeSearchResults(settled.flatMap((r) => r.status === 'fulfilled' ? r.value : []).filter((item) => jrKyushuUrl(item)), 10);
-  if (!hits.length) throw new Error('JR Kyushu official timetable search returned no candidate');
-  const pages = await Promise.allSettled(hits.slice(0, 6).map(async (hit) => {
-    const url = jrKyushuUrl(hit);
-    const response = await fetch(url, { signal: timeoutSignal(signal, 4800), redirect: 'follow', headers: { accept: 'text/html,application/xhtml+xml', 'accept-language': 'ja-JP,ja;q=0.9', 'user-agent': 'Mozilla/5.0 (compatible; TalkSys/1.0; +https://talksys.syouziroupc.workers.dev)' } });
+  const mapResponse = await fetch(JR_KYUSHU_MAP_URL, {
+    signal: timeoutSignal(signal, 4800), redirect: 'follow', headers: JR_KYUSHU_HEADERS,
+  });
+  if (!mapResponse.ok) throw new Error(`JR Kyushu station map ${mapResponse.status}`);
+  const mapHtml = await mapResponse.text();
+  const stationListUrl = stationListUrlFromMap(mapHtml, from, mapResponse.url || JR_KYUSHU_MAP_URL);
+  if (!stationListUrl) throw new Error('JR Kyushu origin station not found in official map');
+
+  const listResponse = await fetch(stationListUrl, {
+    signal: timeoutSignal(signal, 4800), redirect: 'follow', headers: JR_KYUSHU_HEADERS,
+  });
+  if (!listResponse.ok) throw new Error(`JR Kyushu station list ${listResponse.status}`);
+  const listHtml = await listResponse.text();
+  const listText = stripHtml(listHtml);
+  if (!listText.includes(`${from}駅`)) throw new Error('JR Kyushu station page did not match origin');
+  const departureUrls = departureUrlsFromStationList(listHtml, to, listResponse.url || stationListUrl);
+  if (!departureUrls.length) throw new Error('JR Kyushu destination direction not found on station page');
+
+  const pages = await Promise.allSettled(departureUrls.map(async (url) => {
+    const response = await fetch(url, {
+      signal: timeoutSignal(signal, 4800), redirect: 'follow', headers: JR_KYUSHU_HEADERS,
+    });
     if (!response.ok) throw new Error(`JR Kyushu timetable ${response.status}`);
     const text = stripHtml(await response.text());
     const departures = parseJrKyushuDepartures(text, from, to, date);
     if (!departures.length) throw new Error('JR Kyushu timetable contained no future matching departure');
-    return { hit, url: response.url || url, text, departures };
+    return { url: response.url || url, departures };
   }));
-  const usable = pages.flatMap((r) => r.status === 'fulfilled' ? [r.value] : []);
+  const usable = pages.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
   if (!usable.length) throw new Error('JR Kyushu official timetable pages were unusable');
-  const departures = usable.flatMap((page) => page.departures.map((x) => ({ ...x, url: page.url }))).sort((a, b) => a.total - b.total).slice(0, 4);
+  const departures = usable
+    .flatMap((page) => page.departures.map((item) => ({ ...item, url: page.url })))
+    .sort((a, b) => a.total - b.total)
+    .filter((item, index, all) => index === all.findIndex((other) => other.time === item.time && other.detail === item.detail))
+    .slice(0, 4);
   if (!departures.length) throw new Error('JR Kyushu official timetable had no upcoming departures');
   const t = jstParts(date);
-  const primaryUrl = departures[0].url;
-  const lines = departures.map((x) => `${x.time} ${x.detail}`).join(' / ');
+  const lines = departures.map((item) => `${item.time} ${item.detail}`).join(' / ');
   const excerpt = `検索基準時刻 ${t.iso}。JR九州公式駅別時刻表で${from}駅から${to}方面を確認。次の候補: ${lines}`;
-  return { title: `${from}駅から${to}方面 - JR九州公式駅別時刻表`, url: primaryUrl, engine: 'jrkyushu-official-timetable-current', excerpt, snippet: excerpt, requestedAtJst: t.iso, departures };
+  return {
+    title: `${from}駅から${to}方面 - JR九州公式駅別時刻表`,
+    url: departures[0].url,
+    engine: 'jrkyushu-official-timetable-current',
+    excerpt,
+    snippet: excerpt,
+    requestedAtJst: t.iso,
+    departures,
+  };
 }
 
 function evidenceFromSources(sources) { return (sources || []).slice(0, 8).map((item, i) => `[${i + 1}] ${clean(item?.title, 180)}\n${clean(item?.url, 500)}\n${clean(item?.excerpt || item?.snippet || '', 1400)}`).join('\n\n'); }
@@ -211,4 +259,4 @@ export async function augmentGroundedEvidenceV26(base, options = {}) {
   return { ...augmented, revision: SEARCH_TOOL_V26_REVISION, directTransitError: errors.join(' | ').slice(0, 320) };
 }
 export async function collectGroundedEvidenceV26(query, history = [], options = {}) { const base = await collectGroundedEvidenceV23(query, history, options); return augmentGroundedEvidenceV26(base, options); }
-export const __test = { jstParts, stationPair, localArea, localStoreRelevant, pcPurchaseRelevant, pcPurchaseQueries, usefulRouteExcerpt, stripHtml, jrKyushuUrl, parseJrKyushuDepartures, evidenceFromSources, coreQuestion, queryTerms, genericRelevant, genericQueries };
+export const __test = { jstParts, stationPair, localArea, localStoreRelevant, pcPurchaseRelevant, pcPurchaseQueries, usefulRouteExcerpt, stripHtml, anchorLinks, stationListUrlFromMap, departureUrlsFromStationList, parseJrKyushuDepartures, evidenceFromSources, coreQuestion, queryTerms, genericRelevant, genericQueries };
