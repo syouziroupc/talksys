@@ -1,4 +1,4 @@
-name: Patch Gemini 2.5 Flash-Lite once
+name: Patch TalkSys served revision markers once
 
 on:
   push:
@@ -21,46 +21,39 @@ jobs:
         with:
           node-version: 22
 
-      - name: Apply current TalkSys migration
+      - name: Make runtime revision markers unconditional
         shell: bash
         run: |
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
 
-          def replace(path, old, new, count=None):
-              p = Path(path)
-              s = p.read_text()
-              found = s.count(old)
-              if found == 0:
-                  raise SystemExit(f'missing expected text in {path}: {old!r}')
-              if count is not None and found != count:
-                  raise SystemExit(f'unexpected match count in {path}: {old!r} -> {found}, expected {count}')
-              p.write_text(s.replace(old, new))
+          p = Path('src/talk-client-v45.js')
+          s = p.read_text()
+          old = '''client = client.replace(\n  "'use strict';",\n  "'use strict';\\nwindow.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';",\n);'''
+          new = '''client = "window.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';\\n" + client;'''
+          if s.count(old) != 1:
+              raise SystemExit(f'unexpected revision-marker block count: {s.count(old)}')
+          s = s.replace(old, new)
+          anchor = "if (!client.includes('非常文字入力で現在の応答を割込み')) throw new Error('TalkSys typed-interrupt patch did not apply');"
+          guard = "if (!client.includes(\"window.__TALKSYS_CLIENT_REVISION__='\" + CLIENT_REVISION + \"'\") || !client.includes(\"window.__TALKSYS_INTERACTION_REVISION__='\" + INTERACTION_REVISION + \"'\")) throw new Error('TalkSys runtime revision markers did not apply');\\n"
+          if s.count(anchor) != 1:
+              raise SystemExit('runtime assertion anchor missing')
+          s = s.replace(anchor, guard + anchor)
+          p.write_text(s)
 
-          replace('src/entry.js', "export const GEMINI_MODEL = 'gemini-3.8-flash';", "export const GEMINI_MODEL = 'gemini-2.5-flash-lite';", 1)
-          replace('src/entry.js', "thinkingConfig: { thinkingLevel: 'low' },", "thinkingConfig: { thinkingBudget: 0 },", 1)
-          replace('src/entry.js', "    generation_config: {\n      thinking_level: 'low',\n    },\n", "", 1)
-
-          replace('tests/gemini-api-cutover-v47.test.mjs', "assert.equal(GEMINI_MODEL, 'gemini-3.8-flash');", "assert.equal(GEMINI_MODEL, 'gemini-2.5-flash-lite');", 1)
-          replace('tests/gemini-api-cutover-v47.test.mjs', "assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, 'low');", "assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 0);", 1)
-          replace('tests/gemini-api-cutover-v47.test.mjs', r"/generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-3\.8-flash:generateContent$/", r"/generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-2\.5-flash-lite:generateContent$/", 1)
-
-          replace('tests/v45-shell-regression.test.mjs', "assert.equal(CLIENT_REVISION, 'talksys-v45-http-adaptive-vad');", "assert.equal(CLIENT_REVISION, 'talksys-v46-streaming-vad');", 1)
-          replace('tests/v45-shell-regression.test.mjs', "assert.equal(INTERACTION_REVISION, 'talksys-v49-native-gemini-interactions-r1');", "assert.equal(INTERACTION_REVISION, 'talksys-v50-native-gemini-2-5-flash-lite-r1');", 1)
-          replace('tests/v45-shell-regression.test.mjs', "/SILENCE_MS=620/", "/SILENCE_MS=480/", 1)
-          replace('tests/v45-shell-regression.test.mjs', "/talksys-v45-http-adaptive-vad/", "/talksys-v46-streaming-vad/", 1)
-
-          replace('tests/deploy-validation-gate.test.mjs', "/generationModel==='gemini-3\\.8-flash'/", "/generationModel==='gemini-2\\.5-flash-lite'/", 1)
-          replace('tests/deploy-validation-gate.test.mjs', "/talksys-v45-http-adaptive-vad/", "/talksys-v46-streaming-vad/", 1)
-
-          replace('.github/workflows/deploy.yml', "d.generationModel==='gemini-3.8-flash'", "d.generationModel==='gemini-2.5-flash-lite'", 1)
-          replace('.github/workflows/deploy.yml', "d.model!=='gemini-3.8-flash'", "d.model!=='gemini-2.5-flash-lite'", 1)
-          replace('.github/workflows/deploy.yml', "grep -F 'talksys-v45-http-adaptive-vad' <<< \"$client\"", "grep -F 'talksys-v46-streaming-vad' <<< \"$client\"", 1)
+          p = Path('tests/v45-shell-regression.test.mjs')
+          s = p.read_text()
+          anchor = "  assert.match(TALK_CLIENT_V45, /planner:'gemini-native'/);"
+          addition = "  assert.match(TALK_CLIENT_V45, /__TALKSYS_CLIENT_REVISION__='talksys-v46-streaming-vad'/);\\n  assert.match(TALK_CLIENT_V45, /__TALKSYS_INTERACTION_REVISION__='talksys-v50-native-gemini-2-5-flash-lite-r1'/);"
+          if s.count(anchor) != 1:
+              raise SystemExit('test anchor missing')
+          s = s.replace(anchor, anchor + '\n' + addition)
+          p.write_text(s)
           PY
 
           git diff --check
-          git diff -- src/entry.js src/talk-client-v45.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs tests/deploy-validation-gate.test.mjs .github/workflows/deploy.yml
+          git diff -- src/talk-client-v45.js tests/v45-shell-regression.test.mjs
 
       - name: Install dependencies
         shell: bash
@@ -78,12 +71,12 @@ jobs:
           npm test
           npx wrangler deploy --dry-run
 
-      - name: Commit verified migration
+      - name: Commit verified marker fix
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/entry.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs tests/deploy-validation-gate.test.mjs
-          git commit -m 'Switch TalkSys to Gemini 2.5 Flash-Lite'
+          git add src/talk-client-v45.js tests/v45-shell-regression.test.mjs
+          git commit -m 'Fix served TalkSys revision markers'
           git push origin HEAD:main
