@@ -25,6 +25,7 @@ jobs:
           python3 scripts/harden-jst-v53.py
           python3 scripts/harden-factual-v54.py
           python3 scripts/fix-factual-v54.py
+          python3 scripts/fix-factual-v54-round2.py
       - name: Review patch
         run: |
           git diff --check
