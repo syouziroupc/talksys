@@ -1,0 +1,83 @@
+name: Deploy TalkSys telephony preview
+
+on:
+  push:
+    branches: [feature/telephony-shell-v2]
+    paths:
+      - 'telephony/**'
+      - '.github/workflows/deploy-telephony-preview.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: talksys-telephony-preview
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TELEPHONY_SHARED_TOKEN: ${{ secrets.TELEPHONY_SHARED_TOKEN }}
+      PREVIEW_URL: https://talksys-telephony.syouziroupc.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Verify credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${GEMINI_API_KEY:-}"
+          if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+            account_id="$(curl -fsSL -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" https://api.cloudflare.com/client/v4/accounts?per_page=1 | node -e "let d=JSON.parse(require('fs').readFileSync(0,'utf8'));process.stdout.write(d.result?.[0]?.id||'')")"
+            test -n "$account_id"
+            echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Validate telephony only
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check telephony/src/index.js
+          node --check telephony/src/protocol.js
+          node --check telephony/src/codec.js
+          node --test telephony/test.mjs
+          npx wrangler deploy --dry-run -c telephony/wrangler.jsonc
+
+      - name: Deploy isolated worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          secrets_file="$(mktemp)"
+          trap 'rm -f "$secrets_file"' EXIT
+          SECRETS_FILE="$secrets_file" node <<'NODE'
+          const fs = require('fs');
+          const secrets = { GEMINI_API_KEY: process.env.GEMINI_API_KEY };
+          if (process.env.TELEPHONY_SHARED_TOKEN) secrets.TELEPHONY_SHARED_TOKEN = process.env.TELEPHONY_SHARED_TOKEN;
+          fs.writeFileSync(process.env.SECRETS_FILE, JSON.stringify(secrets));
+          NODE
+          npx wrangler deploy -c telephony/wrangler.jsonc --secrets-file "$secrets_file"
+
+      - name: Verify management surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 15); do
+            health="$(curl -fsS --max-time 15 "$PREVIEW_URL/telephony-health" || true)"
+            ok="$(BODY="$health" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.ok===true&&d.isolatedFromBrowserRuntime===true))")"
+            [[ "$ok" == "true" ]] && exit 0
+            sleep 2
+          done
+          exit 1
