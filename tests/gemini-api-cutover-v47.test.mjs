@@ -22,7 +22,7 @@ const {
 test('v47 Gemini adapter exposes the expected stable model and runtime key contract', () => {
   assert.equal(GEMINI_ADAPTER_REVISION, 'talksys-v47-gemini-cutover-r1');
   assert.equal(RESPONSE_QUALITY_REVISION, 'talksys-v48-interrupt-transit-speed-r1');
-  assert.equal(GEMINI_MODEL, 'gemini-2.5-flash-lite');
+  assert.equal(GEMINI_MODEL, 'gemini-3.5-flash-lite');
   assert.equal(hasGeminiKey({ GEMINI_API_KEY: 'abc' }), true);
   assert.equal(hasGeminiKey({ GEMINI_API_KEY: '   ' }), false);
   assert.equal(hasGeminiKey({}), false);
@@ -103,7 +103,7 @@ test('legacy GLM primary is intercepted by server-side Gemini while non-GLM Work
     assert.equal(gemini.response, 'Gemini response');
     assert.equal(gemini.model, GEMINI_MODEL);
     assert.equal(fetchCalls.length, 1);
-    assert.match(fetchCalls[0].url, /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-2\.5-flash-lite:generateContent$/);
+    assert.match(fetchCalls[0].url, /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-3\.5-flash-lite:generateContent$/);
     assert.equal(fetchCalls[0].init.headers['x-goog-api-key'], 'server-only-test-key');
     assert.equal(workersCalls.length, 0);
 

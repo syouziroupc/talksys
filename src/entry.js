@@ -3,7 +3,7 @@ import worker from './worker-v44.js';
 export const TRUTH_GATE_REVISION = 'talksys-v46-hard-facts-r1';
 export const GEMINI_ADAPTER_REVISION = 'talksys-v47-gemini-cutover-r1';
 export const RESPONSE_QUALITY_REVISION = 'talksys-v48-interrupt-transit-speed-r1';
-export const GEMINI_MODEL = 'gemini-2.5-flash-lite';
+export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
 const LEGACY_GLM_PRIMARY = '@cf/zai-org/glm-5.3-flash';
 const LEGACY_GLM_FALLBACK = '@cf/zai-org/glm-4.7-flash';

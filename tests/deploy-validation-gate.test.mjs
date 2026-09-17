@@ -39,7 +39,7 @@ test('production deploy requires the Gemini key and uploads it only as a Worker 
   assert.match(workflow, /--secrets-file "\$secrets_file"/);
   assert.match(workflow, /\/gemini-health/);
   assert.match(workflow, /generationProvider==='gemini'/);
-  assert.match(workflow, /generationModel==='gemini-2\.5-flash-lite'/);
+  assert.match(workflow, /generationModel==='gemini-3\.5-flash-lite'/);
   assert.match(workflow, /legacyGlmExecution===false/);
 });
 
