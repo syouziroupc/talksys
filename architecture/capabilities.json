@@ -9,10 +9,23 @@
   },
   "capabilities": {
     "runtime.entry": {
-      "canonical": "src/entry.js",
+      "canonical": "src/integrated-entry.js",
       "status": "production",
-      "responsibility": "Unversioned production HTTP entry point and terminal response authorization boundary",
-      "migrationNote": "The entry delegates normal request orchestration to worker-v44.js and applies the v46 hard-facts gate before user-visible factual output."
+      "responsibility": "Unified production HTTP entry point that routes Telnyx phone traffic before delegating all normal TalkSys traffic to the existing terminal response boundary",
+      "companions": [
+        "src/entry.js"
+      ],
+      "migrationNote": "The wrapper contains no answer model of its own. Normal TalkSys requests continue through src/entry.js unchanged; phone turns are delegated back into that same existing TalkSys answer path."
+    },
+    "telephony.intake": {
+      "canonical": "src/telephony/index.js",
+      "status": "production",
+      "responsibility": "Telnyx inbound call acceptance, WebSocket media intake, phone VAD, TalkSys STT/turn/TTS bridging, concurrent call isolation, and the Japanese phone management surface",
+      "companions": [
+        "src/telephony/codec.js",
+        "src/telephony/protocol.js"
+      ],
+      "migrationNote": "This is an intake adapter only. It reuses the existing TalkSys STT, answer path, TTS, AI binding, and D1 instead of introducing a separate phone AI stack."
     },
     "answer.authorization": {
       "canonical": "src/entry.js",
@@ -73,7 +86,7 @@
     "speech.stt": {
       "canonical": "src/stt-v45.js",
       "status": "production",
-      "responsibility": "Current speech-to-text path imported by the production worker",
+      "responsibility": "Current speech-to-text path imported by the production worker and reused by integrated telephony",
       "migrationNote": "Legacy versioned filename; future replacement requires registry update."
     },
     "ui.web": {
