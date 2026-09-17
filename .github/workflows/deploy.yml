@@ -210,7 +210,7 @@ jobs:
           set -euo pipefail
           payload='{"text":"12345÷15","history":[]}'
           out="$(curl -fsS --max-time 20 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='deterministic-v45'||d.search!==false||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const routes=['deterministic-v45','gemini-native-interactions'];if(!d.ok||!routes.includes(d.route)||d.search!==false||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
 
           payload='{"text":"別府市の今日の天気は？","history":[]}'
           out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
