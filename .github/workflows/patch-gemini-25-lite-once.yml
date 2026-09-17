@@ -1,4 +1,4 @@
-name: Patch TalkSys served revision markers once
+name: Diagnose TalkSys production turns once
 
 on:
   push:
@@ -7,76 +7,64 @@ on:
       - '.github/workflows/patch-gemini-25-lite-once.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-and-verify:
+  diagnose-production-turns:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
+    env:
+      PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 22
 
-      - name: Make runtime revision markers unconditional
+      - name: Probe deterministic, weather, and contextual turns with retries
         shell: bash
         run: |
           set -euo pipefail
-          python3 <<'PY'
-          from pathlib import Path
 
-          p = Path('src/talk-client-v45.js')
-          s = p.read_text()
-          old = '''client = client.replace(\n  "'use strict';",\n  "'use strict';\\nwindow.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';",\n);'''
-          new = '''client = "window.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';\\n" + client;'''
-          if s.count(old) != 1:
-              raise SystemExit(f'unexpected revision-marker block count: {s.count(old)}')
-          s = s.replace(old, new)
-          anchor = "if (!client.includes('非常文字入力で現在の応答を割込み')) throw new Error('TalkSys typed-interrupt patch did not apply');"
-          guard = "if (!client.includes(\"window.__TALKSYS_CLIENT_REVISION__='\" + CLIENT_REVISION + \"'\") || !client.includes(\"window.__TALKSYS_INTERACTION_REVISION__='\" + INTERACTION_REVISION + \"'\")) throw new Error('TalkSys runtime revision markers did not apply');\n"
-          if s.count(anchor) != 1:
-              raise SystemExit('runtime assertion anchor missing')
-          s = s.replace(anchor, guard + anchor)
-          p.write_text(s)
+          request_with_retry() {
+            local label="$1"
+            local payload="$2"
+            local timeout="$3"
+            local body_file
+            body_file="$(mktemp)"
+            local code=""
+            for attempt in $(seq 1 6); do
+              : > "$body_file"
+              code="$(curl -sS --max-time "$timeout" -o "$body_file" -w '%{http_code}' \
+                -H 'content-type: application/json' \
+                --data "$payload" \
+                "$PRODUCTION_URL/api/turn" || true)"
+              echo "[$label] attempt=$attempt http=$code"
+              cat "$body_file"
+              echo
+              if [[ "$code" == "200" ]]; then
+                cat "$body_file"
+                rm -f "$body_file"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "[$label] failed after retries; last_http=$code" >&2
+            rm -f "$body_file"
+            return 1
+          }
 
-          p = Path('tests/v45-shell-regression.test.mjs')
-          s = p.read_text()
-          anchor = "  assert.match(TALK_CLIENT_V45, /planner:'gemini-native'/);"
-          addition = "  assert.match(TALK_CLIENT_V45, /__TALKSYS_CLIENT_REVISION__='talksys-v46-streaming-vad'/);\n  assert.match(TALK_CLIENT_V45, /__TALKSYS_INTERACTION_REVISION__='talksys-v50-native-gemini-2-5-flash-lite-r1'/);"
-          if s.count(anchor) != 1:
-              raise SystemExit('test anchor missing')
-          s = s.replace(anchor, anchor + '\n' + addition)
-          p.write_text(s)
-          PY
+          deterministic="$(request_with_retry deterministic '{"text":"12345÷15","history":[]}' 20)"
+          printf '%s\n' "$deterministic"
+          deterministic_body="$(printf '%s\n' "$deterministic" | tail -n 1)"
+          OUT="$deterministic_body" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='deterministic-v45'||d.search!==false||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
 
-          git diff --check
-          git diff -- src/talk-client-v45.js tests/v45-shell-regression.test.mjs
+          weather="$(request_with_retry weather '{"text":"別府市の今日の天気は？","history":[]}' 75)"
+          printf '%s\n' "$weather"
+          weather_body="$(printf '%s\n' "$weather" | tail -n 1)"
+          OUT="$weather_body" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather')||d.generationProvider!=='gemini')throw new Error(process.env.OUT);"
 
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
-
-      - name: Smoke patched tree before commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm run architecture:check
-          npm run architecture:graph
-          find src archive -type f -name '*.js' -print0 | xargs -0 -n1 node --check
-          npm test
-          npx wrangler deploy --dry-run
-
-      - name: Commit verified marker fix
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/talk-client-v45.js tests/v45-shell-regression.test.mjs
-          git commit -m 'Fix served TalkSys revision markers'
-          git push origin HEAD:main
+          contextual="$(request_with_retry contextual '{"text":"どれがいい？","history":[{"role":"user","content":"大学のレポート用に中古ノートPCを探してる。予算は3万円。"},{"role":"assistant","content":"Officeとブラウザ中心ですね。"}]}' 45)"
+          printf '%s\n' "$contextual"
+          contextual_body="$(printf '%s\n' "$contextual" | tail -n 1)"
+          OUT="$contextual_body" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||a.length<8||d.generationProvider!=='gemini'||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
