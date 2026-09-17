@@ -1,4 +1,4 @@
-name: Verify TalkSys v48 production once
+name: Verify TalkSys native Gemini production once
 
 on:
   push:
@@ -14,34 +14,36 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Verify typed interruption and faster voice client
+      - name: Verify typed interruption, speed, and native interaction client
         run: |
           set -euo pipefail
           client="$(curl -fsS --max-time 20 https://talksys.syouziroupc.workers.dev/talk-v45.js)"
           grep -F '非常文字入力で現在の応答を割込み' <<< "$client"
           grep -F 'u.rate=1.12' <<< "$client"
           grep -F 'SILENCE_MS=620' <<< "$client"
+          grep -F 'previousInteractionId:geminiInteractionId' <<< "$client"
+          grep -F "planner:'gemini-native'" <<< "$client"
           if grep -F 'if(!v||busy)return' <<< "$client"; then
             echo 'old typed-input busy guard is still live'
             exit 1
           fi
 
-      - name: Verify direct current transit answer
+      - name: Verify Kokura to Oita Sonic uses native Gemini search
         run: |
           set -euo pipefail
-          payload='{"text":"大分駅から別府駅へ向かう次の電車は何時？","history":[]}'
-          out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" https://talksys.syouziroupc.workers.dev/api/turn)"
+          payload='{"text":"今小倉駅だけど、大分に行きたい。次のソニック何時？","history":[]}'
+          out="$(curl -fsS --max-time 90 -H 'content-type: application/json' --data "$payload" https://talksys.syouziroupc.workers.dev/api/turn)"
           OUT="$out" node - <<'NODE'
           const d=JSON.parse(process.env.OUT||'{}');
           const a=String(d.answer||'');
-          const engines=(d.sources||[]).map(x=>x.engine);
-          const directEngines=new Set(['jrkyushu-official-timetable-current','yahoo-transit-direct-current']);
           if (!d.ok) throw new Error('not ok: '+process.env.OUT);
-          if (d.route!=='direct-transit-v48') throw new Error('wrong route: '+process.env.OUT);
-          if (!d.directTransitPrimary) throw new Error('direct transit not active: '+process.env.OUT);
-          if (!engines.some(x=>directEngines.has(x))) throw new Error('direct transit source missing: '+process.env.OUT);
-          if (d.truthGate?.structuredTransitAuthorized!==true) throw new Error('truth gate did not authorize route evidence: '+process.env.OUT);
+          if (d.route!=='gemini-native-interactions') throw new Error('wrong route: '+process.env.OUT);
+          if (d.nativeGoogleSearch!==true) throw new Error('native Google Search flag missing: '+process.env.OUT);
+          if (d.customTransitRetrieval!==false) throw new Error('custom transit retrieval still active: '+process.env.OUT);
+          if (d.customTruthGateApplied!==false) throw new Error('custom truth gate still active: '+process.env.OUT);
           if (/私は.*(?:Gemini|Google)|Googleが開発したAIモデル/i.test(a)) throw new Error('provider self-identification leaked: '+a);
-          if (!/(?:\d{1,2}:\d{2}|\d{1,2}時\d{1,2}分|発)/.test(a)) throw new Error('no concrete departure information: '+a);
-          console.log(JSON.stringify({route:d.route,directTransitEngine:d.directTransitEngine,answer:a,sources:d.sources,timings:d.timings,truthGate:d.truthGate}));
+          if (/リアルタイムの情報を確認できない|お答えできません|駅構内の発車標|時刻表をご確認/i.test(a)) throw new Error('answer pushed retrieval back to user: '+a);
+          if (!/ソニック/.test(a)) throw new Error('Sonic missing from answer: '+a);
+          if (!/(?:\d{1,2}:\d{2}|\d{1,2}時\d{1,2}分)/.test(a)) throw new Error('concrete departure time missing: '+a);
+          console.log(JSON.stringify({route:d.route,answer:a,search:d.search,queries:d.queries,sources:d.sources,interactionId:d.interactionId,timings:d.timings}));
           NODE
