@@ -6,11 +6,19 @@
   "workers_dev": true,
   "vars": {
     "TELEPHONY_ENABLED": "false",
-    "TELEPHONY_TRANSCRIPTION": "false",
     "TELEPHONY_SESSION_MAX_MINUTES": "30",
-    "GEMINI_LIVE_MODEL": "gemini-3.8-live",
-    "BROWSER_TALKSYS_URL": "https://talksys.syouziroupc.workers.dev"
+    "TELEPHONY_VAD_RMS": "0.008",
+    "TELEPHONY_END_SILENCE_MS": "700",
+    "TELEPHONY_MIN_SPEECH_MS": "320",
+    "TELEPHONY_MAX_UTTERANCE_MS": "15000",
+    "TALKSYS_REQUEST_TIMEOUT_MS": "45000",
+    "TALKSYS_BASE_URL": "https://talksys.syouziroupc.workers.dev"
   },
+  "d1_databases": [{
+    "binding": "TALKSYS_LOG_DB",
+    "database_name": "talksys-conversation-logs",
+    "database_id": "4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a"
+  }],
   "observability": {
     "enabled": true
   }
