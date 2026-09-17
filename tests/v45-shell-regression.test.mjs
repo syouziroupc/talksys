@@ -19,7 +19,7 @@ test('v45 shell no longer delegates UI or voice to the legacy worker', () => {
 
 test('v45 microphone client keeps the proven HTTP adaptive-VAD path', () => {
   assert.equal(CLIENT_REVISION, 'talksys-v45-http-adaptive-vad');
-  assert.equal(INTERACTION_REVISION, 'talksys-v48-typed-interrupt-fast-voice-r1');
+  assert.equal(INTERACTION_REVISION, 'talksys-v49-native-gemini-interactions-r1');
   assert.match(TALK_CLIENT_V45, /getUserMedia/);
   assert.match(TALK_CLIENT_V45, /createScriptProcessor/);
   assert.match(TALK_CLIENT_V45, /\/api\/transcribe/);
@@ -27,6 +27,8 @@ test('v45 microphone client keeps the proven HTTP adaptive-VAD path', () => {
   assert.match(TALK_CLIENT_V45, /noiseBoost/);
   assert.match(TALK_CLIENT_V45, /calibrationUntil/);
   assert.match(TALK_CLIENT_V45, /雑音候補を自動破棄/);
+  assert.match(TALK_CLIENT_V45, /previousInteractionId:geminiInteractionId/);
+  assert.match(TALK_CLIENT_V45, /planner:'gemini-native'/);
   assert.doesNotMatch(TALK_CLIENT_V45, /new\s+WebSocket|\/agents\//);
 });
 
