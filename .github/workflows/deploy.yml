@@ -163,7 +163,7 @@ jobs:
             && d.searchDirectorModel==='@cf/qwen/qwen3-30b-a3b-fp8'
             && d.searchDefault==='intent-routed-v45'
             && d.generationProvider==='gemini'
-            && d.generationModel==='gemini-3.8-flash'
+            && d.generationModel==='gemini-2.5-flash-lite'
             && d.geminiConfigured===true
             && d.legacyGlmExecution===false;
           process.stdout.write(String(Boolean(ok)));
@@ -178,7 +178,7 @@ jobs:
           gemini="$(curl -fsS --max-time 20 "$PRODUCTION_URL/gemini-health")"
           GEMINI_HEALTH="$gemini" node - <<'NODE'
           const d=JSON.parse(process.env.GEMINI_HEALTH||'{}');
-          if (!d.ok || !d.configured || d.provider!=='gemini' || d.model!=='gemini-3.8-flash' || d.legacyGlmExecution!==false) {
+          if (!d.ok || !d.configured || d.provider!=='gemini' || d.model!=='gemini-2.5-flash-lite' || d.legacyGlmExecution!==false) {
             throw new Error(process.env.GEMINI_HEALTH);
           }
           NODE
@@ -193,7 +193,7 @@ jobs:
           grep -F '非常用の文字入力' <<< "$page"
 
           client="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v45.js")"
-          grep -F 'talksys-v45-http-adaptive-vad' <<< "$client"
+          grep -F 'talksys-v46-streaming-vad' <<< "$client"
           grep -F 'getUserMedia' <<< "$client"
           grep -F '/api/transcribe' <<< "$client"
           grep -F '/api/turn' <<< "$client"
