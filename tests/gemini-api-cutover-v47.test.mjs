@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   GEMINI_ADAPTER_REVISION,
   GEMINI_MODEL,
+  RESPONSE_QUALITY_REVISION,
   __test,
 } from '../src/entry.js';
 
@@ -11,19 +12,23 @@ const {
   LEGACY_GLM_FALLBACK,
   buildGeminiRequest,
   hasGeminiKey,
+  isDirectTransitCandidate,
   normalizeGenerationMetadata,
+  sanitizeProviderSelfIdentification,
+  structuredTransitAuthorized,
   withGeminiGenerationProvider,
 } = __test;
 
 test('v47 Gemini adapter exposes the expected stable model and runtime key contract', () => {
   assert.equal(GEMINI_ADAPTER_REVISION, 'talksys-v47-gemini-cutover-r1');
+  assert.equal(RESPONSE_QUALITY_REVISION, 'talksys-v48-interrupt-transit-speed-r1');
   assert.equal(GEMINI_MODEL, 'gemini-3.8-flash');
   assert.equal(hasGeminiKey({ GEMINI_API_KEY: 'abc' }), true);
   assert.equal(hasGeminiKey({ GEMINI_API_KEY: '   ' }), false);
   assert.equal(hasGeminiKey({}), false);
 });
 
-test('Gemini request mapping preserves system and conversation roles without enabling a second search path', () => {
+test('Gemini request mapping preserves roles, injects TalkSys identity, and respects the requested output budget', () => {
   const body = buildGeminiRequest({
     messages: [
       { role: 'system', content: '日本語で短く答える' },
@@ -35,13 +40,33 @@ test('Gemini request mapping preserves system and conversation roles without ena
     temperature: 0.16,
   });
 
-  assert.equal(body.systemInstruction.parts[0].text, '日本語で短く答える');
+  assert.match(body.systemInstruction.parts[0].text, /TalkSys/);
+  assert.match(body.systemInstruction.parts[0].text, /フォーンズ/);
+  assert.match(body.systemInstruction.parts[0].text, /日本語で短く答える/);
   assert.deepEqual(body.contents.map((x) => x.role), ['user', 'model', 'user']);
   assert.equal(body.contents[2].parts[0].text, '続き');
   assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, 'low');
-  assert.equal(body.generationConfig.maxOutputTokens, 1024);
+  assert.equal(body.generationConfig.maxOutputTokens, 420);
   assert.equal(body.generationConfig.temperature, 0.16);
   assert.equal('tools' in body, false);
+});
+
+test('provider self-identification is removed without deleting the useful answer', () => {
+  const cleaned = sanitizeProviderSelfIdentification('私はGoogleが開発したAIモデルのGeminiです。大分駅から別府駅の案内を続けます。');
+  assert.doesNotMatch(cleaned, /Gemini|Googleが開発/);
+  assert.match(cleaned, /大分駅から別府駅/);
+});
+
+test('direct current Yahoo Transit evidence authorizes exact route wording', () => {
+  assert.equal(structuredTransitAuthorized({
+    directTransitPrimary: true,
+    sources: [{ engine: 'yahoo-transit-direct-current' }],
+  }), true);
+  assert.equal(structuredTransitAuthorized({
+    directTransitPrimary: false,
+    sources: [{ engine: 'bing-rss' }],
+  }), false);
+  assert.equal(isDirectTransitCandidate({ text: '大分駅から別府駅へ次の電車は何時？', history: [] }), true);
 });
 
 test('legacy GLM primary is intercepted by server-side Gemini while non-GLM Workers AI remains delegated', async () => {
@@ -129,6 +154,7 @@ test('user-facing generation metadata reports Gemini while retaining compatibili
   assert.equal(normalized.generationModel, GEMINI_MODEL);
   assert.equal(normalized.geminiConfigured, true);
   assert.equal(normalized.legacyGlmExecution, false);
+  assert.equal(normalized.responseQualityRevision, RESPONSE_QUALITY_REVISION);
   assert.equal(normalized.timings.glmMs, 123);
   assert.equal(normalized.timings.geminiMs, 123);
 });
