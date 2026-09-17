@@ -51,6 +51,20 @@ export function pcmuBase64ToPcm16Base64(payload) {
   return bytesToBase64(pcm16);
 }
 
+export function pcmuBase64ToPcm16kBase64(payload) {
+  const pcmu = base64ToBytes(payload);
+  if (!pcmu.length) return '';
+  const pcm16 = new Uint8Array(pcmu.length * 4);
+  const view = new DataView(pcm16.buffer);
+  for (let i = 0; i < pcmu.length; i += 1) {
+    const current = decodeMuLawByte(pcmu[i]);
+    const next = i + 1 < pcmu.length ? decodeMuLawByte(pcmu[i + 1]) : current;
+    view.setInt16(i * 4, current, true);
+    view.setInt16(i * 4 + 2, Math.round((current + next) / 2), true);
+  }
+  return bytesToBase64(pcm16);
+}
+
 export function pcm16Base64ToPcmu8k(payload, carry = []) {
   const bytes = base64ToBytes(payload);
   const evenLength = bytes.length - (bytes.length % 2);
@@ -68,8 +82,5 @@ export function pcm16Base64ToPcmu8k(payload, carry = []) {
     pcmu[i] = encodeMuLawSample(averaged);
   }
 
-  return {
-    pcmu,
-    carry: samples.slice(outputLength * 3),
-  };
+  return { pcmu, carry: samples.slice(outputLength * 3) };
 }
