@@ -1,7 +1,7 @@
 import { TALK_CLIENT_V43 } from './talk-client-v43.js';
 
 export const CLIENT_REVISION = 'talksys-v45-http-adaptive-vad';
-export const INTERACTION_REVISION = 'talksys-v48-typed-interrupt-fast-voice-r1';
+export const INTERACTION_REVISION = 'talksys-v49-native-gemini-interactions-r1';
 
 const FORM_HANDLER_OLD = "form.addEventListener('submit',async e=>{e.preventDefault();const v=input.value.trim();if(!v||busy)return;input.value='';busy=true;resumePlan=null;add('user',v);try{await ask(v);}catch(err){lastError=String(err.message||err);log('会話エラー: '+lastError);setStatus('回答に失敗');}finally{busy=false;if(micOn&&!playing)setStatus('聞いています');diagUpdate(true);}});";
 
@@ -29,12 +29,38 @@ let client = TALK_CLIENT_V43
   .replace(FORM_HANDLER_OLD, FORM_HANDLER_NEW);
 
 client = client.replace(
+  "const TARGET=16000, MAX_HISTORY=14, SILENCE_MS=620, MAX_UTTERANCE_MS=16000, MIN_SPEECH_MS=320, PRE_ROLL=8;",
+  "let geminiInteractionId=null;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=620, MAX_UTTERANCE_MS=16000, MIN_SPEECH_MS=320, PRE_ROLL=8;",
+);
+
+client = client.replaceAll(
+  "sessionId:talkSessionId};",
+  "sessionId:talkSessionId,previousInteractionId:geminiInteractionId};",
+);
+
+client = client.replaceAll(
+  "j=await r.json();if(seq!==turnSeq)return;",
+  "j=await r.json();if(seq!==turnSeq)return;if(j.interactionId)geminiInteractionId=j.interactionId;",
+);
+
+client = client.replace(
+  "const plan=await getPlan(text,previous);if(seq!==turnSeq)return;lastPlanMs=Number(plan?.plannerMs)||0;lastSearchPlan=String(plan?.searchInstruction||'');",
+  "const plan={search:false,ack:'',planner:'gemini-native'};if(seq!==turnSeq)return;lastPlanMs=0;lastSearchPlan='';",
+);
+
+client = client.replace(
   "'use strict';",
   "'use strict';\nwindow.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';",
 );
 
 if (!client.includes('非常文字入力で現在の応答を割込み')) {
   throw new Error('TalkSys typed-interrupt patch did not apply');
+}
+if (!client.includes('previousInteractionId:geminiInteractionId')) {
+  throw new Error('Gemini interaction continuity patch did not apply');
+}
+if (!client.includes("planner:'gemini-native'")) {
+  throw new Error('Gemini native planner bypass patch did not apply');
 }
 
 export const TALK_CLIENT_V45 = client;
@@ -48,5 +74,6 @@ export const __test = {
   typedInterrupt: client.includes('非常文字入力で現在の応答を割込み') && !client.includes('if(!v||busy)return'),
   fasterTts: client.includes('u.rate=1.12'),
   fasterTurnEnd: client.includes('SILENCE_MS=620'),
+  nativeGeminiInteractions: client.includes('previousInteractionId:geminiInteractionId') && client.includes("planner:'gemini-native'"),
   legacyWebSocket: client.includes('new WebSocket') || client.includes('/agents/'),
 };
