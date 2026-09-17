@@ -1,4 +1,4 @@
-name: Patch TalkSys grounded Gemini 2.5 once
+name: Migrate TalkSys to Gemini 3.5 Flash-Lite once
 
 on:
   push:
@@ -10,9 +10,9 @@ permissions:
   contents: write
 
 jobs:
-  patch-and-verify:
+  migrate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
@@ -21,192 +21,49 @@ jobs:
         with:
           node-version: 22
 
-      - name: Apply grounded GenerateContent runtime
+      - name: Patch active runtime and tests
         shell: bash
         run: |
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
-          import re
 
-          def regex_replace(path, pattern, replacement, flags=re.S):
-              p = Path(path)
-              s = p.read_text()
-              out, count = re.subn(pattern, lambda m: replacement, s, flags=flags)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected 1 regex match, got {count}: {pattern}')
-              p.write_text(out)
+          targets = list(Path('src').glob('*.js')) + list(Path('tests').glob('*.mjs'))
+          old_model = 'gemini-2.5-flash-lite'
+          new_model = 'gemini-3.5-flash-lite'
+          old_revision = 'talksys-v50-native-gemini-2-5-flash-lite-r1'
+          new_revision = 'talksys-v52-native-gemini-3-5-flash-lite-r1'
+          model_changes = 0
+          revision_changes = 0
 
-          def exact_replace(path, old, new, expected=1):
-              p = Path(path)
-              s = p.read_text()
-              count = s.count(old)
-              if count != expected:
-                  raise SystemExit(f'{path}: expected {expected} matches, got {count}: {old!r}')
-              p.write_text(s.replace(old, new))
+          for path in targets:
+              text = path.read_text()
+              model_changes += text.count(old_model)
+              revision_changes += text.count(old_revision)
+              text = text.replace(old_model, new_model)
+              text = text.replace(old_revision, new_revision)
+              path.write_text(text)
 
-          entry = Path('src/entry.js')
-          s = entry.read_text()
-
-          query_fn = "\n".join([
-              "function interactionQueries(payload = {}) {",
-              "  const grounding = payload?.candidates?.[0]?.groundingMetadata || payload?.candidates?.[0]?.grounding_metadata || {};",
-              "  const groundedQueries = Array.isArray(grounding?.webSearchQueries) ? grounding.webSearchQueries : [];",
-              "  if (groundedQueries.length) return [...new Set(groundedQueries.map((value) => clean(value, 300)).filter(Boolean))].slice(0, 12);",
-              "  const queries = [];",
-              "  for (const step of Array.isArray(payload?.steps) ? payload.steps : []) {",
-              "    if (step?.type !== 'google_search_call') continue;",
-              "    const values = Array.isArray(step?.arguments?.queries) ? step.arguments.queries : [];",
-              "    for (const value of values) {",
-              "      const q = clean(value, 300);",
-              "      if (q && !queries.includes(q)) queries.push(q);",
-              "    }",
-              "  }",
-              "  return queries.slice(0, 12);",
-              "}",
-          ])
-          s, n = re.subn(r"function interactionQueries\(payload = \{\}\) \{.*?\n\}", lambda m: query_fn, s, count=1, flags=re.S)
-          if n != 1: raise SystemExit('interactionQueries replacement failed')
-
-          source_fn = "\n".join([
-              "function interactionSources(payload = {}) {",
-              "  const out = [];",
-              "  const seen = new Set();",
-              "  const push = (url, title = '') => {",
-              "    const href = clean(url, 900);",
-              "    if (!/^https?:\\/\\//i.test(href) || seen.has(href)) return;",
-              "    seen.add(href);",
-              "    out.push({ title: clean(title || href, 240), url: href, engine: 'gemini-google-search' });",
-              "  };",
-              "  const grounding = payload?.candidates?.[0]?.groundingMetadata || payload?.candidates?.[0]?.grounding_metadata || {};",
-              "  for (const chunk of Array.isArray(grounding?.groundingChunks) ? grounding.groundingChunks : []) {",
-              "    push(chunk?.web?.uri || chunk?.web?.url, chunk?.web?.title);",
-              "  }",
-              "  for (const step of Array.isArray(payload?.steps) ? payload.steps : []) {",
-              "    if (step?.type === 'model_output') {",
-              "      for (const part of Array.isArray(step?.content) ? step.content : []) {",
-              "        for (const annotation of Array.isArray(part?.annotations) ? part.annotations : []) {",
-              "          if (annotation?.type === 'url_citation') push(annotation?.url, annotation?.title);",
-              "        }",
-              "      }",
-              "    }",
-              "    if (step?.type === 'google_search_result') {",
-              "      for (const item of Array.isArray(step?.result) ? step.result : []) push(item?.url || item?.uri, item?.title || item?.name);",
-              "    }",
-              "  }",
-              "  return out.slice(0, 12);",
-              "}",
-          ])
-          s, n = re.subn(r"function interactionSources\(payload = \{\}\) \{.*?\n\}", lambda m: source_fn, s, count=1, flags=re.S)
-          if n != 1: raise SystemExit('interactionSources replacement failed')
-
-          create_fn = "\n".join([
-              "async function createGeminiInteraction(env, body = {}, signal, allowPrevious = true) {",
-              "  if (!hasGeminiKey(env)) throw new Error('gemini_api_key_missing');",
-              "  const text = clean(body?.text, 4000);",
-              "  if (!text) throw new Error('empty_user_input');",
-              "  const history = requestHistory(body);",
-              "  const contents = history.map((item) => ({",
-              "    role: item.role === 'assistant' ? 'model' : 'user',",
-              "    parts: [{ text: item.content }],",
-              "  }));",
-              "  contents.push({ role: 'user', parts: [{ text }] });",
-              "  const requestBody = {",
-              "    systemInstruction: { parts: [{ text: TALKSYS_IDENTITY_INSTRUCTION }] },",
-              "    contents,",
-              "    tools: [{ google_search: {} }],",
-              "    generationConfig: { maxOutputTokens: 512, thinkingConfig: { thinkingBudget: 0 } },",
-              "  };",
-              "  const response = await fetch(GEMINI_ENDPOINT, {",
-              "    method: 'POST',",
-              "    headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY.trim() },",
-              "    body: JSON.stringify(requestBody),",
-              "    signal,",
-              "  });",
-              "  const raw = await response.text();",
-              "  let payload = {};",
-              "  try { payload = raw ? JSON.parse(raw) : {}; } catch {}",
-              "  if (!response.ok) {",
-              "    const detail = clean(payload?.error?.message || raw || response.statusText, 600);",
-              "    throw new Error(`gemini_generate_content_http_${response.status}${detail ? `:${detail}` : ''}`);",
-              "  }",
-              "  const answer = readGeminiText(payload);",
-              "  if (!answer) throw new Error('empty_gemini_grounded_answer');",
-              "  return { payload, answer };",
-              "}",
-              "",
-              "async function runNativeGeminiTurn",
-          ])
-          s, n = re.subn(r"async function createGeminiInteraction\(env, body = \{\}, signal, allowPrevious = true\) \{.*?\n\}\n\nasync function runNativeGeminiTurn", lambda m: create_fn, s, count=1, flags=re.S)
-          if n != 1: raise SystemExit('createGeminiInteraction replacement failed')
-
-          s = s.replace("gemini-native-interactions", "gemini-native-generate-content")
-          s = s.replace("api: 'interactions'", "api: 'generateContent'")
-          s = s.replace("gemini_native_interaction_failed", "gemini_native_generation_failed")
-          entry.write_text(s)
-
-          exact_replace('src/talk-client-v45.js', "talksys-v50-native-gemini-2-5-flash-lite-r1", "talksys-v51-native-gemini-2-5-grounded-r1", 1)
-          exact_replace('tests/v45-shell-regression.test.mjs', "talksys-v50-native-gemini-2-5-flash-lite-r1", "talksys-v51-native-gemini-2-5-grounded-r1", 2)
-
-          p = Path('tests/gemini-api-cutover-v47.test.mjs')
-          t = p.read_text()
-          old = "  buildGeminiRequest,\n  hasGeminiKey,"
-          new = "  buildGeminiRequest,\n  createGeminiInteraction,\n  interactionQueries,\n  interactionSources,\n  hasGeminiKey,"
-          if t.count(old) != 1: raise SystemExit('Gemini test destructure anchor missing')
-          t = t.replace(old, new)
-          anchor = "test('provider self-identification is removed without deleting the useful answer', () => {"
-          native_test = """test('native grounded 2.5 path uses GenerateContent Google Search and carries recent history', async () => {
-  const originalFetch = globalThis.fetch;
-  let captured = null;
-  globalThis.fetch = async (url, init = {}) => {
-    captured = { url: String(url), init, body: JSON.parse(init.body) };
-    return new Response(JSON.stringify({
-      candidates: [{
-        content: { parts: [{ text: '候補はCF-SV8です。' }] },
-        groundingMetadata: {
-          webSearchQueries: ['3万円 中古 ノートPC'],
-          groundingChunks: [{ web: { uri: 'https://example.com/pc', title: 'PC source' } }],
-        },
-      }],
-    }), { status: 200, headers: { 'content-type': 'application/json' } });
-  };
-  try {
-    const result = await createGeminiInteraction({ GEMINI_API_KEY: 'server-only-test-key' }, {
-      text: 'どれがいい？',
-      history: [
-        { role: 'user', content: '予算3万円で中古ノートPCを探してる。' },
-        { role: 'assistant', content: 'Officeとブラウザ中心ですね。' },
-      ],
-    });
-    assert.match(captured.url, /generativelanguage\\.googleapis\\.com\\/v1beta\\/models\\/gemini-2\\.5-flash-lite:generateContent$/);
-    assert.deepEqual(captured.body.contents.map((x) => x.role), ['user', 'model', 'user']);
-    assert.equal(captured.body.contents[2].parts[0].text, 'どれがいい？');
-    assert.deepEqual(captured.body.tools, [{ google_search: {} }]);
-    assert.equal(captured.body.generationConfig.thinkingConfig.thinkingBudget, 0);
-    assert.equal(result.answer, '候補はCF-SV8です。');
-    assert.deepEqual(interactionQueries(result.payload), ['3万円 中古 ノートPC']);
-    assert.deepEqual(interactionSources(result.payload), [{ title: 'PC source', url: 'https://example.com/pc', engine: 'gemini-google-search' }]);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-"""
-          if t.count(anchor) != 1: raise SystemExit('Gemini test insertion anchor missing')
-          t = t.replace(anchor, native_test + anchor)
-          p.write_text(t)
+          if model_changes < 1:
+              raise SystemExit('No active Gemini 2.5 Flash-Lite references were found')
+          if revision_changes < 1:
+              raise SystemExit('No active v50 interaction revision references were found')
+          print(f'model_changes={model_changes} revision_changes={revision_changes}')
           PY
-
           git diff --check
-          git diff -- src/entry.js src/talk-client-v45.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs
+          git diff -- src tests
 
       - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+          if [[ -f package-lock.json ]]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
 
-      - name: Validate patched runtime
+      - name: Validate migrated runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -216,12 +73,12 @@ jobs:
           npm test
           npx wrangler deploy --dry-run
 
-      - name: Commit verified grounded runtime
+      - name: Commit verified migration
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/entry.js src/talk-client-v45.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs
-          git commit -m 'Use grounded Gemini 2.5 GenerateContent for TalkSys'
+          git add src tests
+          git commit -m 'Migrate TalkSys to Gemini 3.5 Flash-Lite'
           git push origin HEAD:main
