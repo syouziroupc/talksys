@@ -1,4 +1,4 @@
-name: Harden TalkSys JST router once
+name: Harden TalkSys factual grounding once
 
 on:
   push:
@@ -20,12 +20,14 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Apply JST router hardening
-        run: python3 scripts/harden-jst-v53.py
+      - name: Apply JST and evidence-first hardening
+        run: |
+          python3 scripts/harden-jst-v53.py
+          python3 scripts/harden-factual-v54.py
       - name: Review patch
         run: |
           git diff --check
-          git diff -- src/entry.js tests/jst-router-v53.test.mjs
+          git diff -- src/entry.js src/worker-v44.js src/search-v45.js tests/jst-router-v53.test.mjs tests/evidence-first-v54.test.mjs tests/gemini-api-cutover-v47.test.mjs
       - name: Install dependencies
         run: |
           if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
@@ -36,10 +38,10 @@ jobs:
           find src archive -type f -name '*.js' -print0 | xargs -0 -n1 node --check
           npm test
           npx wrangler deploy --dry-run
-      - name: Commit verified JST router hardening
+      - name: Commit verified factual hardening
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/entry.js tests/jst-router-v53.test.mjs
-          git commit -m 'Harden TalkSys router with authoritative JST clock'
+          git add src/entry.js src/worker-v44.js src/search-v45.js tests/jst-router-v53.test.mjs tests/evidence-first-v54.test.mjs tests/gemini-api-cutover-v47.test.mjs
+          git commit -m 'Harden TalkSys factual answers with evidence-first routing'
           git push origin HEAD:main
