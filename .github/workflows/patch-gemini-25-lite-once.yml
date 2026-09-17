@@ -1,0 +1,86 @@
+name: Patch Gemini 2.5 Flash-Lite once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-gemini-25-lite-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Apply current TalkSys migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, count=None):
+              p = Path(path)
+              s = p.read_text()
+              found = s.count(old)
+              if found == 0:
+                  raise SystemExit(f'missing expected text in {path}: {old!r}')
+              if count is not None and found != count:
+                  raise SystemExit(f'unexpected match count in {path}: {old!r} -> {found}, expected {count}')
+              p.write_text(s.replace(old, new))
+
+          replace('src/entry.js', "export const GEMINI_MODEL = 'gemini-3.8-flash';", "export const GEMINI_MODEL = 'gemini-2.5-flash-lite';", 1)
+          replace('src/entry.js', "thinkingConfig: { thinkingLevel: 'low' },", "thinkingConfig: { thinkingBudget: 0 },", 1)
+          replace('src/entry.js', "    generation_config: {\n      thinking_level: 'low',\n    },\n", "", 1)
+
+          replace('tests/gemini-api-cutover-v47.test.mjs', "assert.equal(GEMINI_MODEL, 'gemini-3.8-flash');", "assert.equal(GEMINI_MODEL, 'gemini-2.5-flash-lite');", 1)
+          replace('tests/gemini-api-cutover-v47.test.mjs', "assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, 'low');", "assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 0);", 1)
+          replace('tests/gemini-api-cutover-v47.test.mjs', r"/generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-3\.8-flash:generateContent$/", r"/generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-2\.5-flash-lite:generateContent$/", 1)
+
+          replace('tests/v45-shell-regression.test.mjs', "assert.equal(CLIENT_REVISION, 'talksys-v45-http-adaptive-vad');", "assert.equal(CLIENT_REVISION, 'talksys-v46-streaming-vad');", 1)
+          replace('tests/v45-shell-regression.test.mjs', "assert.equal(INTERACTION_REVISION, 'talksys-v49-native-gemini-interactions-r1');", "assert.equal(INTERACTION_REVISION, 'talksys-v50-native-gemini-2-5-flash-lite-r1');", 1)
+          replace('tests/v45-shell-regression.test.mjs', "/SILENCE_MS=620/", "/SILENCE_MS=480/", 1)
+          replace('tests/v45-shell-regression.test.mjs', "/talksys-v45-http-adaptive-vad/", "/talksys-v46-streaming-vad/", 1)
+
+          replace('.github/workflows/deploy.yml', "d.generationModel==='gemini-3.8-flash'", "d.generationModel==='gemini-2.5-flash-lite'", 1)
+          replace('.github/workflows/deploy.yml', "d.model!=='gemini-3.8-flash'", "d.model!=='gemini-2.5-flash-lite'", 1)
+          replace('.github/workflows/deploy.yml', "grep -F 'talksys-v45-http-adaptive-vad' <<< \"$client\"", "grep -F 'talksys-v46-streaming-vad' <<< \"$client\"", 1)
+          PY
+
+          git diff --check
+          git diff -- src/entry.js src/talk-client-v45.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs .github/workflows/deploy.yml
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+      - name: Smoke patched tree before commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run architecture:check
+          npm run architecture:graph
+          find src archive -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+          npm test
+          npx wrangler deploy --dry-run
+
+      - name: Commit verified migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/entry.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs .github/workflows/deploy.yml
+          git commit -m 'Switch TalkSys to Gemini 2.5 Flash-Lite'
+          git push origin HEAD:main
