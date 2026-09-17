@@ -1,5 +1,4 @@
 import worker from './worker-v44.js';
-import { collectGroundedEvidenceV26 } from './search-v26.js';
 
 export const TRUTH_GATE_REVISION = 'talksys-v46-hard-facts-r1';
 export const GEMINI_ADAPTER_REVISION = 'talksys-v47-gemini-cutover-r1';
@@ -9,7 +8,15 @@ export const GEMINI_MODEL = 'gemini-3.8-flash';
 const LEGACY_GLM_PRIMARY = '@cf/zai-org/glm-5.3-flash';
 const LEGACY_GLM_FALLBACK = '@cf/zai-org/glm-4.7-flash';
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-const TALKSYS_IDENTITY_INSTRUCTION = 'あなたはTalkSysの日本語音声アシスタント「フォーンズ」です。自分をGemini、GoogleのAI、GLM、ChatGPT、OpenAIなど上流のモデル名・提供元として名乗らないでください。自分について聞かれた場合は「フォーンズです」と簡潔に答えてください。';
+const GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
+
+const TALKSYS_IDENTITY_INSTRUCTION =
+  'あなたはTalkSysの日本語音声アシスタント「フォーンズ」です。' +
+  '自然で簡潔な日本語で回答してください。必要な最新情報は利用可能なGoogle検索を自分で使って確認してください。' +
+  '検索や情報取得を利用者側へ押し戻さず、取得できた根拠に基づいて具体的に答えてください。' +
+  '自分をGemini、GoogleのAI、GLM、ChatGPT、OpenAIなど上流のモデル名・提供元として名乗らないでください。' +
+  '自分について聞かれた場合は「フォーンズです」と簡潔に答えてください。';
+
 const TRANSIT_QUERY_RE = /(電車|鉄道|乗換|乗り換え|列車|時刻表|駅|新幹線|特急|(?:から|→).{1,40}(?:まで|へ|→).{0,20}(?:行く|行き方|経路|ルート))/i;
 const DYNAMIC_FACT_RE = /(最新|現在|今日|明日|価格|値段|相場|在庫|発売|販売中|BIOS|UEFI|ファームウェア|ドライバ|法律|法令|制度|社長|CEO|首相|大統領|ニュース|運行|遅延|運休|時刻表|天気|天候|為替|地震|祝日|営業時間|バージョン)/i;
 const EXACT_TRANSIT_RE = /(乗り換|乗換|乗車|下車|経由|直通|→|番線|何時|時刻|\d{1,2}:\d{2}|\d{1,2}時(?:\d{1,2}分)?|(?:ソニック|にちりん|かもめ|ゆふ|みずほ|さくら|のぞみ|ひかり|こだま).{0,20}(?:で|に乗|号)|(?:本線|新幹線|線|駅).{0,18}(?:を使|を利用|に乗|で行)|\d+\s*分(?:ほど|程度|くらい)?(?:です|かか))/i;
@@ -266,79 +273,145 @@ function isDirectTransitCandidate(body = {}) {
     && /(?:駅)?\s*(?:から|より|→|⇒|〜|～|-)\s*[一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{1,28}(?:駅)?\s*(?:まで|へ|に)/i.test(combined);
 }
 
-async function tryDirectTransitTurn(body, env, signal) {
-  if (!isDirectTransitCandidate(body)) return null;
-  const started = Date.now();
-  const text = clean(body?.text, 1800);
-  const history = requestHistory(body);
-  let research;
-  try {
-    research = await collectGroundedEvidenceV26(text, history, { signal });
-  } catch {
-    return null;
-  }
-  const source = Array.isArray(research?.sources)
-    ? research.sources.find((item) => DIRECT_TRANSIT_ENGINES.has(String(item?.engine || '')))
-    : null;
-  if (research?.directTransitPrimary !== true || !source) return null;
+function interactionOutputText(payload = {}) {
+  const text = (Array.isArray(payload?.steps) ? payload.steps : [])
+    .filter((step) => step?.type === 'model_output')
+    .flatMap((step) => Array.isArray(step?.content) ? step.content : [])
+    .filter((part) => part?.type === 'text' && typeof part?.text === 'string')
+    .map((part) => part.text)
+    .join('');
+  return sanitizeProviderSelfIdentification(text);
+}
 
-  const searchMs = Date.now() - started;
-  const evidence = clean(source?.excerpt || source?.snippet, 7000);
-  if (!evidence) return null;
-  const userContext = history.filter((item) => item.role === 'user').slice(-4).map((item) => item.content).join(' / ');
-  const synthesisStarted = Date.now();
-  let generated;
-  try {
-    generated = await runGemini(env, {
-      messages: [
-        {
-          role: 'system',
-          content: '交通経路専用回答です。取得した公式時刻表または乗換案内の本文だけを根拠に、次に利用できる便を先に簡潔に答えてください。発車時刻、到着時刻、列車名・種別、行先、乗換、運賃は根拠に書かれたものだけ使います。根拠にない内容を一般知識で補わず、利用者に駅や別サイトでの確認を押し戻さないでください。通常2〜4文で答えてください。',
-        },
-        {
-          role: 'user',
-          content: `今回の質問: ${text}\n直近の利用者文脈: ${userContext || '(なし)'}\n検索基準: ${clean(research?.transitRequestedAtJst, 80)}\n取得した交通根拠: ${clean(source?.title, 220)}\n${evidence}`,
-        },
-      ],
-      max_completion_tokens: 480,
-      temperature: 0.03,
-    }, { signal });
-  } catch {
-    return null;
+function interactionQueries(payload = {}) {
+  const queries = [];
+  for (const step of Array.isArray(payload?.steps) ? payload.steps : []) {
+    if (step?.type !== 'google_search_call') continue;
+    const values = Array.isArray(step?.arguments?.queries) ? step.arguments.queries : [];
+    for (const value of values) {
+      const q = clean(value, 300);
+      if (q && !queries.includes(q)) queries.push(q);
+    }
   }
-  const answer = sanitizeProviderSelfIdentification(generated?.text || generated?.response || '');
-  if (!answer) return null;
-  const normalizedSource = {
-    title: clean(source?.title, 220),
-    url: clean(source?.url, 700),
-    engine: clean(source?.engine, 80),
+  return queries.slice(0, 12);
+}
+
+function interactionSources(payload = {}) {
+  const out = [];
+  const seen = new Set();
+  const push = (url, title = '') => {
+    const href = clean(url, 900);
+    if (!/^https?:\/\//i.test(href) || seen.has(href)) return;
+    seen.add(href);
+    out.push({
+      title: clean(title || href, 240),
+      url: href,
+      engine: 'gemini-google-search',
+    });
   };
-  return {
+
+  for (const step of Array.isArray(payload?.steps) ? payload.steps : []) {
+    if (step?.type === 'model_output') {
+      for (const part of Array.isArray(step?.content) ? step.content : []) {
+        for (const annotation of Array.isArray(part?.annotations) ? part.annotations : []) {
+          if (annotation?.type === 'url_citation') {
+            push(annotation?.url, annotation?.title);
+          }
+        }
+      }
+    }
+    if (step?.type === 'google_search_result') {
+      const results = Array.isArray(step?.result) ? step.result : [];
+      for (const item of results) {
+        push(item?.url || item?.uri, item?.title || item?.name);
+      }
+    }
+  }
+  return out.slice(0, 12);
+}
+
+async function createGeminiInteraction(env, body = {}, signal, allowPrevious = true) {
+  if (!hasGeminiKey(env)) throw new Error('gemini_api_key_missing');
+  const text = clean(body?.text, 4000);
+  if (!text) throw new Error('empty_user_input');
+  const previousInteractionId = allowPrevious ? clean(body?.previousInteractionId, 400) : '';
+  const requestBody = {
+    model: GEMINI_MODEL,
+    input: text,
+    system_instruction: TALKSYS_IDENTITY_INSTRUCTION,
+    tools: [{ type: 'google_search' }],
+    generation_config: {
+      thinking_level: 'low',
+    },
+    ...(previousInteractionId ? { previous_interaction_id: previousInteractionId } : {}),
+  };
+
+  const response = await fetch(GEMINI_INTERACTIONS_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-goog-api-key': env.GEMINI_API_KEY.trim(),
+    },
+    body: JSON.stringify(requestBody),
+    signal,
+  });
+
+  const raw = await response.text();
+  let payload = {};
+  try { payload = raw ? JSON.parse(raw) : {}; } catch {}
+
+  if (!response.ok) {
+    const detail = clean(payload?.error?.message || raw || response.statusText, 600);
+    const invalidPrevious = Boolean(previousInteractionId)
+      && (response.status === 400 || response.status === 404)
+      && /previous|interaction|not found|invalid/i.test(detail);
+    if (invalidPrevious && allowPrevious) {
+      return createGeminiInteraction(env, body, signal, false);
+    }
+    throw new Error(`gemini_interactions_http_${response.status}${detail ? `:${detail}` : ''}`);
+  }
+
+  const answer = interactionOutputText(payload);
+  if (!answer) throw new Error('empty_gemini_interaction_answer');
+  return { payload, answer };
+}
+
+async function runNativeGeminiTurn(body, env, signal) {
+  const started = Date.now();
+  const { payload, answer } = await createGeminiInteraction(env, body, signal, true);
+  const queries = interactionQueries(payload);
+  const sources = interactionSources(payload);
+  const searched = queries.length > 0 || sources.length > 0
+    || (Array.isArray(payload?.steps) && payload.steps.some((step) => /^google_search_/.test(String(step?.type || ''))));
+
+  return normalizeGenerationMetadata({
     ok: true,
     answer,
-    search: true,
-    searchUseful: true,
-    route: 'direct-transit-v48',
-    directTransitPrimary: true,
-    directTransitEngine: normalizedSource.engine,
-    transitRequestedAtJst: clean(research?.transitRequestedAtJst, 80),
-    resolvedQuestion: clean(research?.resolvedQuestion || text, 2200),
-    queries: Array.isArray(research?.queries) ? research.queries.slice(0, 6) : [],
-    sources: [normalizedSource],
+    route: 'gemini-native-interactions',
+    planner: 'gemini-native',
+    search: searched,
+    searchUseful: searched,
+    queries,
+    sources,
     apiSources: [],
-    searchPasses: 1,
-    searchCoverage: { sufficient: true, reason: 'direct current official transit evidence' },
-    sourceQuality: normalizedSource.engine === 'jrkyushu-official-timetable-current' ? 'official-railway-timetable-current' : 'direct-route-planner-current',
-    searchMode: 'direct-transit-primary',
+    interactionId: clean(payload?.id, 400),
+    interactionStatus: clean(payload?.status, 80),
+    model: GEMINI_MODEL,
+    languageMode: 'ja-only',
+    nativeGoogleSearch: true,
+    customTransitRetrieval: false,
+    customTruthGateApplied: false,
     timings: {
       totalMs: Date.now() - started,
-      searchMs,
-      glmMs: Date.now() - synthesisStarted,
+      geminiMs: Date.now() - started,
+      searchMs: 0,
     },
-    model: GEMINI_MODEL,
-    planner: 'direct-transit-v26-reuse',
-    languageMode: 'ja-only',
-  };
+  }, env);
+}
+
+async function tryDirectTransitTurn(body, env, signal) {
+  if (!isDirectTransitCandidate(body)) return null;
+  return runNativeGeminiTurn(body, env, signal);
 }
 
 function json(data, status = 200, headers = {}) {
@@ -348,22 +421,22 @@ function json(data, status = 200, headers = {}) {
   out.set('x-talksys-truth-gate-revision', TRUTH_GATE_REVISION);
   out.set('x-talksys-generation-revision', GEMINI_ADAPTER_REVISION);
   out.set('x-talksys-response-quality-revision', RESPONSE_QUALITY_REVISION);
+  out.set('x-talksys-answer-route', 'gemini-native-interactions');
   return new Response(JSON.stringify(data), { status, headers: out });
 }
 
 async function guardedFetch(request, env, ctx) {
   const url = new URL(request.url);
+
   if (request.method === 'GET' && url.pathname === '/truth-gate-health') {
     return json({
       ok: true,
       revision: TRUTH_GATE_REVISION,
       responseQualityRevision: RESPONSE_QUALITY_REVISION,
-      mode: 'claim-level-fail-close',
-      transitExactRouteRequiresStructuredEvidence: true,
-      directYahooTransitEvidenceAuthorized: true,
-      directJrKyushuTimetableEvidenceAuthorized: true,
-      genericWebDoesNotAuthorizeTransitSequence: true,
-      dynamicSpecificsFailClosedWithoutEvidence: true,
+      mode: 'compatibility-only',
+      nativeGeminiAnswerPath: true,
+      nativeGoogleSearch: true,
+      customTruthGateOnNativeAnswers: false,
     });
   }
 
@@ -374,6 +447,8 @@ async function guardedFetch(request, env, ctx) {
       configured,
       provider: 'gemini',
       model: GEMINI_MODEL,
+      api: 'interactions',
+      nativeGoogleSearch: true,
       revision: GEMINI_ADAPTER_REVISION,
       responseQualityRevision: RESPONSE_QUALITY_REVISION,
       requiredSecret: 'GEMINI_API_KEY',
@@ -382,25 +457,28 @@ async function guardedFetch(request, env, ctx) {
     });
   }
 
-  let question = '';
-  let turnBody = null;
   if (request.method === 'POST' && url.pathname === '/api/turn') {
+    let body = {};
     try {
-      turnBody = await request.clone().json();
-      question = clean(turnBody?.text, 1800);
-    } catch {}
-  }
-
-  const runtimeEnv = withGeminiGenerationProvider(env);
-
-  if (turnBody && question && isDirectTransitCandidate(turnBody)) {
-    const directTransit = await tryDirectTransitTurn(turnBody, env, request.signal);
-    if (directTransit) {
-      const gated = gateTurnPayload(directTransit, question);
-      return json(normalizeGenerationMetadata(gated, env));
+      body = await request.json();
+    } catch {
+      return json({ ok: false, error: 'invalid_json' }, 400);
+    }
+    try {
+      const result = await runNativeGeminiTurn(body, env, request.signal);
+      return json(result, 200);
+    } catch (error) {
+      return json({
+        ok: false,
+        error: 'gemini_native_interaction_failed',
+        detail: clean(error?.message || error, 900),
+        route: 'gemini-native-interactions',
+        nativeGoogleSearch: true,
+      }, 502);
     }
   }
 
+  const runtimeEnv = withGeminiGenerationProvider(env);
   const response = await worker.fetch(request, runtimeEnv, ctx);
   const headers = new Headers(response.headers);
   headers.set('x-talksys-truth-gate-revision', TRUTH_GATE_REVISION);
@@ -413,9 +491,9 @@ async function guardedFetch(request, env, ctx) {
       const normalized = normalizeGenerationMetadata({
         ...body,
         truthGateRevision: TRUTH_GATE_REVISION,
-        truthGatePolicy: 'claim-level-fail-close',
-        directYahooTransitEvidenceAuthorized: true,
-        directJrKyushuTimetableEvidenceAuthorized: true,
+        truthGatePolicy: 'compatibility-only',
+        nativeGeminiAnswerPath: true,
+        nativeGoogleSearch: true,
         upstreamIdentitySuppressed: true,
         modelTimeoutFallback: false,
         modelHedgeFallback: 'disabled-by-gemini-adapter',
@@ -426,17 +504,7 @@ async function guardedFetch(request, env, ctx) {
     }
   }
 
-  if (request.method !== 'POST' || url.pathname !== '/api/turn' || !question || !/application\/json/i.test(headers.get('content-type') || '')) {
-    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-  }
-
-  try {
-    const body = await response.clone().json();
-    const gated = gateTurnPayload(body, question);
-    return json(normalizeGenerationMetadata(gated, env), response.status, headers);
-  } catch {
-    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-  }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
 export default { fetch: guardedFetch };
@@ -458,6 +526,11 @@ export const __test = {
   normalizeGenerationMetadata,
   isDirectTransitCandidate,
   tryDirectTransitTurn,
+  interactionOutputText,
+  interactionQueries,
+  interactionSources,
+  createGeminiInteraction,
+  runNativeGeminiTurn,
   LEGACY_GLM_PRIMARY,
   LEGACY_GLM_FALLBACK,
 };
