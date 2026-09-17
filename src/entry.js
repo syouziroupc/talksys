@@ -15,6 +15,7 @@ const DYNAMIC_FACT_RE = /(最新|現在|今日|明日|価格|値段|相場|在�
 const EXACT_TRANSIT_RE = /(乗り換|乗換|乗車|下車|経由|直通|→|番線|何時|時刻|\d{1,2}:\d{2}|\d{1,2}時(?:\d{1,2}分)?|(?:ソニック|にちりん|かもめ|ゆふ|みずほ|さくら|のぞみ|ひかり|こだま).{0,20}(?:で|に乗|号)|(?:本線|新幹線|線|駅).{0,18}(?:を使|を利用|に乗|で行)|\d+\s*分(?:ほど|程度|くらい)?(?:です|かか))/i;
 const SPECIFIC_TOKEN_RE = /(?:[¥￥]\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*(?:円|万円|%|％)|\d{1,2}:\d{2}|\d{1,2}時(?:\d{1,2}分)?|\bv?\d+\.\d+(?:\.\d+)*\b|\b[A-Z]{1,8}[-_ ]?\d{2,}[A-Z0-9_-]*\b)/giu;
 const PROVIDER_SELF_ID_RE = /^(?:私は|わたしは|当モデルは|私自身は).{0,100}(?:Gemini|Google(?:が|の).{0,30}(?:AI|モデル)|GLM|ChatGPT|OpenAI)/i;
+const DIRECT_TRANSIT_ENGINES = new Set(['yahoo-transit-direct-current', 'jrkyushu-official-timetable-current']);
 
 function clean(value, max = 12000) {
   return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -180,7 +181,7 @@ function structuredTransitAuthorized(payload = {}) {
   );
   const directPlanner = payload?.directTransitPrimary === true
     && Array.isArray(payload?.sources)
-    && payload.sources.some((source) => String(source?.engine || '') === 'yahoo-transit-direct-current');
+    && payload.sources.some((source) => DIRECT_TRANSIT_ENGINES.has(String(source?.engine || '')));
   return structuredApi || directPlanner;
 }
 
@@ -277,7 +278,7 @@ async function tryDirectTransitTurn(body, env, signal) {
     return null;
   }
   const source = Array.isArray(research?.sources)
-    ? research.sources.find((item) => String(item?.engine || '') === 'yahoo-transit-direct-current')
+    ? research.sources.find((item) => DIRECT_TRANSIT_ENGINES.has(String(item?.engine || '')))
     : null;
   if (research?.directTransitPrimary !== true || !source) return null;
 
@@ -292,11 +293,11 @@ async function tryDirectTransitTurn(body, env, signal) {
       messages: [
         {
           role: 'system',
-          content: '交通経路専用回答です。取得した乗換案内の本文だけを根拠に、次に利用できる便を先に簡潔に答えてください。発車時刻、到着時刻、列車名・種別、行先、乗換、運賃は根拠に書かれたものだけ使います。根拠にない内容を一般知識で補わず、利用者に駅や別サイトでの確認を押し戻さないでください。通常2〜4文で答えてください。',
+          content: '交通経路専用回答です。取得した公式時刻表または乗換案内の本文だけを根拠に、次に利用できる便を先に簡潔に答えてください。発車時刻、到着時刻、列車名・種別、行先、乗換、運賃は根拠に書かれたものだけ使います。根拠にない内容を一般知識で補わず、利用者に駅や別サイトでの確認を押し戻さないでください。通常2〜4文で答えてください。',
         },
         {
           role: 'user',
-          content: `今回の質問: ${text}\n直近の利用者文脈: ${userContext || '(なし)'}\n検索基準: ${clean(research?.transitRequestedAtJst, 80)}\n取得した乗換案内: ${clean(source?.title, 220)}\n${evidence}`,
+          content: `今回の質問: ${text}\n直近の利用者文脈: ${userContext || '(なし)'}\n検索基準: ${clean(research?.transitRequestedAtJst, 80)}\n取得した交通根拠: ${clean(source?.title, 220)}\n${evidence}`,
         },
       ],
       max_completion_tokens: 480,
@@ -310,7 +311,7 @@ async function tryDirectTransitTurn(body, env, signal) {
   const normalizedSource = {
     title: clean(source?.title, 220),
     url: clean(source?.url, 700),
-    engine: 'yahoo-transit-direct-current',
+    engine: clean(source?.engine, 80),
   };
   return {
     ok: true,
@@ -319,14 +320,15 @@ async function tryDirectTransitTurn(body, env, signal) {
     searchUseful: true,
     route: 'direct-transit-v48',
     directTransitPrimary: true,
+    directTransitEngine: normalizedSource.engine,
     transitRequestedAtJst: clean(research?.transitRequestedAtJst, 80),
     resolvedQuestion: clean(research?.resolvedQuestion || text, 2200),
     queries: Array.isArray(research?.queries) ? research.queries.slice(0, 6) : [],
     sources: [normalizedSource],
     apiSources: [],
     searchPasses: 1,
-    searchCoverage: { sufficient: true, reason: 'direct current route-planner evidence' },
-    sourceQuality: 'direct-route-planner-current',
+    searchCoverage: { sufficient: true, reason: 'direct current official transit evidence' },
+    sourceQuality: normalizedSource.engine === 'jrkyushu-official-timetable-current' ? 'official-railway-timetable-current' : 'direct-route-planner-current',
     searchMode: 'direct-transit-primary',
     timings: {
       totalMs: Date.now() - started,
@@ -359,6 +361,7 @@ async function guardedFetch(request, env, ctx) {
       mode: 'claim-level-fail-close',
       transitExactRouteRequiresStructuredEvidence: true,
       directYahooTransitEvidenceAuthorized: true,
+      directJrKyushuTimetableEvidenceAuthorized: true,
       genericWebDoesNotAuthorizeTransitSequence: true,
       dynamicSpecificsFailClosedWithoutEvidence: true,
     });
@@ -412,6 +415,7 @@ async function guardedFetch(request, env, ctx) {
         truthGateRevision: TRUTH_GATE_REVISION,
         truthGatePolicy: 'claim-level-fail-close',
         directYahooTransitEvidenceAuthorized: true,
+        directJrKyushuTimetableEvidenceAuthorized: true,
         upstreamIdentitySuppressed: true,
         modelTimeoutFallback: false,
         modelHedgeFallback: 'disabled-by-gemini-adapter',
