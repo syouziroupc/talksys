@@ -1,1 +1,1 @@
-gemini-cutover-r1 2026-09-17
+gemini-cutover-r2 2026-09-17
