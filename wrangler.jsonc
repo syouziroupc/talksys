@@ -4,9 +4,17 @@
   // v33 removed the legacy Durable Object / WebSocket voice stack; later versions keep that clean architecture.
   // Historical rollback markers retained for regression contracts only. They are comments, never active entrypoints:
   // "main": "src/worker-v20.js", "main": "src/worker-v21.js", "main": "src/worker-v22.js", "main": "archive/v23/worker-production.js", "main": "archive/v24/worker-production.js", "main": "archive/v25/worker-production.js", "main": "src/worker-v26-production.js", "main": "src/worker-v27-production.js", "main": "src/worker-v28-production.js", "main": "src/worker-v29-production.js", "main": "src/worker-v30-production.js", "main": "src/worker-v31-production.js", "main": "src/worker-v32-production.js", "main": "src/worker-v33.js", "main": "src/worker-v34.js", "main": "src/worker-v35.js", "main": "src/worker-v36.js", "main": "src/worker-v37.js", "main": "src/worker-v38.js", "main": "src/worker-v39.js", "main": "src/worker-v40.js", "main": "src/worker-v41.js", "main": "src/worker-v42.js", "main": "src/worker-v42-hotfix.js", "main": "src/worker-v43.js", "main": "src/worker-v43-reviewfix.js", "main": "src/worker-v43-finalcandidate.js", "main": "src/worker-v44.js"
-  "main": "src/entry.js",
+  "main": "src/integrated-entry.js",
   "compatibility_date": "2026-09-09",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "TELEPHONY_ENABLED": "false",
+    "TELEPHONY_SESSION_MAX_MINUTES": "30",
+    "TELEPHONY_END_SILENCE_MS": "700",
+    "TELEPHONY_MIN_SPEECH_MS": "320",
+    "TELEPHONY_MAX_UTTERANCE_MS": "15000",
+    "TELEPHONY_MAX_SPOKEN_CHARS": "1200"
+  },
   "ai": { "binding": "AI" },
   "d1_databases": [{
     "binding": "TALKSYS_LOG_DB",
