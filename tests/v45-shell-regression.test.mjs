@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { TALK_CLIENT_V45, CLIENT_REVISION } from '../src/talk-client-v45.js';
+import { TALK_CLIENT_V45, CLIENT_REVISION, INTERACTION_REVISION } from '../src/talk-client-v45.js';
 import { TALK_HTML_V45, UI_REVISION } from '../src/ui-v45.js';
 import { STT_MODEL, STT_REVISION, analyzeWav, weakSpeechSignal } from '../src/stt-v45.js';
 
@@ -19,6 +19,7 @@ test('v45 shell no longer delegates UI or voice to the legacy worker', () => {
 
 test('v45 microphone client keeps the proven HTTP adaptive-VAD path', () => {
   assert.equal(CLIENT_REVISION, 'talksys-v45-http-adaptive-vad');
+  assert.equal(INTERACTION_REVISION, 'talksys-v48-typed-interrupt-fast-voice-r1');
   assert.match(TALK_CLIENT_V45, /getUserMedia/);
   assert.match(TALK_CLIENT_V45, /createScriptProcessor/);
   assert.match(TALK_CLIENT_V45, /\/api\/transcribe/);
@@ -27,6 +28,18 @@ test('v45 microphone client keeps the proven HTTP adaptive-VAD path', () => {
   assert.match(TALK_CLIENT_V45, /calibrationUntil/);
   assert.match(TALK_CLIENT_V45, /雑音候補を自動破棄/);
   assert.doesNotMatch(TALK_CLIENT_V45, /new\s+WebSocket|\/agents\//);
+});
+
+test('emergency text input can preempt an in-flight or spoken turn', () => {
+  assert.match(TALK_CLIENT_V45, /非常文字入力で現在の応答を割込み/);
+  assert.match(TALK_CLIENT_V45, /turnSeq\+\+/);
+  assert.match(TALK_CLIENT_V45, /speechSynthesis&&window\.speechSynthesis\.cancel/);
+  assert.doesNotMatch(TALK_CLIENT_V45, /if\(!v\|\|busy\)return/);
+});
+
+test('voice interaction is slightly faster without changing the proven transport', () => {
+  assert.match(TALK_CLIENT_V45, /u\.rate=1\.12/);
+  assert.match(TALK_CLIENT_V45, /SILENCE_MS=620/);
 });
 
 test('v45 UI contains current controls and an honest Foonz status', () => {
