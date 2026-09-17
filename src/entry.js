@@ -2,7 +2,7 @@ import worker from './worker-v44.js';
 
 export const TRUTH_GATE_REVISION = 'talksys-v46-hard-facts-r1';
 export const GEMINI_ADAPTER_REVISION = 'talksys-v47-gemini-cutover-r1';
-export const RESPONSE_QUALITY_REVISION = 'talksys-v48-interrupt-transit-speed-r1';
+export const RESPONSE_QUALITY_REVISION = 'talksys-v54-evidence-first-r1';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
 const LEGACY_GLM_PRIMARY = '@cf/zai-org/glm-5.3-flash';
@@ -12,13 +12,19 @@ const GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/
 
 const TALKSYS_IDENTITY_INSTRUCTION =
   'あなたはTalkSysの日本語音声アシスタント「フォーンズ」です。' +
-  '自然で簡潔な日本語で回答してください。必要な最新情報は利用可能なGoogle検索を自分で使って確認してください。' +
+  '自然で簡潔な日本語で回答してください。利用地域が明示されない通常会話は日本国内を既定とし、時刻は日本標準時JST（UTC+09:00）、日付は日本の暦日、通貨は円、気温は摂氏、距離はメートル法を既定にしてください。' +
+  '国外・別タイムゾーン・別通貨などが明示された場合は、その指定を優先してください。' +
+  '現在時刻、今日・明日、交通、価格、在庫、天気、営業時間など変動する具体値は、信頼できるサーバー時刻または取得済み外部根拠だけを使い、モデル内部の知識や過去の回答から推測してはいけません。' +
+  '交通では、現在時刻より前の便を「次」と扱わず、具体的な発車時刻・乗換・番線は取得済み根拠で確認できた場合だけ述べてください。' +
   '検索や情報取得を利用者側へ押し戻さず、取得できた根拠に基づいて具体的に答えてください。' +
   '自分をGemini、GoogleのAI、GLM、ChatGPT、OpenAIなど上流のモデル名・提供元として名乗らないでください。' +
   '自分について聞かれた場合は「フォーンズです」と簡潔に答えてください。';
 
 const TRANSIT_QUERY_RE = /(電車|鉄道|乗換|乗り換え|列車|時刻表|駅|新幹線|特急|(?:から|→).{1,40}(?:まで|へ|→).{0,20}(?:行く|行き方|経路|ルート))/i;
 const DYNAMIC_FACT_RE = /(最新|現在|今日|明日|価格|値段|相場|在庫|発売|販売中|BIOS|UEFI|ファームウェア|ドライバ|法律|法令|制度|社長|CEO|首相|大統領|ニュース|運行|遅延|運休|時刻表|天気|天候|為替|地震|祝日|営業時間|バージョン)/i;
+const EVIDENCE_REQUIRED_RE = /(おすすめ|候補|店|店舗|販売店|会社|企業|法人|施設|病院|医院|クリニック|ホテル|旅館|飲食店|レストラン|カフェ|商品|製品|型番|モデル|仕様|互換|対応|住所|所在地|電話番号|連絡先|営業時間|予約|アクセス|最寄り|実在|存在|価格|値段|相場|在庫|発売|最新|現在|今日|明日|ニュース|運行|時刻表|天気|為替|法律|制度|バージョン)/i;
+const ENTITY_RECOMMENDATION_RE = /(おすすめ|候補|店|店舗|販売店|会社|企業|法人|施設|病院|医院|クリニック|ホテル|旅館|飲食店|レストラン|カフェ|住所|所在地|電話番号|連絡先|営業時間|予約|アクセス|最寄り|実在|存在)/i;
+const NAMED_ENTITY_RE = /(?:「([^」]{2,60})」|『([^』]{2,60})』|([一-龠々ヶぁ-んァ-ヶA-Za-z0-9・ー]{2,40}(?:商店|工房|電器|電機|病院|医院|クリニック|ホテル|旅館|カフェ|喫茶店|レストラン|株式会社|合同会社|有限会社)))/g;
 const EXACT_TRANSIT_RE = /(乗り換|乗換|乗車|下車|経由|直通|→|番線|何時|時刻|\d{1,2}:\d{2}|\d{1,2}時(?:\d{1,2}分)?|(?:ソニック|にちりん|かもめ|ゆふ|みずほ|さくら|のぞみ|ひかり|こだま).{0,20}(?:で|に乗|号)|(?:本線|新幹線|線|駅).{0,18}(?:を使|を利用|に乗|で行)|\d+\s*分(?:ほど|程度|くらい)?(?:です|かか))/i;
 const SPECIFIC_TOKEN_RE = /(?:[¥￥]\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*(?:円|万円|%|％)|\d{1,2}:\d{2}|\d{1,2}時(?:\d{1,2}分)?|\bv?\d+\.\d+(?:\.\d+)*\b|\b[A-Z]{1,8}[-_ ]?\d{2,}[A-Z0-9_-]*\b)/giu;
 const PROVIDER_SELF_ID_RE = /^(?:私は|わたしは|当モデルは|私自身は).{0,100}(?:Gemini|Google(?:が|の).{0,30}(?:AI|モデル)|GLM|ChatGPT|OpenAI)/i;
@@ -30,6 +36,106 @@ function clean(value, max = 12000) {
 
 function normalize(value) {
   return clean(String(value ?? '').normalize('NFKC'), 20000).toLowerCase().replace(/\s+/g, '');
+}
+
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const JST_WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
+const JST_LOCAL_TIME_RE = /(?:今(?:は|って)?何時|いま(?:は|って)?何時|現在(?:は)?何時|現在時刻|現在の時刻|今の時刻|いまの時刻|今の時間|いまの時間|日本時間(?:で)?(?:今)?何時|JST(?:で)?(?:今)?何時)/i;
+const JST_DATE_RE = /(?:今日(?:は)?(?:何日|何月何日|の日付)|本日(?:は)?(?:何日|の日付)|明日(?:は)?(?:何日|何月何日)|今日(?:は)?何曜日)/i;
+const NON_JST_TIME_CUE_RE = /(?:UTC|GMT|時差|現地時間|海外|ニューヨーク|ロンドン|パリ|ベルリン|北京|上海|ソウル|台北|シドニー|ロサンゼルス|サンフランシスコ)/i;
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function jstParts(now = new Date()) {
+  const shifted = new Date(now.getTime() + JST_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    weekday: JST_WEEKDAYS[shifted.getUTCDay()],
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+    second: shifted.getUTCSeconds(),
+  };
+}
+
+function jstIso(now = new Date()) {
+  const p = jstParts(now);
+  return `${p.year}-${pad2(p.month)}-${pad2(p.day)}T${pad2(p.hour)}:${pad2(p.minute)}:${pad2(p.second)}+09:00`;
+}
+
+function jstTemporalInstruction(now = new Date()) {
+  const p = jstParts(now);
+  return `信頼できるサーバー時刻は ${jstIso(now)}（日本標準時 JST / Asia/Tokyo、${p.weekday}曜日）です。` +
+    '「今」「現在」「今日」「明日」などの相対時刻は必ずこの時刻を基準に解釈し、UTCやモデル内部時計を現在時刻として使わないでください。' +
+    '過去の会話に別の現在時刻が書かれていても、それは過去発言として扱い、このサーバー時刻で上書きしてください。';
+}
+
+function namedForeignTimeRequest(value) {
+  const valueText = clean(String(value ?? '').normalize('NFKC'), 300);
+  if (NON_JST_TIME_CUE_RE.test(valueText) && !/(?:日本|JST|日本時間|東京|大阪|別府|大分)/i.test(valueText)) return true;
+  const m = valueText.match(/^(.{2,24}?)(?:は|の)(?:今|現在)(?:は|って)?何時/);
+  if (!m) return false;
+  return !/(?:日本|東京|大阪|別府|大分|ここ|こちら|現在地)/.test(m[1]);
+}
+
+function localJstTemporalAnswer(value, now = new Date()) {
+  const valueText = clean(String(value ?? '').normalize('NFKC'), 600);
+  if (!valueText || namedForeignTimeRequest(valueText)) return null;
+
+  let match = valueText.match(/今から\s*(\d{1,4})\s*分後/);
+  if (match) {
+    const minutes = Number(match[1]);
+    const target = new Date(now.getTime() + minutes * 60_000);
+    const p = jstParts(target);
+    return {
+      kind: 'jst-relative-time',
+      answer: `日本時間では、今から${minutes}分後は${p.hour}時${pad2(p.minute)}分です。`,
+      route: 'jst-clock-v53', search: false, timeZone: 'Asia/Tokyo', utcOffsetMinutes: 540,
+      serverEpochMs: now.getTime(), jstIso: jstIso(now), targetJstIso: jstIso(target), relativeMinutes: minutes,
+    };
+  }
+
+  match = valueText.match(/今から\s*(\d{1,3})\s*時間後/);
+  if (match) {
+    const hours = Number(match[1]);
+    const target = new Date(now.getTime() + hours * 3_600_000);
+    const p = jstParts(target);
+    return {
+      kind: 'jst-relative-time',
+      answer: `日本時間では、今から${hours}時間後は${p.hour}時${pad2(p.minute)}分です。`,
+      route: 'jst-clock-v53', search: false, timeZone: 'Asia/Tokyo', utcOffsetMinutes: 540,
+      serverEpochMs: now.getTime(), jstIso: jstIso(now), targetJstIso: jstIso(target), relativeMinutes: hours * 60,
+    };
+  }
+
+  if (JST_LOCAL_TIME_RE.test(valueText)) {
+    const p = jstParts(now);
+    return {
+      kind: 'jst-current-time', answer: `現在の日本時間（JST）は${p.hour}時${pad2(p.minute)}分です。`,
+      route: 'jst-clock-v53', search: false, timeZone: 'Asia/Tokyo', utcOffsetMinutes: 540,
+      serverEpochMs: now.getTime(), jstIso: jstIso(now),
+    };
+  }
+
+  if (JST_DATE_RE.test(valueText)) {
+    const tomorrow = /明日/.test(valueText);
+    const target = tomorrow ? new Date(now.getTime() + 86_400_000) : now;
+    const p = jstParts(target);
+    const date = `${p.year}-${pad2(p.month)}-${pad2(p.day)}`;
+    const asksWeekday = /何曜日/.test(valueText);
+    return {
+      kind: 'jst-current-date',
+      answer: asksWeekday
+        ? `日本時間では、今日は${p.year}年${p.month}月${p.day}日、${p.weekday}曜日です。`
+        : `日本時間では、${tomorrow ? '明日' : '今日'}は${p.year}年${p.month}月${p.day}日です。`,
+      route: 'jst-calendar-v53', search: false, timeZone: 'Asia/Tokyo', utcOffsetMinutes: 540,
+      serverEpochMs: now.getTime(), jstIso: jstIso(now), jstDate: date,
+    };
+  }
+  return null;
 }
 
 function sentences(value) {
@@ -77,7 +183,7 @@ function mapGeminiMessages(messages = []) {
   };
 }
 
-function buildGeminiRequest(modelArgs = {}) {
+function buildGeminiRequest(modelArgs = {}, now = new Date()) {
   const mapped = mapGeminiMessages(modelArgs?.messages || []);
   const requestedMax = Number(modelArgs?.max_completion_tokens || modelArgs?.max_output_tokens || 0);
   const maxOutputTokens = Math.min(4096, Math.max(256, Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : 512));
@@ -89,7 +195,7 @@ function buildGeminiRequest(modelArgs = {}) {
   if (Number.isFinite(temperature)) generationConfig.temperature = Math.max(0, Math.min(2, temperature));
   const inheritedSystem = mapped.systemInstruction?.parts?.[0]?.text || '';
   const systemInstruction = {
-    parts: [{ text: clean(`${TALKSYS_IDENTITY_INSTRUCTION}${inheritedSystem ? `\n\n${inheritedSystem}` : ''}`, 60000) }],
+    parts: [{ text: clean(`${TALKSYS_IDENTITY_INSTRUCTION}\n\n${jstTemporalInstruction(now)}${inheritedSystem ? `\n\n${inheritedSystem}` : ''}`, 60000) }],
   };
   return {
     systemInstruction,
@@ -216,6 +322,32 @@ function removeUnauthorizedTransitRouteClaims(answer) {
   return clean(kept.join(''), 12000);
 }
 
+function evidenceCorpus(payload = {}, question = '') {
+  const sourceText = (Array.isArray(payload?.sources) ? payload.sources : []).map((source) => `${source?.title || ''} ${source?.url || ''}`).join(' ');
+  const apiText = (Array.isArray(payload?.apiSources) ? payload.apiSources : []).map((source) => `${source?.tool || ''} ${source?.category || ''} ${source?.attribution || ''} ${source?.sourceUrl || ''}`).join(' ');
+  const candidateText = (Array.isArray(payload?.searchDiagnostics?.candidateNames) ? payload.searchDiagnostics.candidateNames : []).join(' ');
+  return normalize(`${question} ${sourceText} ${apiText} ${candidateText}`);
+}
+
+function namedEntitySupported(token, corpus) {
+  const normalized = normalize(token);
+  if (!normalized || normalized.length < 2) return true;
+  return corpus.includes(normalized);
+}
+
+function removeUnsupportedNamedEntities(answer, payload = {}, question = '') {
+  const corpus = evidenceCorpus(payload, question);
+  const kept = sentences(answer).filter((sentence) => {
+    const matches = [...String(sentence || '').matchAll(NAMED_ENTITY_RE)];
+    if (!matches.length) return true;
+    return matches.every((match) => {
+      const token = clean(match[1] || match[2] || match[3], 120);
+      return namedEntitySupported(token, corpus);
+    });
+  });
+  return clean(kept.join(''), 12000);
+}
+
 export function gateTurnPayload(payload = {}, question = '') {
   if (!payload || typeof payload !== 'object') return payload;
   const original = clean(payload.answer, 12000);
@@ -240,6 +372,17 @@ export function gateTurnPayload(payload = {}, question = '') {
     const guarded = removeUnsupportedDynamicSpecifics(answer, question);
     if (guarded !== answer) reasons.push('dynamic_specifics_require_external_evidence');
     answer = guarded || '現在値や具体的な番号は、根拠を確認できた項目だけ案内します。';
+  }
+
+  if (EVIDENCE_REQUIRED_RE.test(question)) {
+    if (!hasEvidence && ENTITY_RECOMMENDATION_RE.test(question)) {
+      if (answer) reasons.push('entity_evidence_required_but_missing');
+      answer = '今回取得できた根拠では、実在や条件適合を確認できる具体候補を挙げられませんでした。';
+    } else if (hasEvidence) {
+      const guarded = removeUnsupportedNamedEntities(answer, payload, question);
+      if (guarded !== answer) reasons.push('named_entities_require_matching_evidence');
+      answer = guarded || '取得できた根拠の範囲では、具体名を安全に確認できませんでした。';
+    }
   }
 
   return {
@@ -338,7 +481,7 @@ async function createGeminiInteraction(env, body = {}, signal, allowPrevious = t
   const requestBody = {
     model: GEMINI_MODEL,
     input: text,
-    system_instruction: TALKSYS_IDENTITY_INSTRUCTION,
+    system_instruction: `${TALKSYS_IDENTITY_INSTRUCTION}\n\n${jstTemporalInstruction()}`,
     tools: [{ type: 'google_search' }],
     ...(previousInteractionId ? { previous_interaction_id: previousInteractionId } : {}),
   };
@@ -418,7 +561,7 @@ function json(data, status = 200, headers = {}) {
   out.set('x-talksys-truth-gate-revision', TRUTH_GATE_REVISION);
   out.set('x-talksys-generation-revision', GEMINI_ADAPTER_REVISION);
   out.set('x-talksys-response-quality-revision', RESPONSE_QUALITY_REVISION);
-  out.set('x-talksys-answer-route', 'gemini-native-interactions');
+  out.set('x-talksys-answer-route', clean(data?.route || 'router-first-v53', 80));
   return new Response(JSON.stringify(data), { status, headers: out });
 }
 
@@ -430,10 +573,14 @@ async function guardedFetch(request, env, ctx) {
       ok: true,
       revision: TRUTH_GATE_REVISION,
       responseQualityRevision: RESPONSE_QUALITY_REVISION,
-      mode: 'compatibility-only',
-      nativeGeminiAnswerPath: true,
-      nativeGoogleSearch: true,
+      mode: 'router-first-jst-evidence',
+      nativeGeminiAnswerPath: false,
+      nativeGoogleSearch: false,
       customTruthGateOnNativeAnswers: false,
+      routerFirst: true,
+      defaultTimezone: 'Asia/Tokyo',
+      authoritativeJstClock: true,
+      dynamicFactsRequireEvidence: true,
     });
   }
 
@@ -444,8 +591,11 @@ async function guardedFetch(request, env, ctx) {
       configured,
       provider: 'gemini',
       model: GEMINI_MODEL,
-      api: 'interactions',
-      nativeGoogleSearch: true,
+      api: 'generateContent-adapter',
+      nativeGoogleSearch: false,
+      routerFirst: true,
+      defaultTimezone: 'Asia/Tokyo',
+      authoritativeJstClock: true,
       revision: GEMINI_ADAPTER_REVISION,
       responseQualityRevision: RESPONSE_QUALITY_REVISION,
       requiredSecret: 'GEMINI_API_KEY',
@@ -454,24 +604,29 @@ async function guardedFetch(request, env, ctx) {
     });
   }
 
+  let turnBody = null;
   if (request.method === 'POST' && url.pathname === '/api/turn') {
-    let body = {};
     try {
-      body = await request.json();
+      turnBody = await request.clone().json();
     } catch {
       return json({ ok: false, error: 'invalid_json' }, 400);
     }
-    try {
-      const result = await runNativeGeminiTurn(body, env, request.signal);
-      return json(result, 200);
-    } catch (error) {
+    const temporal = localJstTemporalAnswer(turnBody?.text);
+    if (temporal) {
       return json({
-        ok: false,
-        error: 'gemini_native_interaction_failed',
-        detail: clean(error?.message || error, 900),
-        route: 'gemini-native-interactions',
-        nativeGoogleSearch: true,
-      }, 502);
+        ok: true,
+        ...temporal,
+        planner: 'trusted-jst-clock-v53',
+        sources: [],
+        apiSources: [],
+        generationProvider: 'deterministic',
+        generationModel: 'server-jst-clock',
+        generationRevision: GEMINI_ADAPTER_REVISION,
+        responseQualityRevision: RESPONSE_QUALITY_REVISION,
+        geminiConfigured: hasGeminiKey(env),
+        legacyGlmExecution: false,
+        routerFirst: true,
+      }, 200);
     }
   }
 
@@ -482,15 +637,39 @@ async function guardedFetch(request, env, ctx) {
   headers.set('x-talksys-generation-revision', GEMINI_ADAPTER_REVISION);
   headers.set('x-talksys-response-quality-revision', RESPONSE_QUALITY_REVISION);
 
+  if (request.method === 'POST' && url.pathname === '/api/turn' && /application\/json/i.test(headers.get('content-type') || '')) {
+    try {
+      const payload = await response.clone().json();
+      const question = clean(turnBody?.text, 1800);
+      const gated = gateTurnPayload(payload, question);
+      const normalized = normalizeGenerationMetadata({
+        ...gated,
+        routerFirst: true,
+        defaultTimezone: 'Asia/Tokyo',
+        authoritativeJstClock: true,
+        dynamicFactsRequireEvidence: true,
+        nativeGeminiAnswerPath: false,
+        nativeGoogleSearch: false,
+      }, env);
+      return json(normalized, response.status, headers);
+    } catch {
+      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+    }
+  }
+
   if (request.method === 'GET' && url.pathname === '/voice-health' && /application\/json/i.test(headers.get('content-type') || '')) {
     try {
       const body = await response.clone().json();
       const normalized = normalizeGenerationMetadata({
         ...body,
         truthGateRevision: TRUTH_GATE_REVISION,
-        truthGatePolicy: 'compatibility-only',
-        nativeGeminiAnswerPath: true,
-        nativeGoogleSearch: true,
+        truthGatePolicy: 'claim-level-fail-close',
+        nativeGeminiAnswerPath: false,
+        nativeGoogleSearch: false,
+        routerFirst: true,
+        defaultTimezone: 'Asia/Tokyo',
+        authoritativeJstClock: true,
+        dynamicFactsRequireEvidence: true,
         upstreamIdentitySuppressed: true,
         modelTimeoutFallback: false,
         modelHedgeFallback: 'disabled-by-gemini-adapter',
@@ -511,11 +690,17 @@ export const __test = {
   hasUsableExternalEvidence,
   removeUnsupportedDynamicSpecifics,
   removeUnauthorizedTransitRouteClaims,
+  removeUnsupportedNamedEntities,
   gateTurnPayload,
   hasGeminiKey,
   isLegacyGlmModel,
   mapGeminiMessages,
   buildGeminiRequest,
+  jstParts,
+  jstIso,
+  jstTemporalInstruction,
+  localJstTemporalAnswer,
+  namedForeignTimeRequest,
   sanitizeProviderSelfIdentification,
   readGeminiText,
   runGemini,

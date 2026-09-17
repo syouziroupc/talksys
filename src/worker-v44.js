@@ -51,6 +51,11 @@ const EXPLICIT_LOOKUP_RE = /(検索|調べ|探して|探せ|見つけ|確認し�
 const DYNAMIC_FACT_RE = /(最新|現在|今(?:の|この|すぐ|何時|いくら)|今日|明日|昨日|価格|値段|相場|在庫|発売|販売中|BIOS|UEFI|ファームウェア|ドライバ|法律|法令|制度|社長|CEO|首相|大統領|ニュース|運行|遅延|運休|時刻表|天気|天候|為替|地震|祝日|中古(?:PC|パソコン|ノート|スマホ)|営業時間|バージョン)/i;
 const NON_API_FACT_RE = /(BIOS|UEFI|ファームウェア|ドライバ|Windows|macOS|Linux|古物|法律|法令|社長|CEO|首相|大統領|ニュース|中古(?:PC|パソコン)|スマホ|型番|仕様|公式配布|配布元)/i;
 const TRANSIT_QUERY_RE = /(電車|鉄道|乗換|乗り換え|列車|運行情報|遅延|運休|時刻表|何時発|何に乗)/i;
+const REAL_WORLD_ENTITY_RE = /(店|店舗|販売店|会社|企業|法人|施設|病院|医院|クリニック|ホテル|旅館|飲食店|レストラン|カフェ|商品|製品|型番|モデル|人物|社長|CEO|住所|所在地|電話番号|連絡先|営業時間|営業日|定休日|予約|アクセス|最寄り|公式サイト|ホームページ|実在|存在)/i;
+const FACTUAL_QUESTION_RE = /(とは|って何|何(?:です|なの|か|が)|誰|どこ|いつ|何年|何月|何日|何時|何曜日|どの|どれ|違い|比較|特徴|仕様|性能|対応|互換|適合|使える|実在|存在|ある(?:の|か)|ありますか|教えて|知りたい|標高|人口|面積|発売日)/i;
+const LOCAL_TRANSFORM_RE = /(要約|翻訳|言い換え|添削|校正|文案|メール|返信文|台本|文章|コピー|タイトル|見出し|整形|書き換え|作文)/i;
+const LOCAL_ADVICE_RE = /(相談|悩み|どうすれば|どうしたら|アイデア|考えて|方針|作戦|整理して)/i;
+const RECOMMENDATION_RE = /(おすすめ|候補|選ん|どれがいい|何がいい|どこがいい|近く|周辺|買うなら|販売店|店舗|店を探|病院|ホテル|飲食店|レストラン|カフェ)/i;
 
 function clean(value, max = 9000) {
   return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -222,6 +227,21 @@ function ambiguousLocation(text) {
   return !/(東京都|東京23区|大阪市|大阪府|札幌市|札幌|神戸市|神戸|福岡市|福岡県|千葉市|さいたま市|相模原市|新潟市|浜松市|熊本市)/.test(value);
 }
 
+export function shouldGroundFactualTurn(text, history = []) {
+  const value = canonicalizeInput(text, 1800);
+  const hist = historyOf(history);
+  const resolved = fallbackResolvedQuestion(value, hist);
+  if (!value) return false;
+  if (NO_EXTERNAL_RE.test(value)) return false;
+  const evidenceRisk = EXPLICIT_LOOKUP_RE.test(value) || DYNAMIC_FACT_RE.test(value) || REAL_WORLD_ENTITY_RE.test(value) || RECOMMENDATION_RE.test(value);
+  if (evidenceRisk) return true;
+  if (TRIVIAL_RE.test(value) || FEELING_ONLY_RE.test(value) || MEMORY_ONLY_RE.test(value) || CAPABILITY_RE.test(value) || SUBJECTIVE_RE.test(value)) return false;
+  if (LOCAL_TRANSFORM_RE.test(value) || LOCAL_ADVICE_RE.test(value)) return false;
+  if (FACTUAL_QUESTION_RE.test(value)) return true;
+  if (/[？?]$/.test(value) && !LOCAL_TRANSFORM_RE.test(value) && !LOCAL_ADVICE_RE.test(value)) return true;
+  return value.length <= 48 && FACTUAL_QUESTION_RE.test(resolved);
+}
+
 export function classifyTurn(text, history = []) {
   const value = canonicalizeInput(text, 1800);
   const hist = historyOf(history);
@@ -245,6 +265,9 @@ export function classifyTurn(text, history = []) {
   }
   if (EXPLICIT_LOOKUP_RE.test(value) || DYNAMIC_FACT_RE.test(value)) {
     return { mode: 'external', webSearch: true, noExternal: false, apiIntents: [], reason: 'current_or_explicit_lookup' };
+  }
+  if (shouldGroundFactualTurn(value, hist)) {
+    return { mode: 'external', webSearch: true, noExternal: false, apiIntents: [], reason: 'factual_verification_default' };
   }
   return { mode: 'casual', webSearch: false, noExternal: false, reason: 'stable_or_conversational' };
 }
@@ -336,7 +359,10 @@ const GROUNDED_PROMPT = `あなたはTalkSysの日本語電話相談AIです。�
 - assistantの過去発言は外部事実の証拠にしない。
 - 根拠が一部足りなくても、確認できたことと未確認部分を分ける。
 - 「もう一度聞いて」「後で確認」「自分で検索して」と調査を利用者へ押し戻さない。
-- 根拠にない店名、価格、住所、型番、数値を作らない。
+- 根拠にない店名、会社名、施設名、人物名、商品名、価格、住所、型番、数値を作らない。名前が似ていても補完・推測しない。
+- 実在する店・会社・施設・人物・商品を挙げる場合、その名称そのものが取得根拠に現れているものだけを使う。検索結果にない候補を知識から足さない。
+- おすすめ・候補提示では、利用者の条件に合うことを根拠で確認できた候補だけを出す。未確認条件を勝手に満たす扱いにしない。
+- ある候補の住所・価格・営業時間・仕様を別候補へ混ぜない。根拠が矛盾する場合は断定せず、確認できた範囲を分ける。
 - 交通経路では、取得根拠に明記されていない乗換駅・路線名・列車名・駅順を内部知識で補わない。
 - 電話で聞きやすい自然な日本語で通常3〜6文。URLや検索回数は読み上げない。`;
 
@@ -642,12 +668,19 @@ async function synthesizeGroundedAnswer(env, body, search) {
   const resolved = clean(search?.plan?.resolvedQuestion || body?.text, 2200);
   const evidence = evidenceBlock(search);
   const coverage = search?.coverage || {};
+  const candidateType = clean(search?.candidateType || '', 60);
+  const lockedCandidates = Array.isArray(search?.candidateNames) ? search.candidateNames.map((x) => clean(x, 120)).filter(Boolean).slice(0, 8) : [];
+  const candidateLock = candidateType && candidateType !== 'none'
+    ? (lockedCandidates.length
+      ? `\n候補名ロック: この回答で新しく候補として挙げてよい名称は次だけです: ${lockedCandidates.join(' / ')}。この一覧外の候補名を追加しないでください。`
+      : '\n候補名ロック: 検索で実在と条件適合を確認できる候補名が得られていません。具体的な候補名を新規に作らず、確認不足を明示してください。')
+    : '';
   const prompt = `利用者の質問: ${canonicalizeInput(body?.text, 1800)}
 解決した調査課題: ${resolved}
 検索の十分性: ${coverage.sufficient === true ? '十分と判定' : '不足の可能性あり'} ${clean(coverage.reason, 260)}
 
 取得根拠:
-${evidence || '(直接使える根拠は取得できなかった)'}
+${evidence || '(直接使える根拠は取得できなかった)'}${candidateLock}
 
 上のルールに従って利用者へ直接答えてください。`;
   return runModel(env, [{ role: 'system', content: GROUNDED_PROMPT }, ...hist, { role: 'user', content: prompt }], 620, 0.05);
@@ -1039,6 +1072,7 @@ export const __test = {
   shouldPreserveSpecializedTurn,
   fallbackResolvedQuestion,
   structuredCoverageIsWholeQuestion,
+  shouldGroundFactualTurn,
   guardUnsupportedTransitEntities,
   deepPlan,
 };

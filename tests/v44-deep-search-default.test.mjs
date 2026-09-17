@@ -16,11 +16,11 @@ import {
   __test as search,
 } from '../src/search-v44.js';
 
-test('v45 routes substantive turns by intent instead of blanket search', () => {
+test('v54 routes factual and recommendation turns to evidence while keeping social chat local', () => {
   assert.equal(worker.shouldSearchByDefault('中古のジャイロキャノピーで強力な添加剤は何がいい？'), true);
   assert.equal(worker.shouldSearchByDefault('バナナはおやつに入る？'), false);
   assert.equal(worker.shouldSearchByDefault('この修理、買い替えたほうがいいかな'), true);
-  assert.equal(worker.shouldSearchByDefault('RAMとSSDの違いを説明して'), false);
+  assert.equal(worker.shouldSearchByDefault('RAMとSSDの違いを説明して'), true);
 });
 
 test('v45 keeps zero-value social and memory turns local', () => {

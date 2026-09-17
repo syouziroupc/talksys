@@ -21,9 +21,9 @@ test('explicit no-search instructions dominate routing', () => {
   }
 });
 
-test('stable knowledge and conversation remain local', () => {
-  assert.equal(router.shouldSearchByDefault('RAMとSSDの違いを説明して'), false);
-  assert.equal(router.shouldSearchByDefault('HTTP 404って何？'), false);
+test('factual knowledge is grounded while conversation and memory remain local', () => {
+  assert.equal(router.shouldSearchByDefault('RAMとSSDの違いを説明して'), true);
+  assert.equal(router.shouldSearchByDefault('HTTP 404って何？'), true);
   assert.equal(router.shouldSearchByDefault('今日は疲れた'), false);
   assert.equal(router.shouldSearchByDefault('さっき何について話してた？'), false);
 });

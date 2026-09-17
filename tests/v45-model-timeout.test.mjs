@@ -8,8 +8,8 @@ test('boundedPromise rejects a hung model call instead of hanging the turn', asy
   assert.ok(Date.now() - started < 1000);
 });
 
-test('unified router still keeps deterministic and stable knowledge local', () => {
+test('unified router keeps deterministic local but grounds factual knowledge', () => {
   assert.equal(worker.classifyTurn('12345÷15', []).mode, 'deterministic');
-  assert.equal(worker.classifyTurn('RAMとSSDの違いを短く説明して', []).mode, 'casual');
+  assert.equal(worker.classifyTurn('RAMとSSDの違いを短く説明して', []).mode, 'external');
   assert.equal(worker.classifyTurn('別府市の今日の天気は？', []).mode, 'external');
 });

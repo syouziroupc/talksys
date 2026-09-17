@@ -454,6 +454,21 @@ function extractCandidates(results, limit = 4) {
   return out;
 }
 
+function extractLocalCandidates(results, limit = 6) {
+  const out = [], seen = new Set();
+  for (const item of results || []) {
+    if (!/openstreetmap-(?:nominatim|direct)/i.test(`${item?.engine || ''} ${item?.probeEngine || ''}`)) continue;
+    const name = clean(item?.title, 100);
+    const key = normalize(name);
+    if (!name || name.length < 2 || name.length > 80 || seen.has(key)) continue;
+    if (/^(?:地図|検索結果|日本|大分県|別府市|東京都|大阪府|福岡県)$/i.test(name)) continue;
+    seen.add(key);
+    out.push({ name, type: 'local_entity', evidence: clean(item?.snippet || item?.excerpt, 220) });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 function verificationFacets(candidates, plan) {
   const out = [];
   for (const c of candidates.slice(0, 2)) {
@@ -564,6 +579,9 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
       merged.push(...local.map(x => ({ ...x, probeQuery:q, probeEngine:'openstreetmap-direct' })));
     } catch {}
     timings.localMs = Date.now()-t;
+    if (['store','place','company','service'].includes(plan.candidateType)) {
+      candidates = extractLocalCandidates(merged, 6);
+    }
   }
 
   if (SEARCH_V45_GENERAL_WEB_SEARCH_ENABLED && plan.researchMode === 'discover_then_verify' && candidates.length && deadline - Date.now() > 1000) {
@@ -613,9 +631,12 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   const evidenceUseful = baseEvidenceUseful
     && (!requiresCurrentFirmwareVersion || hasCurrentFirmwareVersionEvidence)
     && (!requiresPriceEvidence || hasPriceEvidence);
+  const entityCandidateRequired = ['store','place','company','service'].includes(plan.candidateType);
   const sufficient = plan.researchMode === 'discover_then_verify'
     ? Boolean(candidates.length && evidenceUseful)
-    : evidenceUseful;
+    : entityCandidateRequired
+      ? Boolean(candidates.length && evidenceUseful)
+      : evidenceUseful;
   timings.totalMs = Date.now()-startedAt;
 
   return {
@@ -674,4 +695,4 @@ export async function runDeepSearchV44(ai, text, history = [], signal, options =
   };
 }
 
-export const __test = { inferIntent, simplePlan, officialDomainHint, queryTerms, extractCandidates, isPriceQuestion, concreteMoneyMentions, hasConcretePriceEvidence, priceRecoveryFacets };
+export const __test = { inferIntent, simplePlan, officialDomainHint, queryTerms, extractCandidates, extractLocalCandidates, isPriceQuestion, concreteMoneyMentions, hasConcretePriceEvidence, priceRecoveryFacets };

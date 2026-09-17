@@ -21,7 +21,7 @@ const {
 
 test('v47 Gemini adapter exposes the expected stable model and runtime key contract', () => {
   assert.equal(GEMINI_ADAPTER_REVISION, 'talksys-v47-gemini-cutover-r1');
-  assert.equal(RESPONSE_QUALITY_REVISION, 'talksys-v48-interrupt-transit-speed-r1');
+  assert.equal(RESPONSE_QUALITY_REVISION, 'talksys-v54-evidence-first-r1');
   assert.equal(GEMINI_MODEL, 'gemini-3.5-flash-lite');
   assert.equal(hasGeminiKey({ GEMINI_API_KEY: 'abc' }), true);
   assert.equal(hasGeminiKey({ GEMINI_API_KEY: '   ' }), false);
