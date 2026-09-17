@@ -21,27 +21,11 @@ const FORM_HANDLER_NEW = String.raw`form.addEventListener('submit',async e=>{
   finally{if(turnSeq===mySeq){busy=false;if(micOn&&!playing)setStatus('聞いています');diagUpdate(true);}}
 });`;
 
-const SPOKEN_TEXT_VOICE_PATCH = String.raw`function spokenText(text){
+const VOICE_SAFE_HELPER = String.raw`function voiceSafeText(text){
   let v=String(text||'')
     .replace(/https?:\/\/\S+/g,'')
-    .replace(/^\s{0,3}#{1,6}\s*[^\n]*\n/gm,'')
-    .replace(/^\s*[-*+]\s+/gm,'')
-    .replace(/^\s*\d+[.)]\s+/gm,'')
-    .replace(/\*\*([^*]+)\*\*/g,'$1')
-    .replace(/__([^_]+)__/g,'$1')
-    .replace(/[*_#>\x60~]/g,'')
-    .replace(/\bWindows\s*10\b/gi,'ウィンドウズ テン')
-    .replace(/\bWindows\s*11\b/gi,'ウィンドウズ イレブン')
-    .replace(/\bPC\b/gi,'パソコン')
-    .replace(/\bSSD\b/gi,'エスエスディー')
-    .replace(/\bHDD\b/gi,'エイチディーディー')
-    .replace(/\bCPU\b/gi,'シーピーユー')
-    .replace(/\bGPU\b/gi,'ジーピーユー')
-    .replace(/\bRAM\b/gi,'メモリー')
-    .replace(/\bUSB\b/gi,'ユーエスビー')
-    .replace(/\bHDMI\b/gi,'エイチディーエムアイ')
-    .replace(/\bWi[-‐‑–—]?Fi\b/gi,'ワイファイ')
-    .replace(/\n+/g,'。')
+    .replace(/(^|[。！？!?])\s*(?:結論|要点|ポイント|回答|理由|注意点|補足)\s*[:：]?\s*/g,'$1')
+    .replace(/\s+(?:結論|要点|ポイント|回答|理由|注意点|補足)\s*[:：]\s*/g,'。')
     .replace(/\s+/g,' ')
     .replace(/。{2,}/g,'。')
     .trim();
@@ -49,13 +33,8 @@ const SPOKEN_TEXT_VOICE_PATCH = String.raw`function spokenText(text){
   return sentences.slice(0,4).join('').trim();
 }`;
 
-const RESUME_PATCH = String.raw`async function resumeInterruptedSpeech(){
-  const plan=resumePlan;resumePlan=null;if(!plan)return false;
-  falseBargeResumes++;bargeCooldownUntil=Date.now()+650;
-  const nextIndex=Math.min(plan.chunks.length-1,Math.max(0,Number(plan.index)||0)+1);
-  log('新しい発話なし。停止位置の次から読み上げ再開 '+falseBargeResumes+'回目');
-  await speak(plan.text,{startIndex:nextIndex,resumeable:true});return true;
-}`;
+const RESUME_OLD = "async function resumeInterruptedSpeech(){const plan=resumePlan;resumePlan=null;if(!plan)return false;falseBargeResumes++;bargeCooldownUntil=Date.now()+900;log('新しい発話なし。元の読み上げを再開 '+falseBargeResumes+'回目');await speak(plan.text,{startIndex:plan.index,resumeable:true});return true;}";
+const RESUME_NEW = "async function resumeInterruptedSpeech(){const plan=resumePlan;resumePlan=null;if(!plan)return false;falseBargeResumes++;bargeCooldownUntil=Date.now()+650;const nextIndex=Math.min(plan.chunks.length-1,Math.max(0,Number(plan.index)||0)+1);log('新しい発話なし。停止位置の次から読み上げ再開 '+falseBargeResumes+'回目');await speak(plan.text,{startIndex:nextIndex,resumeable:true});return true;}";
 
 let client = TALK_CLIENT_V43
   .replaceAll('talksys-v43-smoke-weather-adaptive-vad', CLIENT_REVISION)
@@ -89,8 +68,11 @@ client = client.replace(
   "const bargeTh=Math.max(0.013,Math.min(0.065,startTh*1.08));const peakTh=Math.max(0.028,bargeTh*1.45);if(age>320&&lv.r>=bargeTh&&lv.p>=peakTh)bargeHits++;else bargeHits=Math.max(0,bargeHits-1);if(bargeHits>=3&&interruptSpeechForBargeIn(lv.r))",
 );
 
-client = client.replace(/function spokenText\(text\)\{[\s\S]*?\n\}\nfunction speechChunks/, SPOKEN_TEXT_VOICE_PATCH+'\nfunction speechChunks');
-client = client.replace(/async function resumeInterruptedSpeech\(\)\{[\s\S]*?\n\}\nfunction processFrame/, RESUME_PATCH+'\nfunction processFrame');
+client = client.replace(
+  "function speechChunks(text){const value=spokenText(text);",
+  VOICE_SAFE_HELPER+"\nfunction speechChunks(text){const value=voiceSafeText(spokenText(text));",
+);
+client = client.replace(RESUME_OLD, RESUME_NEW);
 
 client = client.replace(
   "'use strict';",
@@ -102,7 +84,8 @@ if (!client.includes('previousInteractionId:geminiInteractionId')) throw new Err
 if (!client.includes("planner:'gemini-native'")) throw new Error('Gemini native planner bypass patch did not apply');
 if (!client.includes('bargeHits>=3')) throw new Error('TalkSys relaxed barge-in patch did not apply');
 if (!client.includes('SILENCE_MS=480')) throw new Error('TalkSys faster voice-end patch did not apply');
-if (!client.includes('sentences.slice(0,4)')) throw new Error('TalkSys spoken-text compaction patch did not apply');
+if (!client.includes('voiceSafeText(spokenText(text))') || !client.includes('sentences.slice(0,4)')) throw new Error('TalkSys spoken-text compaction patch did not apply');
+if (!client.includes('停止位置の次から読み上げ再開')) throw new Error('TalkSys false-barge resume patch did not apply');
 
 export const TALK_CLIENT_V45 = client;
 export const __test = {
@@ -117,7 +100,7 @@ export const __test = {
   fasterTurnEnd: client.includes('SILENCE_MS=480'),
   relaxedBargeIn: client.includes('bargeHits>=3') && client.includes('age>320'),
   resumeAfterInterruptedChunk: client.includes('停止位置の次から読み上げ再開'),
-  spokenAnswerCompaction: client.includes('sentences.slice(0,4)'),
+  spokenAnswerCompaction: client.includes('voiceSafeText(spokenText(text))') && client.includes('sentences.slice(0,4)'),
   nativeGeminiInteractions: client.includes('previousInteractionId:geminiInteractionId') && client.includes("planner:'gemini-native'"),
   legacyWebSocket: client.includes('new WebSocket') || client.includes('/agents/'),
 };
