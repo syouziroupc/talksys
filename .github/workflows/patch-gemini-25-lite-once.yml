@@ -51,13 +51,16 @@ jobs:
           replace('tests/v45-shell-regression.test.mjs', "/SILENCE_MS=620/", "/SILENCE_MS=480/", 1)
           replace('tests/v45-shell-regression.test.mjs', "/talksys-v45-http-adaptive-vad/", "/talksys-v46-streaming-vad/", 1)
 
+          replace('tests/deploy-validation-gate.test.mjs', "/generationModel==='gemini-3\\.8-flash'/", "/generationModel==='gemini-2\\.5-flash-lite'/", 1)
+          replace('tests/deploy-validation-gate.test.mjs', "/talksys-v45-http-adaptive-vad/", "/talksys-v46-streaming-vad/", 1)
+
           replace('.github/workflows/deploy.yml', "d.generationModel==='gemini-3.8-flash'", "d.generationModel==='gemini-2.5-flash-lite'", 1)
           replace('.github/workflows/deploy.yml', "d.model!=='gemini-3.8-flash'", "d.model!=='gemini-2.5-flash-lite'", 1)
           replace('.github/workflows/deploy.yml', "grep -F 'talksys-v45-http-adaptive-vad' <<< \"$client\"", "grep -F 'talksys-v46-streaming-vad' <<< \"$client\"", 1)
           PY
 
           git diff --check
-          git diff -- src/entry.js src/talk-client-v45.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs .github/workflows/deploy.yml
+          git diff -- src/entry.js src/talk-client-v45.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs tests/deploy-validation-gate.test.mjs .github/workflows/deploy.yml
 
       - name: Install dependencies
         shell: bash
@@ -81,6 +84,6 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/entry.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs .github/workflows/deploy.yml
+          git add src/entry.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs tests/deploy-validation-gate.test.mjs .github/workflows/deploy.yml
           git commit -m 'Switch TalkSys to Gemini 2.5 Flash-Lite'
           git push origin HEAD:main
