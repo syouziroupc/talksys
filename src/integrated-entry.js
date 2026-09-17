@@ -63,7 +63,7 @@ export function isImmediateTransitQuestion(text = '') {
 
 function immediateTransitInstruction(now = new Date()) {
   const iso = currentJstIso(now);
-  return `これは現在基準の交通案内です。基準時刻は ${iso}。検索結果の時刻表には発車済みの便も含まれるため、候補の発車時刻を必ずこの基準時刻と比較してください。同一日の ${iso.slice(11, 16)} より前に発車する便は候補から捨て、現在時刻以後に実際に乗れる便だけを「次」として答えてください。検索時にも日付と現在時刻を含め、単なる時刻表一覧ではなく現在時刻以後の候補を確認してください。`;
+  return `これは現在基準の交通案内です。基準時刻は ${iso}。検索結果の時刻表には発車済みの便も含まれるため、候補の発車時刻を必ずこの基準時刻と比較してください。同一日の ${iso.slice(11, 16)} より前に発車する便は候補から捨て、現在時刻以後に実際に乗れる便だけを「次」として答えてください。具体的な発車時刻を答えるときは「8時55分発」のように発車時刻だと分かる形で述べてください。検索時にも日付と現在時刻を含め、単なる時刻表一覧ではなく現在時刻以後の候補を確認してください。`;
 }
 
 export function buildTalkSysSystemInstruction(now = new Date(), { forceSearch = false, immediateTransit = false } = {}) {
@@ -332,7 +332,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   const searched = searchedInInteraction(interaction.payload);
   let answer = normalizeSpokenJapanese(interaction.answer);
   if (remainingPastDepartures.length > 0) {
-    answer = '現在時刻より前の発車時刻が検索結果に混ざっていたため、その時刻は案内しません。現在時刻以後の便だけを答える必要がありますが、今回の再検索では安全に確定できませんでした。';
+    answer = '検索結果に発車済みの時刻しか残ったため、その時刻は案内しません。現在時刻より後の便だけを案内します。';
   }
   if (!answer) throw new Error('empty_spoken_answer');
 
