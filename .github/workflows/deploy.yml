@@ -25,6 +25,7 @@ jobs:
       # successful TalkSys deployment workflows. Values remain GitHub secrets.
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
     steps:
       - uses: actions/checkout@v6
@@ -79,11 +80,12 @@ jobs:
             sleep 5
           done
 
-      - name: Verify required Cloudflare credentials
+      - name: Verify required deployment credentials
         shell: bash
         run: |
           set -euo pipefail
           test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${GEMINI_API_KEY:-}"
           if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
             account_id="$(curl --fail-with-body --silent --show-error \
               -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
@@ -111,9 +113,19 @@ jobs:
           npm test
           npx wrangler deploy --dry-run
 
-      - name: Deploy exact validated revision
+      - name: Deploy exact validated revision with Gemini secret
         shell: bash
-        run: npx wrangler deploy
+        run: |
+          set -euo pipefail
+          secrets_file="$(mktemp)"
+          trap 'rm -f "$secrets_file"' EXIT
+          SECRETS_FILE="$secrets_file" node <<'NODE'
+          const fs = require('fs');
+          const key = process.env.GEMINI_API_KEY || '';
+          if (!key) throw new Error('GEMINI_API_KEY is required');
+          fs.writeFileSync(process.env.SECRETS_FILE, JSON.stringify({ GEMINI_API_KEY: key }));
+          NODE
+          npx wrangler deploy --secrets-file "$secrets_file"
 
       - name: Verify current v45 production contract
         shell: bash
@@ -149,7 +161,11 @@ jobs:
             && d.externalFailureUsesCasualModel===false
             && d.modelTimeoutMs===12000
             && d.searchDirectorModel==='@cf/qwen/qwen3-30b-a3b-fp8'
-            && d.searchDefault==='intent-routed-v45';
+            && d.searchDefault==='intent-routed-v45'
+            && d.generationProvider==='gemini'
+            && d.generationModel==='gemini-3.8-flash'
+            && d.geminiConfigured===true
+            && d.legacyGlmExecution===false;
           process.stdout.write(String(Boolean(ok)));
           NODE
             )"
@@ -158,6 +174,14 @@ jobs:
             sleep 3
           done
           echo "$body"
+
+          gemini="$(curl -fsS --max-time 20 "$PRODUCTION_URL/gemini-health")"
+          GEMINI_HEALTH="$gemini" node - <<'NODE'
+          const d=JSON.parse(process.env.GEMINI_HEALTH||'{}');
+          if (!d.ok || !d.configured || d.provider!=='gemini' || d.model!=='gemini-3.8-flash' || d.legacyGlmExecution!==false) {
+            throw new Error(process.env.GEMINI_HEALTH);
+          }
+          NODE
 
       - name: Verify live v45 UI and microphone client
         shell: bash
@@ -190,8 +214,8 @@ jobs:
 
           payload='{"text":"別府市の今日の天気は？","history":[]}'
           out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather'))throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const tools=(d.apiSources||[]).map(x=>x.tool);if(!d.ok||d.route!=='api-first-v45'||!tools.includes('jma_weather')||d.generationProvider!=='gemini')throw new Error(process.env.OUT);"
 
           payload='{"text":"どれがいい？","history":[{"role":"user","content":"大学のレポート用に中古ノートPCを探してる。予算は3万円。"},{"role":"assistant","content":"Officeとブラウザ中心ですね。"}]}'
           out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||a.length<8||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||a.length<8||d.generationProvider!=='gemini'||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
