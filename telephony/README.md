@@ -1,63 +1,86 @@
-# TalkSys Telephony Worker
+# TalkSys 電話ゲートウェイ
 
-TalkSys の電話接続を、既存ブラウザ版とは別 Worker として実装します。
+この `telephony/` は、Telnyx の着信を既存 TalkSys へ渡すための一時的なゲートウェイです。
+
+**回答生成AIはここに持ちません。** 電話音声を既存 TalkSys の `/api/transcribe` と `/api/turn` に接続し、TalkSys 本体が現在使用している回答モデル・検索・grounding・truth gate をそのまま利用します。
+
+将来、電話経路を TalkSys 本体へ統合した時点で、この Worker は削除する前提です。
 
 ## 分離ルール
 
-電話開発は `telephony/` 配下だけで進めます。既存 production の `src/`、`/api/turn`、検索・grounding、回答品質改善、ブラウザ UI は変更しません。電話 Worker のデプロイも既存 TalkSys Worker とは別です。
+電話開発は `telephony/` 配下だけで進めます。既存 production の `src/`、`/api/turn`、検索・grounding、回答品質改善、ブラウザ UI は変更しません。
 
-## 現在の範囲
-
-- `/phone` — 電話管理画面
-- `/telephony-health` — 電話 Worker 状態
-- `/telnyx/voice` — Telnyx TeXML instruction webhook
-- `/telnyx/media` — Telnyx media WebSocket ⇄ Gemini Live
-- `/telnyx/stream-status` — Stream status callback
-- 通話本文・録音・顧客情報の永続保存は未使用
-
-## 音声経路
+## 現在の経路
 
 ```text
-Telnyx inbound call
+050番号 / Telnyx
   -> TeXML <Connect><Stream>
-  -> PCMU 8 kHz WebSocket
-  -> TalkSys Telephony Worker
-  -> PCM16 16 kHz -> Gemini Live
-  -> Gemini PCM16 24 kHz
-  -> 8 kHz downsample + PCMU
-  -> Telnyx WebSocket
-  -> caller
+  -> PCMU 8kHz WebSocket
+  -> TalkSys Telephony Gateway
+  -> 簡易VADで発話単位に分割
+  -> PCM16 WAVへ変換
+  -> 既存TalkSys /api/transcribe
+  -> 既存TalkSys /api/turn
+  -> Gemini 3.5 Flash-Lite + 既存検索/grounding
 ```
 
-TeXML は `track="inbound_track"`、`bidirectionalMode="rtp"`、`bidirectionalCodec="PCMU"`、`bidirectionalSamplingRate="8000"` を使用します。
+電話 Worker から Gemini Live や別の回答モデルへ直接接続しません。
+
+## 管理画面
+
+`/phone` で以下を表示します。
+
+- 発信者番号
+- 着信番号
+- 通話状態
+- 開始時刻
+- 会話内容（発信者 / TalkSys）
+
+管理データは新規DBを作らず、既存の `talksys-conversation-logs` D1 に `phone_calls` / `phone_messages` テーブルだけ追加して利用します。録音はしません。
+
+管理画面の会話内容APIは Bearer token 必須です。`TELEPHONY_ADMIN_TOKEN` が未設定なら `TELEPHONY_SHARED_TOKEN` を代用します。
 
 ## 複数同時通話
 
-共有セッションは作りません。Telnyx の Media WebSocket 1本につき Gemini Live セッションを1本作るため、複数着信は独立した Worker リクエストとして並行処理されます。電話接続だけのために Durable Objects、D1、R2 は追加しません。
+1通話ごとに独立した Telnyx Media WebSocket を処理します。会話履歴も各接続内で独立しています。
 
-Telnyx 側の Inbound Channel Limit は当面設定せず、固定 Channel Billing も有効化しません。必要性が出るまでは従量課金のまま運用します。
+Durable Objects、R2、新規DB、別AI契約は追加しません。
 
-## コストガード
+## 現時点の未完了
 
-- Gemini の input/output transcription は初期 OFF
-- 録音 OFF
-- D1/R2 保存 OFF
-- 1通話のセッション上限は初期 30 分
-- Gemini Live の context window compression を有効化
-- Gemini Live の session resumption を有効化
+TalkSys のテキスト回答までは接続済みですが、**TalkSys回答テキストを電話回線へ音声として返すTTS/音声変換アダプタは未接続**です。
 
-`TELEPHONY_TRANSCRIPTION=true` を明示した場合だけ文字起こしを有効化します。
+ここは回答モデルとは別の電話輸送層として実装します。高価な Gemini Live に逃がさず、日本語TTSを最小コストでPCMUへ返せる方式を選定します。
+
+## コスト方針
+
+- 回答生成: 既存 TalkSys の Gemini 3.5 Flash-Lite
+- STT: 既存 TalkSys の Whisper Large V3 Turbo
+- Gemini Live: 不使用
+- 録音: OFF
+- R2: 不使用
+- 新規 D1: 不使用
+- 通話ログ: 既存 D1 のみ
+- 1通話上限: 初期30分
 
 ## Secrets
 
-ソースには秘密情報を保存しません。この Worker にだけ次を登録します。
+ソースには秘密情報を保存しません。
 
-```bash
-npx wrangler secret put GEMINI_API_KEY -c telephony/wrangler.jsonc
-npx wrangler secret put TELEPHONY_SHARED_TOKEN -c telephony/wrangler.jsonc
-```
+- `TELEPHONY_SHARED_TOKEN`: Telnyx webhook / media の暫定保護
+- `TELEPHONY_ADMIN_TOKEN`: 管理画面API用。省略時は shared token を利用
 
-`TELEPHONY_SHARED_TOKEN` は接続初期段階の webhook / media URL 保護用です。番号を本番運用する前に Telnyx webhook 署名検証を追加します。
+番号を本番運用する前に Telnyx webhook 署名検証へ移行します。
+
+## 主なエンドポイント
+
+- `/phone` — 日本語電話管理画面
+- `/telephony-health` — ゲートウェイ状態
+- `/api/calls` — 着信一覧（要管理トークン）
+- `/api/calls/:id/messages` — 会話内容（要管理トークン）
+- `/telnyx/voice` — TeXML instruction webhook
+- `/telnyx/media` — Telnyx media WebSocket
+- `/telnyx/stream-status` — Stream status callback
 
 ## テスト
 
@@ -66,27 +89,4 @@ node --test telephony/test.mjs
 npx wrangler deploy --dry-run -c telephony/wrangler.jsonc
 ```
 
-テスト対象には PCMU codec、TeXML、Gemini Live setup、transcription opt-in、session resumption が含まれます。
-
-## 開発とデプロイ
-
-```bash
-npx wrangler dev -c telephony/wrangler.jsonc
-npx wrangler deploy -c telephony/wrangler.jsonc
-```
-
-初期状態は `TELEPHONY_ENABLED=false` です。管理画面と health の確認後に有効化します。既存 TalkSys の production deploy workflow は使用しません。
-
-## Telnyx Webhook
-
-Worker 公開後、TeXML Application の webhook を次へ変更します。
-
-```text
-https://<talksys-telephony-worker>/telnyx/voice?token=<TELEPHONY_SHARED_TOKEN>
-```
-
-050 番号が Active になるまでは番号を Application へ割り当てません。
-
-## 保存
-
-接続安定後に必要なら追加します。基本方針は D1 を索引、R2 を長文・音声向けとしますが、当面はどちらも使いません。
+初期状態は `TELEPHONY_ENABLED=false` です。050番号が Active になるまでは番号を割り当てません。
