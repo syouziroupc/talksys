@@ -1,1 +1,1 @@
-gemini-2-5-flash-lite-voice-v46-marker-fix 2026-09-17
+gemini-3-5-flash-lite-v52-production 2026-09-17
