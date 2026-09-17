@@ -84,6 +84,6 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/entry.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs tests/deploy-validation-gate.test.mjs .github/workflows/deploy.yml
+          git add src/entry.js tests/gemini-api-cutover-v47.test.mjs tests/v45-shell-regression.test.mjs tests/deploy-validation-gate.test.mjs
           git commit -m 'Switch TalkSys to Gemini 2.5 Flash-Lite'
           git push origin HEAD:main
