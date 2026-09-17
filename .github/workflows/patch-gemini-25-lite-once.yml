@@ -1,4 +1,5 @@
 name: Migrate TalkSys to Gemini 3.5 Flash-Lite once
+# Production deploy contract is already aligned to Gemini 3.5 before this migration run.
 
 on:
   push:
