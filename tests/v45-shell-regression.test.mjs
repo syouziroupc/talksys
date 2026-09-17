@@ -46,12 +46,16 @@ test('voice interaction is slightly faster without changing the proven transport
   assert.match(TALK_CLIENT_V45, /SILENCE_MS=480/);
 });
 
-test('v45 UI contains current controls and an honest Foonz status', () => {
-  assert.equal(UI_REVISION, 'talksys-v45-ui-restored-20260911');
-  for (const id of ['chat','status','mic','form','input','diag','log','tts-test','phone-provider']) assert.match(TALK_HTML_V45, new RegExp(`id=["']${id}["']`));
+test('current UI keeps controls, two-column debug console, runtime status and honest Foonz state', () => {
+  assert.equal(UI_REVISION, 'talksys-v54-ui-two-column-20260917');
+  for (const id of ['chat','status','mic','form','input','diag','log','tts-test','phone-provider','debug-pane','runtime-revision','model-name']) assert.match(TALK_HTML_V45, new RegExp(`id=["']${id}["']`));
+  assert.match(TALK_HTML_V45, /grid-template-columns:minmax\(0,1\.45fr\) minmax\(380px,\.75fr\)/);
+  assert.match(TALK_HTML_V45, /\/gemini-health/);
+  assert.match(TALK_HTML_V45, /responseQualityRevision/);
   assert.match(TALK_HTML_V45, /\/talk-v45\.js/);
   assert.match(TALK_HTML_V45, /Foonz/);
-  assert.match(TALK_HTML_V45, /電話網連携準備中/);
+  assert.match(TALK_HTML_V45, /電話網連携確認中/);
+  assert.match(TALK_HTML_V45, /talksys-v45-ui-restored-20260911/);
   assert.doesNotMatch(TALK_HTML_V45, /realtime-voice\.js|voice-fallback\.js|\/agents\//);
 });
 
