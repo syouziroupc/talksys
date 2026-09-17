@@ -25,6 +25,7 @@ export const TALK_HTML_V45 = `<!doctype html>
   </style>
 </head>
 <body>
+<!-- deployment compatibility marker: talksys-v45-ui-restored-20260911 -->
 <main class="app">
   <header class="top">
     <div><div class="brand">TalkSys</div><div class="mode">電話相談・音声実証 / evidence-first</div></div>
