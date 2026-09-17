@@ -1,18 +1,9 @@
-import { bytesToBase64, pcm16Base64ToPcmu8k, pcmuBase64ToPcm16kBase64 } from './codec.js';
-import {
-  DEFAULT_GEMINI_MODEL,
-  GEMINI_LIVE_ENDPOINT,
-  buildGeminiSetup,
-  buildTexml,
-  clampInt,
-  clean,
-  flag,
-  xmlEscape,
-} from './protocol.js';
+import { pcmuBase64ToSamples, rmsOfSamples, samplesToWav } from './codec.js';
+import { buildTexml, clampInt, clean, flag, xmlEscape } from './protocol.js';
 
-export const TELEPHONY_REVISION = 'talksys-telephony-v0.2-concurrent-cost-guard';
-const PCM_U_SILENCE = 0xff;
-const TELNYX_MIN_AUDIO_BYTES = 160;
+export const TELEPHONY_REVISION = 'talksys-telephony-v0.3-talksys-gateway';
+const FRAME_MS = 20;
+let schemaPromise;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -29,8 +20,9 @@ function sharedToken(env) {
   return typeof env?.TELEPHONY_SHARED_TOKEN === 'string' ? env.TELEPHONY_SHARED_TOKEN.trim() : '';
 }
 
-function geminiKey(env) {
-  return typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
+function adminToken(env) {
+  const dedicated = typeof env?.TELEPHONY_ADMIN_TOKEN === 'string' ? env.TELEPHONY_ADMIN_TOKEN.trim() : '';
+  return dedicated || sharedToken(env);
 }
 
 function tokenAuthorized(request, env) {
@@ -38,6 +30,18 @@ function tokenAuthorized(request, env) {
   if (!expected) return false;
   const supplied = new URL(request.url).searchParams.get('token') || '';
   return supplied.length === expected.length && supplied === expected;
+}
+
+function adminAuthorized(request, env) {
+  const expected = adminToken(env);
+  if (!expected) return false;
+  const header = request.headers.get('authorization') || '';
+  const supplied = header.replace(/^Bearer\s+/i, '');
+  return supplied.length === expected.length && supplied === expected;
+}
+
+function talksysBase(env) {
+  return String(env?.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/+$/, '');
 }
 
 function publicBaseUrl(request) {
@@ -58,16 +62,6 @@ async function requestParams(request) {
   return out;
 }
 
-function safeSend(socket, payload) {
-  if (socket && socket.readyState === 1) socket.send(typeof payload === 'string' ? payload : JSON.stringify(payload));
-}
-
-function closeSocket(socket, code = 1000, reason = 'closed') {
-  try {
-    if (socket && (socket.readyState === 0 || socket.readyState === 1)) socket.close(code, reason.slice(0, 120));
-  } catch {}
-}
-
 async function messageText(data) {
   if (typeof data === 'string') return data;
   if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
@@ -76,246 +70,321 @@ async function messageText(data) {
   return String(data ?? '');
 }
 
-function dashboardHtml(request, env) {
+function closeSocket(socket, code = 1000, reason = 'closed') {
+  try {
+    if (socket && (socket.readyState === 0 || socket.readyState === 1)) socket.close(code, reason.slice(0, 120));
+  } catch {}
+}
+
+async function ensureSchema(env) {
+  if (!env?.TALKSYS_LOG_DB) return false;
+  if (!schemaPromise) {
+    schemaPromise = (async () => {
+      await env.TALKSYS_LOG_DB.prepare(`CREATE TABLE IF NOT EXISTS phone_calls (
+        call_id TEXT PRIMARY KEY,
+        from_number TEXT,
+        to_number TEXT,
+        status TEXT NOT NULL DEFAULT 'starting',
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        ended_at TEXT,
+        last_user_text TEXT,
+        last_assistant_text TEXT,
+        message_count INTEGER NOT NULL DEFAULT 0
+      )`).run();
+      await env.TALKSYS_LOG_DB.prepare(`CREATE TABLE IF NOT EXISTS phone_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        call_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )`).run();
+      await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_phone_messages_call ON phone_messages(call_id, id)').run();
+      await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_phone_calls_updated ON phone_calls(updated_at DESC)').run();
+      return true;
+    })().catch((error) => {
+      schemaPromise = undefined;
+      console.error('telephony_schema_error', error);
+      return false;
+    });
+  }
+  return schemaPromise;
+}
+
+async function upsertCall(env, { callId, from = '', to = '', status = 'starting' }) {
+  if (!callId || !(await ensureSchema(env))) return;
+  const now = new Date().toISOString();
+  await env.TALKSYS_LOG_DB.prepare(`INSERT INTO phone_calls
+    (call_id, from_number, to_number, status, started_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(call_id) DO UPDATE SET
+      from_number=CASE WHEN excluded.from_number<>'' THEN excluded.from_number ELSE phone_calls.from_number END,
+      to_number=CASE WHEN excluded.to_number<>'' THEN excluded.to_number ELSE phone_calls.to_number END,
+      status=excluded.status,
+      updated_at=excluded.updated_at`).bind(callId, from, to, status, now, now).run();
+}
+
+async function setCallStatus(env, callId, status) {
+  if (!callId || !(await ensureSchema(env))) return;
+  const now = new Date().toISOString();
+  const ended = status === 'ended' || status === 'error' ? now : null;
+  await env.TALKSYS_LOG_DB.prepare('UPDATE phone_calls SET status=?, updated_at=?, ended_at=COALESCE(?, ended_at) WHERE call_id=?')
+    .bind(status, now, ended, callId).run();
+}
+
+async function appendMessage(env, callId, role, content) {
+  const text = clean(content, 12000);
+  if (!callId || !text || !(await ensureSchema(env))) return;
+  const now = new Date().toISOString();
+  await env.TALKSYS_LOG_DB.batch([
+    env.TALKSYS_LOG_DB.prepare('INSERT INTO phone_messages (call_id, role, content, created_at) VALUES (?, ?, ?, ?)').bind(callId, role, text, now),
+    env.TALKSYS_LOG_DB.prepare(`UPDATE phone_calls SET
+      updated_at=?, message_count=message_count+1,
+      last_user_text=CASE WHEN ?='user' THEN ? ELSE last_user_text END,
+      last_assistant_text=CASE WHEN ?='assistant' THEN ? ELSE last_assistant_text END
+      WHERE call_id=?`).bind(now, role, text, role, text, callId),
+  ]);
+}
+
+function customParameters(start = {}) {
+  const raw = start.custom_parameters || start.customParameters || start.parameters || {};
+  if (Array.isArray(raw)) {
+    const out = {};
+    for (const item of raw) if (item?.name) out[item.name] = item.value || '';
+    return out;
+  }
+  return raw && typeof raw === 'object' ? raw : {};
+}
+
+async function callTalkSys(env, path, init = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort('talksys_timeout'), clampInt(env?.TALKSYS_REQUEST_TIMEOUT_MS, 45000, 5000, 90000));
+  try {
+    return await fetch(`${talksysBase(env)}${path}`, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function transcribeWithTalkSys(env, samples) {
+  const wav = samplesToWav(samples, 8000);
+  const response = await callTalkSys(env, '/api/transcribe', {
+    method: 'POST',
+    headers: { 'content-type': 'audio/wav', 'x-talksys-source': 'telnyx' },
+    body: wav,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok !== true || !payload?.text) return { ok: false, error: payload?.error || `stt_${response.status}` };
+  return { ok: true, text: clean(payload.text, 1800), meta: payload };
+}
+
+async function answerWithTalkSys(env, text, history) {
+  const response = await callTalkSys(env, '/api/turn', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-talksys-source': 'telnyx' },
+    body: JSON.stringify({ text, history: history.slice(-16), channel: 'phone' }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  const answer = clean(payload?.answer || payload?.response || payload?.text || '', 9000);
+  if (!response.ok || !answer) return { ok: false, error: payload?.error || `turn_${response.status}` };
+  return { ok: true, answer, payload };
+}
+
+function dashboardHtml(request) {
   const base = publicBaseUrl(request);
-  const model = clean(env?.GEMINI_LIVE_MODEL || DEFAULT_GEMINI_MODEL, 100);
-  const browserUrl = clean(env?.BROWSER_TALKSYS_URL || 'https://talksys.syouziroupc.workers.dev', 500);
-  const maxMinutes = clampInt(env?.TELEPHONY_SESSION_MAX_MINUTES, 30, 5, 180);
-  const transcription = flag(env?.TELEPHONY_TRANSCRIPTION, false);
-  return `<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TalkSys Phone</title><style>
-:root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0e14;color:#f3f6fb}body{margin:0;background:#0b0e14}.wrap{max-width:980px;margin:auto;padding:32px 20px 56px}h1{font-size:28px;margin:0 0 6px}.sub{color:#9ca9ba;margin:0 0 24px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.card{border:1px solid #293243;background:#121722;border-radius:14px;padding:18px}.label{font-size:12px;color:#8f9bad;text-transform:uppercase;letter-spacing:.08em}.value{font-size:18px;font-weight:650;margin-top:8px;word-break:break-word}.ok{color:#80d59b}.warn{color:#ffcc74}.muted{color:#a8b2c1}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.wide{grid-column:1/-1}.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}a.btn{color:#f3f6fb;text-decoration:none;border:1px solid #3a465c;border-radius:9px;padding:9px 13px}.small{font-size:12px;color:#8490a2;margin-top:12px}
-</style></head><body><main class="wrap">
-<h1>TalkSys Phone</h1><p class="sub">電話経路は既存TalkSysから分離。1通話=1独立WebSocket/Gemini Liveセッション。</p>
-<section class="grid">
-<div class="card"><div class="label">Telephony</div><div id="enabled" class="value">確認中</div></div>
-<div class="card"><div class="label">Gemini Live</div><div id="gemini" class="value">確認中</div></div>
-<div class="card"><div class="label">Concurrent calls</div><div class="value ok">supported</div></div>
-<div class="card"><div class="label">Max session</div><div class="value">${maxMinutes} min</div></div>
-<div class="card"><div class="label">Transcription</div><div class="value ${transcription ? 'warn' : 'ok'}">${transcription ? 'ON' : 'OFF'}</div></div>
-<div class="card"><div class="label">Storage</div><div id="storage" class="value muted">disabled</div></div>
-<div class="card"><div class="label">Model</div><div class="value">${xmlEscape(model)}</div></div>
-<div class="card wide"><div class="label">TeXML webhook</div><div class="value"><code>${xmlEscape(base)}/telnyx/voice?token=&lt;secret&gt;</code></div></div>
-<div class="card wide"><div class="label">Cost policy</div><div class="value muted">録音・文字起こし・D1/R2保存は初期OFF。Telnyxは従量課金を維持し、固定Channel課金は必要になるまで使わない。</div></div>
-</section>
-<div class="row"><a class="btn" href="${xmlEscape(browserUrl)}">既存TalkSys</a><a class="btn" href="${xmlEscape(base)}/telephony-health">Health JSON</a></div>
-<p class="small">revision: ${TELEPHONY_REVISION}</p></main>
-<script>async function refresh(){try{const r=await fetch('/telephony-health',{cache:'no-store'});const h=await r.json();const e=document.getElementById('enabled');const g=document.getElementById('gemini');e.textContent=h.enabled?'enabled':'disabled';e.className='value '+(h.enabled?'ok':'warn');g.textContent=h.geminiConfigured?'configured':'not configured';g.className='value '+(h.geminiConfigured?'ok':'warn');document.getElementById('storage').textContent=h.storageMode||'disabled'}catch{}}refresh();setInterval(refresh,10000);</script>
-</body></html>`;
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TalkSys 電話管理</title><style>
+  :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0e14;color:#f3f6fb}body{margin:0}.wrap{max-width:1100px;margin:auto;padding:28px 18px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.sub,.muted{color:#98a5b7}.panel{border:1px solid #293243;background:#121722;border-radius:14px;padding:16px;margin-top:16px}.grid{display:grid;grid-template-columns:minmax(310px,.9fr) minmax(360px,1.4fr);gap:14px}@media(max-width:800px){.grid{grid-template-columns:1fr}}button,input{font:inherit}button{background:#202a3a;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:8px 12px;cursor:pointer}input{background:#0b0e14;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px;width:min(380px,75vw)}.call{padding:12px;border-bottom:1px solid #283245;cursor:pointer}.call:hover{background:#171e2b}.num{font-weight:700}.meta{font-size:12px;color:#91a0b5;margin-top:4px}.msg{margin:10px 0;padding:10px 12px;border-radius:10px;white-space:pre-wrap}.user{background:#1b2b3a}.assistant{background:#25213a}.role{font-size:11px;color:#9ca8ba;margin-bottom:5px}.status{font-size:13px}.warn{color:#ffca72}.ok{color:#7dd69a}code{font-size:12px}.hidden{display:none}
+  </style></head><body><main class="wrap"><div class="top"><div><h1>TalkSys 電話管理</h1><div class="sub">Telnyxの着信を既存TalkSysへ接続する一時ゲートウェイ</div></div><div><a href="${xmlEscape(base)}/telephony-health" style="color:#a8c7ff">状態JSON</a></div></div>
+  <section id="login" class="panel"><b>管理トークン</b><p class="muted">通話番号と会話内容を表示するため認証が必要です。</p><input id="token" type="password" autocomplete="current-password"><button id="loginBtn">表示</button><div id="loginErr" class="warn"></div></section>
+  <section id="app" class="hidden"><div class="panel"><div id="health">状態確認中...</div></div><div class="grid"><div class="panel"><h2>着信一覧</h2><div id="calls"></div></div><div class="panel"><h2 id="conversationTitle">会話内容</h2><div id="messages" class="muted">左の着信を選択してください。</div></div></div></section>
+  </main><script>
+  let adminToken=sessionStorage.getItem('talksysPhoneToken')||'';let selected='';
+  const auth=()=>({'authorization':'Bearer '+adminToken});
+  async function api(path){const r=await fetch(path,{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');return r.json()}
+  async function refreshHealth(){const h=await fetch('/telephony-health',{cache:'no-store'}).then(r=>r.json());document.getElementById('health').innerHTML='電話受付: <b class="'+(h.enabled?'ok':'warn')+'">'+(h.enabled?'有効':'無効')+'</b> / TalkSys接続先: <code>'+h.talksysBase+'</code> / 回答モデル: <b>'+h.answerEngine+'</b> / 保存: <b>'+h.storageMode+'</b>'}
+  async function refreshCalls(){const d=await api('/api/calls');const root=document.getElementById('calls');root.innerHTML=d.calls.length?d.calls.map(c=>'<div class="call" data-id="'+esc(c.call_id)+'"><div class="num">'+esc(c.from_number||'番号不明')+' → '+esc(c.to_number||'着信番号不明')+'</div><div class="meta">'+esc(c.status)+' / '+esc(c.started_at)+' / '+c.message_count+'件</div><div class="meta">'+esc(c.last_user_text||c.last_assistant_text||'会話待ち')+'</div></div>').join(''):'<div class="muted">まだ着信はありません。</div>';root.querySelectorAll('.call').forEach(x=>x.onclick=()=>loadMessages(x.dataset.id));}
+  async function loadMessages(id){selected=id;const d=await api('/api/calls/'+encodeURIComponent(id)+'/messages');document.getElementById('conversationTitle').textContent=(d.call?.from_number||'番号不明')+' の会話';document.getElementById('messages').innerHTML=d.messages.length?d.messages.map(m=>'<div class="msg '+m.role+'"><div class="role">'+(m.role==='user'?'発信者':'TalkSys')+' / '+esc(m.created_at)+'</div>'+esc(m.content)+'</div>').join(''):'<div class="muted">会話はまだありません。</div>'}
+  function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+  async function start(){try{await api('/api/calls');document.getElementById('login').classList.add('hidden');document.getElementById('app').classList.remove('hidden');await refreshHealth();await refreshCalls();setInterval(async()=>{try{await refreshCalls();if(selected)await loadMessages(selected)}catch{}},3000)}catch(e){document.getElementById('loginErr').textContent=e.message}}
+  document.getElementById('loginBtn').onclick=()=>{adminToken=document.getElementById('token').value;sessionStorage.setItem('talksysPhoneToken',adminToken);start()};if(adminToken)start();
+  </script></body></html>`;
 }
 
 function health(request, env) {
-  const sessionMaxMinutes = clampInt(env?.TELEPHONY_SESSION_MAX_MINUTES, 30, 5, 180);
   return json({
     ok: true,
     revision: TELEPHONY_REVISION,
-    isolatedFromBrowserRuntime: true,
+    role: 'temporary-telnyx-to-talksys-gateway',
+    future: 'merge-into-main-talksys-and-remove-this-worker',
     enabled: enabled(env),
     tokenConfigured: Boolean(sharedToken(env)),
-    geminiConfigured: Boolean(geminiKey(env)),
-    geminiModel: env?.GEMINI_LIVE_MODEL || DEFAULT_GEMINI_MODEL,
-    transcription: flag(env?.TELEPHONY_TRANSCRIPTION, false),
-    contextCompression: true,
-    sessionResumption: true,
-    sessionMaxMinutes,
-    concurrency: {
-      mode: 'independent-session-per-call',
-      applicationLimit: null,
-      note: 'No shared in-memory state is required; each Telnyx WebSocket gets its own Gemini Live session.',
-    },
-    storageMode: env?.TELEPHONY_STORAGE_MODE || 'disabled',
-    readyForMedia: enabled(env) && Boolean(sharedToken(env)) && Boolean(geminiKey(env)),
-    routes: { management: '/phone', health: '/telephony-health', voice: '/telnyx/voice', media: '/telnyx/media', streamStatus: '/telnyx/stream-status' },
+    adminTokenConfigured: Boolean(adminToken(env)),
+    talksysBase: talksysBase(env),
+    answerEngine: '既存TalkSys / Gemini 3.5 Flash-Lite',
+    directGeminiLive: false,
+    directAnswerModel: false,
+    storageMode: env?.TALKSYS_LOG_DB ? '既存TalkSys D1（通話一覧・会話表示のみ）' : 'disabled',
+    recording: false,
+    concurrency: '1通話=1独立WebSocket。回答処理は既存TalkSysへ委譲。',
+    outputAudioStatus: 'pending-tts-transport-adapter',
+    routes: { management: '/phone', health: '/telephony-health', voice: '/telnyx/voice', media: '/telnyx/media' },
     origin: publicBaseUrl(request),
   });
+}
+
+async function listCalls(request, env) {
+  if (!adminAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+  if (!(await ensureSchema(env))) return json({ ok: false, error: 'storage unavailable' }, 503);
+  const result = await env.TALKSYS_LOG_DB.prepare('SELECT * FROM phone_calls ORDER BY updated_at DESC LIMIT 100').all();
+  return json({ ok: true, calls: result.results || [] });
+}
+
+async function callMessages(request, env, callId) {
+  if (!adminAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+  if (!(await ensureSchema(env))) return json({ ok: false, error: 'storage unavailable' }, 503);
+  const call = await env.TALKSYS_LOG_DB.prepare('SELECT * FROM phone_calls WHERE call_id=?').bind(callId).first();
+  const messages = await env.TALKSYS_LOG_DB.prepare('SELECT role, content, created_at FROM phone_messages WHERE call_id=? ORDER BY id ASC LIMIT 500').bind(callId).all();
+  return json({ ok: true, call, messages: messages.results || [] });
 }
 
 async function texmlResponse(request, env) {
   if (!enabled(env)) return new Response('telephony_disabled', { status: 503 });
   if (!sharedToken(env)) return new Response('telephony_shared_token_missing', { status: 503 });
-  if (!geminiKey(env)) return new Response('gemini_api_key_missing', { status: 503 });
   if (!tokenAuthorized(request, env)) return new Response('unauthorized', { status: 401 });
-
   const params = await requestParams(request);
-  const callSid = clean(params.get('CallSid') || params.get('call_sid') || '', 200);
+  const callId = clean(params.get('CallSid') || params.get('call_sid') || crypto.randomUUID(), 200);
   const from = clean(params.get('From') || params.get('from') || '', 80);
   const to = clean(params.get('To') || params.get('to') || '', 80);
+  await upsertCall(env, { callId, from, to, status: 'connecting' });
   const url = new URL(request.url);
-  const xml = buildTexml({ host: url.host, protocol: url.protocol, token: sharedToken(env), callSid, from, to });
+  const xml = buildTexml({ host: url.host, protocol: url.protocol, token: sharedToken(env), callSid: callId, from, to });
   return new Response(xml, { status: 200, headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'no-store' } });
 }
 
 async function streamStatus(request, env) {
   if (!tokenAuthorized(request, env)) return new Response('unauthorized', { status: 401 });
-  let event = 'unknown';
-  let callSid = '';
-  try {
-    const params = await requestParams(request);
-    event = clean(params.get('StreamEvent') || params.get('Event') || params.get('event') || 'unknown', 80);
-    callSid = clean(params.get('CallSid') || '', 100);
-  } catch {}
-  console.log(JSON.stringify({ type: 'telnyx_stream_status', event, callSid: callSid ? 'present' : 'missing', revision: TELEPHONY_REVISION }));
+  const params = await requestParams(request).catch(() => new URLSearchParams());
+  const event = clean(params.get('StreamEvent') || params.get('Event') || params.get('event') || 'unknown', 80);
+  const callId = clean(params.get('CallSid') || params.get('call_sid') || '', 200);
+  if (callId && /stop|disconnect|end|fail|error/i.test(event)) await setCallStatus(env, callId, /fail|error/i.test(event) ? 'error' : 'ended');
+  console.log(JSON.stringify({ type: 'telnyx_stream_status', event, callId: callId ? 'present' : 'missing', revision: TELEPHONY_REVISION }));
   return new Response(null, { status: 204 });
 }
 
 function mediaBridge(request, env) {
   if (!enabled(env)) return new Response('telephony_disabled', { status: 503 });
   if (!tokenAuthorized(request, env)) return new Response('unauthorized', { status: 401 });
-  const key = geminiKey(env);
-  if (!key) return new Response('gemini_api_key_missing', { status: 503 });
   if ((request.headers.get('upgrade') || '').toLowerCase() !== 'websocket') return new Response('Expected Upgrade: websocket', { status: 426 });
 
   const pair = new WebSocketPair();
   const [client, telnyx] = Object.values(pair);
   telnyx.accept();
 
-  const liveUrl = `${GEMINI_LIVE_ENDPOINT}?key=${encodeURIComponent(key)}`;
-  const maxSessionMs = clampInt(env?.TELEPHONY_SESSION_MAX_MINUTES, 30, 5, 180) * 60_000;
-  let gemini = null;
-  let geminiReady = false;
-  let closing = false;
-  let reconnecting = false;
-  let resumeHandle = '';
-  let inputQueue = [];
-  let outputQueue = [];
-  let downsampleCarry = [];
-  let streamId = '';
-  const startedAt = Date.now();
-  let deadline;
+  const speechThreshold = Number(env?.TELEPHONY_VAD_RMS || 0.008);
+  const silenceMs = clampInt(env?.TELEPHONY_END_SILENCE_MS, 700, 300, 2000);
+  const minSpeechMs = clampInt(env?.TELEPHONY_MIN_SPEECH_MS, 320, 200, 2000);
+  const maxUtteranceMs = clampInt(env?.TELEPHONY_MAX_UTTERANCE_MS, 15000, 3000, 30000);
+  const sessionMaxMs = clampInt(env?.TELEPHONY_SESSION_MAX_MINUTES, 30, 5, 180) * 60000;
+  const history = [];
+  let callId = '';
+  let from = '';
+  let to = '';
+  let speechActive = false;
+  let silentFor = 0;
+  let speechFrames = [];
+  let preRoll = [];
+  let processing = Promise.resolve();
+  let closed = false;
 
-  const closeBoth = (reason = 'bridge_closed') => {
-    if (closing) return;
-    closing = true;
-    if (deadline) clearTimeout(deadline);
-    closeSocket(gemini, 1000, reason);
-    closeSocket(telnyx, 1000, reason);
-    console.log(JSON.stringify({ type: 'phone_session_closed', reason, durationMs: Date.now() - startedAt, revision: TELEPHONY_REVISION }));
-  };
-
-  deadline = setTimeout(() => closeBoth('session_cost_guard'), maxSessionMs);
-
-  const sendCallerAudio = (payload) => {
-    if (!geminiReady || !gemini || gemini.readyState !== 1) {
-      if (inputQueue.length < 75) inputQueue.push(payload);
-      return;
-    }
-    safeSend(gemini, { realtimeInput: { audio: { data: pcmuBase64ToPcm16kBase64(payload), mimeType: 'audio/pcm;rate=16000' } } });
-  };
-
-  const flushInput = () => {
-    const queued = inputQueue;
-    inputQueue = [];
-    for (const payload of queued) sendCallerAudio(payload);
-  };
-
-  const sendTelnyxChunk = (bytes) => safeSend(telnyx, { event: 'media', media: { payload: bytesToBase64(bytes) } });
-
-  const flushOutput = (force = false) => {
-    while (outputQueue.length >= TELNYX_MIN_AUDIO_BYTES) sendTelnyxChunk(Uint8Array.from(outputQueue.splice(0, TELNYX_MIN_AUDIO_BYTES)));
-    if (force && outputQueue.length) {
-      const padded = new Uint8Array(TELNYX_MIN_AUDIO_BYTES);
-      padded.fill(PCM_U_SILENCE);
-      padded.set(outputQueue.splice(0, outputQueue.length), 0);
-      sendTelnyxChunk(padded);
-    }
-  };
-
-  const connectGemini = (handle = '') => {
-    if (closing) return;
-    geminiReady = false;
-    reconnecting = Boolean(handle);
-    const socket = new WebSocket(liveUrl);
-    gemini = socket;
-
-    socket.addEventListener('open', () => safeSend(socket, buildGeminiSetup(env, handle)));
-    socket.addEventListener('message', async (event) => {
-      let message;
-      try { message = JSON.parse(await messageText(event.data)); } catch { return; }
-      if (message?.sessionResumptionUpdate?.resumable && message.sessionResumptionUpdate.newHandle) resumeHandle = message.sessionResumptionUpdate.newHandle;
-      if (message?.goAway) {
-        console.log(JSON.stringify({ type: 'gemini_goaway', resumable: Boolean(resumeHandle), revision: TELEPHONY_REVISION }));
-        if (resumeHandle && !closing) {
-          reconnecting = true;
-          closeSocket(socket, 1000, 'resume');
+  const finishUtterance = () => {
+    if (!speechActive || !speechFrames.length) return;
+    const frames = speechFrames;
+    speechActive = false;
+    silentFor = 0;
+    speechFrames = [];
+    preRoll = [];
+    const samples = Int16Array.from(frames.flatMap(frame => Array.from(frame)));
+    const durationMs = samples.length / 8;
+    if (durationMs < minSpeechMs) return;
+    processing = processing.then(async () => {
+      try {
+        const stt = await transcribeWithTalkSys(env, samples);
+        if (!stt.ok || !stt.text) return;
+        await appendMessage(env, callId, 'user', stt.text);
+        const prior = history.slice(-16);
+        const turn = await answerWithTalkSys(env, stt.text, prior);
+        history.push({ role: 'user', content: stt.text });
+        if (!turn.ok) {
+          await appendMessage(env, callId, 'assistant', `［TalkSys応答エラー: ${clean(turn.error, 200)}］`);
+          return;
         }
-        return;
+        history.push({ role: 'assistant', content: turn.answer });
+        await appendMessage(env, callId, 'assistant', turn.answer);
+        console.log(JSON.stringify({ type: 'talksys_phone_turn', callId: callId ? 'present' : 'missing', userChars: stt.text.length, answerChars: turn.answer.length }));
+        // 応答音声の電話回線への返送は別アダプタ。回答生成そのものは既存TalkSysに完全委譲する。
+      } catch (error) {
+        console.error(JSON.stringify({ type: 'talksys_phone_turn_error', error: clean(error?.message || error, 240) }));
       }
-      if (message?.setupComplete) {
-        geminiReady = true;
-        reconnecting = false;
-        flushInput();
-        if (!handle && flag(env?.TELEPHONY_AUTO_GREETING, true)) safeSend(socket, { realtimeInput: { text: '電話がつながりました。日本語で短く挨拶してください。' } });
-        return;
-      }
-      const content = message?.serverContent;
-      if (!content) return;
-      if (content.interrupted) {
-        outputQueue = [];
-        downsampleCarry = [];
-        safeSend(telnyx, { event: 'clear' });
-      }
-      for (const part of content?.modelTurn?.parts || []) {
-        const inline = part?.inlineData || part?.inline_data;
-        if (!inline?.data) continue;
-        const mime = String(inline?.mimeType || inline?.mime_type || 'audio/pcm;rate=24000');
-        if (!mime.startsWith('audio/pcm')) continue;
-        const converted = pcm16Base64ToPcmu8k(inline.data, downsampleCarry);
-        downsampleCarry = converted.carry;
-        outputQueue.push(...converted.pcmu);
-        flushOutput(false);
-      }
-      if (content.turnComplete) flushOutput(true);
-      if (flag(env?.TELEPHONY_TRANSCRIPTION, false)) {
-        if (content.inputTranscription?.text) console.log(JSON.stringify({ type: 'phone_input_transcript', chars: content.inputTranscription.text.length }));
-        if (content.outputTranscription?.text) console.log(JSON.stringify({ type: 'phone_output_transcript', chars: content.outputTranscription.text.length }));
-      }
-    });
-    socket.addEventListener('error', () => {
-      console.error(JSON.stringify({ type: 'gemini_live_error', revision: TELEPHONY_REVISION }));
-    });
-    socket.addEventListener('close', () => {
-      if (closing) return;
-      if (reconnecting && resumeHandle) {
-        setTimeout(() => connectGemini(resumeHandle), 100);
-        return;
-      }
-      closeBoth('gemini_closed');
     });
   };
 
-  connectGemini();
+  const deadline = setTimeout(() => {
+    if (!closed) closeSocket(telnyx, 1000, 'session_limit');
+  }, sessionMaxMs);
 
   telnyx.addEventListener('message', async (event) => {
     let message;
     try { message = JSON.parse(await messageText(event.data)); } catch { return; }
-    if (message?.stream_id) streamId = clean(message.stream_id, 100);
-    if (message?.event === 'connected') return;
     if (message?.event === 'start') {
-      const format = message?.start?.media_format || {};
-      if (format.encoding && String(format.encoding).toUpperCase() !== 'PCMU') {
-        console.error(JSON.stringify({ type: 'unsupported_telnyx_codec', encoding: clean(format.encoding, 30) }));
-        closeBoth('unsupported_codec');
-      }
-      console.log(JSON.stringify({ type: 'phone_session_started', streamId: streamId ? 'present' : 'missing', revision: TELEPHONY_REVISION }));
+      const start = message.start || {};
+      const params = customParameters(start);
+      callId = clean(params.call_sid || start.call_sid || start.callSid || crypto.randomUUID(), 200);
+      from = clean(params.from || start.from || '', 80);
+      to = clean(params.to || start.to || '', 80);
+      await upsertCall(env, { callId, from, to, status: 'active' });
       return;
     }
     if (message?.event === 'media' && message?.media?.payload) {
-      sendCallerAudio(message.media.payload);
+      const samples = pcmuBase64ToSamples(message.media.payload);
+      const rms = rmsOfSamples(samples);
+      if (rms >= speechThreshold) {
+        if (!speechActive) {
+          speechActive = true;
+          speechFrames = [...preRoll];
+          preRoll = [];
+        }
+        speechFrames.push(samples);
+        silentFor = 0;
+      } else if (speechActive) {
+        speechFrames.push(samples);
+        silentFor += FRAME_MS;
+        const durationMs = speechFrames.length * FRAME_MS;
+        if (silentFor >= silenceMs || durationMs >= maxUtteranceMs) finishUtterance();
+      } else {
+        preRoll.push(samples);
+        if (preRoll.length > 10) preRoll.shift();
+      }
       return;
     }
     if (message?.event === 'stop') {
-      safeSend(gemini, { realtimeInput: { audioStreamEnd: true } });
-      closeBoth('telnyx_stopped');
-      return;
-    }
-    if (message?.event === 'error') {
-      console.error(JSON.stringify({ type: 'telnyx_media_error', streamId: streamId ? 'present' : 'missing', detail: clean(message?.payload?.detail || '', 200) }));
-      closeBoth('telnyx_error');
+      finishUtterance();
+      await processing.catch(() => {});
+      await setCallStatus(env, callId, 'ended');
+      closeSocket(telnyx, 1000, 'telnyx_stopped');
     }
   });
-  telnyx.addEventListener('error', () => closeBoth('telnyx_socket_error'));
-  telnyx.addEventListener('close', () => closeBoth('telnyx_closed'));
+
+  telnyx.addEventListener('error', async () => {
+    await setCallStatus(env, callId, 'error');
+    closeSocket(telnyx, 1011, 'telnyx_error');
+  });
+  telnyx.addEventListener('close', async () => {
+    closed = true;
+    clearTimeout(deadline);
+    finishUtterance();
+    await processing.catch(() => {});
+    await setCallStatus(env, callId, 'ended');
+  });
 
   return new Response(null, { status: 101, webSocket: client });
 }
@@ -324,8 +393,11 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/') return Response.redirect(`${url.origin}/phone`, 302);
-    if (request.method === 'GET' && url.pathname === '/phone') return new Response(dashboardHtml(request, env), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+    if (request.method === 'GET' && url.pathname === '/phone') return new Response(dashboardHtml(request), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
     if (request.method === 'GET' && url.pathname === '/telephony-health') return health(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/calls') return listCalls(request, env);
+    const messageMatch = url.pathname.match(/^\/api\/calls\/([^/]+)\/messages$/);
+    if (request.method === 'GET' && messageMatch) return callMessages(request, env, decodeURIComponent(messageMatch[1]));
     if ((request.method === 'GET' || request.method === 'POST') && url.pathname === '/telnyx/voice') return texmlResponse(request, env);
     if ((request.method === 'GET' || request.method === 'POST') && url.pathname === '/telnyx/stream-status') return streamStatus(request, env);
     if (request.method === 'GET' && url.pathname === '/telnyx/media') return mediaBridge(request, env);
