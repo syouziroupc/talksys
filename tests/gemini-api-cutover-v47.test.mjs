@@ -22,7 +22,7 @@ const {
 test('v47 Gemini adapter exposes the expected stable model and runtime key contract', () => {
   assert.equal(GEMINI_ADAPTER_REVISION, 'talksys-v47-gemini-cutover-r1');
   assert.equal(RESPONSE_QUALITY_REVISION, 'talksys-v48-interrupt-transit-speed-r1');
-  assert.equal(GEMINI_MODEL, 'gemini-3.8-flash');
+  assert.equal(GEMINI_MODEL, 'gemini-2.5-flash-lite');
   assert.equal(hasGeminiKey({ GEMINI_API_KEY: 'abc' }), true);
   assert.equal(hasGeminiKey({ GEMINI_API_KEY: '   ' }), false);
   assert.equal(hasGeminiKey({}), false);
@@ -45,7 +45,7 @@ test('Gemini request mapping preserves roles, injects TalkSys identity, and resp
   assert.match(body.systemInstruction.parts[0].text, /日本語で短く答える/);
   assert.deepEqual(body.contents.map((x) => x.role), ['user', 'model', 'user']);
   assert.equal(body.contents[2].parts[0].text, '続き');
-  assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, 'low');
+  assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 0);
   assert.equal(body.generationConfig.maxOutputTokens, 420);
   assert.equal(body.generationConfig.temperature, 0.16);
   assert.equal('tools' in body, false);
@@ -103,7 +103,7 @@ test('legacy GLM primary is intercepted by server-side Gemini while non-GLM Work
     assert.equal(gemini.response, 'Gemini response');
     assert.equal(gemini.model, GEMINI_MODEL);
     assert.equal(fetchCalls.length, 1);
-    assert.match(fetchCalls[0].url, /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-3\.8-flash:generateContent$/);
+    assert.match(fetchCalls[0].url, /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-2\.5-flash-lite:generateContent$/);
     assert.equal(fetchCalls[0].init.headers['x-goog-api-key'], 'server-only-test-key');
     assert.equal(workersCalls.length, 0);
 

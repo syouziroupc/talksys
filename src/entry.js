@@ -3,7 +3,7 @@ import worker from './worker-v44.js';
 export const TRUTH_GATE_REVISION = 'talksys-v46-hard-facts-r1';
 export const GEMINI_ADAPTER_REVISION = 'talksys-v47-gemini-cutover-r1';
 export const RESPONSE_QUALITY_REVISION = 'talksys-v48-interrupt-transit-speed-r1';
-export const GEMINI_MODEL = 'gemini-3.8-flash';
+export const GEMINI_MODEL = 'gemini-2.5-flash-lite';
 
 const LEGACY_GLM_PRIMARY = '@cf/zai-org/glm-5.3-flash';
 const LEGACY_GLM_FALLBACK = '@cf/zai-org/glm-4.7-flash';
@@ -83,7 +83,7 @@ function buildGeminiRequest(modelArgs = {}) {
   const maxOutputTokens = Math.min(4096, Math.max(256, Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : 512));
   const generationConfig = {
     maxOutputTokens,
-    thinkingConfig: { thinkingLevel: 'low' },
+    thinkingConfig: { thinkingBudget: 0 },
   };
   const temperature = Number(modelArgs?.temperature);
   if (Number.isFinite(temperature)) generationConfig.temperature = Math.max(0, Math.min(2, temperature));
@@ -340,9 +340,6 @@ async function createGeminiInteraction(env, body = {}, signal, allowPrevious = t
     input: text,
     system_instruction: TALKSYS_IDENTITY_INSTRUCTION,
     tools: [{ type: 'google_search' }],
-    generation_config: {
-      thinking_level: 'low',
-    },
     ...(previousInteractionId ? { previous_interaction_id: previousInteractionId } : {}),
   };
 

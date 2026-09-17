@@ -18,8 +18,8 @@ test('v45 shell no longer delegates UI or voice to the legacy worker', () => {
 });
 
 test('v45 microphone client keeps the proven HTTP adaptive-VAD path', () => {
-  assert.equal(CLIENT_REVISION, 'talksys-v45-http-adaptive-vad');
-  assert.equal(INTERACTION_REVISION, 'talksys-v49-native-gemini-interactions-r1');
+  assert.equal(CLIENT_REVISION, 'talksys-v46-streaming-vad');
+  assert.equal(INTERACTION_REVISION, 'talksys-v50-native-gemini-2-5-flash-lite-r1');
   assert.match(TALK_CLIENT_V45, /getUserMedia/);
   assert.match(TALK_CLIENT_V45, /createScriptProcessor/);
   assert.match(TALK_CLIENT_V45, /\/api\/transcribe/);
@@ -41,7 +41,7 @@ test('emergency text input can preempt an in-flight or spoken turn', () => {
 
 test('voice interaction is slightly faster without changing the proven transport', () => {
   assert.match(TALK_CLIENT_V45, /u\.rate=1\.12/);
-  assert.match(TALK_CLIENT_V45, /SILENCE_MS=620/);
+  assert.match(TALK_CLIENT_V45, /SILENCE_MS=480/);
 });
 
 test('v45 UI contains current controls and an honest Foonz status', () => {
@@ -70,7 +70,7 @@ test('production deployment derives revision contract from source and checks cur
   assert.match(deploy, /CLIENT_REVISION/);
   assert.match(deploy, /UI_REVISION/);
   assert.match(deploy, /STT_REVISION/);
-  assert.match(deploy, /talksys-v45-http-adaptive-vad/);
+  assert.match(deploy, /talksys-v46-streaming-vad/);
   assert.match(deploy, /talksys-v45-ui-restored-20260911/);
   assert.match(deploy, /\/talk-v45\.js/);
   assert.match(deploy, /getUserMedia/);

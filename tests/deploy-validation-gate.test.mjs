@@ -39,7 +39,7 @@ test('production deploy requires the Gemini key and uploads it only as a Worker 
   assert.match(workflow, /--secrets-file "\$secrets_file"/);
   assert.match(workflow, /\/gemini-health/);
   assert.match(workflow, /generationProvider==='gemini'/);
-  assert.match(workflow, /generationModel==='gemini-3\.8-flash'/);
+  assert.match(workflow, /generationModel==='gemini-2\.5-flash-lite'/);
   assert.match(workflow, /legacyGlmExecution===false/);
 });
 
@@ -57,7 +57,7 @@ test('post-deploy contract is derived from checked-out source instead of stale h
 test('production deploy keeps UI, microphone, deterministic, weather, and contextual smoke checks', () => {
   assert.match(workflow, /Verify live v45 UI and microphone client/);
   assert.match(workflow, /Production answer smoke/);
-  assert.match(workflow, /talksys-v45-http-adaptive-vad/);
+  assert.match(workflow, /talksys-v46-streaming-vad/);
   assert.match(workflow, /\/api\/transcribe/);
   assert.match(workflow, /\/api\/turn/);
   assert.match(workflow, /12345÷15/);
