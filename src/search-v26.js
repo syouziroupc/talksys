@@ -1,7 +1,7 @@
 import { collectGroundedEvidenceV23 } from './search-v23.js';
 import { searchBingRss, searchOpenStreetMapLocal, dedupeSearchResults } from './search-fallbacks.js';
 
-export const SEARCH_TOOL_V26_REVISION = 'evidence-web-v26-trusted-commerce-generic-current-transit';
+export const SEARCH_TOOL_V26_REVISION = 'evidence-web-v26-trusted-commerce-generic-current-transit-jrkyushu';
 
 const TRANSIT_RE = /(乗り換え|乗換|経路|行き方|電車|鉄道|所要時間|運賃|時刻表|直通|次の電車|何時発|発車時刻)/i;
 const PC_RE = /(パソコン|\bPC\b|ＰＣ|ノートパソコン|ノート|Windows)/i;
@@ -14,6 +14,7 @@ const OFFICIAL_PC_SEEDS = [
   { title: 'Lenovo ノートパソコン公式ストア', url: 'https://www.lenovo.com/jp/ja/laptops/' },
   { title: 'Dell ノートパソコン公式ストア', url: 'https://www.dell.com/ja-jp/shop/dell-laptops/scr/laptops' },
 ];
+const JR_KYUSHU_HOST_RE = /(^|\.)jrkyushu-timetable\.jp$/i;
 
 function clean(value, max = 4000) { return String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max); }
 function decodeEntities(value) { return String(value || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16))).replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))); }
@@ -80,6 +81,61 @@ async function fetchYahooTransitRoute(from, to, signal, date = new Date()) {
   if (!/(乗換|乗り換え|ルート|経路|運賃|円|分|発|着)/i.test(excerpt)) throw new Error('Transit page contained no usable route evidence');
   return { title: `${from}から${to}への乗換案内 - Yahoo!路線情報`, url: response.url || url, engine: 'yahoo-transit-direct-current', excerpt: `検索基準時刻 ${t.iso}。${excerpt}`, snippet: excerpt, requestedAtJst: t.iso };
 }
+
+function jrKyushuUrl(item) {
+  try {
+    const url = new URL(String(item?.url || ''));
+    return JR_KYUSHU_HOST_RE.test(url.hostname) && /(?:sp-tt_dep\.cgi|tt_dep\.cgi)/i.test(url.pathname + url.search) ? url.toString() : '';
+  } catch { return ''; }
+}
+function parseJrKyushuDepartures(text, from, to, date = new Date()) {
+  const normalized = clean(text, 90000);
+  if (!normalized.includes(`${from}駅`) || !normalized.includes(to)) return [];
+  const t = jstParts(date);
+  const expectedDate = `${Number(t.year)}年${Number(t.month)}月${Number(t.day)}日`;
+  if (!normalized.includes(expectedDate)) return [];
+  const currentMinutes = Number(t.hour) * 60 + Number(t.minute);
+  const out = [];
+  const re = /(\d{2}):(\d{2})\s+(.{1,80}?)(?=\s+\d{2}:\d{2}|\s+ご利用上の注意|$)/g;
+  for (const match of normalized.matchAll(re)) {
+    const hour = Number(match[1]), minute = Number(match[2]);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute) || hour > 23 || minute > 59) continue;
+    const total = hour * 60 + minute;
+    if (total < currentMinutes) continue;
+    const detail = clean(match[3], 90).replace(/^[・•\-\s]+/, '');
+    if (!/(行|ソニック|にちりん|ゆふ|九州横断特急|快速|普通|特急)/.test(detail)) continue;
+    out.push({ time: `${match[1]}:${match[2]}`, detail, total });
+  }
+  return out.slice(0, 8);
+}
+async function fetchJrKyushuCurrentDepartures(from, to, signal, date = new Date()) {
+  const queries = [
+    `${from}駅 ${to}駅 site:jrkyushu-timetable.jp/cgi-bin/sp/sp-tt_dep.cgi`,
+    `${from}駅 ${to}駅 JR九州 駅別時刻表`,
+  ];
+  const settled = await Promise.allSettled(queries.map((q) => searchBingRss(q, { timeoutMs: 4200, limit: 10 })));
+  const hits = dedupeSearchResults(settled.flatMap((r) => r.status === 'fulfilled' ? r.value : []).filter((item) => jrKyushuUrl(item)), 10);
+  if (!hits.length) throw new Error('JR Kyushu official timetable search returned no candidate');
+  const pages = await Promise.allSettled(hits.slice(0, 6).map(async (hit) => {
+    const url = jrKyushuUrl(hit);
+    const response = await fetch(url, { signal: timeoutSignal(signal, 4800), redirect: 'follow', headers: { accept: 'text/html,application/xhtml+xml', 'accept-language': 'ja-JP,ja;q=0.9', 'user-agent': 'Mozilla/5.0 (compatible; TalkSys/1.0; +https://talksys.syouziroupc.workers.dev)' } });
+    if (!response.ok) throw new Error(`JR Kyushu timetable ${response.status}`);
+    const text = stripHtml(await response.text());
+    const departures = parseJrKyushuDepartures(text, from, to, date);
+    if (!departures.length) throw new Error('JR Kyushu timetable contained no future matching departure');
+    return { hit, url: response.url || url, text, departures };
+  }));
+  const usable = pages.flatMap((r) => r.status === 'fulfilled' ? [r.value] : []);
+  if (!usable.length) throw new Error('JR Kyushu official timetable pages were unusable');
+  const departures = usable.flatMap((page) => page.departures.map((x) => ({ ...x, url: page.url }))).sort((a, b) => a.total - b.total).slice(0, 4);
+  if (!departures.length) throw new Error('JR Kyushu official timetable had no upcoming departures');
+  const t = jstParts(date);
+  const primaryUrl = departures[0].url;
+  const lines = departures.map((x) => `${x.time} ${x.detail}`).join(' / ');
+  const excerpt = `検索基準時刻 ${t.iso}。JR九州公式駅別時刻表で${from}駅から${to}方面を確認。次の候補: ${lines}`;
+  return { title: `${from}駅から${to}方面 - JR九州公式駅別時刻表`, url: primaryUrl, engine: 'jrkyushu-official-timetable-current', excerpt, snippet: excerpt, requestedAtJst: t.iso, departures };
+}
+
 function evidenceFromSources(sources) { return (sources || []).slice(0, 8).map((item, i) => `[${i + 1}] ${clean(item?.title, 180)}\n${clean(item?.url, 500)}\n${clean(item?.excerpt || item?.snippet || '', 1400)}`).join('\n\n'); }
 function coreQuestion(resolved) { return clean(resolved, 900).replace(/(?:正確な|最新の|最新|複数の検索元で|別の検索元も使って|具体的な根拠が取れるまで|情報を)?(?:検索して|確認して|再確認して)[。！？!?]*$/g, '').replace(/^[0-9]{4}年[^。]{0,50}（日本時間）[。．]?/u, '').trim(); }
 function queryTerms(text) {
@@ -140,13 +196,19 @@ export async function augmentGroundedEvidenceV26(base, options = {}) {
   const resolved = clean(augmented?.resolvedQuestion || '', 1200);
   if (!TRANSIT_RE.test(resolved)) return { ...augmented, revision: SEARCH_TOOL_V26_REVISION };
   const [from, to] = stationPair(resolved); if (!from || !to) return { ...augmented, revision: SEARCH_TOOL_V26_REVISION };
-  try {
-    const direct = await fetchYahooTransitRoute(from, to, options.signal);
-    const existing = Array.isArray(augmented?.sources) ? augmented.sources : [], directKey = String(direct.url || '').replace(/[?#].*$/, '').replace(/\/$/, '');
-    const sources = [direct, ...existing.filter((item) => String(item?.url || '').replace(/[?#].*$/, '').replace(/\/$/, '') !== directKey)].slice(0, 8);
-    options.onProgress?.({ phase: 'evidence_ready', revision: SEARCH_TOOL_V26_REVISION, resolvedQuestion: resolved, queries: augmented?.queries || [], evidenceCount: sources.length, sources: sources.map((item) => ({ title: item.title, url: item.url })), message: '現在時刻を指定した乗換案内を優先根拠として確認' });
-    return { ...augmented, revision: SEARCH_TOOL_V26_REVISION, sources, evidence: evidenceFromSources(sources), searchUseful: true, directTransitPrimary: true, transitRequestedAtJst: direct.requestedAtJst };
-  } catch (error) { return { ...augmented, revision: SEARCH_TOOL_V26_REVISION, directTransitError: String(error?.message || error).slice(0, 180) }; }
+  const errors = [];
+  for (const fetcher of [fetchJrKyushuCurrentDepartures, fetchYahooTransitRoute]) {
+    try {
+      const direct = await fetcher(from, to, options.signal);
+      const existing = Array.isArray(augmented?.sources) ? augmented.sources : [], directKey = String(direct.url || '').replace(/[?#].*$/, '').replace(/\/$/, '');
+      const sources = [direct, ...existing.filter((item) => String(item?.url || '').replace(/[?#].*$/, '').replace(/\/$/, '') !== directKey)].slice(0, 8);
+      options.onProgress?.({ phase: 'evidence_ready', revision: SEARCH_TOOL_V26_REVISION, resolvedQuestion: resolved, queries: augmented?.queries || [], evidenceCount: sources.length, sources: sources.map((item) => ({ title: item.title, url: item.url })), message: direct.engine === 'jrkyushu-official-timetable-current' ? 'JR九州公式の当日時刻表を優先根拠として確認' : '現在時刻を指定した乗換案内を優先根拠として確認' });
+      return { ...augmented, revision: SEARCH_TOOL_V26_REVISION, sources, evidence: evidenceFromSources(sources), searchUseful: true, directTransitPrimary: true, directTransitEngine: direct.engine, transitRequestedAtJst: direct.requestedAtJst };
+    } catch (error) {
+      errors.push(String(error?.message || error).slice(0, 160));
+    }
+  }
+  return { ...augmented, revision: SEARCH_TOOL_V26_REVISION, directTransitError: errors.join(' | ').slice(0, 320) };
 }
 export async function collectGroundedEvidenceV26(query, history = [], options = {}) { const base = await collectGroundedEvidenceV23(query, history, options); return augmentGroundedEvidenceV26(base, options); }
-export const __test = { jstParts, stationPair, localArea, localStoreRelevant, pcPurchaseRelevant, pcPurchaseQueries, usefulRouteExcerpt, stripHtml, evidenceFromSources, coreQuestion, queryTerms, genericRelevant, genericQueries };
+export const __test = { jstParts, stationPair, localArea, localStoreRelevant, pcPurchaseRelevant, pcPurchaseQueries, usefulRouteExcerpt, stripHtml, jrKyushuUrl, parseJrKyushuDepartures, evidenceFromSources, coreQuestion, queryTerms, genericRelevant, genericQueries };
