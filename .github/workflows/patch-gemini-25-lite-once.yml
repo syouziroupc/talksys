@@ -30,17 +30,13 @@ jobs:
 
           p = Path('src/talk-client-v45.js')
           s = p.read_text()
-          old = '''client = client.replace(
-            "'use strict';",
-            "'use strict';\\nwindow.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';",
-          );'''
+          old = '''client = client.replace(\n  "'use strict';",\n  "'use strict';\\nwindow.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';",\n);'''
           new = '''client = "window.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';\\n" + client;'''
           if s.count(old) != 1:
               raise SystemExit(f'unexpected revision-marker block count: {s.count(old)}')
           s = s.replace(old, new)
           anchor = "if (!client.includes('非常文字入力で現在の応答を割込み')) throw new Error('TalkSys typed-interrupt patch did not apply');"
-          guard = """if (!client.includes("window.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "'") || !client.includes("window.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "'")) throw new Error('TalkSys runtime revision markers did not apply');
-"""
+          guard = "if (!client.includes(\"window.__TALKSYS_CLIENT_REVISION__='\" + CLIENT_REVISION + \"'\") || !client.includes(\"window.__TALKSYS_INTERACTION_REVISION__='\" + INTERACTION_REVISION + \"'\")) throw new Error('TalkSys runtime revision markers did not apply');\n"
           if s.count(anchor) != 1:
               raise SystemExit('runtime assertion anchor missing')
           s = s.replace(anchor, guard + anchor)
@@ -49,8 +45,7 @@ jobs:
           p = Path('tests/v45-shell-regression.test.mjs')
           s = p.read_text()
           anchor = "  assert.match(TALK_CLIENT_V45, /planner:'gemini-native'/);"
-          addition = """  assert.match(TALK_CLIENT_V45, /__TALKSYS_CLIENT_REVISION__='talksys-v46-streaming-vad'/);
-  assert.match(TALK_CLIENT_V45, /__TALKSYS_INTERACTION_REVISION__='talksys-v50-native-gemini-2-5-flash-lite-r1'/);"""
+          addition = "  assert.match(TALK_CLIENT_V45, /__TALKSYS_CLIENT_REVISION__='talksys-v46-streaming-vad'/);\n  assert.match(TALK_CLIENT_V45, /__TALKSYS_INTERACTION_REVISION__='talksys-v50-native-gemini-2-5-flash-lite-r1'/);"
           if s.count(anchor) != 1:
               raise SystemExit('test anchor missing')
           s = s.replace(anchor, anchor + '\n' + addition)
