@@ -29,7 +29,18 @@ test('production deploy revalidates architecture, source graph, archived syntax,
   assert.match(workflow, /find src archive -type f -name '\*\.js'/);
   assert.match(workflow, /npm test/);
   assert.match(workflow, /npx wrangler deploy --dry-run/);
-  assert.match(workflow, /npx wrangler deploy\s*$/m);
+  assert.match(workflow, /npx wrangler deploy --secrets-file "\$secrets_file"/);
+});
+
+test('production deploy requires the Gemini key and uploads it only as a Worker secret', () => {
+  assert.match(workflow, /GEMINI_API_KEY:\s*\$\{\{ secrets\.GEMINI_API_KEY \}\}/);
+  assert.match(workflow, /test -n "\$\{GEMINI_API_KEY:-\}"/);
+  assert.match(workflow, /JSON\.stringify\(\{ GEMINI_API_KEY: key \}\)/);
+  assert.match(workflow, /--secrets-file "\$secrets_file"/);
+  assert.match(workflow, /\/gemini-health/);
+  assert.match(workflow, /generationProvider==='gemini'/);
+  assert.match(workflow, /generationModel==='gemini-3\.8-flash'/);
+  assert.match(workflow, /legacyGlmExecution===false/);
 });
 
 test('post-deploy contract is derived from checked-out source instead of stale hard-coded revisions', () => {
