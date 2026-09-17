@@ -31,24 +31,31 @@ jobs:
           targets = list(Path('src').glob('*.js')) + list(Path('tests').glob('*.mjs'))
           old_model = 'gemini-2.5-flash-lite'
           new_model = 'gemini-3.5-flash-lite'
+          old_regex_model = r'gemini-2\.5-flash-lite'
+          new_regex_model = r'gemini-3\.5-flash-lite'
           old_revision = 'talksys-v50-native-gemini-2-5-flash-lite-r1'
           new_revision = 'talksys-v52-native-gemini-3-5-flash-lite-r1'
           model_changes = 0
+          regex_model_changes = 0
           revision_changes = 0
 
           for path in targets:
               text = path.read_text()
               model_changes += text.count(old_model)
+              regex_model_changes += text.count(old_regex_model)
               revision_changes += text.count(old_revision)
               text = text.replace(old_model, new_model)
+              text = text.replace(old_regex_model, new_regex_model)
               text = text.replace(old_revision, new_revision)
               path.write_text(text)
 
           if model_changes < 1:
               raise SystemExit('No active Gemini 2.5 Flash-Lite references were found')
+          if regex_model_changes < 1:
+              raise SystemExit('No escaped Gemini 2.5 test literal was found')
           if revision_changes < 1:
               raise SystemExit('No active v50 interaction revision references were found')
-          print(f'model_changes={model_changes} revision_changes={revision_changes}')
+          print(f'model_changes={model_changes} regex_model_changes={regex_model_changes} revision_changes={revision_changes}')
           PY
           git diff --check
           git diff -- src tests
