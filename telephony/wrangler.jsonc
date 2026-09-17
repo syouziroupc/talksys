@@ -6,8 +6,8 @@
   "workers_dev": true,
   "vars": {
     "TELEPHONY_ENABLED": "false",
-    "TELEPHONY_STORAGE_MODE": "disabled",
-    "TELEPHONY_AUTO_GREETING": "true",
+    "TELEPHONY_TRANSCRIPTION": "false",
+    "TELEPHONY_SESSION_MAX_MINUTES": "30",
     "GEMINI_LIVE_MODEL": "gemini-3.8-live",
     "BROWSER_TALKSYS_URL": "https://talksys.syouziroupc.workers.dev"
   },
