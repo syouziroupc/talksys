@@ -345,6 +345,15 @@ function mediaBridge(request, env, deps) {
     promise.finally(() => pendingTasks.delete(promise));
     return promise;
   };
+  const queueMessageLog = (role, content) => trackTask(
+    appendMessage(env, callId, role, content).catch((error) => {
+      console.error(JSON.stringify({
+        type: 'phone_message_log_error',
+        role,
+        error: clean(error?.message || error, 240),
+      }));
+    }),
+  );
   const abortActiveTurn = () => {
     const controller = activeTurnAbort;
     activeTurnAbort = null;
@@ -408,7 +417,7 @@ function mediaBridge(request, env, deps) {
       const myVersion = ++turnVersion;
       abortActiveTurn();
       interruptPlayback();
-      await appendMessage(env, callId, 'user', stt.text);
+      queueMessageLog('user', stt.text);
       history.push({ role: 'user', content: stt.text });
 
       const controller = new AbortController();
@@ -431,7 +440,7 @@ function mediaBridge(request, env, deps) {
           return;
         }
         history.push({ role: 'assistant', content: turn.answer });
-        await appendMessage(env, callId, 'assistant', turn.answer);
+        queueMessageLog('assistant', turn.answer);
         if (myVersion !== turnVersion) return;
         const spoken = await speak(turn.answer);
         if (!spoken) await setCallStatus(env, callId, 'tts-error');
