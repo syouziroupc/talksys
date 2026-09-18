@@ -19,3 +19,29 @@ test('PCM16 mono is wrapped as a valid 24 kHz WAV for Discord playback', () => {
   assert.equal(view.getUint32(40, true), pcm.byteLength);
   assert.deepEqual([...wav.subarray(44)], [...pcm]);
 });
+
+test('raw Interactions response audio is found inside model output content', () => {
+  const audio = integrated.geminiAudioContent({
+    status: 'completed',
+    steps: [{
+      type: 'model_output',
+      content: [{
+        type: 'audio',
+        data: 'AAECAw==',
+        mime_type: 'audio/l16',
+        sample_rate: 24000,
+      }],
+    }],
+  });
+  assert.equal(audio.data, 'AAECAw==');
+  assert.equal(audio.mime_type, 'audio/l16');
+  assert.equal(audio.sample_rate, 24000);
+});
+
+test('SDK-style output_audio remains accepted when present', () => {
+  const audio = integrated.geminiAudioContent({
+    output_audio: { data: 'BAUGBw==', mime_type: 'audio/l16', sample_rate: 24000 },
+    steps: [],
+  });
+  assert.equal(audio.data, 'BAUGBw==');
+});
