@@ -37,7 +37,7 @@ test('v57 generic verifier is Gemini-led and explicitly repair-first rather than
   assert.match(system, /最終回答検証器/);
   assert.match(system, /2026-09-17T20:00:00\+09:00/);
   assert.match(system, /価格、在庫、営業状態/);
-  assert.match(system, /正しい部分は残/);
+  assert.match(system, /確認できた部分まで捨てず/);
 });
 
 test('generic verifier skips only explicit low-risk turns', () => {
