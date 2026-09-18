@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { TALK_CLIENT_V45, CLIENT_REVISION, INTERACTION_REVISION } from '../src/talk-client-v45.js';
+import { TALK_CLIENT_V45, CLIENT_REVISION, INTERACTION_REVISION, REALTIME_VOICE_REVISION } from '../src/talk-client-v45.js';
 import { TALK_HTML_V45, UI_REVISION } from '../src/ui-v45.js';
 import { STT_MODEL, STT_REVISION, analyzeWav, weakSpeechSignal } from '../src/stt-v45.js';
 
@@ -31,7 +31,10 @@ test('v45 microphone client keeps the proven HTTP adaptive-VAD path', () => {
   assert.match(TALK_CLIENT_V45, /planner:'gemini-native'/);
   assert.match(TALK_CLIENT_V45, /__TALKSYS_CLIENT_REVISION__='talksys-v46-streaming-vad'/);
   assert.match(TALK_CLIENT_V45, /__TALKSYS_INTERACTION_REVISION__='talksys-v52-native-gemini-3-5-flash-lite-r1'/);
-  assert.doesNotMatch(TALK_CLIENT_V45, /new\s+WebSocket|\/agents\//);
+  assert.equal(REALTIME_VOICE_REVISION, 'talksys-v59-realtime-backchannel-r1');
+  assert.match(TALK_CLIENT_V45, /new\s+WebSocket/);
+  assert.match(TALK_CLIENT_V45, /\/api\/realtime-stt/);
+  assert.doesNotMatch(TALK_CLIENT_V45, /\/agents\//);
 });
 
 test('emergency text input can preempt an in-flight or spoken turn', () => {
@@ -41,7 +44,7 @@ test('emergency text input can preempt an in-flight or spoken turn', () => {
   assert.doesNotMatch(TALK_CLIENT_V45, /if\(!v\|\|busy\)return/);
 });
 
-test('voice interaction is slightly faster without changing the proven transport', () => {
+test('voice interaction keeps Whisper fallback while adding realtime transcription', () => {
   assert.match(TALK_CLIENT_V45, /u\.rate=1\.12/);
   assert.match(TALK_CLIENT_V45, /SILENCE_MS=480/);
 });

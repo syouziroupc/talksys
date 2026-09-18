@@ -94,6 +94,16 @@
       "status": "production",
       "responsibility": "Current web UI imported by the production worker",
       "migrationNote": "Legacy versioned filename; future replacement requires registry update."
+    },
+    "speech.turntaking": {
+      "canonical": "src/voice-fast-reaction.js",
+      "status": "production",
+      "responsibility": "Deterministic short conversational backchannels and utterance matching used by realtime browser turn-taking and integrated phone replies",
+      "companions": [
+        "src/integrated-entry.js",
+        "src/telephony/index.js"
+      ],
+      "migrationNote": "Realtime STT is an acceleration layer only. Existing adaptive VAD and batch Whisper remain fallback/confirmation paths; factual answer generation remains in the shared Gemini turn runner."
     }
   },
   "legacyPriorArt": {

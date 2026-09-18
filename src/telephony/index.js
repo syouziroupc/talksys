@@ -2,8 +2,9 @@ import { CloudflareJapaneseTTS } from '../cloudflare-japanese-tts.js';
 import { transcribeV45 } from '../stt-v45.js';
 import { bytesToBase64, pcmuBase64ToSamples, rmsOfSamples, samplesToWav } from './codec.js';
 import { buildTexml, clampInt, clean, flag, xmlEscape } from './protocol.js';
+import { fastReaction, FAST_REACTION_REVISION } from '../voice-fast-reaction.js';
 
-export const TELEPHONY_REVISION = 'talksys-telephony-v58-adaptive-vad-cancel';
+export const TELEPHONY_REVISION = 'talksys-telephony-v59-fast-reaction';
 const FRAME_MS = 20;
 let schemaPromise;
 
@@ -175,10 +176,10 @@ async function transcribeSamples(env, samples) {
   return { ok: true, text: clean(payload.text, 1800) };
 }
 
-async function answerWithTalkSys(deps, text, history, signal) {
+async function answerWithTalkSys(deps, text, history, signal, spokenBackchannel = '') {
   if (typeof deps?.turn !== 'function') return { ok: false, error: 'talksys_turn_not_connected' };
   try {
-    const payload = await deps.turn({ text, history: history.slice(-16), channel: 'phone' }, signal);
+    const payload = await deps.turn({ text, history: history.slice(-16), channel: 'phone', spokenBackchannel }, signal);
     const answer = clean(payload?.answer || payload?.response || payload?.text || '', 9000);
     if (!answer) return { ok: false, error: payload?.error || 'empty_answer' };
     return { ok: true, answer, payload };
@@ -251,6 +252,7 @@ function health(request, env, deps) {
     concurrency: '通話ごとに独立WebSocket。確定した追加入力は進行中AIターンを中断。',
     inputAudio: 'Telnyx PCMU 8kHz → 90Hz HPF → 適応VAD → TalkSys STT',
     voiceInterruption: 'STT確定後に旧GeminiターンをAbort。ノイズだけでは中断しない。',
+    fastReaction: `STT確定直後の短い相槌 + Gemini本回答 / ${FAST_REACTION_REVISION}`,
     outputAudio: 'TalkSys TTS MP3 → Telnyx',
     answerEngine: 'TalkSys本体（既存回答経路）',
     routes: { management: '/phone', health: '/telephony-health', voice: '/telnyx/voice', media: '/telnyx/media' },
@@ -412,7 +414,14 @@ function mediaBridge(request, env, deps) {
       const controller = new AbortController();
       activeTurnAbort = controller;
       try {
-        const turn = await answerWithTalkSys(deps, stt.text, history, controller.signal);
+        const reaction = fastReaction(stt.text);
+        const spokenBackchannel = reaction.shouldSpeak ? reaction.text : '';
+        const turnPromise = answerWithTalkSys(deps, stt.text, history, controller.signal, spokenBackchannel);
+        if (spokenBackchannel && myVersion === turnVersion) {
+          const reacted = await speak(spokenBackchannel);
+          if (reacted) console.log(JSON.stringify({ type: 'phone_fast_reaction', kind: reaction.kind, text: spokenBackchannel }));
+        }
+        const turn = await turnPromise;
         if (myVersion !== turnVersion || turn?.aborted) return;
         if (pendingSttCount > 0 && !await waitForPendingSpeechDecision(myVersion)) return;
         if (myVersion !== turnVersion) return;
