@@ -46,5 +46,5 @@ npm install --no-audit --no-fund
 
 Write-Host "[start] Discord voice smoke"
 Write-Host "[start] TalkSys: $env:TALKSYS_BASE_URL"
-Write-Host "[start] mode: raw echo + TalkSys STT/turn (TTS only when DISCORD_BRIDGE_TOKEN is set)"
+Write-Host "[start] mode: TalkSys STT/turn + TalkSys TTS temporary demo; raw echo only on TTS failure"
 npm start
