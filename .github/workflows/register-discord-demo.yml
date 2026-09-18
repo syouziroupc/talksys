@@ -1,0 +1,30 @@
+name: Register Discord demo command
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  register:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      DISCORD_APPLICATION_ID: ${{ secrets.DISCORD_APPLICATION_ID }}
+      DISCORD_TEST_GUILD_ID: ${{ secrets.DISCORD_TEST_GUILD_ID }}
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify Discord credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${DISCORD_APPLICATION_ID:-}"
+          test -n "${DISCORD_TEST_GUILD_ID:-}"
+          test -n "${DISCORD_TOKEN:-}"
+      - name: Register /talk on the test guild
+        run: node scripts/register-discord-demo.mjs
