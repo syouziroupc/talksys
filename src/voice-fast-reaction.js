@@ -1,4 +1,4 @@
-export const FAST_REACTION_REVISION = 'talksys-v59-fast-reaction-r1';
+export const FAST_REACTION_REVISION = 'talksys-v61-quality-buffer-r1';
 
 function clean(value, max = 800) {
   return String(value ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -27,16 +27,16 @@ export function fastReaction(text = '') {
     return { kind: 'thanks', text: 'どういたしまして。', shouldSpeak: true, terminal: false };
   }
   if (SEARCHISH_RE.test(value)) {
-    return { kind: 'lookup', text: 'はい、調べます。', shouldSpeak: true, terminal: false };
+    return { kind: 'lookup', text: 'はい、少し確認しながら調べますね。', shouldSpeak: true, terminal: false };
   }
   if (REQUEST_RE.test(value)) {
-    return { kind: 'request', text: 'はい。', shouldSpeak: true, terminal: false };
+    return { kind: 'request', text: 'はい、内容を確認しますね。', shouldSpeak: true, terminal: false };
   }
   if (QUESTION_RE.test(value)) {
-    return { kind: 'question', text: 'はい。', shouldSpeak: true, terminal: false };
+    return { kind: 'question', text: 'はい、確認してお答えしますね。', shouldSpeak: true, terminal: false };
   }
   if (value.length >= 18) {
-    return { kind: 'listening', text: 'はい、聞いています。', shouldSpeak: true, terminal: false };
+    return { kind: 'listening', text: 'はい、内容を確認しています。', shouldSpeak: true, terminal: false };
   }
   return { kind: 'none', text: '', shouldSpeak: false, terminal: false };
 }
