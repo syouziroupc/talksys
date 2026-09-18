@@ -64,3 +64,17 @@ test('production deploy keeps UI, microphone, deterministic, weather, and contex
   assert.match(workflow, /別府市の今日の天気は？/);
   assert.match(workflow, /大学のレポート用に中古ノートPCを探してる。予算は3万円。/);
 });
+
+
+test('answer smoke runs before the nonblocking realtime STT check', () => {
+  const answerIndex = workflow.indexOf('- name: Production answer smoke');
+  const realtimeIndex = workflow.indexOf('- name: Verify realtime STT websocket (non-blocking known issue)');
+  assert.ok(answerIndex >= 0);
+  assert.ok(realtimeIndex > answerIndex);
+  assert.match(workflow, /Verify realtime STT websocket \(non-blocking known issue\)[\s\S]*continue-on-error: true/);
+  assert.match(workflow, /genericVerificationAttempted!==true/);
+  assert.match(workflow, /genericVerificationSucceeded!==true/);
+  assert.match(workflow, /Number\.isFinite\(d\.timings\?\.primaryMs\)/);
+  assert.match(workflow, /Number\.isFinite\(d\.timings\?\.verifierMs\)/);
+  assert.match(workflow, /genericVerificationAttempted!==false/);
+});
