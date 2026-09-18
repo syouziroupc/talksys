@@ -67,6 +67,27 @@ function transcriptFrom(payload) {
   return String(payload?.channel?.alternatives?.[0]?.transcript || payload?.transcript || '').trim();
 }
 
+async function probeRealtimeStt() {
+  await new Promise((resolve, reject) => {
+    const ws = new WebSocket(STT_WS_URL);
+    const timer = setTimeout(() => {
+      try { ws.terminate(); } catch {}
+      reject(new Error('realtime_stt_probe_timeout'));
+    }, 8000);
+    const cleanup = () => clearTimeout(timer);
+    ws.once('open', () => {
+      cleanup();
+      console.log('[preflight] realtime STT websocket open');
+      try { ws.close(1000, 'preflight'); } catch {}
+      resolve();
+    });
+    ws.once('error', (error) => {
+      cleanup();
+      reject(error);
+    });
+  });
+}
+
 async function talk(text) {
   console.log('[turn] user:', text);
   const response = await fetch(TALKSYS_BASE_URL + '/api/turn', {
@@ -143,7 +164,7 @@ async function playMp3(mp3) {
 
 async function playRawPcm48(pcm) {
   if (!pcm?.length) return;
-  const resource = createAudioResource(Readable.from(pcm), { inputType: StreamType.Raw });
+  const resource = createAudioResource(Readable.from([pcm]), { inputType: StreamType.Raw });
   player.play(resource);
   console.log('[tx] raw echo playback started');
   await new Promise((resolve, reject) => {
@@ -217,7 +238,12 @@ function startReceiverSession(userId) {
       sessions.delete(userId);
       const rawPcm48 = Buffer.concat(rawPcm48Chunks);
       if (text) processTranscript(text, userId, rawPcm48);
-      else console.log('[stt] no transcript');
+      else {
+        console.log('[stt] no transcript');
+        if (!BRIDGE_TOKEN && rawPcm48.length) {
+          playRawPcm48(rawPcm48).catch((error) => console.error('[echo]', error?.stack || error));
+        }
+      }
     }, 900);
   };
 
@@ -243,6 +269,7 @@ function startReceiverSession(userId) {
 
   ws.on('error', (error) => {
     console.error('[stt] websocket error:', error.message);
+    finish();
   });
 
   ws.on('close', (code, reason) => {
@@ -292,6 +319,11 @@ client.once('ready', async () => {
     console.log('[discord] voice ready:', channel.name);
     console.log('[discord] TalkSys realtime STT:', STT_WS_URL);
     console.log('[discord] output mode:', BRIDGE_TOKEN ? 'TalkSys TTS' : 'raw echo smoke');
+    try {
+      await probeRealtimeStt();
+    } catch (error) {
+      console.error('[preflight] realtime STT websocket failed:', error?.message || error);
+    }
 
     connection.receiver.speaking.on('start', (userId) => {
       if (userId === client.user.id) return;
