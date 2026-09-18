@@ -143,8 +143,8 @@ test('factual question retries once with an explicit search instruction when Gem
 
 test('integrated browser and Telnyx turns share the same personalized Gemini runner', () => {
   const source = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
-  assert.match(source, /turn: \(body\) => runTalkSysTurn\(request, env, body\)/);
-  assert.match(source, /return runGeminiTurn\(body \|\| \{\}, env, request\.signal\)/);
+  assert.match(source, /turn: \(body, signal\) => runTalkSysTurn\(request, env, body, signal \|\| request\.signal\)/);
+  assert.match(source, /return runGeminiTurn\(body \|\| \{\}, env, signal\)/);
   assert.match(source, /url\.pathname === '\/api\/turn'/);
   assert.doesNotMatch(source, /LEGACY_GLM|@cf\/zai-org\/glm/);
 });
