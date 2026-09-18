@@ -3,6 +3,7 @@ import { TALK_CLIENT_V43 } from './talk-client-v43.js';
 export const CLIENT_REVISION = 'talksys-v46-streaming-vad';
 export const INTERACTION_REVISION = 'talksys-v52-native-gemini-3-5-flash-lite-r1';
 export const AUDIO_REVISION = 'talksys-v58-noise-cancel-interrupt-r1';
+export const REALTIME_VOICE_REVISION = 'talksys-v59-realtime-backchannel-r1';
 
 const FORM_HANDLER_OLD = "form.addEventListener('submit',async e=>{e.preventDefault();const v=input.value.trim();if(!v||busy)return;input.value='';busy=true;resumePlan=null;add('user',v);try{await ask(v);}catch(err){lastError=String(err.message||err);log('会話エラー: '+lastError);setStatus('回答に失敗');}finally{busy=false;if(micOn&&!playing)setStatus('聞いています');diagUpdate(true);}});";
 
@@ -37,7 +38,7 @@ const VOICE_SAFE_HELPER = String.raw`function voiceSafeText(text){
 
 const VOICE_CONTROL_HELPERS = String.raw`
 function beginVoiceCandidate(){
-  const id=++voiceCandidateEpoch;voiceCandidateCount++;currentVoiceCandidateId=id;return id;
+  const id=++voiceCandidateEpoch;voiceCandidateCount++;currentVoiceCandidateId=id;lastVoiceCandidateAt=Date.now();cancelFastReaction('new-local-speech');return id;
 }
 function finishVoiceCandidate(id){
   if(!id)return;voiceCandidateCount=Math.max(0,voiceCandidateCount-1);if(currentVoiceCandidateId===id)currentVoiceCandidateId=0;
@@ -57,6 +58,96 @@ function stopPlaybackForConfirmedVoice(){
   try{fallbackSource&&fallbackSource.stop();}catch{}fallbackSource=null;
   try{if(fallbackAudio){fallbackAudio.pause();fallbackAudio.currentTime=0;}}catch{}fallbackAudio=null;
   playing=false;
+}
+function normalizeUtterance(v){return String(v||'').normalize('NFKC').replace(/[、。！？!?・「」『』"'\s]/g,'').toLowerCase();}
+function sameUtteranceLocal(a,b){
+  const x=normalizeUtterance(a),y=normalizeUtterance(b);if(!x||!y)return false;
+  if(x===y||x.includes(y)||y.includes(x))return true;
+  const min=Math.min(x.length,y.length);let prefix=0;while(prefix<min&&x[prefix]===y[prefix])prefix++;
+  return prefix/Math.max(1,min)>=.72;
+}
+function pcm16Frame(a){
+  const out=new Int16Array(a.length);
+  for(let i=0;i<a.length;i++){const x=Math.max(-1,Math.min(1,Number(a[i])||0));out[i]=x<0?Math.round(x*32768):Math.round(x*32767);}
+  return out.buffer;
+}
+function cancelFastReaction(reason){
+  realtimeReactionSeq++;if(realtimeReactionTimer){clearTimeout(realtimeReactionTimer);realtimeReactionTimer=0;}
+  if(realtimeReactionAbort){try{realtimeReactionAbort.abort(reason||'cancelled');}catch{}realtimeReactionAbort=null;}
+}
+function beginRealtimeSpeech(){
+  cancelFastReaction('speech-resumed');realtimeFinalParts=[];realtimeInterim='';realtimeSpeechStartedAt=Date.now();
+}
+function sendRealtimeSttFrame(a){
+  const ws=realtimeSttSocket;if(!ws||ws.readyState!==1)return;
+  try{ws.send(pcm16Frame(a));}catch{}
+}
+function realtimeTranscriptFrom(payload){
+  return String(payload?.channel?.alternatives?.[0]?.transcript||payload?.transcript||'').trim();
+}
+async function requestFastReaction(text,seq){
+  const controller=new AbortController();realtimeReactionAbort=controller;
+  try{
+    const r=await fetch('/api/fast-reaction',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text})});
+    const j=await r.json();if(seq!==realtimeReactionSeq||!r.ok||!j?.shouldSpeak||!j?.text)return;
+    realtimeReactionText=String(j.text);realtimeReactionSourceText=String(text);realtimeReactionAt=Date.now();
+    log('高速相槌 '+j.kind+': '+realtimeReactionText);
+    fastReactionPlayingPromise=speak(realtimeReactionText,{resumeable:false,fastReaction:true}).catch(()=>{});
+    await fastReactionPlayingPromise;
+  }catch(e){if(e?.name!=='AbortError')log('高速相槌エラー: '+String(e?.message||e));}
+  finally{if(realtimeReactionAbort===controller)realtimeReactionAbort=null;}
+}
+function scheduleFastReaction(text){
+  const value=String(text||'').trim();if(!value)return;
+  const seq=++realtimeReactionSeq;if(realtimeReactionTimer)clearTimeout(realtimeReactionTimer);
+  realtimeReactionTimer=setTimeout(()=>{realtimeReactionTimer=0;requestFastReaction(value,seq);},90);
+}
+function onRealtimeBoundary(text){
+  const value=String(text||'').trim();if(!value)return;
+  const eligible=speech||voiceCandidateCount>0||(Date.now()-lastVoiceCandidateAt<1800);
+  if(!eligible){log('リアルタイムSTT終端を無視: ローカル発話候補なし');return;}
+  realtimeLastBoundaryText=value;realtimeLastBoundaryAt=Date.now();log('リアルタイムSTT終端: '+value);
+  if(speech)commitVoice('リアルタイム終端');
+  scheduleFastReaction(value);
+}
+function handleRealtimeSttMessage(data){
+  let j;try{j=JSON.parse(String(data));}catch{return;}
+  const type=String(j?.type||j?.event||'');
+  if(/SpeechStarted/i.test(type)){beginRealtimeSpeech();return;}
+  const transcript=realtimeTranscriptFrom(j);
+  if(transcript)realtimeInterim=transcript;
+  if(/Results/i.test(type)){
+    if(j?.is_final&&transcript&&!realtimeFinalParts.includes(transcript))realtimeFinalParts.push(transcript);
+    if(j?.speech_final){
+      const text=[...realtimeFinalParts,(!j?.is_final&&transcript?transcript:'')].filter(Boolean).join(' ').trim()||transcript;
+      onRealtimeBoundary(text);realtimeFinalParts=[];realtimeInterim='';
+    }
+    return;
+  }
+  if(/UtteranceEnd/i.test(type)){
+    const text=realtimeFinalParts.join(' ').trim()||realtimeInterim;
+    if(text)onRealtimeBoundary(text);realtimeFinalParts=[];realtimeInterim='';
+  }
+}
+function openRealtimeStt(){
+  closeRealtimeStt();try{
+    const proto=location.protocol==='https:'?'wss:':'ws:';
+    const ws=new WebSocket(proto+'//'+location.host+'/api/realtime-stt');realtimeSttSocket=ws;ws.binaryType='arraybuffer';
+    ws.onopen=()=>{realtimeSttReady=true;log('リアルタイムSTT接続 Nova-3 日本語');diagUpdate(true);};
+    ws.onmessage=e=>handleRealtimeSttMessage(e.data);
+    ws.onerror=()=>{realtimeSttReady=false;log('リアルタイムSTTエラー。Whisper確定へフォールバック');diagUpdate(true);};
+    ws.onclose=()=>{if(realtimeSttSocket===ws)realtimeSttSocket=null;realtimeSttReady=false;diagUpdate(true);};
+  }catch(e){realtimeSttReady=false;log('リアルタイムSTT開始失敗: '+String(e?.message||e));}
+}
+function closeRealtimeStt(){
+  cancelFastReaction('mic-stop');const ws=realtimeSttSocket;realtimeSttSocket=null;realtimeSttReady=false;
+  if(ws){try{ws.close(1000,'mic-stop');}catch{}}
+  realtimeFinalParts=[];realtimeInterim='';
+}
+function backchannelFor(text){
+  if(!realtimeReactionText||Date.now()-realtimeReactionAt>9000)return '';
+  if(!sameUtteranceLocal(text,realtimeReactionSourceText))return '';
+  const value=realtimeReactionText;realtimeReactionText='';realtimeReactionSourceText='';return value;
 }
 `;
 
@@ -121,12 +212,13 @@ async function commitVoice(reason){
 const ASK_V58 = String.raw`
 async function ask(text){
   const plan={search:false,ack:'',planner:'gemini-native'};
+  const spokenBackchannel=backchannelFor(text);
   abortActiveTurn('new-turn');
   const seq=++turnSeq,previous=history.slice(-MAX_HISTORY),controller=new AbortController();activeTurnController=controller;
   history.push({role:'user',content:text});setStatus('考えています…');
   try{
     const t=Date.now();
-    const r=await fetch('/api/turn',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text,history:previous,searchTrace,sessionId:talkSessionId,previousInteractionId:geminiInteractionId})});
+    const r=await fetch('/api/turn',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text,history:previous,searchTrace,sessionId:talkSessionId,previousInteractionId:geminiInteractionId,spokenBackchannel})});
     const j=await r.json();if(seq!==turnSeq)return;
     if(j.interactionId)geminiInteractionId=j.interactionId;
     if(voiceCandidateCount>0){log('追加入力候補を認識中。旧回答の表示を保留');if(!await waitForVoiceCandidate(seq))return;}
@@ -135,6 +227,7 @@ async function ask(text){
     if(!r.ok||!j.ok||!j.answer)throw new Error(j.error||'回答生成に失敗');
     if(j.search){lastSearchQueries=Array.isArray(j.queries)?j.queries.slice(0,6):[];searchTrace={resolvedQuestion:j.resolvedQuestion||text,queries:lastSearchQueries,sources:Array.isArray(j.sources)?j.sources.slice(0,8):[]};}
     log((j.search?'検索あり':'検索なし')+' / route='+(j.route||'?')+' / Gemini '+lastGlmMs+'ms'+(lastSearchMs?' / 検索 '+lastSearchMs+'ms':''));
+    if(spokenBackchannel&&fastReactionPlayingPromise){await Promise.race([fastReactionPlayingPromise,new Promise(resolve=>setTimeout(resolve,1400))]);if(seq!==turnSeq)return;}
     add('assistant',j.answer);history.push({role:'assistant',content:j.answer});if(history.length>MAX_HISTORY*2)history=history.slice(-MAX_HISTORY*2);
     await speak(j.answer,{resumeable:true});
   }catch(e){
@@ -160,8 +253,9 @@ async function startMic(){
     const AC=window.AudioContext||window.webkitAudioContext;ctx=new AC();await ctx.resume();source=ctx.createMediaStreamSource(stream);
     inputFilter=ctx.createBiquadFilter();inputFilter.type='highpass';inputFilter.frequency.value=90;inputFilter.Q.value=.707;
     processor=ctx.createScriptProcessor(2048,1,1);silentGain=ctx.createGain();silentGain.gain.value=0;
-    const convert=resampler(ctx.sampleRate);processor.onaudioprocess=e=>{const d=e.inputBuffer.getChannelData(0);for(const f of convert(d))processFrame(f);};
+    const convert=resampler(ctx.sampleRate);processor.onaudioprocess=e=>{const d=e.inputBuffer.getChannelData(0);for(const f of convert(d)){sendRealtimeSttFrame(f);processFrame(f);}};
     source.connect(inputFilter);inputFilter.connect(processor);processor.connect(silentGain);silentGain.connect(ctx.destination);
+    openRealtimeStt();
     micOn=true;calibrationUntil=Date.now()+1400;startHits=0;noiseBoost=Math.max(1,noiseBoost*.96);mic.classList.add('on');mic.textContent='マイク会話を停止';
     setStatus(playing?'話しています…':'周囲の雑音を調整中…');log('マイク開始 '+ctx.sampleRate+'Hz → 16000Hz / '+micProcessingSettings+' / HPF 90Hz');diagUpdate(true);
   }catch(e){lastError=e.name+': '+String(e.message||e);log('マイク開始失敗: '+lastError);setStatus('マイクを開始できません');stopMic();}
@@ -170,6 +264,7 @@ async function startMic(){
 
 const STOP_MIC_V58 = String.raw`
 function stopMic(){
+  closeRealtimeStt();
   if(currentVoiceCandidateId){finishVoiceCandidate(currentVoiceCandidateId);currentVoiceCandidateId=0;}
   if(speech)resetTurn();micOn=false;
   try{processor&&processor.disconnect();}catch{}try{inputFilter&&inputFilter.disconnect();}catch{}try{source&&source.disconnect();}catch{}try{silentGain&&silentGain.disconnect();}catch{}try{stream&&stream.getTracks().forEach(t=>t.stop());}catch{}
@@ -221,7 +316,7 @@ client = client.replace(RESUME_OLD, RESUME_NEW);
 
 client = client.replace(
   "let geminiInteractionId=null;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=480, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
-  "let geminiInteractionId=null,activeTurnController=null,voiceCandidateEpoch=0,voiceCandidateCount=0,currentVoiceCandidateId=0,voiceCaptureSeq=0,latestAcceptedVoiceSeq=0,inputFilter=null,micProcessingSettings='';\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=480, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
+  "let geminiInteractionId=null,activeTurnController=null,voiceCandidateEpoch=0,voiceCandidateCount=0,currentVoiceCandidateId=0,voiceCaptureSeq=0,latestAcceptedVoiceSeq=0,inputFilter=null,micProcessingSettings='',realtimeSttSocket=null,realtimeSttReady=false,realtimeInterim='',realtimeFinalParts=[],realtimeLastBoundaryText='',realtimeLastBoundaryAt=0,realtimeSpeechStartedAt=0,realtimeReactionSeq=0,realtimeReactionTimer=0,realtimeReactionAbort=null,realtimeReactionText='',realtimeReactionSourceText='',realtimeReactionAt=0,fastReactionPlayingPromise=null,lastVoiceCandidateAt=0;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=480, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
 );
 client = client.replace(
   "function voiceKey(v){",
@@ -233,6 +328,7 @@ client = client.replace(/async function ask\(text\)\{[\s\S]*?\n\}\nasync functio
 client = client.replace(/async function startMic\(\)\{[\s\S]*?\}\nfunction stopMic/, START_MIC_V58+"\nfunction stopMic");
 client = client.replace(/function stopMic\(\)\{[\s\S]*?\}\nmic\.addEventListener/, STOP_MIC_V58+"\nmic.addEventListener");
 
+client = "window.__TALKSYS_REALTIME_VOICE_REVISION__='" + REALTIME_VOICE_REVISION + "';\n" + client;
 client = "window.__TALKSYS_AUDIO_REVISION__='" + AUDIO_REVISION + "';\n" + client;
 client = "window.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';\n" + client;
 
@@ -248,12 +344,15 @@ if (!client.includes('confirmed-voice-interrupt') || !client.includes('activeTur
 if (!client.includes('voiceCandidateCount>0') || !client.includes('旧回答の表示を保留')) throw new Error('TalkSys in-flight voice hold patch did not apply');
 if (!client.includes("inputFilter.type='highpass'") || !client.includes('noiseSuppression=true')) throw new Error('TalkSys microphone DSP patch did not apply');
 if (client.includes('if(busy&&!speech){startHits=0;bargeHits=0')) throw new Error('TalkSys still blocks microphone during processing');
+if (!client.includes('/api/realtime-stt') || !client.includes('sendRealtimeSttFrame')) throw new Error('TalkSys realtime STT patch did not apply');
+if (!client.includes('/api/fast-reaction') || !client.includes('spokenBackchannel')) throw new Error('TalkSys fast-reaction handoff patch did not apply');
 
 export const TALK_CLIENT_V45 = client;
 export const __test = {
   revision: CLIENT_REVISION,
   interactionRevision: INTERACTION_REVISION,
   audioRevision: AUDIO_REVISION,
+  realtimeVoiceRevision: REALTIME_VOICE_REVISION,
   httpTranscribe: client.includes('/api/transcribe'),
   httpTurns: client.includes('/api/turn'),
   adaptiveNoise: client.includes('noiseBoost'),
@@ -262,6 +361,8 @@ export const __test = {
   confirmedVoiceCancellation: client.includes('confirmed-voice-interrupt') && client.includes('activeTurnController'),
   listenWhileProcessing: !client.includes('if(busy&&!speech){startHits=0;bargeHits=0') && client.includes('処理中の追加入力開始'),
   holdOldAnswerUntilStt: client.includes('voiceCandidateCount>0') && client.includes('旧回答の表示を保留'),
+  realtimeJapaneseStt: client.includes('/api/realtime-stt') && client.includes('sendRealtimeSttFrame'),
+  fastReactionHandoff: client.includes('/api/fast-reaction') && client.includes('spokenBackchannel') && client.includes('backchannelFor'),
   typedInterrupt: client.includes('非常文字入力で現在の応答を割込み') && !client.includes('if(!v||busy)return'),
   fasterTts: client.includes('u.rate=1.12'),
   fasterTurnEnd: client.includes('SILENCE_MS=480'),
