@@ -9,7 +9,8 @@
     "architecture:check": "node scripts/check-architecture-registry.mjs",
     "architecture:graph": "node scripts/audit-active-source-graph.mjs",
     "reuse:check": "node scripts/check-reuse-gate.mjs",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "discord:register": "node scripts/register-discord-demo.mjs"
   },
   "dependencies": {
     "@cloudflare/ai-utils": "1.0.1",
