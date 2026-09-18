@@ -333,11 +333,12 @@ async function createGeminiInteraction(env, body = {}, signal, { allowPrevious =
   const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
   if (!key) throw new Error('gemini_api_key_missing');
   const previousInteractionId = allowPrevious ? compact(body?.previousInteractionId, 400) : '';
+  const searchAllowed = forceSearch || !TRIVIAL_CONVERSATION_RE.test(compact(body?.text, 4000));
   const requestBody = {
     model: GEMINI_MODEL,
     input: interactionInput(body, { forceSearch, immediateTransit, now }),
     system_instruction: buildTalkSysSystemInstruction(now, { forceSearch, immediateTransit }),
-    tools: [{ type: 'google_search' }],
+    ...(searchAllowed ? { tools: [{ type: 'google_search' }] } : {}),
     ...(previousInteractionId ? { previous_interaction_id: previousInteractionId } : {}),
   };
 
