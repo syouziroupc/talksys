@@ -3,7 +3,7 @@ import { TALK_CLIENT_V43 } from './talk-client-v43.js';
 export const CLIENT_REVISION = 'talksys-v46-streaming-vad';
 export const INTERACTION_REVISION = 'talksys-v52-native-gemini-3-5-flash-lite-r1';
 export const AUDIO_REVISION = 'talksys-v58-noise-cancel-interrupt-r1';
-export const REALTIME_VOICE_REVISION = 'talksys-v59.1-realtime-backchannel-fallback-r1';
+export const REALTIME_VOICE_REVISION = 'talksys-v59.2-realtime-stt-minimal-r1';
 
 const FORM_HANDLER_OLD = "form.addEventListener('submit',async e=>{e.preventDefault();const v=input.value.trim();if(!v||busy)return;input.value='';busy=true;resumePlan=null;add('user',v);try{await ask(v);}catch(err){lastError=String(err.message||err);log('会話エラー: '+lastError);setStatus('回答に失敗');}finally{busy=false;if(micOn&&!playing)setStatus('聞いています');diagUpdate(true);}});";
 
