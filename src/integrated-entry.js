@@ -474,8 +474,8 @@ function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), { status, headers: out });
 }
 
-async function runTalkSysTurn(request, env, body) {
-  return runGeminiTurn(body || {}, env, request.signal);
+async function runTalkSysTurn(request, env, body, signal = request.signal) {
+  return runGeminiTurn(body || {}, env, signal);
 }
 
 async function voiceHealth(request, env, ctx) {
@@ -514,7 +514,7 @@ export default {
     const url = new URL(request.url);
 
     const telephonyResponse = await handleTelephonyRequest(request, env, ctx, {
-      turn: (body) => runTalkSysTurn(request, env, body),
+      turn: (body, signal) => runTalkSysTurn(request, env, body, signal || request.signal),
     });
     if (telephonyResponse) return telephonyResponse;
 
