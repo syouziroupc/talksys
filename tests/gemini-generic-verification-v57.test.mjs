@@ -15,7 +15,7 @@ const {
 const FIXED = new Date('2026-09-17T11:00:00Z'); // 20:00 JST
 
 test('quality-first verifier restores the detailed independent review prompt', () => {
-  assert.equal(GENERIC_VERIFICATION_REVISION, 'talksys-v57-gemini-self-verify-r1');
+  assert.equal(GENERIC_VERIFICATION_REVISION, 'talksys-v63-risk-gated-self-verify-r1');
   const input = buildGenericVerificationInput(
     { text: '今営業している店を教えて' },
     {
@@ -39,7 +39,7 @@ test('quality-first verifier restores the detailed independent review prompt', (
   assert.match(input, /回答全体を「確認できません」「分かりません」に置き換えない/);
 });
 
-test('only trivial greeting-like conversation skips search and verification', () => {
+test('search stays quality-first while the second verifier is risk-gated', () => {
   for (const text of ['こんにちは', 'ありがとう', 'はい', '了解']) {
     assert.equal(shouldStronglyPreferSearch(text), false, text);
     assert.equal(shouldRunGenericVerification(text, {}), false, text);
@@ -52,6 +52,11 @@ test('only trivial greeting-like conversation skips search and verification', ()
     'おすすめを教えて',
   ]) {
     assert.equal(shouldStronglyPreferSearch(text), true, text);
+  }
+  for (const text of ['12345÷15', 'この文章を短くして', '富士山の高さは？', 'おすすめを教えて']) {
+    assert.equal(shouldRunGenericVerification(text, {}), false, text);
+  }
+  for (const text of ['このCPUはWindows 11に対応してる？', '今日の天気は？', '製品Xの最新バージョンは？']) {
     assert.equal(shouldRunGenericVerification(text, {}), true, text);
   }
 });
@@ -110,7 +115,7 @@ test('same Gemini repairs a stale current-state answer after an independent sear
   }
 });
 
-test('if primary skips search, quality-first path retries search and then independently verifies', async () => {
+test('if primary skips search, forced-search retry is the second and final normal interaction', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (_url, options) => {
@@ -158,13 +163,14 @@ test('if primary skips search, quality-first path retries search and then indepe
       undefined,
       { now: FIXED },
     );
-    assert.equal(calls, 3);
+    assert.equal(calls, 2);
     assert.equal(result.searchRetried, true);
-    assert.equal(result.genericVerificationAttempted, true);
-    assert.equal(result.genericVerificationSucceeded, true);
-    assert.equal(result.verifierSearched, true);
+    assert.equal(result.genericVerificationAttempted, false);
+    assert.equal(result.genericVerificationSucceeded, false);
+    assert.equal(result.verifierSearched, false);
+    assert.equal(result.verificationPolicy, 'risk-gated-max-two-normal-interactions');
     assert.ok(result.timings.searchRetryMs >= 0);
-    assert.ok(result.timings.verifierMs >= 0);
+    assert.equal(result.timings.verifierMs, 0);
     assert.match(result.answer, /5点3/);
   } finally {
     globalThis.fetch = originalFetch;
