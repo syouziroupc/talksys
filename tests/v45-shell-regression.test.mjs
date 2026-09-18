@@ -31,7 +31,7 @@ test('v45 microphone client keeps the proven HTTP adaptive-VAD path', () => {
   assert.match(TALK_CLIENT_V45, /planner:'gemini-native'/);
   assert.match(TALK_CLIENT_V45, /__TALKSYS_CLIENT_REVISION__='talksys-v46-streaming-vad'/);
   assert.match(TALK_CLIENT_V45, /__TALKSYS_INTERACTION_REVISION__='talksys-v52-native-gemini-3-5-flash-lite-r1'/);
-  assert.equal(REALTIME_VOICE_REVISION, 'talksys-v59.1-realtime-backchannel-fallback-r1');
+  assert.equal(REALTIME_VOICE_REVISION, 'talksys-v59.2-realtime-stt-minimal-r1');
   assert.match(TALK_CLIENT_V45, /new\s+WebSocket/);
   assert.match(TALK_CLIENT_V45, /\/api\/realtime-stt/);
   assert.doesNotMatch(TALK_CLIENT_V45, /\/agents\//);
