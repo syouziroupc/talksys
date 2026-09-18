@@ -39,12 +39,14 @@ test('authoritative clock is JST and is injected independently from model memory
   assert.match(clock, /現在、今日、明日、次の便/);
 });
 
-test('search preference is broad but skips trivial talk and pure arithmetic', () => {
+test('search preference skips only greeting-like trivial conversation', () => {
   assert.equal(shouldStronglyPreferSearch('別府で中古パソコンのおすすめ店ある？'), true);
   assert.equal(shouldStronglyPreferSearch('QCM1250とこのACアダプタは互換性ある？'), true);
   assert.equal(shouldStronglyPreferSearch('今のソニックの時刻を教えて'), true);
+  assert.equal(shouldStronglyPreferSearch('12345÷15'), true);
+  assert.equal(shouldStronglyPreferSearch('この文章を短くして'), true);
   assert.equal(shouldStronglyPreferSearch('ありがとう'), false);
-  assert.equal(shouldStronglyPreferSearch('12345÷15'), false);
+  assert.equal(shouldStronglyPreferSearch('こんにちは'), false);
 });
 
 test('spoken-answer normalizer removes screen-only notation and makes common numbers and units Japanese-friendly', () => {
@@ -93,7 +95,7 @@ test('native Gemini turn keeps search, source metadata and conversational answer
   }
 });
 
-test('factual question goes directly from an unsearched primary to forced-search verification', async () => {
+test('factual question restores the three-stage quality path when primary initially skips search', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (_url, options) => {
@@ -106,23 +108,35 @@ test('factual question goes directly from an unsearched primary to forced-search
         steps: [{ type: 'model_output', content: [{ type: 'text', text: '一般知識では分かります。' }] }],
       }), { status: 200 });
     }
-    assert.equal(calls, 2);
-    assert.match(req.system_instruction, /最終回答検証器/);
-    assert.match(req.input, /Google検索を実行して事実確認/);
+    assert.match(req.system_instruction, /Google検索を必ず実行/);
+    if (calls === 2) {
+      assert.match(req.input, /Google検索を実行して事実確認/);
+      return new Response(JSON.stringify({
+        id: 'interaction-search',
+        status: 'completed',
+        steps: [
+          { type: 'google_search_call', arguments: { queries: ['別府 今日 天気'] } },
+          { type: 'model_output', content: [{ type: 'text', text: '検索して確認した情報を案内します。' }] },
+        ],
+      }), { status: 200 });
+    }
+    assert.equal(calls, 3);
+    assert.match(req.input, /最終回答前の自己検証/);
+    assert.match(req.input, /候補回答: 検索して確認した情報を案内します/);
     return new Response(JSON.stringify({
       id: 'interaction-verified',
       status: 'completed',
       steps: [
         { type: 'google_search_call', arguments: { queries: ['別府 今日 天気 現在'] } },
-        { type: 'model_output', content: [{ type: 'text', text: '検索して確認した情報を案内します。' }] },
+        { type: 'model_output', content: [{ type: 'text', text: '検索して再確認した情報を案内します。' }] },
       ],
     }), { status: 200 });
   };
   try {
     const result = await runGeminiTurn({ text: '別府の今日の天気は？' }, { GEMINI_API_KEY: 'test-key' });
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
     assert.equal(result.search, true);
-    assert.equal(result.searchRetried, false);
+    assert.equal(result.searchRetried, true);
     assert.equal(result.genericVerificationAttempted, true);
     assert.equal(result.genericVerificationSucceeded, true);
     assert.equal(result.interactionId, 'interaction-verified');
