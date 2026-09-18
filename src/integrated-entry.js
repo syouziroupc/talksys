@@ -583,7 +583,7 @@ async function handleDiscordInteraction(request, env, ctx) {
   ctx?.waitUntil?.(completeDiscordInteraction(interaction, question, env));
   return json({
     type: 5,
-    data: { flags: 64 },
+    data: {},
   });
 }
 
@@ -671,7 +671,7 @@ async function voiceHealth(request, env, ctx) {
       fastReactionRevision: FAST_REACTION_REVISION,
       genericGeminiVerification: true,
       genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
-      verificationFailureMode: 'fail-open-primary-answer',
+      verificationFailureMode: 'grounded-primary-fail-open-or-forced-search',
       temporalTransitGuard: true,
       temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
       legacyGlmExecution: false,
