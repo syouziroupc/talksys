@@ -66,7 +66,7 @@ test('production deploy keeps UI, microphone, deterministic, weather, and contex
 });
 
 
-test('answer smoke runs before a blocking realtime STT 101 upgrade check', () => {
+test('answer smoke enforces quality-first search before the blocking realtime STT check', () => {
   const answerIndex = workflow.indexOf('- name: Production answer smoke');
   const realtimeIndex = workflow.indexOf('- name: Verify realtime STT websocket upgrade');
   assert.ok(answerIndex >= 0);
@@ -75,9 +75,16 @@ test('answer smoke runs before a blocking realtime STT 101 upgrade check', () =>
   assert.match(workflow, /Sec-WebSocket-Version: 13/);
   assert.match(workflow, /Sec-WebSocket-Key:/);
   assert.match(workflow, /HTTP\/1\\\.\[01\] 101/);
-  assert.match(workflow, /genericVerificationAttempted!==true/);
-  assert.match(workflow, /genericVerificationSucceeded!==true/);
+
+  assert.match(workflow, /"text":"こんにちは"/);
+  assert.match(workflow, /d\.search!==false/);
+  assert.match(workflow, /d\.genericVerificationAttempted!==false/);
+
+  assert.match(workflow, /12345÷15/);
+  assert.match(workflow, /d\.search!==true/);
+  assert.match(workflow, /d\.genericVerificationAttempted!==true/);
+  assert.match(workflow, /d\.genericVerificationSucceeded!==true/);
+  assert.match(workflow, /d\.verifierSearched!==true/);
   assert.match(workflow, /Number\.isFinite\(d\.timings\?\.primaryMs\)/);
   assert.match(workflow, /Number\.isFinite\(d\.timings\?\.verifierMs\)/);
-  assert.match(workflow, /genericVerificationAttempted!==false/);
 });
