@@ -283,13 +283,20 @@ function sourceSummary(payload = {}) {
   return lines.join('\n');
 }
 
-export function shouldRunGenericVerification(text = '', payload = {}) {
+export function isLowRiskSinglePassQuestion(text = '', payload = {}) {
   const value = compact(text, 4000);
-  if (!value) return false;
-  if (TRIVIAL_CONVERSATION_RE.test(value)) return false;
-  if (SIMPLE_ARITHMETIC_RE.test(value)) return false;
-  if (LOCAL_TRANSFORM_RE.test(value) && !searchedInInteraction(payload)) return false;
-  return shouldStronglyPreferSearch(value) || searchedInInteraction(payload);
+  if (!value) return true;
+  // Once any search has occurred, keep the independent verifier. Search-bearing
+  // turns are factual by nature and must never be downgraded to single-pass.
+  if (searchedInInteraction(payload)) return false;
+  if (TRIVIAL_CONVERSATION_RE.test(value)) return true;
+  if (SIMPLE_ARITHMETIC_RE.test(value)) return true;
+  if (LOCAL_TRANSFORM_RE.test(value) && !FACTUAL_OR_LOOKUP_RE.test(value.replace(/[？?]/g, ''))) return true;
+  return false;
+}
+
+export function shouldRunGenericVerification(text = '', payload = {}) {
+  return !isLowRiskSinglePassQuestion(text, payload);
 }
 
 function buildGenericVerificationInput(body = {}, primary = {}, now = new Date()) {
@@ -376,11 +383,13 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
 
   const immediateTransit = isImmediateTransitQuestion(text);
   let interaction = await createGeminiInteraction(env, body, signal, { allowPrevious: true, forceSearch: false, now, immediateTransit });
+  // Do not spend a third serial Gemini call just because the primary chose not
+  // to search. All non-low-risk turns go through the independent verifier below,
+  // and that verifier is forced to search. This keeps the normal path at two
+  // Gemini calls while preserving grounded final answers.
   let searchRetried = false;
-  if (!searchedInInteraction(interaction.payload) && shouldStronglyPreferSearch(text)) {
-    searchRetried = true;
-    interaction = await createGeminiInteraction(env, body, signal, { allowPrevious: true, forceSearch: true, now, immediateTransit });
-  }
+  const primaryNeedsSearch = shouldStronglyPreferSearch(text);
+  const primaryMissedSearch = primaryNeedsSearch && !searchedInInteraction(interaction.payload);
 
   const primaryInteraction = interaction;
   let genericVerificationAttempted = false;
@@ -397,8 +406,21 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
         verifierSearched = searchedInInteraction(verified.payload);
       }
     } catch {
-      verificationFailOpen = true;
-      interaction = primaryInteraction;
+      // A factual turn whose primary skipped search must never fail open to an
+      // ungrounded answer. Only this exceptional verifier-failure path performs
+      // a forced-search retry.
+      if (primaryMissedSearch) {
+        searchRetried = true;
+        interaction = await createGeminiInteraction(env, body, signal, {
+          allowPrevious: true,
+          forceSearch: true,
+          now,
+          immediateTransit,
+        });
+      } else {
+        verificationFailOpen = true;
+        interaction = primaryInteraction;
+      }
     }
   }
 
@@ -670,6 +692,7 @@ export default {
 };
 
 export const __test = {
+  isLowRiskSinglePassQuestion,
   buildTalkSysSystemInstruction,
   currentJstInstruction,
   shouldRunGenericVerification,
