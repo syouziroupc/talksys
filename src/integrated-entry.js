@@ -6,7 +6,7 @@ import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v2';
 export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
-export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
+export const GENERIC_VERIFICATION_REVISION = 'talksys-v63-risk-gated-self-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v59.2-realtime-stt-minimal-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
@@ -21,6 +21,7 @@ const SIMPLE_ARITHMETIC_RE = /^\s*[\d０-９,.，+＋\-−ー*＊×xX÷/／()（
 const TRIVIAL_CONVERSATION_RE = /^(?:もしもし|おはよう(?:ございます)?|こんにちは|こんばんは|ありがとう(?:ございます)?|ありがと|どうも|はい|うん|ううん|了解|わかった|分かった|またね|じゃあね)[。！!？?…\s]*$/i;
 const LOCAL_TRANSFORM_RE = /(?:この文章|この文|次の文章|以下の文章).{0,30}(?:要約|翻訳|言い換え|添削|校正|短く|整えて)/i;
 const FACTUAL_OR_LOOKUP_RE = /[？?]|(?:誰|どこ|いつ|何時|何日|時刻|いくら|価格|値段|相場|在庫|最新|現在|今日|明日|天気|運行|時刻表|乗換|乗り換え|おすすめ|候補|店|店舗|会社|企業|病院|ホテル|商品|製品|型番|仕様|互換|対応|住所|電話番号|営業時間|ニュース|法律|制度|社長|CEO|大統領|首相|発売|販売中|検索|調べ|探して|確認して|教えて)/i;
+const HIGH_RISK_VERIFICATION_RE = /(?:今|現在|今日|明日|最新|直近|価格|値段|相場|在庫|発売|販売中|営業(?:中|時間)?|運行|遅延|運休|時刻表|乗換|乗り換え|電車|鉄道|列車|新幹線|特急|天気|天候|為替|法律|法令|制度|規制|社長|CEO|首相|大統領|ニュース|バージョン|対応|互換|BIOS|UEFI|ファームウェア|ドライバ)/i;
 const TRANSIT_QUERY_RE = /(?:電車|鉄道|列車|新幹線|特急|快速|普通列車|乗換|乗り換え|時刻表|発車|出発|駅)/i;
 const IMMEDIATE_TRANSIT_CUE_RE = /(?:今から|現在から|これから|このあと|この後|次(?:の|は)?(?:電車|列車|便)?|直近|すぐ|今乗れる|乗れる次|間に合う次)/i;
 const EXPLICIT_FUTURE_TRANSIT_DATE_RE = /(?:明日|明後日|来週|来月|翌日|翌朝|\d{1,2}月\d{1,2}日|\d{4}[\/-]\d{1,2}[\/-]\d{1,2})/i;
@@ -325,7 +326,7 @@ export function shouldRunGenericVerification(text = '', payload = {}) {
   const value = compact(text, 4000);
   if (!value) return false;
   if (TRIVIAL_CONVERSATION_RE.test(value) && !searchedInInteraction(payload)) return false;
-  return true;
+  return HIGH_RISK_VERIFICATION_RE.test(value);
 }
 
 function buildGenericVerificationInput(body = {}, primary = {}, now = new Date()) {
@@ -417,6 +418,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   let interaction = await createGeminiInteraction(env, body, signal, { allowPrevious: true, forceSearch: false, now, immediateTransit });
   const primaryMs = Date.now() - primaryStarted;
 
+  const verificationRequired = shouldRunGenericVerification(text, interaction.payload);
   let searchRetried = false;
   let searchRetryMs = 0;
   if (!searchedInInteraction(interaction.payload) && shouldStronglyPreferSearch(text)) {
@@ -432,7 +434,10 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   let verificationFailOpen = false;
   let verifierSearched = false;
   let verifierMs = 0;
-  if (shouldRunGenericVerification(text, interaction.payload)) {
+  // Keep the quality-first search policy, but cap the normal answer path at
+  // two Gemini interactions. A forced-search retry already consumes the
+  // second interaction, so a third generic verifier is skipped in that case.
+  if (!searchRetried && verificationRequired) {
     genericVerificationAttempted = true;
     try {
       const verifierStarted = Date.now();
@@ -492,6 +497,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     genericVerificationAttempted,
     genericVerificationSucceeded,
     genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
+    verificationPolicy: 'risk-gated-max-two-normal-interactions',
     verifierSearched,
     verificationFailOpen,
     temporalTransitGuard: immediateTransit,
@@ -735,7 +741,9 @@ async function voiceHealth(request, env, ctx) {
       realtimeVoiceRevision: REALTIME_VOICE_REVISION,
       fastReactionRevision: FAST_REACTION_REVISION,
       genericGeminiVerification: true,
+      genericVerificationMode: 'high-risk-only',
       genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
+      normalInteractionBudget: 2,
       verificationFailureMode: 'fail-open-primary-answer',
       temporalTransitGuard: true,
       temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
