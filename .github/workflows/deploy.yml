@@ -203,8 +203,10 @@ jobs:
           grep -F '/api/turn' <<< "$client"
           grep -F 'noiseBoost' <<< "$client"
           grep -F 'calibrationUntil' <<< "$client"
-          if grep -E 'new[[:space:]]+WebSocket|/agents/' <<< "$client"; then
-            echo 'legacy websocket/agent voice path returned'
+          grep -F '/api/realtime-stt' <<< "$client"
+          grep -F '/api/fast-reaction' <<< "$client"
+          if grep -E '/agents/' <<< "$client"; then
+            echo 'legacy agent voice path returned'
             exit 1
           fi
 
