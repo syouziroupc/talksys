@@ -3,7 +3,7 @@ import { TALK_CLIENT_V43 } from './talk-client-v43.js';
 export const CLIENT_REVISION = 'talksys-v46-streaming-vad';
 export const INTERACTION_REVISION = 'talksys-v52-native-gemini-3-5-flash-lite-r1';
 export const AUDIO_REVISION = 'talksys-v58-noise-cancel-interrupt-r1';
-export const REALTIME_VOICE_REVISION = 'talksys-v59-realtime-backchannel-r1';
+export const REALTIME_VOICE_REVISION = 'talksys-v59.1-realtime-backchannel-fallback-r1';
 
 const FORM_HANDLER_OLD = "form.addEventListener('submit',async e=>{e.preventDefault();const v=input.value.trim();if(!v||busy)return;input.value='';busy=true;resumePlan=null;add('user',v);try{await ask(v);}catch(err){lastError=String(err.message||err);log('会話エラー: '+lastError);setStatus('回答に失敗');}finally{busy=false;if(micOn&&!playing)setStatus('聞いています');diagUpdate(true);}});";
 
@@ -197,8 +197,16 @@ async function commitVoice(reason){
     latestAcceptedVoiceSeq=captureId;goodSpeechCount++;noiseBoost=Math.max(1,noiseBoost*.93);lastTranscript=j.text;lastError='';
     log('STT完了 '+lastSttMs+'ms: '+j.text+' / 確定入力として前ターンを中断');
     abortActiveTurn('confirmed-voice-interrupt');turnSeq++;stopPlaybackForConfirmedVoice();busy=false;
+    let confirmedBackchannel=backchannelFor(j.text);
+    if(!confirmedBackchannel&&j?.fastReaction?.shouldSpeak&&j?.fastReaction?.text){
+      cancelFastReaction('batch-stt-confirmed');
+      confirmedBackchannel=String(j.fastReaction.text);
+      realtimeReactionText='';realtimeReactionSourceText='';realtimeReactionAt=0;
+      log('高速相槌 batch: '+confirmedBackchannel);
+      fastReactionPlayingPromise=speak(confirmedBackchannel,{resumeable:false,fastReaction:true}).catch(()=>{});
+    }
     add('user',j.text);busy=true;const mySeq=turnSeq+1;
-    try{await ask(j.text);}
+    try{await ask(j.text,confirmedBackchannel);}
     catch(err){if(turnSeq===mySeq){lastError=String(err.message||err);log('会話エラー: '+lastError);setStatus('回答に失敗');}}
     finally{if(captureId===latestAcceptedVoiceSeq){busy=false;if(micOn&&!playing)setStatus('聞いています');diagUpdate(true);}}
   }catch(e){
@@ -210,9 +218,9 @@ async function commitVoice(reason){
 `;
 
 const ASK_V58 = String.raw`
-async function ask(text){
+async function ask(text,spokenBackchannelOverride=''){
   const plan={search:false,ack:'',planner:'gemini-native'};
-  const spokenBackchannel=backchannelFor(text);
+  const spokenBackchannel=spokenBackchannelOverride||backchannelFor(text);
   abortActiveTurn('new-turn');
   const seq=++turnSeq,previous=history.slice(-MAX_HISTORY),controller=new AbortController();activeTurnController=controller;
   history.push({role:'user',content:text});setStatus('考えています…');
@@ -346,6 +354,7 @@ if (!client.includes("inputFilter.type='highpass'") || !client.includes('noiseSu
 if (client.includes('if(busy&&!speech){startHits=0;bargeHits=0')) throw new Error('TalkSys still blocks microphone during processing');
 if (!client.includes('/api/realtime-stt') || !client.includes('sendRealtimeSttFrame')) throw new Error('TalkSys realtime STT patch did not apply');
 if (!client.includes('/api/fast-reaction') || !client.includes('spokenBackchannel')) throw new Error('TalkSys fast-reaction handoff patch did not apply');
+if (!client.includes('高速相槌 batch:') || !client.includes('j?.fastReaction?.shouldSpeak')) throw new Error('TalkSys batch fast-reaction fallback patch did not apply');
 
 export const TALK_CLIENT_V45 = client;
 export const __test = {
@@ -363,6 +372,7 @@ export const __test = {
   holdOldAnswerUntilStt: client.includes('voiceCandidateCount>0') && client.includes('旧回答の表示を保留'),
   realtimeJapaneseStt: client.includes('/api/realtime-stt') && client.includes('sendRealtimeSttFrame'),
   fastReactionHandoff: client.includes('/api/fast-reaction') && client.includes('spokenBackchannel') && client.includes('backchannelFor'),
+  batchFastReactionFallback: client.includes('高速相槌 batch:') && client.includes('j?.fastReaction?.shouldSpeak'),
   typedInterrupt: client.includes('非常文字入力で現在の応答を割込み') && !client.includes('if(!v||busy)return'),
   fasterTts: client.includes('u.rate=1.12'),
   fasterTurnEnd: client.includes('SILENCE_MS=480'),

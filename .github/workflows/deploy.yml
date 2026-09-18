@@ -205,10 +205,38 @@ jobs:
           grep -F 'calibrationUntil' <<< "$client"
           grep -F '/api/realtime-stt' <<< "$client"
           grep -F '/api/fast-reaction' <<< "$client"
+          grep -F '高速相槌 batch:' <<< "$client"
           if grep -E '/agents/' <<< "$client"; then
             echo 'legacy agent voice path returned'
             exit 1
           fi
+
+          reaction="$(curl -fsS --max-time 20 -H 'content-type: application/json' --data '{"text":"今日の天気を調べて"}' "$PRODUCTION_URL/api/fast-reaction")"
+          REACTION="$reaction" node -e "const d=JSON.parse(process.env.REACTION||'{}');if(!d.ok||d.shouldSpeak!==true||!String(d.text||'').trim())throw new Error(process.env.REACTION);"
+
+          PRODUCTION_URL="$PRODUCTION_URL" node <<'NODE'
+          const url = new URL(process.env.PRODUCTION_URL);
+          url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+          url.pathname = '/api/realtime-stt';
+          url.search = '';
+          const ws = new WebSocket(url.href);
+          const timer = setTimeout(() => {
+            try { ws.close(); } catch {}
+            console.error('realtime STT websocket handshake timed out');
+            process.exit(1);
+          }, 12000);
+          ws.addEventListener('open', () => {
+            clearTimeout(timer);
+            console.log('Realtime STT websocket handshake OK');
+            try { ws.close(1000, 'smoke'); } catch {}
+            setTimeout(() => process.exit(0), 100);
+          });
+          ws.addEventListener('error', (event) => {
+            clearTimeout(timer);
+            console.error('Realtime STT websocket handshake failed', event?.message || event);
+            process.exit(1);
+          });
+          NODE
 
       - name: Production answer smoke
         shell: bash
