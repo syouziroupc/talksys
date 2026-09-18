@@ -12,12 +12,12 @@ import {
 } from '../src/talk-client-v45.js';
 import { fastReaction, sameUtterance, FAST_REACTION_REVISION } from '../src/voice-fast-reaction.js';
 
-test('v59 fast reactions are short and context-sensitive instead of one canned phrase', () => {
-  assert.equal(FAST_REACTION_REVISION, 'talksys-v59-fast-reaction-r1');
+test('v61 fast reactions are context-sensitive and intentionally a little longer', () => {
+  assert.equal(FAST_REACTION_REVISION, 'talksys-v61-quality-buffer-r1');
   assert.deepEqual(fastReaction('こんにちは').text, 'こんにちは。');
   assert.deepEqual(fastReaction('ありがとう').text, 'どういたしまして。');
-  assert.deepEqual(fastReaction('今から別府駅の次の電車を調べて').text, 'はい、調べます。');
-  assert.deepEqual(fastReaction('ちょっと相談したい').text, 'はい。');
+  assert.deepEqual(fastReaction('今から別府駅の次の電車を調べて').text, 'はい、少し確認しながら調べますね。');
+  assert.deepEqual(fastReaction('ちょっと相談したい').text, 'はい、内容を確認しますね。');
   assert.equal(fastReaction('えーと').shouldSpeak, false);
 });
 
@@ -29,10 +29,10 @@ test('similar realtime and Whisper transcripts are recognized as the same uttera
 test('Gemini final-answer input knows a backchannel was already spoken and avoids repeating it', () => {
   const input = integrated.interactionInput({
     text: '別府の今日の天気を教えて',
-    spokenBackchannel: 'はい、調べます。',
+    spokenBackchannel: 'はい、少し確認しながら調べますね。',
     history: [],
   }, { now: new Date('2026-09-18T02:00:00Z') });
-  assert.match(input, /短い相槌「はい、調べます。」をすでに読み上げ/);
+  assert.match(input, /短い相槌「はい、少し確認しながら調べますね。」をすでに読み上げ/);
   assert.match(input, /同じ相槌や挨拶を繰り返さず/);
   assert.match(input, /別府の今日の天気を教えて/);
 });
