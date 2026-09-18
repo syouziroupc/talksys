@@ -44,9 +44,10 @@ test('emergency text input can preempt an in-flight or spoken turn', () => {
   assert.doesNotMatch(TALK_CLIENT_V45, /if\(!v\|\|busy\)return/);
 });
 
-test('voice interaction keeps Whisper fallback while adding realtime transcription', () => {
+test('voice interaction keeps Whisper fallback while using a quality-oriented end-silence window', () => {
   assert.match(TALK_CLIENT_V45, /u\.rate=1\.12/);
-  assert.match(TALK_CLIENT_V45, /SILENCE_MS=480/);
+  assert.match(TALK_CLIENT_V45, /SILENCE_MS=650/);
+  assert.doesNotMatch(TALK_CLIENT_V45, /SILENCE_MS=480/);
 });
 
 test('current UI keeps controls, two-column debug console, runtime status and honest Foonz state', () => {
