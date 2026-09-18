@@ -230,8 +230,8 @@ client = client.replace(
 client = client.replace(/function processFrame\(a\)\{[\s\S]*?\n\}\nfunction wav/, PROCESS_FRAME_V58+"\nfunction wav");
 client = client.replace(/async function commitVoice\(reason\)\{[\s\S]*?\n\}\nasync function getPlan/, COMMIT_VOICE_V58+"\nasync function getPlan");
 client = client.replace(/async function ask\(text\)\{[\s\S]*?\n\}\nasync function startMic/, ASK_V58+"\nasync function startMic");
-client = client.replace(/async function startMic\(\)\{[\s\S]*?\n\}\nfunction stopMic/, START_MIC_V58+"\nfunction stopMic");
-client = client.replace(/function stopMic\(\)\{[\s\S]*?\n\}\nmic\.addEventListener/, STOP_MIC_V58+"\nmic.addEventListener");
+client = client.replace(/async function startMic\(\)\{[\s\S]*?\}\nfunction stopMic/, START_MIC_V58+"\nfunction stopMic");
+client = client.replace(/function stopMic\(\)\{[\s\S]*?\}\nmic\.addEventListener/, STOP_MIC_V58+"\nmic.addEventListener");
 
 client = "window.__TALKSYS_AUDIO_REVISION__='" + AUDIO_REVISION + "';\n" + client;
 client = "window.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + "';\nwindow.__TALKSYS_INTERACTION_REVISION__='" + INTERACTION_REVISION + "';\n" + client;
