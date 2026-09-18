@@ -38,7 +38,7 @@ test('Gemini final-answer input knows a backchannel was already spoken and avoid
 });
 
 test('realtime STT endpoint uses Japanese Nova-3 websocket with interim results and fast endpointing', async () => {
-  assert.equal(SERVER_REALTIME_REVISION, 'talksys-v59.1-realtime-backchannel-fallback-r1');
+  assert.equal(SERVER_REALTIME_REVISION, 'talksys-v59.2-realtime-stt-minimal-r1');
   assert.equal(REALTIME_STT_MODEL, '@cf/deepgram/nova-3');
   let call;
   const response = new Response(null, { status: 200 });
@@ -60,14 +60,14 @@ test('realtime STT endpoint uses Japanese Nova-3 websocket with interim results 
   assert.equal(call.args.sample_rate, '16000');
   assert.equal(call.args.language, 'ja');
   assert.equal(call.args.interim_results, true);
-  assert.equal(call.args.endpointing, '300');
-  assert.equal(call.args.vad_events, true);
+  assert.equal('endpointing' in call.args, false);
+  assert.equal('vad_events' in call.args, false);
   assert.equal('utterance_end_ms' in call.args, false);
   assert.equal(call.options.websocket, true);
 });
 
 test('browser streams mic frames but keeps Whisper batch STT as authoritative fallback', () => {
-  assert.equal(CLIENT_REALTIME_REVISION, 'talksys-v59.1-realtime-backchannel-fallback-r1');
+  assert.equal(CLIENT_REALTIME_REVISION, 'talksys-v59.2-realtime-stt-minimal-r1');
   assert.equal(clientFlags.realtimeJapaneseStt, true);
   assert.equal(clientFlags.fastReactionHandoff, true);
   assert.equal(clientFlags.batchFastReactionFallback, true);
