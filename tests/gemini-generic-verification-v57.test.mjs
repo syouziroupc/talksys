@@ -7,6 +7,8 @@ import {
 
 const {
   buildGenericVerificationInput,
+  buildVerificationSystemInstruction,
+  isLowRiskSinglePassQuestion,
   shouldRunGenericVerification,
   runGeminiTurn,
 } = __test;
@@ -28,14 +30,22 @@ test('v57 generic verifier is Gemini-led and explicitly repair-first rather than
     },
     FIXED,
   );
-  assert.match(input, /2026-09-17T20:00:00\+09:00/);
-  assert.match(input, /現在時点との整合性/);
-  assert.match(input, /Google検索を使って再確認/);
-  assert.match(input, /回答全体を「確認できません」「分かりません」に置き換えない/);
-  assert.match(input, /最終回答そのもの/);
+  assert.match(input, /質問: 今営業している店を教えて/);
+  assert.match(input, /一次回答: A店が営業中です/);
+  assert.match(input, /Google検索で独立に確認/);
+  const system = buildVerificationSystemInstruction(FIXED);
+  assert.match(system, /最終回答検証器/);
+  assert.match(system, /2026-09-17T20:00:00\+09:00/);
+  assert.match(system, /価格、在庫、営業状態/);
+  assert.match(system, /正しい部分は残/);
 });
 
-test('generic verifier runs for factual/search turns but not trivial conversation', () => {
+test('generic verifier skips only explicit low-risk turns', () => {
+  assert.equal(isLowRiskSinglePassQuestion('ありがとう', {}), true);
+  assert.equal(isLowRiskSinglePassQuestion('12345÷15', {}), true);
+  assert.equal(isLowRiskSinglePassQuestion('この文章を短くして', {}), true);
+  assert.equal(isLowRiskSinglePassQuestion('富士山の高さは？', {}), false);
+  assert.equal(isLowRiskSinglePassQuestion('このCPUはWindows 11に対応してる？', {}), false);
   assert.equal(shouldRunGenericVerification('今営業している店を教えて', {}), true);
   assert.equal(shouldRunGenericVerification('ありがとう', {}), false);
   assert.equal(shouldRunGenericVerification('12345÷15', {}), false);
@@ -65,9 +75,10 @@ test('same Gemini repairs a stale current-state answer instead of TalkSys decidi
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
 
-    assert.match(req.input, /最終回答前の自己検証/);
-    assert.match(req.input, /A店は今営業しています/);
-    assert.match(req.input, /2026-09-17T20:00:00\+09:00/);
+    assert.match(req.system_instruction, /最終回答検証器/);
+    assert.match(req.system_instruction, /2026-09-17T20:00:00\+09:00/);
+    assert.match(req.input, /一次回答: A店は今営業しています/);
+    assert.match(req.input, /Google検索を実行して事実確認/);
     return new Response(JSON.stringify({
       id: 'verified',
       status: 'completed',
@@ -131,6 +142,50 @@ test('verifier failure is fail-open and keeps the useful primary Gemini answer',
     assert.equal(result.verificationFailOpen, true);
     assert.match(result.answer, /5点2/);
     assert.doesNotMatch(result.answer, /確認できません|分かりません/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('primary search miss is handled by the forced-search verifier in the second call', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls += 1;
+    const req = JSON.parse(options.body);
+    if (calls === 1) {
+      return new Response(JSON.stringify({
+        id: 'primary-no-search',
+        status: 'completed',
+        steps: [{ type: 'model_output', content: [{ type: 'text', text: '製品Xは5.2です。' }] }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    assert.equal(calls, 2);
+    assert.match(req.system_instruction, /最終回答検証器/);
+    assert.match(req.input, /Google検索を実行して事実確認/);
+    return new Response(JSON.stringify({
+      id: 'verified',
+      status: 'completed',
+      steps: [
+        { type: 'google_search_call', arguments: { queries: ['製品X 最新 バージョン'] } },
+        { type: 'model_output', content: [{ type: 'text', text: '製品Xの最新バージョンは5.3です。' }] },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const result = await runGeminiTurn(
+      { text: '製品Xの最新バージョンは？', history: [] },
+      { GEMINI_API_KEY: 'test-key' },
+      undefined,
+      { now: FIXED },
+    );
+    assert.equal(calls, 2);
+    assert.equal(result.genericVerificationAttempted, true);
+    assert.equal(result.genericVerificationSucceeded, true);
+    assert.equal(result.searchRetried, false);
+    assert.ok(result.timings.primaryMs >= 0);
+    assert.ok(result.timings.verifierMs >= 0);
+    assert.match(result.answer, /5点3/);
   } finally {
     globalThis.fetch = originalFetch;
   }
