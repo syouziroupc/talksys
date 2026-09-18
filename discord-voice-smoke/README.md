@@ -28,19 +28,20 @@ npx wrangler secret put DISCORD_BRIDGE_TOKEN
 
 ## 起動
 
-PowerShell例:
+Windowsでは `start.ps1` を実行してください。Node.js 22.12以上を確認し、依存関係を自動導入したうえで、未設定のDiscord値だけ対話入力します。
 
 ```powershell
 cd discord-voice-smoke
-npm install
-$env:DISCORD_TOKEN="..."
-$env:DISCORD_GUILD_ID="..."
-$env:DISCORD_VOICE_CHANNEL_ID="..."
-$env:TALKSYS_BASE_URL="https://talksys.syouziroupc.workers.dev"
-# TalkSys TTS返送まで使う場合だけ
-$env:DISCORD_BRIDGE_TOKEN="..."
-npm start
+powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
+
+必要なのはDiscord側で取得する次の3項目です。
+
+- `DISCORD_TOKEN`
+- `DISCORD_GUILD_ID`
+- `DISCORD_VOICE_CHANNEL_ID`
+
+TalkSys側URL、STT WebSocket、`/api/turn`、raw echo処理はコード側に設定済みです。
 
 起動後、自動で指定VCへ参加します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。`DISCORD_BRIDGE_TOKEN` が設定済みなら回答はTalkSys側TTSで生成してVCへ返します。未設定なら、受信した実音声をそのままVCへ返すraw echo smokeになり、受信・WebSocket・送信の三点だけ先に確認できます。
 
@@ -50,6 +51,7 @@ npm start
 
 ```
 [discord] voice ready
+[preflight] realtime STT websocket open
 [rx] user=...
 [stt] websocket open
 [stt] ...
