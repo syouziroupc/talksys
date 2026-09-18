@@ -120,6 +120,7 @@ async function commitVoice(reason){
 
 const ASK_V58 = String.raw`
 async function ask(text){
+  const plan={search:false,ack:'',planner:'gemini-native'};
   abortActiveTurn('new-turn');
   const seq=++turnSeq,previous=history.slice(-MAX_HISTORY),controller=new AbortController();activeTurnController=controller;
   history.push({role:'user',content:text});setStatus('考えています…');
