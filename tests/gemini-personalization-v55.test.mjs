@@ -95,7 +95,7 @@ test('native Gemini turn keeps search, source metadata and conversational answer
   }
 });
 
-test('factual question restores the three-stage quality path when primary initially skips search', async () => {
+test('factual question uses forced search as the second and final normal interaction', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (_url, options) => {
@@ -134,12 +134,13 @@ test('factual question restores the three-stage quality path when primary initia
   };
   try {
     const result = await runGeminiTurn({ text: '別府の今日の天気は？' }, { GEMINI_API_KEY: 'test-key' });
-    assert.equal(calls, 3);
+    assert.equal(calls, 2);
     assert.equal(result.search, true);
     assert.equal(result.searchRetried, true);
-    assert.equal(result.genericVerificationAttempted, true);
-    assert.equal(result.genericVerificationSucceeded, true);
-    assert.equal(result.interactionId, 'interaction-verified');
+    assert.equal(result.genericVerificationAttempted, false);
+    assert.equal(result.genericVerificationSucceeded, false);
+    assert.equal(result.verificationPolicy, 'risk-gated-max-two-normal-interactions');
+    assert.equal(result.interactionId, 'interaction-search');
   } finally {
     globalThis.fetch = originalFetch;
   }
