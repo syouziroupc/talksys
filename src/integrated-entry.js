@@ -6,7 +6,7 @@ export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v2';
 export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
-export const REALTIME_VOICE_REVISION = 'talksys-v59-realtime-backchannel-r1';
+export const REALTIME_VOICE_REVISION = 'talksys-v59.1-realtime-backchannel-fallback-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
@@ -486,6 +486,24 @@ async function runTalkSysTurn(request, env, body, signal = request.signal) {
   return runGeminiTurn(body || {}, env, signal);
 }
 
+async function transcribeWithFastReaction(request, env, ctx) {
+  const response = await talksys.fetch(request, env, ctx);
+  const type = response.headers.get('content-type') || '';
+  if (!/application\/json/i.test(type)) return response;
+  try {
+    const body = await response.json();
+    const reaction = body?.ok && body?.text ? fastReaction(body.text) : { kind: 'none', text: '', shouldSpeak: false, terminal: false };
+    return json({
+      ...body,
+      fastReaction: reaction,
+      fastReactionRevision: FAST_REACTION_REVISION,
+      realtimeVoiceRevision: REALTIME_VOICE_REVISION,
+    }, response.status, response.headers);
+  } catch {
+    return response;
+  }
+}
+
 async function realtimeSttResponse(request, env) {
   if ((request.headers.get('upgrade') || '').toLowerCase() !== 'websocket') {
     return new Response('Expected Upgrade: websocket', { status: 426 });
@@ -501,7 +519,6 @@ async function realtimeSttResponse(request, env) {
       interim_results: true,
       endpointing: '300',
       vad_events: true,
-      utterance_end_ms: '650',
       punctuate: true,
       smart_format: true,
       filler_words: true,
@@ -563,6 +580,10 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/realtime-stt') {
       return realtimeSttResponse(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/transcribe') {
+      return transcribeWithFastReaction(request, env, ctx);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/fast-reaction') {
