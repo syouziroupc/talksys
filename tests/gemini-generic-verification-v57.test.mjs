@@ -7,6 +7,7 @@ import {
 
 const {
   buildGenericVerificationInput,
+  isLowRiskSinglePassQuestion,
   shouldRunGenericVerification,
   runGeminiTurn,
 } = __test;
@@ -131,6 +132,67 @@ test('verifier failure is fail-open and keeps the useful primary Gemini answer',
     assert.equal(result.verificationFailOpen, true);
     assert.match(result.answer, /5点2/);
     assert.doesNotMatch(result.answer, /確認できません|分かりません/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('single-pass exemption is explicit and limited to genuinely low-risk turns', () => {
+  assert.equal(isLowRiskSinglePassQuestion('ありがとう', {}), true);
+  assert.equal(isLowRiskSinglePassQuestion('12345÷15', {}), true);
+  assert.equal(isLowRiskSinglePassQuestion('この文章を短くして', {}), true);
+
+  assert.equal(isLowRiskSinglePassQuestion('富士山の高さは？', {}), false);
+  assert.equal(isLowRiskSinglePassQuestion('このCPUはWindows 11に対応してる？', {}), false);
+  assert.equal(isLowRiskSinglePassQuestion('今営業している店を教えて', {}), false);
+  assert.equal(isLowRiskSinglePassQuestion('ありがとう', {
+    steps: [{ type: 'google_search_call', arguments: { queries: ['test'] } }],
+  }), false);
+});
+
+test('primary search miss goes straight to the forced-search verifier instead of a third serial pre-verification retry', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls += 1;
+    const req = JSON.parse(options.body);
+
+    if (calls === 1) {
+      assert.doesNotMatch(req.input, /Google検索を実行して事実確認したうえで/);
+      return new Response(JSON.stringify({
+        id: 'primary-no-search',
+        status: 'completed',
+        steps: [
+          { type: 'model_output', content: [{ type: 'text', text: '製品Xは5.2です。' }] },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+
+    assert.equal(calls, 2);
+    assert.match(req.input, /最終回答前の自己検証/);
+    assert.match(req.input, /Google検索を実行して事実確認したうえで/);
+    return new Response(JSON.stringify({
+      id: 'verified-search',
+      status: 'completed',
+      steps: [
+        { type: 'google_search_call', arguments: { queries: ['製品X 最新 バージョン'] } },
+        { type: 'model_output', content: [{ type: 'text', text: '製品Xの最新バージョンは5.3です。' }] },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  try {
+    const result = await runGeminiTurn(
+      { text: '製品Xの最新バージョンは？', history: [] },
+      { GEMINI_API_KEY: 'test-key' },
+      undefined,
+      { now: FIXED },
+    );
+    assert.equal(calls, 2);
+    assert.equal(result.genericVerificationAttempted, true);
+    assert.equal(result.genericVerificationSucceeded, true);
+    assert.equal(result.searchRetried, false);
+    assert.match(result.answer, /5点3/);
   } finally {
     globalThis.fetch = originalFetch;
   }
