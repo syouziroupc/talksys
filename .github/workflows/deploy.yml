@@ -230,31 +230,27 @@ jobs:
           out="$(curl -fsS --max-time 75 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
           OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||d.route!=='gemini-native-interactions'||a.length<8||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
  
-      - name: Verify realtime STT websocket (non-blocking known issue)
-        continue-on-error: true
+      - name: Verify realtime STT websocket upgrade
         shell: bash
         run: |
           set -euo pipefail
-          PRODUCTION_URL="$PRODUCTION_URL" node <<'NODE'
-          const url = new URL(process.env.PRODUCTION_URL);
-          url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-          url.pathname = '/api/realtime-stt';
-          url.search = '';
-          const ws = new WebSocket(url.href);
-          const timer = setTimeout(() => {
-            try { ws.close(); } catch {}
-            console.error('realtime STT websocket handshake timed out');
-            process.exit(1);
-          }, 12000);
-          ws.addEventListener('open', () => {
-            clearTimeout(timer);
-            console.log('Realtime STT websocket handshake OK');
-            try { ws.close(1000, 'smoke'); } catch {}
-            setTimeout(() => process.exit(0), 100);
-          });
-          ws.addEventListener('error', (event) => {
-            clearTimeout(timer);
-            console.error('Realtime STT websocket handshake failed', event?.message || event);
-            process.exit(1);
-          });
-          NODE
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          trap 'rm -f "$headers" "$body"' EXIT
+          set +e
+          curl --silent --show-error --http1.1 --max-time 8 \
+            -D "$headers" -o "$body" \
+            -H 'Connection: Upgrade' \
+            -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Version: 13' \
+            -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            "$PRODUCTION_URL/api/realtime-stt"
+          curl_rc=$?
+          set -e
+          cat "$headers"
+          if ! grep -Eq '^HTTP/1\.[01] 101 ' "$headers"; then
+            echo "Realtime STT websocket upgrade failed (curl exit $curl_rc)"
+            cat "$body" || true
+            exit 1
+          fi
+          echo "Realtime STT websocket 101 upgrade OK"
