@@ -110,7 +110,7 @@ test('same Gemini repairs a stale current-state answer after an independent sear
   }
 });
 
-test('if primary skips search, quality-first path retries search and then independently verifies', async () => {
+test('non-greeting primary is search-forced from the first call and verification stays second', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (_url, options) => {
@@ -118,18 +118,10 @@ test('if primary skips search, quality-first path retries search and then indepe
     const req = JSON.parse(options.body);
 
     if (calls === 1) {
-      return new Response(JSON.stringify({
-        id: 'primary-no-search',
-        status: 'completed',
-        steps: [{ type: 'model_output', content: [{ type: 'text', text: '製品Xは5.2です。' }] }],
-      }), { status: 200, headers: { 'content-type': 'application/json' } });
-    }
-
-    if (calls === 2) {
       assert.match(req.system_instruction, /Google検索を必ず実行/);
       assert.match(req.input, /Google検索を実行して事実確認/);
       return new Response(JSON.stringify({
-        id: 'forced-search',
+        id: 'primary-grounded',
         status: 'completed',
         steps: [
           { type: 'google_search_call', arguments: { queries: ['製品X 最新 バージョン'] } },
@@ -138,7 +130,8 @@ test('if primary skips search, quality-first path retries search and then indepe
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
 
-    assert.equal(calls, 3);
+    assert.equal(calls, 2);
+    assert.match(req.system_instruction, /Google検索を必ず実行/);
     assert.match(req.input, /最終回答前の自己検証/);
     assert.match(req.input, /候補回答: 製品Xの最新バージョンは5.3です/);
     return new Response(JSON.stringify({
@@ -158,8 +151,8 @@ test('if primary skips search, quality-first path retries search and then indepe
       undefined,
       { now: FIXED },
     );
-    assert.equal(calls, 3);
-    assert.equal(result.searchRetried, true);
+    assert.equal(calls, 2);
+    assert.equal(result.searchRetried, false);
     assert.equal(result.genericVerificationAttempted, true);
     assert.equal(result.genericVerificationSucceeded, true);
     assert.equal(result.verifierSearched, true);
