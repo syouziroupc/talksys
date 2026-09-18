@@ -26,6 +26,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      DISCORD_PUBLIC_KEY: ${{ secrets.DISCORD_PUBLIC_KEY }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
     steps:
       - uses: actions/checkout@v6
@@ -122,8 +123,11 @@ jobs:
           SECRETS_FILE="$secrets_file" node <<'NODE'
           const fs = require('fs');
           const key = process.env.GEMINI_API_KEY || '';
+          const discordPublicKey = process.env.DISCORD_PUBLIC_KEY || '';
           if (!key) throw new Error('GEMINI_API_KEY is required');
-          fs.writeFileSync(process.env.SECRETS_FILE, JSON.stringify({ GEMINI_API_KEY: key }));
+          const secrets = { GEMINI_API_KEY: key };
+          if (discordPublicKey) secrets.DISCORD_PUBLIC_KEY = discordPublicKey;
+          fs.writeFileSync(process.env.SECRETS_FILE, JSON.stringify(secrets));
           NODE
           npx wrangler deploy --secrets-file "$secrets_file"
 
