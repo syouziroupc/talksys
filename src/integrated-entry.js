@@ -413,18 +413,22 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   if (!text) throw new Error('empty_user_input');
 
   const immediateTransit = isImmediateTransitQuestion(text);
+  const trivialConversation = TRIVIAL_CONVERSATION_RE.test(text);
   const primaryStarted = Date.now();
-  let interaction = await createGeminiInteraction(env, body, signal, { allowPrevious: true, forceSearch: false, now, immediateTransit });
+  // Greetings stay one-pass and do not expose the search tool. Every other turn
+  // starts grounded so the normal path never needs a serial search-retry stage.
+  let interaction = await createGeminiInteraction(env, body, signal, {
+    allowPrevious: true,
+    forceSearch: !trivialConversation,
+    now,
+    immediateTransit,
+  });
   const primaryMs = Date.now() - primaryStarted;
 
+  // Kept in the response contract for telemetry compatibility. The normal
+  // answer path no longer performs a separate primary search retry.
   let searchRetried = false;
   let searchRetryMs = 0;
-  if (!searchedInInteraction(interaction.payload) && shouldStronglyPreferSearch(text)) {
-    searchRetried = true;
-    const retryStarted = Date.now();
-    interaction = await createGeminiInteraction(env, body, signal, { allowPrevious: true, forceSearch: true, now, immediateTransit });
-    searchRetryMs = Date.now() - retryStarted;
-  }
 
   const primaryInteraction = interaction;
   let genericVerificationAttempted = false;
