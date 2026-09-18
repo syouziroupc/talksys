@@ -67,7 +67,9 @@ test('current-time route overrides stale assistant history with server JST', asy
   assert.equal(body.generationProvider, 'deterministic');
   assert.equal(body.timeZone, 'Asia/Tokyo');
   assert.ok(body.serverEpochMs >= before && body.serverEpochMs <= after);
-  assert.doesNotMatch(body.answer, /10時37分/);
+  const shifted = new Date(body.serverEpochMs + 9 * 60 * 60 * 1000);
+  const expected = `${shifted.getUTCHours()}時${String(shifted.getUTCMinutes()).padStart(2, '0')}分`;
+  assert.match(body.answer, new RegExp(expected));
 });
 
 test('health contract advertises router-first JST and evidence-only dynamic facts', async () => {

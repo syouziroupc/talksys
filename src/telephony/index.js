@@ -3,7 +3,7 @@ import { transcribeV45 } from '../stt-v45.js';
 import { bytesToBase64, pcmuBase64ToSamples, rmsOfSamples, samplesToWav } from './codec.js';
 import { buildTexml, clampInt, clean, flag, xmlEscape } from './protocol.js';
 
-export const TELEPHONY_REVISION = 'talksys-telephony-integrated-v1';
+export const TELEPHONY_REVISION = 'talksys-telephony-v58-adaptive-vad-cancel';
 const FRAME_MS = 20;
 let schemaPromise;
 
@@ -175,16 +175,38 @@ async function transcribeSamples(env, samples) {
   return { ok: true, text: clean(payload.text, 1800) };
 }
 
-async function answerWithTalkSys(deps, text, history) {
+async function answerWithTalkSys(deps, text, history, signal) {
   if (typeof deps?.turn !== 'function') return { ok: false, error: 'talksys_turn_not_connected' };
   try {
-    const payload = await deps.turn({ text, history: history.slice(-16), channel: 'phone' });
+    const payload = await deps.turn({ text, history: history.slice(-16), channel: 'phone' }, signal);
     const answer = clean(payload?.answer || payload?.response || payload?.text || '', 9000);
     if (!answer) return { ok: false, error: payload?.error || 'empty_answer' };
     return { ok: true, answer, payload };
   } catch (error) {
+    if (error?.name === 'AbortError') return { ok: false, aborted: true, error: 'turn_aborted' };
     return { ok: false, error: clean(error?.message || error, 240) };
   }
+}
+
+export function highPassPcmFrame(samples, state = {}, sampleRate = 8000, cutoffHz = 90) {
+  const input = samples instanceof Int16Array ? samples : Int16Array.from(samples || []);
+  const out = new Int16Array(input.length);
+  const dt = 1 / Math.max(1, sampleRate);
+  const rc = 1 / (2 * Math.PI * Math.max(1, cutoffHz));
+  const alpha = rc / (rc + dt);
+  let prevX = Number(state.prevX || 0);
+  let prevY = Number(state.prevY || 0);
+  for (let i = 0; i < input.length; i += 1) {
+    const x = input[i];
+    const y = alpha * (prevY + x - prevX);
+    const clipped = Math.max(-32768, Math.min(32767, Math.round(y)));
+    out[i] = clipped;
+    prevX = x;
+    prevY = y;
+  }
+  state.prevX = prevX;
+  state.prevY = prevY;
+  return out;
 }
 
 async function synthesizeMp3(env, text) {
@@ -226,8 +248,9 @@ function health(request, env, deps) {
     talksysTurnConnected: typeof deps?.turn === 'function',
     storageMode: env?.TALKSYS_LOG_DB ? '既存TalkSys D1' : 'disabled',
     recording: false,
-    concurrency: '通話ごとに独立WebSocket。共有AIセッションなし。',
-    inputAudio: 'Telnyx PCMU 8kHz → TalkSys STT',
+    concurrency: '通話ごとに独立WebSocket。確定した追加入力は進行中AIターンを中断。',
+    inputAudio: 'Telnyx PCMU 8kHz → 90Hz HPF → 適応VAD → TalkSys STT',
+    voiceInterruption: 'STT確定後に旧GeminiターンをAbort。ノイズだけでは中断しない。',
     outputAudio: 'TalkSys TTS MP3 → Telnyx',
     answerEngine: 'TalkSys本体（既存回答経路）',
     routes: { management: '/phone', health: '/telephony-health', voice: '/telnyx/voice', media: '/telnyx/media' },
@@ -295,10 +318,45 @@ function mediaBridge(request, env, deps) {
   let silentFor = 0;
   let speechFrames = [];
   let preRoll = [];
-  let processing = Promise.resolve();
   let closed = false;
   let assistantPlaying = false;
   let currentMark = '';
+  let noiseFloor = Math.max(0.0015, Math.min(0.02, speechThreshold * 0.45));
+  let speechHits = 0;
+  let bargeHits = 0;
+  let captureSeq = 0;
+  let latestAcceptedCapture = 0;
+  let turnVersion = 0;
+  let activeTurnAbort = null;
+  let pendingSttCount = 0;
+  const pendingTasks = new Set();
+  const hpState = { prevX: 0, prevY: 0 };
+
+  const adaptNoise = (rms, fast = false) => {
+    const value = Math.max(0.0005, Math.min(0.04, Number(rms) || 0));
+    const alpha = fast ? 0.08 : (value > noiseFloor ? 0.01 : 0.035);
+    noiseFloor = Math.max(0.001, Math.min(0.03, noiseFloor * (1 - alpha) + value * alpha));
+  };
+  const startThreshold = () => Math.max(speechThreshold, Math.min(0.055, noiseFloor * 2.7));
+  const trackTask = (promise) => {
+    pendingTasks.add(promise);
+    promise.finally(() => pendingTasks.delete(promise));
+    return promise;
+  };
+  const abortActiveTurn = () => {
+    const controller = activeTurnAbort;
+    activeTurnAbort = null;
+    if (controller) {
+      try { controller.abort('confirmed-voice-interrupt'); } catch {}
+    }
+  };
+  const waitForPendingSpeechDecision = async (version) => {
+    const until = Date.now() + 2800;
+    while (pendingSttCount > 0 && version === turnVersion && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 35));
+    }
+    return version === turnVersion;
+  };
 
   const speak = async (text) => {
     const payload = await synthesizeMp3(env, text);
@@ -320,7 +378,10 @@ function mediaBridge(request, env, deps) {
   const finishUtterance = () => {
     if (!speechActive || !speechFrames.length) return;
     const frames = speechFrames;
+    const myCapture = ++captureSeq;
     speechActive = false;
+    speechHits = 0;
+    bargeHits = 0;
     silentFor = 0;
     speechFrames = [];
     preRoll = [];
@@ -328,13 +389,33 @@ function mediaBridge(request, env, deps) {
     const durationMs = samples.length / 8;
     if (durationMs < minSpeechMs) return;
 
-    processing = processing.then(async () => {
+    pendingSttCount += 1;
+    const task = (async () => {
+      let stt;
       try {
-        const stt = await transcribeSamples(env, samples);
-        if (!stt.ok || !stt.text) return;
-        await appendMessage(env, callId, 'user', stt.text);
-        const turn = await answerWithTalkSys(deps, stt.text, history);
-        history.push({ role: 'user', content: stt.text });
+        stt = await transcribeSamples(env, samples);
+      } catch (error) {
+        console.error(JSON.stringify({ type: 'phone_stt_error', error: clean(error?.message || error, 240) }));
+        return;
+      } finally {
+        pendingSttCount = Math.max(0, pendingSttCount - 1);
+      }
+      if (!stt?.ok || !stt.text || myCapture < latestAcceptedCapture) return;
+
+      latestAcceptedCapture = myCapture;
+      const myVersion = ++turnVersion;
+      abortActiveTurn();
+      interruptPlayback();
+      await appendMessage(env, callId, 'user', stt.text);
+      history.push({ role: 'user', content: stt.text });
+
+      const controller = new AbortController();
+      activeTurnAbort = controller;
+      try {
+        const turn = await answerWithTalkSys(deps, stt.text, history, controller.signal);
+        if (myVersion !== turnVersion || turn?.aborted) return;
+        if (pendingSttCount > 0 && !await waitForPendingSpeechDecision(myVersion)) return;
+        if (myVersion !== turnVersion) return;
         if (!turn.ok) {
           await setCallStatus(env, callId, 'answer-error');
           console.error(JSON.stringify({ type: 'phone_turn_error', error: clean(turn.error, 200) }));
@@ -342,13 +423,18 @@ function mediaBridge(request, env, deps) {
         }
         history.push({ role: 'assistant', content: turn.answer });
         await appendMessage(env, callId, 'assistant', turn.answer);
+        if (myVersion !== turnVersion) return;
         const spoken = await speak(turn.answer);
         if (!spoken) await setCallStatus(env, callId, 'tts-error');
       } catch (error) {
+        if (error?.name === 'AbortError' || myVersion !== turnVersion) return;
         await setCallStatus(env, callId, 'error');
         console.error(JSON.stringify({ type: 'phone_pipeline_error', error: clean(error?.message || error, 240) }));
+      } finally {
+        if (activeTurnAbort === controller) activeTurnAbort = null;
       }
-    });
+    })();
+    trackTask(task);
   };
 
   const deadline = setTimeout(() => {
@@ -383,32 +469,64 @@ function mediaBridge(request, env, deps) {
     }
 
     if (message?.event === 'media' && message?.media?.payload) {
-      const samples = pcmuBase64ToSamples(message.media.payload);
+      const decoded = pcmuBase64ToSamples(message.media.payload);
+      const samples = highPassPcmFrame(decoded, hpState, 8000, 90);
       const rms = rmsOfSamples(samples);
-      if (rms >= speechThreshold) {
-        if (!speechActive) {
-          interruptPlayback();
+      const threshold = startThreshold();
+      const snr = rms / Math.max(0.001, noiseFloor);
+
+      if (!speechActive) {
+        preRoll.push(samples);
+        if (preRoll.length > 12) preRoll.shift();
+
+        if (assistantPlaying) {
+          const bargeThreshold = Math.max(threshold * 1.25, noiseFloor * 3.2, 0.010);
+          if (rms >= bargeThreshold && snr >= 1.8) bargeHits += 1;
+          else bargeHits = Math.max(0, bargeHits - 1);
+          if (bargeHits >= 5) {
+            interruptPlayback();
+            speechActive = true;
+            speechFrames = [...preRoll];
+            preRoll = [];
+            silentFor = 0;
+            speechHits = 0;
+            bargeHits = 0;
+          } else {
+            adaptNoise(rms, false);
+          }
+          return;
+        }
+
+        if (rms >= threshold && snr >= 1.6) speechHits += 1;
+        else {
+          speechHits = 0;
+          adaptNoise(rms, false);
+        }
+        if (speechHits >= 3) {
           speechActive = true;
           speechFrames = [...preRoll];
           preRoll = [];
+          silentFor = 0;
+          speechHits = 0;
         }
-        speechFrames.push(samples);
-        silentFor = 0;
-      } else if (speechActive) {
-        speechFrames.push(samples);
-        silentFor += FRAME_MS;
-        const durationMs = speechFrames.length * FRAME_MS;
-        if (silentFor >= silenceMs || durationMs >= maxUtteranceMs) finishUtterance();
-      } else {
-        preRoll.push(samples);
-        if (preRoll.length > 10) preRoll.shift();
+        return;
       }
+
+      speechFrames.push(samples);
+      if (rms >= Math.max(noiseFloor * 1.8, speechThreshold * 0.75)) {
+        silentFor = 0;
+      } else {
+        silentFor += FRAME_MS;
+      }
+      const durationMs = speechFrames.length * FRAME_MS;
+      if (silentFor >= silenceMs || durationMs >= maxUtteranceMs) finishUtterance();
       return;
     }
 
     if (message?.event === 'stop') {
       finishUtterance();
-      await processing.catch(() => {});
+      abortActiveTurn();
+      await Promise.allSettled([...pendingTasks]);
       await setCallStatus(env, callId, 'ended');
       closeSocket(telnyx, 1000, 'telnyx_stopped');
     }
@@ -423,7 +541,8 @@ function mediaBridge(request, env, deps) {
     closed = true;
     clearTimeout(deadline);
     finishUtterance();
-    await processing.catch(() => {});
+    abortActiveTurn();
+    await Promise.allSettled([...pendingTasks]);
     await setCallStatus(env, callId, 'ended');
   });
 
