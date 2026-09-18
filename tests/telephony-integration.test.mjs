@@ -38,3 +38,13 @@ test('integrated entry keeps Telnyx transport but routes phone turns through the
   assert.doesNotMatch(source, /gemini-3\.8-live/i);
   assert.doesNotMatch(source, /BidiGenerateContent/i);
 });
+
+
+test('phone message logging stays off the answer critical path', () => {
+  const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+  assert.match(source, /const queueMessageLog = \(role, content\) => trackTask/);
+  assert.match(source, /queueMessageLog\('user', stt\.text\);\s*history\.push/);
+  assert.match(source, /queueMessageLog\('assistant', turn\.answer\);\s*if \(myVersion !== turnVersion\) return;\s*const spoken = await speak/);
+  assert.doesNotMatch(source, /await appendMessage\(env, callId, 'user', stt\.text\)/);
+  assert.doesNotMatch(source, /await appendMessage\(env, callId, 'assistant', turn\.answer\)/);
+});
