@@ -35,7 +35,7 @@ const VOICE_SAFE_HELPER = String.raw`function voiceSafeText(text){
 }`;
 
 
-const VOICE_CONTROL_HELPERS = String.raw\`
+const VOICE_CONTROL_HELPERS = String.raw`
 function beginVoiceCandidate(){
   const id=++voiceCandidateEpoch;voiceCandidateCount++;currentVoiceCandidateId=id;return id;
 }
@@ -58,9 +58,9 @@ function stopPlaybackForConfirmedVoice(){
   try{if(fallbackAudio){fallbackAudio.pause();fallbackAudio.currentTime=0;}}catch{}fallbackAudio=null;
   playing=false;
 }
-\`;
+`;
 
-const PROCESS_FRAME_V58 = String.raw\`
+const PROCESS_FRAME_V58 = String.raw`
 function processFrame(a){
   frameCount++;const lv=level(a);lastRms=lv.r;lastPeak=lv.p;const frameMs=a.length/TARGET*1000;const th=vadThresholds(),startTh=th.startTh,endTh=th.endTh,now=Date.now();const snr=lv.r/Math.max(.001,noise);
   if(!speech&&!playing&&!busy&&now<calibrationUntil){pre.push(a.slice());if(pre.length>PRE_ROLL)pre.shift();adaptAmbient(lv.r,true);startHits=0;diagUpdate();return;}
@@ -84,9 +84,9 @@ function processFrame(a){
   if(lv.r>endTh){silence=0;speechVoicedMs+=frameMs;}else silence+=frameMs;
   if(duration>=MAX_UTTERANCE_MS||silence>=SILENCE_MS)commitVoice(duration>=MAX_UTTERANCE_MS?'最大長':'無音');diagUpdate();
 }
-\`;
+`;
 
-const COMMIT_VOICE_V58 = String.raw\`
+const COMMIT_VOICE_V58 = String.raw`
 async function commitVoice(reason){
   if(!speech)return;
   const candidateId=currentVoiceCandidateId,data=frames,ms=duration,voicedMs=speechVoicedMs,maxRms=speechMaxRms,snr=maxRms/Math.max(.001,noise),captureId=++voiceCaptureSeq;
@@ -116,9 +116,9 @@ async function commitVoice(reason){
     if(!gotText&&resumePlan){lastError='';await resumeInterruptedSpeech();}else if(!activeTurnController)setStatus('聞き取りに失敗');
   }finally{diagUpdate(true);}
 }
-\`;
+`;
 
-const ASK_V58 = String.raw\`
+const ASK_V58 = String.raw`
 async function ask(text){
   abortActiveTurn('new-turn');
   const seq=++turnSeq,previous=history.slice(-MAX_HISTORY),controller=new AbortController();activeTurnController=controller;
@@ -141,9 +141,9 @@ async function ask(text){
     throw e;
   }finally{if(activeTurnController===controller)activeTurnController=null;}
 }
-\`;
+`;
 
-const START_MIC_V58 = String.raw\`
+const START_MIC_V58 = String.raw`
 async function startMic(){
   if(micOn)return;lastError='';
   try{
@@ -165,9 +165,9 @@ async function startMic(){
     setStatus(playing?'話しています…':'周囲の雑音を調整中…');log('マイク開始 '+ctx.sampleRate+'Hz → 16000Hz / '+micProcessingSettings+' / HPF 90Hz');diagUpdate(true);
   }catch(e){lastError=e.name+': '+String(e.message||e);log('マイク開始失敗: '+lastError);setStatus('マイクを開始できません');stopMic();}
 }
-\`;
+`;
 
-const STOP_MIC_V58 = String.raw\`
+const STOP_MIC_V58 = String.raw`
 function stopMic(){
   if(currentVoiceCandidateId){finishVoiceCandidate(currentVoiceCandidateId);currentVoiceCandidateId=0;}
   if(speech)resetTurn();micOn=false;
@@ -175,7 +175,7 @@ function stopMic(){
   processor=inputFilter=source=silentGain=stream=null;if(ctx){try{ctx.close();}catch{}ctx=null;}
   mic.classList.remove('on');mic.textContent='マイク会話を開始';setStatus(playing?'話しています…':'停止中');log('マイク停止');diagUpdate(true);
 }
-\`;
+`;
 
 const RESUME_OLD = "async function resumeInterruptedSpeech(){const plan=resumePlan;resumePlan=null;if(!plan)return false;falseBargeResumes++;bargeCooldownUntil=Date.now()+900;log('新しい発話なし。元の読み上げを再開 '+falseBargeResumes+'回目');await speak(plan.text,{startIndex:plan.index,resumeable:true});return true;}";
 const RESUME_NEW = "async function resumeInterruptedSpeech(){const plan=resumePlan;resumePlan=null;if(!plan)return false;falseBargeResumes++;bargeCooldownUntil=Date.now()+650;const nextIndex=Math.min(plan.chunks.length-1,Math.max(0,Number(plan.index)||0)+1);log('新しい発話なし。停止位置の次から読み上げ再開 '+falseBargeResumes+'回目');await speak(plan.text,{startIndex:nextIndex,resumeable:true});return true;}";
