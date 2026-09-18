@@ -1,0 +1,137 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  GENERIC_VERIFICATION_REVISION,
+  __test,
+} from '../src/integrated-entry.js';
+
+const {
+  buildGenericVerificationInput,
+  shouldRunGenericVerification,
+  runGeminiTurn,
+} = __test;
+
+const FIXED = new Date('2026-09-17T11:00:00Z'); // 20:00 JST
+
+test('v57 generic verifier is Gemini-led and explicitly repair-first rather than blanket fail-closed', () => {
+  assert.equal(GENERIC_VERIFICATION_REVISION, 'talksys-v57-gemini-self-verify-r1');
+  const input = buildGenericVerificationInput(
+    { text: '今営業している店を教えて' },
+    {
+      answer: 'A店が営業中です。',
+      payload: {
+        steps: [
+          { type: 'google_search_call', arguments: { queries: ['A店 営業時間'] } },
+          { type: 'google_search_result', result: [{ title: 'A店公式', url: 'https://example.com/a' }] },
+        ],
+      },
+    },
+    FIXED,
+  );
+  assert.match(input, /2026-09-17T20:00:00\+09:00/);
+  assert.match(input, /現在時点との整合性/);
+  assert.match(input, /Google検索を使って再確認/);
+  assert.match(input, /回答全体を「確認できません」「分かりません」に置き換えない/);
+  assert.match(input, /最終回答そのもの/);
+});
+
+test('generic verifier runs for factual/search turns but not trivial conversation', () => {
+  assert.equal(shouldRunGenericVerification('今営業している店を教えて', {}), true);
+  assert.equal(shouldRunGenericVerification('ありがとう', {}), false);
+  assert.equal(shouldRunGenericVerification('12345÷15', {}), false);
+  assert.equal(shouldRunGenericVerification('この文章を短くして', {}), false);
+  assert.equal(shouldRunGenericVerification('この文章を短くして', {
+    steps: [{ type: 'google_search_call', arguments: { queries: ['test'] } }],
+  }), true);
+});
+
+test('same Gemini repairs a stale current-state answer instead of TalkSys deciding the fact', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls += 1;
+    const req = JSON.parse(options.body);
+    assert.equal(req.model, 'gemini-3.5-flash-lite');
+    assert.deepEqual(req.tools, [{ type: 'google_search' }]);
+
+    if (calls === 1) {
+      return new Response(JSON.stringify({
+        id: 'primary',
+        status: 'completed',
+        steps: [
+          { type: 'google_search_call', arguments: { queries: ['A店 営業時間'] } },
+          { type: 'model_output', content: [{ type: 'text', text: 'A店は今営業しています。' }] },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+
+    assert.match(req.input, /最終回答前の自己検証/);
+    assert.match(req.input, /A店は今営業しています/);
+    assert.match(req.input, /2026-09-17T20:00:00\+09:00/);
+    return new Response(JSON.stringify({
+      id: 'verified',
+      status: 'completed',
+      steps: [
+        { type: 'google_search_call', arguments: { queries: ['A店 営業時間 2026年9月17日'] } },
+        { type: 'model_output', content: [{ type: 'text', text: 'A店は19時に閉店しているため、現在は営業していません。' }] },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  try {
+    const result = await runGeminiTurn(
+      { text: 'A店は今営業していますか？', history: [] },
+      { GEMINI_API_KEY: 'test-key' },
+      undefined,
+      { now: FIXED },
+    );
+    assert.equal(calls, 2);
+    assert.equal(result.genericVerificationAttempted, true);
+    assert.equal(result.genericVerificationSucceeded, true);
+    assert.equal(result.verifierSearched, true);
+    assert.equal(result.verificationFailOpen, false);
+    assert.doesNotMatch(result.answer, /今営業しています/);
+    assert.match(result.answer, /19時に閉店/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('verifier failure is fail-open and keeps the useful primary Gemini answer', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(JSON.stringify({
+        id: 'primary',
+        status: 'completed',
+        steps: [
+          { type: 'google_search_call', arguments: { queries: ['製品X 最新 バージョン'] } },
+          { type: 'model_output', content: [{ type: 'text', text: '製品Xの最新バージョンは5.2です。' }] },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ error: { message: 'temporary verifier outage' } }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const result = await runGeminiTurn(
+      { text: '製品Xの最新バージョンは？', history: [] },
+      { GEMINI_API_KEY: 'test-key' },
+      undefined,
+      { now: FIXED },
+    );
+    assert.equal(calls, 2);
+    assert.equal(result.genericVerificationAttempted, true);
+    assert.equal(result.genericVerificationSucceeded, false);
+    assert.equal(result.verificationFailOpen, true);
+    assert.match(result.answer, /5点2/);
+    assert.doesNotMatch(result.answer, /確認できません|分かりません/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
