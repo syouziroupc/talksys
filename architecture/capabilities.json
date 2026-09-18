@@ -100,7 +100,6 @@
       "status": "production",
       "responsibility": "Deterministic short conversational backchannels and utterance matching used by realtime browser turn-taking and integrated phone replies",
       "companions": [
-        "src/talk-client-v45.js",
         "src/integrated-entry.js",
         "src/telephony/index.js"
       ],
