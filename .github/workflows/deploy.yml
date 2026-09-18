@@ -250,13 +250,22 @@ jobs:
           headers="$(mktemp)"
           audio="$(mktemp)"
           trap 'rm -f "$headers" "$audio"' EXIT
-          curl --fail-with-body --silent --show-error --max-time 30 \
+          set +e
+          http_code="$(curl --silent --show-error --max-time 30 \
+            -w '%{http_code}' \
             -D "$headers" -o "$audio" \
             -H 'content-type: application/json' \
             -H 'x-talksys-demo: discord-voice-smoke-20260918' \
             --data '{"text":"接続テストです。"}' \
-            "$PRODUCTION_URL/api/voice/synthesize"
+            "$PRODUCTION_URL/api/voice/synthesize")"
+          curl_rc=$?
+          set -e
           cat "$headers"
+          if [[ "$curl_rc" -ne 0 || "$http_code" != "200" ]]; then
+            echo "Temporary Discord demo TTS failed: curl=$curl_rc http=$http_code"
+            cat "$audio" || true
+            exit 1
+          fi
           grep -Eiq '^content-type: *audio/mpeg' "$headers"
           test "$(wc -c < "$audio")" -gt 100
           echo "Temporary Discord demo TTS returned $(wc -c < "$audio") bytes."
