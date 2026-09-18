@@ -102,6 +102,32 @@ function historyForInput(body = {}) {
   }).filter(Boolean);
 }
 
+export function unansweredUserTail(body = {}) {
+  const history = Array.isArray(body?.history) ? body.history.slice(-12) : [];
+  const out = [];
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const item = history[i];
+    if (item?.role === 'assistant') break;
+    if (item?.role !== 'user') continue;
+    const content = compact(item?.content, 1800);
+    if (content) out.push(content);
+  }
+  return out.reverse();
+}
+
+export function resolvedUserQuestion(body = {}) {
+  const current = compact(body?.text, 4000);
+  const tail = unansweredUserTail(body);
+  const fragments = [];
+  for (const value of [...tail, current]) {
+    const text = compact(value, 4000);
+    if (!text) continue;
+    if (fragments.length && fragments[fragments.length - 1] === text) continue;
+    fragments.push(text);
+  }
+  return compact(fragments.join(' '), 8000);
+}
+
 function interactionInput(body = {}, { forceSearch = false, immediateTransit = false, now = new Date() } = {}) {
   const text = compact(body?.text, 4000);
   if (!text) throw new Error('empty_user_input');
@@ -112,6 +138,17 @@ function interactionInput(body = {}, { forceSearch = false, immediateTransit = f
     ? `利用者には直前に短い相槌「${spokenBackchannel}」をすでに読み上げています。最終回答では同じ相槌や挨拶を繰り返さず、その続きとして自然に本題から答えてください。\n`
     : '';
   if (previousInteractionId) {
+    const unanswered = unansweredUserTail(body);
+    if (unanswered.length) {
+      return [
+        ...(transitPrefix ? [transitPrefix.trim()] : []),
+        ...(backchannelPrefix ? [backchannelPrefix.trim()] : []),
+        '直前の利用者発話は音声認識の都合で複数断片に分かれている可能性があります。まだ回答していない直前の利用者発話と今回の発話を、ひと続きの発話として解釈してください。',
+        ...unanswered.map((value) => `直前の未回答断片: ${value}`),
+        `今回の利用者発言: ${text}`,
+        ...(forceSearch ? ['これら全体の文脈を使ってGoogle検索を実行し、事実確認してから回答してください。検索語も断片全体から作ってください。'] : []),
+      ].join('\n');
+    }
     return forceSearch
       ? `${transitPrefix}${backchannelPrefix}Google検索を実行して事実確認したうえで答えてください。今回の利用者発言: ${text}`
       : `${transitPrefix}${backchannelPrefix}${text}`;
@@ -175,7 +212,7 @@ export function pastImmediateTransitDepartures(answer = '', now = new Date()) {
 }
 
 function temporalRepairBody(body = {}, rejectedAnswer = '', now = new Date()) {
-  const original = compact(body?.text, 4000);
+  const original = resolvedUserQuestion(body);
   const rejected = compact(rejectedAnswer, 3000);
   return {
     ...body,
@@ -319,7 +356,7 @@ async function runGenericGeminiVerification(env, body = {}, primary = {}, signal
     allowPrevious: false,
     forceSearch: true,
     now,
-    immediateTransit: isImmediateTransitQuestion(compact(body?.text, 4000)),
+    immediateTransit: isImmediateTransitQuestion(resolvedUserQuestion(body)),
   });
 }
 
@@ -333,7 +370,7 @@ async function createGeminiInteraction(env, body = {}, signal, { allowPrevious =
   const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
   if (!key) throw new Error('gemini_api_key_missing');
   const previousInteractionId = allowPrevious ? compact(body?.previousInteractionId, 400) : '';
-  const searchAllowed = forceSearch || !TRIVIAL_CONVERSATION_RE.test(compact(body?.text, 4000));
+  const searchAllowed = forceSearch || !TRIVIAL_CONVERSATION_RE.test(resolvedUserQuestion(body));
   const requestBody = {
     model: GEMINI_MODEL,
     input: interactionInput(body, { forceSearch, immediateTransit, now }),
@@ -369,7 +406,7 @@ async function createGeminiInteraction(env, body = {}, signal, { allowPrevious =
 export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   const started = Date.now();
   const now = options?.now instanceof Date ? options.now : new Date();
-  const text = compact(body?.text, 4000);
+  const text = resolvedUserQuestion(body);
   if (!text) throw new Error('empty_user_input');
 
   const immediateTransit = isImmediateTransitQuestion(text);
@@ -718,6 +755,8 @@ export default {
 };
 
 export const __test = {
+  unansweredUserTail,
+  resolvedUserQuestion,
   buildTalkSysSystemInstruction,
   currentJstInstruction,
   shouldRunGenericVerification,
