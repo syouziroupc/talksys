@@ -11,6 +11,7 @@ export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v59.2-realtime-stt-minimal-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
+export const GEMINI_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
 
 const GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -595,6 +596,68 @@ function discordVoiceTtsAuthorized(request, env, nowMs = Date.now()) {
   return demo === DISCORD_DEMO_TTS_HEADER && nowMs <= DISCORD_DEMO_TTS_EXPIRES_AT;
 }
 
+function decodeBase64Bytes(value) {
+  const binary = atob(String(value || ''));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function pcm16MonoToWav(pcmBytes, sampleRate = 24000) {
+  const pcm = pcmBytes instanceof Uint8Array ? pcmBytes : new Uint8Array(pcmBytes || 0);
+  const dataLength = pcm.byteLength - (pcm.byteLength % 2);
+  const out = new Uint8Array(44 + dataLength);
+  const view = new DataView(out.buffer);
+  const writeAscii = (offset, value) => {
+    for (let i = 0; i < value.length; i += 1) out[offset + i] = value.charCodeAt(i);
+  };
+  writeAscii(0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true);
+  writeAscii(8, 'WAVE');
+  writeAscii(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(36, 'data');
+  view.setUint32(40, dataLength, true);
+  out.set(pcm.subarray(0, dataLength), 44);
+  return out.buffer;
+}
+
+async function synthesizeGeminiJapaneseTts(text, env, signal) {
+  const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
+  if (!key) throw new Error('gemini_tts_api_key_missing');
+  const response = await fetch(GEMINI_INTERACTIONS_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+    body: JSON.stringify({
+      model: GEMINI_TTS_MODEL,
+      input: text,
+      response_format: { type: 'audio' },
+      generation_config: {
+        speech_config: [{ voice: 'Kore' }],
+      },
+    }),
+    signal,
+  });
+  const raw = await response.text();
+  let payload = {};
+  try { payload = raw ? JSON.parse(raw) : {}; } catch {}
+  if (!response.ok) {
+    const detail = compact(payload?.error?.message || raw || response.statusText, 700);
+    throw new Error(`gemini_tts_http_${response.status}${detail ? `:${detail}` : ''}`);
+  }
+  const encoded = compact(payload?.output_audio?.data, 20_000_000);
+  if (!encoded) throw new Error('gemini_tts_empty_audio');
+  const pcm = decodeBase64Bytes(encoded);
+  if (pcm.byteLength <= 0) throw new Error('gemini_tts_empty_pcm');
+  return pcm16MonoToWav(pcm, 24000);
+}
+
 async function discordVoiceSynthesize(request, env) {
   if (!discordVoiceTtsAuthorized(request, env)) {
     return json({ ok: false, error: 'unauthorized' }, 401);
@@ -604,21 +667,47 @@ async function discordVoiceSynthesize(request, env) {
   catch { return json({ ok: false, error: 'invalid_json' }, 400); }
   const text = compact(body?.text, 1800);
   if (!text) return json({ ok: false, error: 'empty_text' }, 400);
-  if (!env?.AI) return json({ ok: false, error: 'workers_ai_unavailable' }, 503);
+  let primaryError = '';
+  if (env?.AI) {
+    try {
+      const tts = new CloudflareJapaneseTTS(env.AI);
+      const audio = await tts.synthesize(text, request.signal);
+      if (audio && audio.byteLength > 0) {
+        return new Response(audio, {
+          status: 200,
+          headers: {
+            'content-type': 'audio/mpeg',
+            'cache-control': 'no-store',
+            'x-talksys-voice-source': 'talksys-cloudflare-tts',
+          },
+        });
+      }
+      primaryError = 'empty_cloudflare_tts_audio';
+    } catch (error) {
+      primaryError = compact(error?.message || error, 350);
+    }
+  } else {
+    primaryError = 'workers_ai_unavailable';
+  }
+
   try {
-    const tts = new CloudflareJapaneseTTS(env.AI);
-    const audio = await tts.synthesize(text, request.signal);
-    if (!audio || audio.byteLength <= 0) return json({ ok: false, error: 'empty_tts_audio' }, 502);
-    return new Response(audio, {
+    const wav = await synthesizeGeminiJapaneseTts(text, env, request.signal);
+    return new Response(wav, {
       status: 200,
       headers: {
-        'content-type': 'audio/mpeg',
+        'content-type': 'audio/wav',
         'cache-control': 'no-store',
-        'x-talksys-voice-source': 'talksys-cloudflare-tts',
+        'x-talksys-voice-source': 'talksys-gemini-tts-fallback',
+        'x-talksys-tts-primary-error': primaryError.slice(0, 160),
       },
     });
   } catch (error) {
-    return json({ ok: false, error: 'tts_failed', detail: compact(error?.message || error, 500) }, 502);
+    const fallbackError = compact(error?.message || error, 500);
+    return json({
+      ok: false,
+      error: 'tts_failed',
+      detail: compact(`cloudflare=${primaryError}; gemini=${fallbackError}`, 800),
+    }, 502);
   }
 }
 
@@ -784,4 +873,6 @@ export const __test = {
   runGeminiTurn,
   realtimeSttResponse,
   discordVoiceTtsAuthorized,
+  pcm16MonoToWav,
+  synthesizeGeminiJapaneseTts,
 };
