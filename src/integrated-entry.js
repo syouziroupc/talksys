@@ -1,6 +1,7 @@
 import talksys from './entry.js';
 import { handleTelephonyRequest } from './telephony/index.js';
 import { fastReaction, FAST_REACTION_REVISION } from './voice-fast-reaction.js';
+import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 
 export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v2';
 export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
@@ -566,6 +567,36 @@ async function realtimeSttResponse(request, env) {
   }
 }
 
+async function discordVoiceSynthesize(request, env) {
+  const expected = typeof env?.DISCORD_BRIDGE_TOKEN === 'string' ? env.DISCORD_BRIDGE_TOKEN.trim() : '';
+  if (!expected) return json({ ok: false, error: 'discord_bridge_token_missing' }, 503);
+  const supplied = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  if (!supplied || supplied.length !== expected.length || supplied !== expected) {
+    return json({ ok: false, error: 'unauthorized' }, 401);
+  }
+  let body = {};
+  try { body = await request.json(); }
+  catch { return json({ ok: false, error: 'invalid_json' }, 400); }
+  const text = compact(body?.text, 1800);
+  if (!text) return json({ ok: false, error: 'empty_text' }, 400);
+  if (!env?.AI) return json({ ok: false, error: 'workers_ai_unavailable' }, 503);
+  try {
+    const tts = new CloudflareJapaneseTTS(env.AI);
+    const audio = await tts.synthesize(text, request.signal);
+    if (!audio || audio.byteLength <= 0) return json({ ok: false, error: 'empty_tts_audio' }, 502);
+    return new Response(audio, {
+      status: 200,
+      headers: {
+        'content-type': 'audio/mpeg',
+        'cache-control': 'no-store',
+        'x-talksys-voice-source': 'talksys-cloudflare-tts',
+      },
+    });
+  } catch (error) {
+    return json({ ok: false, error: 'tts_failed', detail: compact(error?.message || error, 500) }, 502);
+  }
+}
+
 async function voiceHealth(request, env, ctx) {
   const response = await talksys.fetch(request, env, ctx);
   const type = response.headers.get('content-type') || '';
@@ -616,6 +647,10 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/api/transcribe') {
       return transcribeWithFastReaction(request, env, ctx);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/voice/synthesize') {
+      return discordVoiceSynthesize(request, env);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/fast-reaction') {
