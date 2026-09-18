@@ -266,7 +266,7 @@ jobs:
             cat "$audio" || true
             exit 1
           fi
-          grep -Eiq '^content-type: *audio/mpeg' "$headers"
+          grep -Eiq '^content-type: *audio/(mpeg|wav)' "$headers"
           test "$(wc -c < "$audio")" -gt 100
           echo "Temporary Discord demo TTS returned $(wc -c < "$audio") bytes."
 
