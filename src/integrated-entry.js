@@ -554,7 +554,7 @@ async function realtimeSttResponse(request, env) {
       encoding: 'linear16',
       sample_rate: '16000',
       language: 'ja',
-      interim_results: true,
+      interim_results: 'true',
     }, { websocket: true });
   } catch (error) {
     return json({
