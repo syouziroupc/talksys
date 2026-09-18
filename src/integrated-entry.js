@@ -628,6 +628,16 @@ function pcm16MonoToWav(pcmBytes, sampleRate = 24000) {
   return out.buffer;
 }
 
+function geminiAudioContent(payload = {}) {
+  if (payload?.output_audio?.data) return payload.output_audio;
+  for (const step of Array.isArray(payload?.steps) ? payload.steps : []) {
+    for (const part of Array.isArray(step?.content) ? step.content : []) {
+      if (part?.type === 'audio' && part?.data) return part;
+    }
+  }
+  return null;
+}
+
 async function synthesizeGeminiJapaneseTts(text, env, signal) {
   const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
   if (!key) throw new Error('gemini_tts_api_key_missing');
@@ -639,7 +649,7 @@ async function synthesizeGeminiJapaneseTts(text, env, signal) {
       input: text,
       response_format: { type: 'audio' },
       generation_config: {
-        speech_config: [{ voice: 'Kore' }],
+        speech_config: [{ voice: 'Kore', language: 'ja-JP' }],
       },
     }),
     signal,
@@ -651,11 +661,18 @@ async function synthesizeGeminiJapaneseTts(text, env, signal) {
     const detail = compact(payload?.error?.message || raw || response.statusText, 700);
     throw new Error(`gemini_tts_http_${response.status}${detail ? `:${detail}` : ''}`);
   }
-  const encoded = compact(payload?.output_audio?.data, 20_000_000);
-  if (!encoded) throw new Error('gemini_tts_empty_audio');
-  const pcm = decodeBase64Bytes(encoded);
-  if (pcm.byteLength <= 0) throw new Error('gemini_tts_empty_pcm');
-  return pcm16MonoToWav(pcm, 24000);
+  const audioPart = geminiAudioContent(payload);
+  const encoded = String(audioPart?.data || '').trim();
+  if (!encoded) {
+    const stepTypes = (Array.isArray(payload?.steps) ? payload.steps : []).map((step) => step?.type).filter(Boolean).join(',');
+    throw new Error(`gemini_tts_empty_audio:status=${compact(payload?.status, 40)};steps=${compact(stepTypes, 120)}`);
+  }
+  const bytes = decodeBase64Bytes(encoded);
+  if (bytes.byteLength <= 0) throw new Error('gemini_tts_empty_pcm');
+  const mime = String(audioPart?.mime_type || '').toLowerCase();
+  if (mime === 'audio/wav') return bytes.buffer;
+  const sampleRate = Number(audioPart?.sample_rate) || 24000;
+  return pcm16MonoToWav(bytes, sampleRate);
 }
 
 async function discordVoiceSynthesize(request, env) {
@@ -874,5 +891,6 @@ export const __test = {
   realtimeSttResponse,
   discordVoiceTtsAuthorized,
   pcm16MonoToWav,
+  geminiAudioContent,
   synthesizeGeminiJapaneseTts,
 };
