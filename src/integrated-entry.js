@@ -7,6 +7,7 @@ export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v59.2-realtime-stt-minimal-r1';
+export const DISCORD_DEMO_REVISION = 'talksys-discord-demo-v1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
@@ -494,6 +495,98 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   };
 }
 
+
+function hexBytes(value = '') {
+  const hex = String(value || '').trim();
+  if (!hex || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) return null;
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+export async function verifyDiscordSignature({ bodyText = '', signature = '', timestamp = '', publicKey = '' } = {}) {
+  const sig = hexBytes(signature);
+  const keyBytes = hexBytes(publicKey);
+  if (!sig || !keyBytes || !timestamp) return false;
+  try {
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'Ed25519' }, false, ['verify']);
+    const data = new TextEncoder().encode(String(timestamp) + String(bodyText));
+    return await crypto.subtle.verify({ name: 'Ed25519' }, key, sig, data);
+  } catch {
+    return false;
+  }
+}
+
+function discordQuestion(interaction = {}) {
+  if (interaction?.type !== 2 || interaction?.data?.name !== 'talk') return '';
+  const options = Array.isArray(interaction?.data?.options) ? interaction.data.options : [];
+  return compact(options.find((option) => option?.name === 'question')?.value, 4000);
+}
+
+function discordContent(result = {}) {
+  const answer = compact(result?.answer, 1600) || '回答を生成できませんでした。';
+  const sources = Array.isArray(result?.sources) ? result.sources.slice(0, 3) : [];
+  const refs = sources
+    .map((source) => {
+      const title = compact(source?.title, 100);
+      const url = compact(source?.url, 500);
+      return /^https?:\/\//i.test(url) ? `- ${title || '参照元'}: ${url}` : '';
+    })
+    .filter(Boolean);
+  const content = refs.length ? `${answer}\n\n参照:\n${refs.join('\n')}` : answer;
+  return content.slice(0, 1950);
+}
+
+async function completeDiscordInteraction(interaction, question, env) {
+  const endpoint = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  let content;
+  try {
+    const result = await runGeminiTurn({ text: question, history: [] }, env, undefined);
+    content = discordContent(result);
+  } catch {
+    content = 'TalkSysで回答を生成できませんでした。';
+  }
+  await fetch(endpoint, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+  });
+}
+
+async function handleDiscordInteraction(request, env, ctx) {
+  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  const publicKey = typeof env?.DISCORD_PUBLIC_KEY === 'string' ? env.DISCORD_PUBLIC_KEY.trim() : '';
+  if (!publicKey) return json({ ok: false, error: 'discord_public_key_missing' }, 503);
+
+  const bodyText = await request.text();
+  const valid = await verifyDiscordSignature({
+    bodyText,
+    signature: request.headers.get('x-signature-ed25519') || '',
+    timestamp: request.headers.get('x-signature-timestamp') || '',
+    publicKey,
+  });
+  if (!valid) return new Response('Bad request signature.', { status: 401 });
+
+  let interaction;
+  try { interaction = JSON.parse(bodyText); }
+  catch { return json({ ok: false, error: 'invalid_json' }, 400); }
+
+  if (interaction?.type === 1) return json({ type: 1 });
+  const question = discordQuestion(interaction);
+  if (!question) {
+    return json({
+      type: 4,
+      data: { content: '使い方: /talk question:<質問>', flags: 64, allowed_mentions: { parse: [] } },
+    });
+  }
+
+  ctx?.waitUntil?.(completeDiscordInteraction(interaction, question, env));
+  return json({
+    type: 5,
+    data: { flags: 64 },
+  });
+}
+
 function json(data, status = 200, headers = {}) {
   const out = new Headers(headers);
   out.set('content-type', 'application/json; charset=utf-8');
@@ -520,6 +613,8 @@ async function transcribeWithFastReaction(request, env, ctx) {
       fastReaction: reaction,
       fastReactionRevision: FAST_REACTION_REVISION,
       realtimeVoiceRevision: REALTIME_VOICE_REVISION,
+      discordDemo: typeof env?.DISCORD_PUBLIC_KEY === 'string' && env.DISCORD_PUBLIC_KEY.trim().length > 0,
+      discordDemoRevision: DISCORD_DEMO_REVISION,
     }, response.status, response.headers);
   } catch {
     return response;
@@ -589,6 +684,10 @@ async function voiceHealth(request, env, ctx) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    if (url.pathname === '/discord/interactions') {
+      return handleDiscordInteraction(request, env, ctx);
+    }
 
     const telephonyResponse = await handleTelephonyRequest(request, env, ctx, {
       turn: (body, signal) => runTalkSysTurn(request, env, body, signal || request.signal),
@@ -692,6 +791,9 @@ export default {
 };
 
 export const __test = {
+  verifyDiscordSignature,
+  discordQuestion,
+  discordContent,
   isLowRiskSinglePassQuestion,
   buildTalkSysSystemInstruction,
   currentJstInstruction,
