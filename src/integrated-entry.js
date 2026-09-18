@@ -6,7 +6,7 @@ export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v2';
 export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
-export const REALTIME_VOICE_REVISION = 'talksys-v59.1-realtime-backchannel-fallback-r1';
+export const REALTIME_VOICE_REVISION = 'talksys-v59.2-realtime-stt-minimal-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
@@ -517,11 +517,6 @@ async function realtimeSttResponse(request, env) {
       sample_rate: '16000',
       language: 'ja',
       interim_results: true,
-      endpointing: '300',
-      vad_events: true,
-      punctuate: true,
-      smart_format: true,
-      filler_words: true,
     }, { websocket: true });
   } catch (error) {
     return json({
