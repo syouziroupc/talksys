@@ -107,22 +107,35 @@ test('factual question retries once with an explicit search instruction when Gem
       }), { status: 200 });
     }
     assert.match(req.system_instruction, /Google検索を必ず実行/);
-    assert.match(req.input, /Google検索を実行して事実確認/);
+    if (calls === 2) {
+      assert.match(req.input, /Google検索を実行して事実確認/);
+      return new Response(JSON.stringify({
+        id: 'interaction-search',
+        status: 'completed',
+        steps: [
+          { type: 'google_search_call', arguments: { queries: ['別府 今日 天気'] } },
+          { type: 'model_output', content: [{ type: 'text', text: '検索して確認した情報を案内します。' }] },
+        ],
+      }), { status: 200 });
+    }
+    assert.match(req.input, /最終回答前の自己検証/);
     return new Response(JSON.stringify({
-      id: 'interaction-search',
+      id: 'interaction-verified',
       status: 'completed',
       steps: [
-        { type: 'google_search_call', arguments: { queries: ['別府 今日 天気'] } },
+        { type: 'google_search_call', arguments: { queries: ['別府 今日 天気 現在'] } },
         { type: 'model_output', content: [{ type: 'text', text: '検索して確認した情報を案内します。' }] },
       ],
     }), { status: 200 });
   };
   try {
     const result = await runGeminiTurn({ text: '別府の今日の天気は？' }, { GEMINI_API_KEY: 'test-key' });
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
     assert.equal(result.search, true);
     assert.equal(result.searchRetried, true);
-    assert.equal(result.interactionId, 'interaction-search');
+    assert.equal(result.genericVerificationAttempted, true);
+    assert.equal(result.genericVerificationSucceeded, true);
+    assert.equal(result.interactionId, 'interaction-verified');
   } finally {
     globalThis.fetch = originalFetch;
   }
