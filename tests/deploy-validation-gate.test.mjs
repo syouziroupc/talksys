@@ -66,12 +66,15 @@ test('production deploy keeps UI, microphone, deterministic, weather, and contex
 });
 
 
-test('answer smoke runs before the nonblocking realtime STT check', () => {
+test('answer smoke runs before a blocking realtime STT 101 upgrade check', () => {
   const answerIndex = workflow.indexOf('- name: Production answer smoke');
-  const realtimeIndex = workflow.indexOf('- name: Verify realtime STT websocket (non-blocking known issue)');
+  const realtimeIndex = workflow.indexOf('- name: Verify realtime STT websocket upgrade');
   assert.ok(answerIndex >= 0);
   assert.ok(realtimeIndex > answerIndex);
-  assert.match(workflow, /Verify realtime STT websocket \(non-blocking known issue\)[\s\S]*continue-on-error: true/);
+  assert.doesNotMatch(workflow, /Verify realtime STT websocket upgrade[\s\S]*continue-on-error: true/);
+  assert.match(workflow, /Sec-WebSocket-Version: 13/);
+  assert.match(workflow, /Sec-WebSocket-Key:/);
+  assert.match(workflow, /HTTP\/1\\\.\[01\] 101/);
   assert.match(workflow, /genericVerificationAttempted!==true/);
   assert.match(workflow, /genericVerificationSucceeded!==true/);
   assert.match(workflow, /Number\.isFinite\(d\.timings\?\.primaryMs\)/);
