@@ -16,7 +16,7 @@ import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import WebSocket from 'ws';
 
-const required = ['DISCORD_TOKEN', 'DISCORD_GUILD_ID', 'DISCORD_VOICE_CHANNEL_ID', 'DISCORD_BRIDGE_TOKEN'];
+const required = ['DISCORD_TOKEN', 'DISCORD_GUILD_ID', 'DISCORD_VOICE_CHANNEL_ID'];
 for (const key of required) {
   if (!process.env[key]) {
     console.error(`[fatal] missing ${key}`);
@@ -28,7 +28,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const VOICE_CHANNEL_ID = process.env.DISCORD_VOICE_CHANNEL_ID;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
-const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
+const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN || '';
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
 
 const client = new Client({
@@ -141,16 +141,43 @@ async function playMp3(mp3) {
   if (ffmpegError.trim()) console.log('[ffmpeg]', ffmpegError.trim());
 }
 
-async function processTranscript(text, userId) {
+async function playRawPcm48(pcm) {
+  if (!pcm?.length) return;
+  const resource = createAudioResource(Readable.from(pcm), { inputType: StreamType.Raw });
+  player.play(resource);
+  console.log('[tx] raw echo playback started');
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('echo_playback_timeout')), 15000);
+    const done = () => { clearTimeout(timeout); cleanup(); resolve(); };
+    const fail = (error) => { clearTimeout(timeout); cleanup(); reject(error); };
+    const cleanup = () => {
+      player.off(AudioPlayerStatus.Idle, done);
+      player.off('error', fail);
+    };
+    player.once(AudioPlayerStatus.Idle, done);
+    player.once('error', fail);
+  });
+}
+
+async function processTranscript(text, userId, rawPcm48) {
   if (!text || answering) return;
   answering = true;
   try {
     console.log(`[stt] final user=${userId}:`, text);
     const answer = await talk(text);
-    const audio = await synthesize(answer);
-    await playMp3(audio);
+    if (BRIDGE_TOKEN) {
+      const audio = await synthesize(answer);
+      await playMp3(audio);
+    } else {
+      console.log('[tts] DISCORD_BRIDGE_TOKEN not set; using raw echo smoke fallback');
+      await playRawPcm48(rawPcm48);
+    }
   } catch (error) {
     console.error('[pipeline]', error?.stack || error);
+    if (rawPcm48?.length) {
+      try { await playRawPcm48(rawPcm48); }
+      catch (echoError) { console.error('[echo]', echoError?.stack || echoError); }
+    }
   } finally {
     answering = false;
   }
@@ -169,6 +196,7 @@ function startReceiverSession(userId) {
   let latest = '';
   let finalText = '';
   let ended = false;
+  const rawPcm48Chunks = [];
   let finishTimer;
 
   const session = { opus, decoder, ws };
@@ -187,7 +215,8 @@ function startReceiverSession(userId) {
       const text = (finalText || latest).trim();
       try { ws.close(1000, 'utterance-complete'); } catch {}
       sessions.delete(userId);
-      if (text) processTranscript(text, userId);
+      const rawPcm48 = Buffer.concat(rawPcm48Chunks);
+      if (text) processTranscript(text, userId, rawPcm48);
       else console.log('[stt] no transcript');
     }, 900);
   };
@@ -221,6 +250,7 @@ function startReceiverSession(userId) {
   });
 
   decoder.on('data', (pcm48) => {
+    if (rawPcm48Chunks.length < 500) rawPcm48Chunks.push(Buffer.from(pcm48));
     const pcm16 = mono16kFromStereo48k(pcm48);
     if (!pcm16.length) return;
     if (ws.readyState === WebSocket.OPEN) ws.send(pcm16);
@@ -261,6 +291,7 @@ client.once('ready', async () => {
     await entersState(connection, VoiceConnectionStatus.Ready, 15000);
     console.log('[discord] voice ready:', channel.name);
     console.log('[discord] TalkSys realtime STT:', STT_WS_URL);
+    console.log('[discord] output mode:', BRIDGE_TOKEN ? 'TalkSys TTS' : 'raw echo smoke');
 
     connection.receiver.speaking.on('start', (userId) => {
       if (userId === client.user.id) return;

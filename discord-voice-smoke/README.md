@@ -24,7 +24,7 @@ Cloudflare Workerに次のsecretを設定してデプロイします。
 npx wrangler secret put DISCORD_BRIDGE_TOKEN
 ```
 
-値はローカルの `DISCORD_BRIDGE_TOKEN` と同じにします。
+値はローカルの `DISCORD_BRIDGE_TOKEN` と同じにします。これはTalkSys TTS返送を使う場合だけ必要です。未設定でもraw echo smokeで音声受信・WebSocket STT・Discord音声送信の疎通確認はできます。
 
 ## 起動
 
@@ -37,11 +37,12 @@ $env:DISCORD_TOKEN="..."
 $env:DISCORD_GUILD_ID="..."
 $env:DISCORD_VOICE_CHANNEL_ID="..."
 $env:TALKSYS_BASE_URL="https://talksys.syouziroupc.workers.dev"
+# TalkSys TTS返送まで使う場合だけ
 $env:DISCORD_BRIDGE_TOKEN="..."
 npm start
 ```
 
-起動後、自動で指定VCへ参加します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSで生成し、その音声をVCへ返します。
+起動後、自動で指定VCへ参加します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。`DISCORD_BRIDGE_TOKEN` が設定済みなら回答はTalkSys側TTSで生成してVCへ返します。未設定なら、受信した実音声をそのままVCへ返すraw echo smokeになり、受信・WebSocket・送信の三点だけ先に確認できます。
 
 ## 合格条件
 
