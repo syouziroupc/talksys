@@ -288,12 +288,12 @@ let client = TALK_CLIENT_V43
   .replaceAll('talksys-v43-smoke-weather-adaptive-vad', CLIENT_REVISION)
   .replaceAll('TalkSys v43 起動', 'TalkSys v46 起動')
   .replaceAll('u.rate=1.0;', 'u.rate=1.12;')
-  .replace('SILENCE_MS=760', 'SILENCE_MS=480')
+  .replace('SILENCE_MS=760', 'SILENCE_MS=650')
   .replace(FORM_HANDLER_OLD, FORM_HANDLER_NEW);
 
 client = client.replace(
-  "const TARGET=16000, MAX_HISTORY=14, SILENCE_MS=480, MAX_UTTERANCE_MS=16000, MIN_SPEECH_MS=320, PRE_ROLL=8;",
-  "let geminiInteractionId=null;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=480, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
+  "const TARGET=16000, MAX_HISTORY=14, SILENCE_MS=650, MAX_UTTERANCE_MS=16000, MIN_SPEECH_MS=320, PRE_ROLL=8;",
+  "let geminiInteractionId=null;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=650, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
 );
 
 client = client.replaceAll(
@@ -323,8 +323,8 @@ client = client.replace(
 client = client.replace(RESUME_OLD, RESUME_NEW);
 
 client = client.replace(
-  "let geminiInteractionId=null;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=480, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
-  "let geminiInteractionId=null,activeTurnController=null,voiceCandidateEpoch=0,voiceCandidateCount=0,currentVoiceCandidateId=0,voiceCaptureSeq=0,latestAcceptedVoiceSeq=0,inputFilter=null,micProcessingSettings='',realtimeSttSocket=null,realtimeSttReady=false,realtimeInterim='',realtimeFinalParts=[],realtimeLastBoundaryText='',realtimeLastBoundaryAt=0,realtimeSpeechStartedAt=0,realtimeReactionSeq=0,realtimeReactionTimer=0,realtimeReactionAbort=null,realtimeReactionText='',realtimeReactionSourceText='',realtimeReactionAt=0,fastReactionPlayingPromise=null,lastVoiceCandidateAt=0;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=480, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
+  "let geminiInteractionId=null;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=650, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
+  "let geminiInteractionId=null,activeTurnController=null,voiceCandidateEpoch=0,voiceCandidateCount=0,currentVoiceCandidateId=0,voiceCaptureSeq=0,latestAcceptedVoiceSeq=0,inputFilter=null,micProcessingSettings='',realtimeSttSocket=null,realtimeSttReady=false,realtimeInterim='',realtimeFinalParts=[],realtimeLastBoundaryText='',realtimeLastBoundaryAt=0,realtimeSpeechStartedAt=0,realtimeReactionSeq=0,realtimeReactionTimer=0,realtimeReactionAbort=null,realtimeReactionText='',realtimeReactionSourceText='',realtimeReactionAt=0,fastReactionPlayingPromise=null,lastVoiceCandidateAt=0;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=650, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
 );
 client = client.replace(
   "function voiceKey(v){",
@@ -345,7 +345,7 @@ if (!client.includes('非常文字入力で現在の応答を割込み')) throw 
 if (!client.includes('previousInteractionId:geminiInteractionId')) throw new Error('Gemini interaction continuity patch did not apply');
 if (!client.includes("planner:'gemini-native'")) throw new Error('Gemini native planner bypass patch did not apply');
 if (!client.includes('bargeHits>=4') || !client.includes('age>360')) throw new Error('TalkSys debounced barge-in patch did not apply');
-if (!client.includes('SILENCE_MS=480')) throw new Error('TalkSys faster voice-end patch did not apply');
+if (!client.includes('SILENCE_MS=650')) throw new Error('TalkSys quality voice-end patch did not apply');
 if (!client.includes('voiceSafeText(spokenText(text))') || !client.includes('sentences.slice(0,4)')) throw new Error('TalkSys spoken-text compaction patch did not apply');
 if (!client.includes('停止位置の次から読み上げ再開')) throw new Error('TalkSys false-barge resume patch did not apply');
 if (!client.includes('confirmed-voice-interrupt') || !client.includes('activeTurnController')) throw new Error('TalkSys confirmed voice cancellation patch did not apply');
@@ -375,7 +375,7 @@ export const __test = {
   batchFastReactionFallback: client.includes('高速相槌 batch:') && client.includes('j?.fastReaction?.shouldSpeak'),
   typedInterrupt: client.includes('非常文字入力で現在の応答を割込み') && !client.includes('if(!v||busy)return'),
   fasterTts: client.includes('u.rate=1.12'),
-  fasterTurnEnd: client.includes('SILENCE_MS=480'),
+  fasterTurnEnd: client.includes('SILENCE_MS=650'),
   relaxedBargeIn: client.includes('bargeHits>=4') && client.includes('age>360'),
   resumeAfterInterruptedChunk: client.includes('停止位置の次から読み上げ再開'),
   spokenAnswerCompaction: client.includes('voiceSafeText(spokenText(text))') && client.includes('sentences.slice(0,4)'),

@@ -48,3 +48,12 @@ test('phone message logging stays off the answer critical path', () => {
   assert.doesNotMatch(source, /await appendMessage\(env, callId, 'user', stt\.text\)/);
   assert.doesNotMatch(source, /await appendMessage\(env, callId, 'assistant', turn\.answer\)/);
 });
+
+
+test('phone turn sends only prior history and never duplicates the current STT text', () => {
+  const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+  assert.match(source, /const lastIsCurrent = last\?\.role === 'user'/);
+  assert.match(source, /const priorHistory = \(lastIsCurrent \? history\.slice\(0, -1\) : history\)\.slice\(-16\)/);
+  assert.match(source, /deps\.turn\(\{ text: current, history: priorHistory/);
+  assert.doesNotMatch(source, /deps\.turn\(\{ text, history: history\.slice\(-16\)/);
+});
