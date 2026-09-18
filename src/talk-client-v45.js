@@ -239,7 +239,7 @@ if (!client.includes("window.__TALKSYS_CLIENT_REVISION__='" + CLIENT_REVISION + 
 if (!client.includes('非常文字入力で現在の応答を割込み')) throw new Error('TalkSys typed-interrupt patch did not apply');
 if (!client.includes('previousInteractionId:geminiInteractionId')) throw new Error('Gemini interaction continuity patch did not apply');
 if (!client.includes("planner:'gemini-native'")) throw new Error('Gemini native planner bypass patch did not apply');
-if (!client.includes('bargeHits>=3')) throw new Error('TalkSys relaxed barge-in patch did not apply');
+if (!client.includes('bargeHits>=4') || !client.includes('age>360')) throw new Error('TalkSys debounced barge-in patch did not apply');
 if (!client.includes('SILENCE_MS=480')) throw new Error('TalkSys faster voice-end patch did not apply');
 if (!client.includes('voiceSafeText(spokenText(text))') || !client.includes('sentences.slice(0,4)')) throw new Error('TalkSys spoken-text compaction patch did not apply');
 if (!client.includes('停止位置の次から読み上げ再開')) throw new Error('TalkSys false-barge resume patch did not apply');
@@ -264,7 +264,7 @@ export const __test = {
   typedInterrupt: client.includes('非常文字入力で現在の応答を割込み') && !client.includes('if(!v||busy)return'),
   fasterTts: client.includes('u.rate=1.12'),
   fasterTurnEnd: client.includes('SILENCE_MS=480'),
-  relaxedBargeIn: client.includes('bargeHits>=3') && client.includes('age>320'),
+  relaxedBargeIn: client.includes('bargeHits>=4') && client.includes('age>360'),
   resumeAfterInterruptedChunk: client.includes('停止位置の次から読み上げ再開'),
   spokenAnswerCompaction: client.includes('voiceSafeText(spokenText(text))') && client.includes('sentences.slice(0,4)'),
   nativeGeminiInteractions: client.includes('previousInteractionId:geminiInteractionId') && client.includes("planner:'gemini-native'"),
