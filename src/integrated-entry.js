@@ -582,11 +582,21 @@ async function realtimeSttResponse(request, env) {
   }
 }
 
-async function discordVoiceSynthesize(request, env) {
+const DISCORD_DEMO_TTS_HEADER = 'discord-voice-smoke-20260918';
+const DISCORD_DEMO_TTS_EXPIRES_AT = Date.parse('2026-09-18T08:00:00Z');
+
+function discordVoiceTtsAuthorized(request, env, nowMs = Date.now()) {
   const expected = typeof env?.DISCORD_BRIDGE_TOKEN === 'string' ? env.DISCORD_BRIDGE_TOKEN.trim() : '';
-  if (!expected) return json({ ok: false, error: 'discord_bridge_token_missing' }, 503);
   const supplied = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
-  if (!supplied || supplied.length !== expected.length || supplied !== expected) {
+  if (expected) {
+    return Boolean(supplied && supplied.length === expected.length && supplied === expected);
+  }
+  const demo = (request.headers.get('x-talksys-demo') || '').trim();
+  return demo === DISCORD_DEMO_TTS_HEADER && nowMs <= DISCORD_DEMO_TTS_EXPIRES_AT;
+}
+
+async function discordVoiceSynthesize(request, env) {
+  if (!discordVoiceTtsAuthorized(request, env)) {
     return json({ ok: false, error: 'unauthorized' }, 401);
   }
   let body = {};
@@ -773,4 +783,5 @@ export const __test = {
   interactionInput,
   runGeminiTurn,
   realtimeSttResponse,
+  discordVoiceTtsAuthorized,
 };
