@@ -95,22 +95,16 @@ test('native Gemini turn keeps search, source metadata and conversational answer
   }
 });
 
-test('factual question restores the three-stage quality path when primary initially skips search', async () => {
+test('factual question searches on the primary call and verifies on the second call', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (_url, options) => {
     calls += 1;
     const req = JSON.parse(options.body);
-    if (calls === 1) {
-      return new Response(JSON.stringify({
-        id: 'interaction-no-search',
-        status: 'completed',
-        steps: [{ type: 'model_output', content: [{ type: 'text', text: '一般知識では分かります。' }] }],
-      }), { status: 200 });
-    }
     assert.match(req.system_instruction, /Google検索を必ず実行/);
-    if (calls === 2) {
-      assert.match(req.input, /Google検索を実行して事実確認/);
+    assert.match(req.input, /Google検索を実行して事実確認/);
+
+    if (calls === 1) {
       return new Response(JSON.stringify({
         id: 'interaction-search',
         status: 'completed',
@@ -120,7 +114,8 @@ test('factual question restores the three-stage quality path when primary initia
         ],
       }), { status: 200 });
     }
-    assert.equal(calls, 3);
+
+    assert.equal(calls, 2);
     assert.match(req.input, /最終回答前の自己検証/);
     assert.match(req.input, /候補回答: 検索して確認した情報を案内します/);
     return new Response(JSON.stringify({
@@ -134,9 +129,9 @@ test('factual question restores the three-stage quality path when primary initia
   };
   try {
     const result = await runGeminiTurn({ text: '別府の今日の天気は？' }, { GEMINI_API_KEY: 'test-key' });
-    assert.equal(calls, 3);
+    assert.equal(calls, 2);
     assert.equal(result.search, true);
-    assert.equal(result.searchRetried, true);
+    assert.equal(result.searchRetried, false);
     assert.equal(result.genericVerificationAttempted, true);
     assert.equal(result.genericVerificationSucceeded, true);
     assert.equal(result.interactionId, 'interaction-verified');
