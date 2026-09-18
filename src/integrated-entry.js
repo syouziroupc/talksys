@@ -7,6 +7,7 @@ export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v2';
 export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
+export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v59.2-realtime-stt-minimal-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
@@ -327,7 +328,7 @@ export function shouldRunGenericVerification(text = '', payload = {}) {
 }
 
 function buildGenericVerificationInput(body = {}, primary = {}, now = new Date()) {
-  const original = compact(body?.text, 4000);
+  const original = resolvedUserQuestion(body);
   const candidate = compact(primary?.answer, 7000);
   const evidence = sourceSummary(primary?.payload || {});
   return [
@@ -370,10 +371,11 @@ async function createGeminiInteraction(env, body = {}, signal, { allowPrevious =
   const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
   if (!key) throw new Error('gemini_api_key_missing');
   const previousInteractionId = allowPrevious ? compact(body?.previousInteractionId, 400) : '';
-  const searchAllowed = forceSearch || !TRIVIAL_CONVERSATION_RE.test(resolvedUserQuestion(body));
+  const inputBody = allowPrevious ? body : { ...body, previousInteractionId: '' };
+  const searchAllowed = forceSearch || !TRIVIAL_CONVERSATION_RE.test(resolvedUserQuestion(inputBody));
   const requestBody = {
     model: GEMINI_MODEL,
-    input: interactionInput(body, { forceSearch, immediateTransit, now }),
+    input: interactionInput(inputBody, { forceSearch, immediateTransit, now }),
     system_instruction: buildTalkSysSystemInstruction(now, { forceSearch, immediateTransit }),
     ...(searchAllowed ? { tools: [{ type: 'google_search' }] } : {}),
     ...(previousInteractionId ? { previous_interaction_id: previousInteractionId } : {}),
