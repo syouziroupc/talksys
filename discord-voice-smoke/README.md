@@ -18,13 +18,9 @@ Botはサーバーに追加済みである必要があります。Message Conten
 
 ## TalkSys側
 
-Cloudflare Workerに次のsecretを設定してデプロイします。
+面談用の一時デモでは `DISCORD_BRIDGE_TOKEN` は不要です。2026-09-18 17:00 JST まではTalkSys本番Workerが一時デモヘッダーを受け付け、TalkSys側で生成したTTS音声を返します。
 
-```
-npx wrangler secret put DISCORD_BRIDGE_TOKEN
-```
-
-値はローカルの `DISCORD_BRIDGE_TOKEN` と同じにします。これはTalkSys TTS返送を使う場合だけ必要です。未設定でもraw echo smokeで音声受信・WebSocket STT・Discord音声送信の疎通確認はできます。
+期限後はこの一時経路は自動で無効になり、恒久運用では `DISCORD_BRIDGE_TOKEN` を使います。
 
 ## 起動
 
@@ -41,9 +37,9 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 - `DISCORD_GUILD_ID`
 - `DISCORD_VOICE_CHANNEL_ID`
 
-TalkSys側URL、STT WebSocket、`/api/turn`、raw echo処理はコード側に設定済みです。
+TalkSys側URL、STT WebSocket、`/api/turn`、TalkSys TTS、raw echo fallbackはコード側に設定済みです。
 
-起動後、自動で指定VCへ参加します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。`DISCORD_BRIDGE_TOKEN` が設定済みなら回答はTalkSys側TTSで生成してVCへ返します。未設定なら、受信した実音声をそのままVCへ返すraw echo smokeになり、受信・WebSocket・送信の三点だけ先に確認できます。
+起動後、自動で指定VCへ参加します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSでMP3化してVCへ返します。TTSが失敗した場合だけ、受信した実音声をそのまま返すraw echoへフォールバックします。
 
 ## 合格条件
 

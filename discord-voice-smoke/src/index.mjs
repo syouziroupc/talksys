@@ -116,7 +116,9 @@ async function synthesize(text) {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      authorization: 'Bearer ' + BRIDGE_TOKEN,
+      ...(BRIDGE_TOKEN
+        ? { authorization: 'Bearer ' + BRIDGE_TOKEN }
+        : { 'x-talksys-demo': 'discord-voice-smoke-20260918' }),
     },
     body: JSON.stringify({ text }),
   });
@@ -186,13 +188,8 @@ async function processTranscript(text, userId, rawPcm48) {
   try {
     console.log(`[stt] final user=${userId}:`, text);
     const answer = await talk(text);
-    if (BRIDGE_TOKEN) {
-      const audio = await synthesize(answer);
-      await playMp3(audio);
-    } else {
-      console.log('[tts] DISCORD_BRIDGE_TOKEN not set; using raw echo smoke fallback');
-      await playRawPcm48(rawPcm48);
-    }
+    const audio = await synthesize(answer);
+    await playMp3(audio);
   } catch (error) {
     console.error('[pipeline]', error?.stack || error);
     if (rawPcm48?.length) {
@@ -318,7 +315,7 @@ client.once('ready', async () => {
     await entersState(connection, VoiceConnectionStatus.Ready, 15000);
     console.log('[discord] voice ready:', channel.name);
     console.log('[discord] TalkSys realtime STT:', STT_WS_URL);
-    console.log('[discord] output mode:', BRIDGE_TOKEN ? 'TalkSys TTS' : 'raw echo smoke');
+    console.log('[discord] output mode:', BRIDGE_TOKEN ? 'TalkSys TTS (shared token)' : 'TalkSys TTS (temporary demo)');
     try {
       await probeRealtimeStt();
     } catch (error) {

@@ -237,6 +237,30 @@ jobs:
           out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
           OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||d.route!=='gemini-native-interactions'||d.search!==true||d.genericVerificationAttempted!==true||d.genericVerificationSucceeded!==true||a.length<8||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
 
+      - name: Verify temporary Discord demo TTS
+        shell: bash
+        run: |
+          set -euo pipefail
+          now_epoch="$(date -u +%s)"
+          cutoff_epoch="$(date -u -d '2026-09-18 08:00:00 UTC' +%s)"
+          if (( now_epoch > cutoff_epoch )); then
+            echo 'Temporary Discord demo TTS window has expired; skipping.'
+            exit 0
+          fi
+          headers="$(mktemp)"
+          audio="$(mktemp)"
+          trap 'rm -f "$headers" "$audio"' EXIT
+          curl --fail-with-body --silent --show-error --max-time 30 \
+            -D "$headers" -o "$audio" \
+            -H 'content-type: application/json' \
+            -H 'x-talksys-demo: discord-voice-smoke-20260918' \
+            --data '{"text":"接続テストです。"}' \
+            "$PRODUCTION_URL/api/voice/synthesize"
+          cat "$headers"
+          grep -Eiq '^content-type: *audio/mpeg' "$headers"
+          test "$(wc -c < "$audio")" -gt 100
+          echo "Temporary Discord demo TTS returned $(wc -c < "$audio") bytes."
+
       - name: Verify realtime STT websocket upgrade
         shell: bash
         run: |

@@ -19,6 +19,13 @@ test('Discord smoke has a realtime STT websocket preflight', () => {
   assert.match(source, /realtime_stt_probe_timeout/);
 });
 
+test('temporary demo path uses TalkSys-side TTS before raw echo fallback', () => {
+  assert.match(source, /x-talksys-demo/);
+  assert.match(source, /discord-voice-smoke-20260918/);
+  assert.match(source, /const audio = await synthesize\(answer\)/);
+  assert.match(source, /await playMp3\(audio\)/);
+});
+
 test('raw echo sends buffered PCM even when STT does not produce a transcript', () => {
   assert.match(source, /Readable\.from\(\[pcm\]\)/);
   assert.match(source, /\[stt\] no transcript/);
