@@ -179,7 +179,11 @@ async function transcribeSamples(env, samples) {
 async function answerWithTalkSys(deps, text, history, signal, spokenBackchannel = '') {
   if (typeof deps?.turn !== 'function') return { ok: false, error: 'talksys_turn_not_connected' };
   try {
-    const payload = await deps.turn({ text, history: history.slice(-16), channel: 'phone', spokenBackchannel }, signal);
+    const current = clean(text, 1800);
+    const last = history.at(-1);
+    const lastIsCurrent = last?.role === 'user' && clean(last?.content, 1800) === current;
+    const priorHistory = (lastIsCurrent ? history.slice(0, -1) : history).slice(-16);
+    const payload = await deps.turn({ text: current, history: priorHistory, channel: 'phone', spokenBackchannel }, signal);
     const answer = clean(payload?.answer || payload?.response || payload?.text || '', 9000);
     if (!answer) return { ok: false, error: payload?.error || 'empty_answer' };
     return { ok: true, answer, payload };
