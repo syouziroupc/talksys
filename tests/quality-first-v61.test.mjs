@@ -1,3 +1,4 @@
+// Quality-first v61 regression contract.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
