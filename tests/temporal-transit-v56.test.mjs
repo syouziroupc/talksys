@@ -60,6 +60,14 @@ test('past departure triggers a fresh Gemini search and only the corrected futur
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
 
+    if (calls === 2) {
+      assert.match(req.input, /最終回答前の自己検証/);
+      return new Response(JSON.stringify({ error: { message: 'temporary verifier error' } }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
     assert.match(req.input, /前回回答には基準時刻 2026-09-18T08:48:00\+09:00 より前/);
     assert.match(req.input, /Google検索をやり直し/);
     return new Response(JSON.stringify({
@@ -79,8 +87,11 @@ test('past departure triggers a fresh Gemini search and only the corrected futur
       undefined,
       { now: FIXED },
     );
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
     assert.equal(result.ok, true);
+    assert.equal(result.genericVerificationAttempted, true);
+    assert.equal(result.genericVerificationSucceeded, false);
+    assert.equal(result.verificationFailOpen, true);
     assert.equal(result.temporalTransitGuard, true);
     assert.equal(result.temporalRepairRetried, true);
     assert.equal(result.temporalRepairAttempts, 1);

@@ -4,6 +4,7 @@ import { handleTelephonyRequest } from './telephony/index.js';
 export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v2';
 export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
+export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
 const GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
@@ -260,6 +261,63 @@ export function interactionSources(payload = {}) {
   return out.slice(0, 12);
 }
 
+function sourceSummary(payload = {}) {
+  const queries = interactionQueries(payload);
+  const sources = interactionSources(payload);
+  const lines = [];
+  if (queries.length) lines.push(`検索語: ${queries.join(' / ')}`);
+  if (sources.length) {
+    lines.push('確認に使った検索元:');
+    for (const source of sources.slice(0, 8)) {
+      lines.push(`- ${compact(source.title, 180)} ${compact(source.url, 500)}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+export function shouldRunGenericVerification(text = '', payload = {}) {
+  const value = compact(text, 4000);
+  if (!value) return false;
+  if (TRIVIAL_CONVERSATION_RE.test(value)) return false;
+  if (SIMPLE_ARITHMETIC_RE.test(value)) return false;
+  if (LOCAL_TRANSFORM_RE.test(value) && !searchedInInteraction(payload)) return false;
+  return shouldStronglyPreferSearch(value) || searchedInInteraction(payload);
+}
+
+function buildGenericVerificationInput(body = {}, primary = {}, now = new Date()) {
+  const original = compact(body?.text, 4000);
+  const candidate = compact(primary?.answer, 7000);
+  const evidence = sourceSummary(primary?.payload || {});
+  return [
+    'これはTalkSysの最終回答前の自己検証です。あなた自身が候補回答を審査し、必要ならGoogle検索をやり直して、利用者へ返す最終回答そのものを書いてください。',
+    `信頼できる現在コンテキストは ${currentJstIso(now)} 日本標準時です。`,
+    `元の利用者の質問: ${original}`,
+    `候補回答: ${candidate}`,
+    ...(evidence ? [evidence] : []),
+    '確認する観点は、現在時点との整合性、日付や時刻、価格、在庫、営業状態、人物や役職、バージョン、制度、ニュースなど時間で変わる事実、質問条件との一致、検索結果の取り違えです。',
+    '検索結果自体が正しくても、現在時刻や利用者条件に照らすと候補から外れる情報が混ざることがあります。候補回答をそのまま信じず、条件と照合してください。',
+    '外部事実や現在性が関係する場合はGoogle検索を使って再確認してください。最初の検索結果が曖昧なら検索語を変えてください。',
+    '候補回答に明白な誤りや条件違反があれば、正しい情報へ修正した最終回答を書いてください。',
+    '候補回答が妥当なら、内容を維持した自然な最終回答を書いてください。「検証しました」「候補回答は正しいです」などの審査コメントは出さないでください。',
+    '重要: 情報が一部不足しているだけで回答全体を「確認できません」「分かりません」に置き換えないでください。確認できた部分は残してください。単に裏付けが薄いだけなら、候補回答の有用な部分を消さず、必要な箇所だけ慎重な表現へ直してください。',
+    'これは電話でそのまま読み上げる回答です。Markdown、箇条書き、URL、引用番号、画面向け記号を出さず、自然で簡潔な日本語の最終回答だけを返してください。',
+  ].join('\n');
+}
+
+async function runGenericGeminiVerification(env, body = {}, primary = {}, signal, now = new Date()) {
+  const verifyBody = {
+    text: buildGenericVerificationInput(body, primary, now),
+    history: [],
+    previousInteractionId: '',
+  };
+  return createGeminiInteraction(env, verifyBody, signal, {
+    allowPrevious: false,
+    forceSearch: true,
+    now,
+    immediateTransit: isImmediateTransitQuestion(compact(body?.text, 4000)),
+  });
+}
+
 function searchedInInteraction(payload = {}) {
   return interactionQueries(payload).length > 0
     || interactionSources(payload).length > 0
@@ -316,6 +374,26 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     interaction = await createGeminiInteraction(env, body, signal, { allowPrevious: true, forceSearch: true, now, immediateTransit });
   }
 
+  const primaryInteraction = interaction;
+  let genericVerificationAttempted = false;
+  let genericVerificationSucceeded = false;
+  let verificationFailOpen = false;
+  let verifierSearched = false;
+  if (shouldRunGenericVerification(text, interaction.payload)) {
+    genericVerificationAttempted = true;
+    try {
+      const verified = await runGenericGeminiVerification(env, body, interaction, signal, now);
+      if (verified?.answer) {
+        interaction = verified;
+        genericVerificationSucceeded = true;
+        verifierSearched = searchedInInteraction(verified.payload);
+      }
+    } catch {
+      verificationFailOpen = true;
+      interaction = primaryInteraction;
+    }
+  }
+
   let temporalRepairRetried = false;
   let temporalRepairAttempts = 0;
   if (immediateTransit) {
@@ -328,9 +406,19 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   }
 
   const remainingPastDepartures = immediateTransit ? pastImmediateTransitDepartures(interaction.answer, now) : [];
-  const queries = interactionQueries(interaction.payload);
-  const sources = interactionSources(interaction.payload);
-  const searched = searchedInInteraction(interaction.payload);
+  const finalQueries = interactionQueries(interaction.payload);
+  const primaryQueries = interactionQueries(primaryInteraction.payload);
+  const queries = [...new Set([...finalQueries, ...primaryQueries])].slice(0, 12);
+  const finalSources = interactionSources(interaction.payload);
+  const primarySources = interactionSources(primaryInteraction.payload);
+  const seenSourceUrls = new Set();
+  const sources = [...finalSources, ...primarySources].filter((source) => {
+    const url = compact(source?.url, 1000);
+    if (!url || seenSourceUrls.has(url)) return false;
+    seenSourceUrls.add(url);
+    return true;
+  }).slice(0, 12);
+  const searched = searchedInInteraction(interaction.payload) || searchedInInteraction(primaryInteraction.payload);
   let answer = normalizeSpokenJapanese(interaction.answer);
   if (remainingPastDepartures.length > 0) {
     answer = '検索結果に発車済みの時刻しか残ったため、その時刻は案内しません。現在時刻より後の便だけを案内します。';
@@ -346,6 +434,11 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     searchUseful: searched,
     searchPolicy: 'aggressive-native-google-search',
     searchRetried,
+    genericVerificationAttempted,
+    genericVerificationSucceeded,
+    genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
+    verifierSearched,
+    verificationFailOpen,
     temporalTransitGuard: immediateTransit,
     temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
     temporalRepairRetried,
@@ -404,6 +497,9 @@ async function voiceHealth(request, env, ctx) {
       customTruthGateApplied: false,
       blanketFailClosed: false,
       speechOptimized: true,
+      genericGeminiVerification: true,
+      genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
+      verificationFailureMode: 'fail-open-primary-answer',
       temporalTransitGuard: true,
       temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
       legacyGlmExecution: false,
@@ -454,6 +550,9 @@ export default {
         searchDefault: 'aggressive-native-google-search',
         personalizationRevision: PERSONALIZATION_REVISION,
         speechOptimized: true,
+        genericGeminiVerification: true,
+        genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
+        verificationFailureMode: 'fail-open-primary-answer',
         temporalTransitGuard: true,
         temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
         promptInjectionDefense: true,
@@ -473,6 +572,9 @@ export default {
         customTruthGateOnNativeAnswers: false,
         blanketFailClosed: false,
         partialAnswersPreferred: true,
+        genericGeminiVerification: true,
+        genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
+        verificationFailureMode: 'fail-open-primary-answer',
         temporalTransitGuard: true,
         temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
         promptInjectionDefense: true,
@@ -490,6 +592,8 @@ export default {
 export const __test = {
   buildTalkSysSystemInstruction,
   currentJstInstruction,
+  shouldRunGenericVerification,
+  buildGenericVerificationInput,
   isImmediateTransitQuestion,
   pastImmediateTransitDepartures,
   shouldStronglyPreferSearch,
