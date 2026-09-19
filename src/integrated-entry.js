@@ -10,7 +10,8 @@ export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
-export const REALTIME_VOICE_REVISION = 'talksys-v65-persistent-logs-chunked-tts-r1';
+export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v65-persistent-logs-chunked-tts-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -855,6 +856,7 @@ async function voiceHealth(request, env, ctx) {
       realtimeStt: true,
       realtimeSttModel: REALTIME_STT_MODEL,
       realtimeVoiceRevision: REALTIME_VOICE_REVISION,
+      discordPipelineRevision: DISCORD_PIPELINE_REVISION,
       discordBridgeConfigured: typeof env?.DISCORD_BRIDGE_TOKEN === 'string' && env.DISCORD_BRIDGE_TOKEN.trim().length > 0,
       persistentConversationLogs: env?.TALKSYS_LOG_DB ? 'd1-private' : 'disabled',
       conversationLogEndpoint: '/api/conversation-logs',
