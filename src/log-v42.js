@@ -36,6 +36,7 @@ async function ensureConversationLogSchema(env){
       )`).run();
       await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_conversation_logs_time ON conversation_logs(timestamp DESC)').run();
       await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_conversation_logs_session ON conversation_logs(session_id, timestamp)').run();
+      await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_conversation_logs_event_time ON conversation_logs(event, timestamp DESC)').run();
       return true;
     })().catch((error)=>{
       conversationLogSchemaPromise=undefined;
@@ -69,10 +70,22 @@ export async function persistTalkLog(env,input){
   }catch(error){console.error(JSON.stringify({type:'talksys_log_error',storage:'d1',event:v.event,message:clean(error?.message||error,600)}));return false;}
 }
 
-export async function listTalkLogs(env,limit=100){
+export async function listTalkLogs(env,limit=100,filters={}){
   if(!(await ensureConversationLogSchema(env)))throw new Error('TALKSYS_LOG_DB binding missing');
   const count=Math.max(1,Math.min(500,Number(limit)||100));
-  const data=await env.TALKSYS_LOG_DB.prepare('SELECT id,session_id,event,timestamp,jst,revision,path,status,user_text,result_json FROM conversation_logs ORDER BY timestamp DESC LIMIT ?').bind(count).all();
+  const where=[],binds=[];
+  const exactSession=clean(filters?.sessionId,180).trim();
+  const sessionPrefix=clean(filters?.sessionPrefix,120).replace(/[^A-Za-z0-9._-]/g,'').trim();
+  const event=clean(filters?.event,120).trim();
+  const q=clean(filters?.q,500).trim();
+  if(exactSession){where.push('session_id = ?');binds.push(exactSession);}
+  else if(sessionPrefix){where.push('session_id LIKE ?');binds.push(sessionPrefix+'%');}
+  if(event){where.push('event = ?');binds.push(event);}
+  if(q){where.push('user_text LIKE ?');binds.push('%'+q+'%');}
+  const sql='SELECT id,session_id,event,timestamp,jst,revision,path,status,user_text,result_json FROM conversation_logs'
+    +(where.length?' WHERE '+where.join(' AND '):'')
+    +' ORDER BY timestamp DESC LIMIT ?';
+  const data=await env.TALKSYS_LOG_DB.prepare(sql).bind(...binds,count).all();
   return (data?.results||[]).map((row)=>{
     let result={};try{result=JSON.parse(row.result_json||'{}')||{};}catch{}
     return {
