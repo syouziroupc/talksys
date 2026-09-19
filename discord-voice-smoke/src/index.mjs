@@ -39,6 +39,7 @@ let previousInteractionId = '';
 let connection;
 let answering = false;
 let voiceEpoch = 0;
+let realtimeSttBackoffUntil = 0;
 const pendingTurns = [];
 
 function resetConversationState() {
@@ -71,6 +72,44 @@ function mono16kFromStereo48k(chunk) {
 
 function transcriptFrom(payload) {
   return String(payload?.channel?.alternatives?.[0]?.transcript || payload?.transcript || '').trim();
+}
+
+function pcm16MonoToWav16k(pcm) {
+  const input = Buffer.isBuffer(pcm) ? pcm : Buffer.from(pcm || []);
+  const dataLength = input.length - (input.length % 2);
+  const out = Buffer.alloc(44 + dataLength);
+  out.write('RIFF', 0, 'ascii');
+  out.writeUInt32LE(36 + dataLength, 4);
+  out.write('WAVE', 8, 'ascii');
+  out.write('fmt ', 12, 'ascii');
+  out.writeUInt32LE(16, 16);
+  out.writeUInt16LE(1, 20);
+  out.writeUInt16LE(1, 22);
+  out.writeUInt32LE(16000, 24);
+  out.writeUInt32LE(32000, 28);
+  out.writeUInt16LE(2, 32);
+  out.writeUInt16LE(16, 34);
+  out.write('data', 36, 'ascii');
+  out.writeUInt32LE(dataLength, 40);
+  input.copy(out, 44, 0, dataLength);
+  return out;
+}
+
+async function batchTranscribePcm16(pcm, reason = 'fallback') {
+  if (!pcm?.length) throw new Error('batch_stt_empty_pcm');
+  const wav = pcm16MonoToWav16k(pcm);
+  console.log(`[stt-fallback] batch start reason=${reason} pcm=${pcm.length}B wav=${wav.length}B`);
+  const response = await fetch(TALKSYS_BASE_URL + '/api/transcribe', {
+    method: 'POST',
+    headers: { 'content-type': 'audio/wav' },
+    body: wav,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body?.ok || !body?.text) {
+    throw new Error(body?.error || body?.rejected || `batch_stt_http_${response.status}`);
+  }
+  console.log(`[stt-fallback] batch success model=${body.model || 'unknown'} elapsed=${body.elapsedMs ?? '?'}ms:`, body.text);
+  return String(body.text).trim();
 }
 
 async function probeRealtimeStt() {
@@ -238,39 +277,66 @@ function startReceiverSession(userId) {
     end: { behavior: EndBehaviorType.AfterSilence, duration: 550 },
   });
   const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
-  const ws = new WebSocket(STT_WS_URL);
   const pending = [];
   const finalParts = [];
+  const pcm16Chunks = [];
   let latest = '';
   let inputEnded = false;
   let completed = false;
   let finalizeSent = false;
+  let realtimeFailed = Date.now() < realtimeSttBackoffUntil;
+  let realtimeFailureReason = realtimeFailed ? 'rate-limit-backoff' : '';
   let opusBytes = 0;
   let pcm48Bytes = 0;
   let pcm16Bytes = 0;
   let completionTimer;
   let settleTimer;
+  let ws = null;
 
-  const session = { opus, decoder, ws };
+  const session = { opus, decoder, ws: null };
   sessions.set(userId, session);
 
-  const complete = (reason = 'complete') => {
+  const markRealtimeFailed = (reason, statusCode = 0) => {
+    if (realtimeFailed) return;
+    realtimeFailed = true;
+    realtimeFailureReason = reason || 'realtime-failed';
+    if (statusCode === 429 || /429|rate/i.test(realtimeFailureReason)) {
+      realtimeSttBackoffUntil = Date.now() + 60_000;
+      console.warn('[stt] realtime 429; batch STT forced for 60s');
+    } else {
+      console.warn('[stt] realtime unavailable; using batch STT:', realtimeFailureReason);
+    }
+    try { ws?.terminate(); } catch {}
+  };
+
+  const complete = async (reason = 'complete') => {
     if (completed) return;
     completed = true;
     clearTimeout(completionTimer);
     clearTimeout(settleTimer);
-    try { ws.close(1000, 'utterance-complete'); } catch {}
+    try { ws?.close(1000, 'utterance-complete'); } catch {}
     sessions.delete(userId);
 
-    const text = (finalParts.join(' ').trim() || latest).trim();
+    let text = (finalParts.join(' ').trim() || latest).trim();
+    const pcm16 = Buffer.concat(pcm16Chunks);
     console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B reason=${reason}`);
     if (sessionEpoch !== voiceEpoch) return;
+
+    if (!text && pcm16.length && (realtimeFailed || reason === 'finalize-timeout' || reason === 'websocket-close')) {
+      try {
+        text = await batchTranscribePcm16(pcm16, realtimeFailureReason || reason);
+      } catch (error) {
+        console.error('[stt-fallback]', error?.message || error);
+      }
+    }
+
+    if (sessionEpoch !== voiceEpoch) return;
     if (text) processTranscript(text, userId, sessionEpoch);
-    else console.warn('[stt] no transcript; utterance dropped (raw echo disabled)');
+    else console.warn('[stt] no transcript; utterance dropped after realtime+batch STT');
   };
 
   const sendFinalizeIfReady = () => {
-    if (!inputEnded || finalizeSent || ws.readyState !== WebSocket.OPEN) return;
+    if (!inputEnded || realtimeFailed || finalizeSent || !ws || ws.readyState !== WebSocket.OPEN) return;
     try {
       ws.send(JSON.stringify({ type: 'Finalize' }));
       finalizeSent = true;
@@ -278,6 +344,7 @@ function startReceiverSession(userId) {
       completionTimer = setTimeout(() => complete('finalize-timeout'), 3000);
     } catch (error) {
       console.error('[stt] finalize failed:', error.message);
+      markRealtimeFailed('finalize-error');
       complete('finalize-error');
     }
   };
@@ -287,58 +354,87 @@ function startReceiverSession(userId) {
     inputEnded = true;
     try { opus.destroy(); } catch {}
     try { decoder.destroy(); } catch {}
+
+    if (realtimeFailed || !ws) {
+      complete('batch-fallback');
+      return;
+    }
+
     sendFinalizeIfReady();
     if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      markRealtimeFailed('websocket-closed-before-finalize');
       complete('websocket-closed-before-finalize');
     }
   };
 
-  ws.on('open', () => {
-    console.log('[stt] websocket open');
-    for (const frame of pending.splice(0)) ws.send(frame);
-    sendFinalizeIfReady();
-  });
+  if (!realtimeFailed) {
+    ws = new WebSocket(STT_WS_URL);
+    session.ws = ws;
 
-  ws.on('message', (data) => {
-    let payload;
-    try { payload = JSON.parse(String(data)); } catch { return; }
-    const text = transcriptFrom(payload);
-    if (text) {
-      latest = text;
-      console.log('[stt]', payload?.is_final ? 'final-part:' : 'interim:', text);
-      if (payload?.is_final) {
-        const previous = finalParts.at(-1);
-        if (previous !== text) finalParts.push(text);
+    ws.on('open', () => {
+      console.log('[stt] websocket open');
+      for (const frame of pending.splice(0)) ws.send(frame);
+      sendFinalizeIfReady();
+    });
+
+    ws.on('message', (data) => {
+      let payload;
+      try { payload = JSON.parse(String(data)); } catch { return; }
+      const text = transcriptFrom(payload);
+      if (text) {
+        latest = text;
+        console.log('[stt]', payload?.is_final ? 'final-part:' : 'interim:', text);
+        if (payload?.is_final) {
+          const previous = finalParts.at(-1);
+          if (previous !== text) finalParts.push(text);
+        }
       }
-    }
 
-    if (payload?.speech_final && text) {
-      if (!inputEnded) endInput();
-      clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => complete('speech-final'), 100);
-    } else if (inputEnded && payload?.is_final && text) {
-      clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => complete('final-result'), 180);
-    }
-  });
+      if (payload?.speech_final && text) {
+        if (!inputEnded) endInput();
+        clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => complete('speech-final'), 100);
+      } else if (inputEnded && payload?.is_final && text) {
+        clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => complete('final-result'), 180);
+      }
+    });
 
-  ws.on('error', (error) => {
-    console.error('[stt] websocket error:', error.message);
-    complete('websocket-error');
-  });
+    ws.on('unexpected-response', (_request, response) => {
+      const status = Number(response?.statusCode || 0);
+      console.error('[stt] websocket unexpected response:', status);
+      markRealtimeFailed(`http_${status || 'unknown'}`, status);
+      if (inputEnded) complete('unexpected-response');
+    });
 
-  ws.on('close', (code, reason) => {
-    console.log('[stt] websocket close', code, String(reason || ''));
-    if (!completed) complete('websocket-close');
-  });
+    ws.on('error', (error) => {
+      console.error('[stt] websocket error:', error.message);
+      const statusMatch = String(error?.message || '').match(/\b(429)\b/);
+      markRealtimeFailed(error?.message || 'websocket-error', statusMatch ? 429 : 0);
+      if (inputEnded) complete('websocket-error');
+    });
+
+    ws.on('close', (code, reason) => {
+      console.log('[stt] websocket close', code, String(reason || ''));
+      if (!completed && !realtimeFailed) {
+        markRealtimeFailed(`websocket-close-${code}`);
+        if (inputEnded) complete('websocket-close');
+      }
+    });
+  } else {
+    console.warn(`[stt] realtime backoff active ${Math.max(0, realtimeSttBackoffUntil - Date.now())}ms; batch STT only`);
+  }
 
   decoder.on('data', (pcm48) => {
     pcm48Bytes += pcm48.length;
     const pcm16 = mono16kFromStereo48k(pcm48);
     pcm16Bytes += pcm16.length;
     if (!pcm16.length) return;
-    if (ws.readyState === WebSocket.OPEN && !inputEnded) ws.send(pcm16);
-    else if (ws.readyState === WebSocket.CONNECTING && !inputEnded) {
+    if (pcm16Chunks.length < 600) pcm16Chunks.push(Buffer.from(pcm16));
+
+    if (!realtimeFailed && ws?.readyState === WebSocket.OPEN && !inputEnded) {
+      ws.send(pcm16);
+    } else if (!realtimeFailed && ws?.readyState === WebSocket.CONNECTING && !inputEnded) {
       pending.push(pcm16);
       if (pending.length > 250) pending.shift();
     }
