@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GEMINI_TTS_MODEL, __test as integrated } from '../src/integrated-entry.js';
+import { GEMINI_TTS_MODEL, GEMINI_TTS_FALLBACK_MODEL, __test as integrated } from '../src/integrated-entry.js';
 
-test('Discord Gemini TTS fallback uses current Flash TTS preview model', () => {
-  assert.equal(GEMINI_TTS_MODEL, 'gemini-3.1-flash-tts-preview');
+test('Discord Gemini TTS fallback uses low-latency primary plus current fallback model', () => {
+  assert.equal(GEMINI_TTS_MODEL, 'gemini-2.5-flash-preview-tts');
+  assert.equal(GEMINI_TTS_FALLBACK_MODEL, 'gemini-3.1-flash-tts-preview');
 });
 
 test('PCM16 mono is wrapped as a valid 24 kHz WAV for Discord playback', () => {
