@@ -12,7 +12,8 @@ export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
-export const GEMINI_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
+export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
+export const GEMINI_TTS_FALLBACK_MODEL = 'gemini-3.1-flash-tts-preview';
 
 const GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -661,18 +662,39 @@ function pcm16MonoToWav(pcmBytes, sampleRate = 24000) {
   return out.buffer;
 }
 
-async function synthesizeGeminiJapaneseTts(text, env, signal) {
+function geminiTtsAudioData(payload) {
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+  for (const candidate of candidates) {
+    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+    for (const part of parts) {
+      const encoded = compact(part?.inlineData?.data || part?.inline_data?.data, 20_000_000);
+      if (encoded) return encoded;
+    }
+  }
+  return '';
+}
+
+async function synthesizeGeminiJapaneseTtsModel(text, env, signal, model) {
   const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
   if (!key) throw new Error('gemini_tts_api_key_missing');
-  const response = await fetch(GEMINI_INTERACTIONS_ENDPOINT, {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify({
-      model: GEMINI_TTS_MODEL,
-      input: text,
-      response_format: { type: 'audio' },
-      generation_config: {
-        speech_config: [{ voice: 'Kore' }],
+      contents: [{
+        parts: [{ text }],
+      }],
+      generationConfig: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          languageCode: 'ja-JP',
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: 'Kore',
+            },
+          },
+        },
       },
     }),
     signal,
@@ -682,13 +704,29 @@ async function synthesizeGeminiJapaneseTts(text, env, signal) {
   try { payload = raw ? JSON.parse(raw) : {}; } catch {}
   if (!response.ok) {
     const detail = compact(payload?.error?.message || raw || response.statusText, 700);
-    throw new Error(`gemini_tts_http_${response.status}${detail ? `:${detail}` : ''}`);
+    throw new Error(`gemini_tts_${model}_http_${response.status}${detail ? `:${detail}` : ''}`);
   }
-  const encoded = compact(payload?.output_audio?.data, 20_000_000);
-  if (!encoded) throw new Error('gemini_tts_empty_audio');
+  const encoded = geminiTtsAudioData(payload);
+  if (!encoded) {
+    const finish = compact(payload?.candidates?.[0]?.finishReason || payload?.candidates?.[0]?.finish_reason, 120);
+    throw new Error(`gemini_tts_${model}_empty_audio${finish ? `:${finish}` : ''}`);
+  }
   const pcm = decodeBase64Bytes(encoded);
-  if (pcm.byteLength <= 0) throw new Error('gemini_tts_empty_pcm');
+  if (pcm.byteLength <= 0) throw new Error(`gemini_tts_${model}_empty_pcm`);
   return pcm16MonoToWav(pcm, 24000);
+}
+
+async function synthesizeGeminiJapaneseTts(text, env, signal) {
+  const models = [GEMINI_TTS_MODEL, GEMINI_TTS_FALLBACK_MODEL];
+  const errors = [];
+  for (const model of models) {
+    try {
+      return await synthesizeGeminiJapaneseTtsModel(text, env, signal, model);
+    } catch (error) {
+      errors.push(compact(error?.message || error, 450));
+    }
+  }
+  throw new Error(`gemini_tts_all_failed:${errors.join(' | ')}`);
 }
 
 async function discordVoiceSynthesize(request, env) {
@@ -925,5 +963,7 @@ export const __test = {
   realtimeSttResponse,
   discordVoiceTtsAuthorized,
   pcm16MonoToWav,
+  geminiTtsAudioData,
+  synthesizeGeminiJapaneseTtsModel,
   synthesizeGeminiJapaneseTts,
 };
