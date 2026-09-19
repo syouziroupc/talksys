@@ -34,14 +34,25 @@ test('raw echo and receive-byte diagnostics distinguish Discord receive from STT
   assert.match(source, /playRawPcm48\(rawPcm48\)/);
 });
 
-test('Discord smoke launcher requests only external Discord identifiers and installs locally', () => {
+test('Discord smoke launcher requires tokens but no longer requires a fixed voice channel', () => {
   assert.match(launcher, /DISCORD_TOKEN/);
   assert.match(launcher, /DISCORD_GUILD_ID/);
-  assert.match(launcher, /DISCORD_VOICE_CHANNEL_ID/);
+  assert.doesNotMatch(launcher, /Read-Host "Discord Voice Channel ID"/);
   assert.match(launcher, /DISCORD_BRIDGE_TOKEN/);
   assert.match(launcher, /Read-Secret "TalkSys Discord Bridge Token"/);
+  assert.match(launcher, /\/talksys joins caller VC/);
   assert.match(launcher, /npm install --no-audit --no-fund/);
   assert.match(launcher, /Node\.js 22\.12/);
+});
+
+test('Discord smoke registers slash commands and joins the invoking users voice channel', () => {
+  assert.match(source, /guild\.commands\.set/);
+  assert.match(source, /name: 'talksys'/);
+  assert.match(source, /name: 'leave'/);
+  assert.match(source, /voiceStates\.cache\.get\(interaction\.user\.id\)/);
+  assert.match(source, /connectToVoiceChannel\(channel\)/);
+  assert.match(source, /destroyVoiceConnection\(\)/);
+  assert.match(source, /waiting for \/talksys/);
 });
 
 test('Discord voice dependencies are pinned to expected major lines', () => {
