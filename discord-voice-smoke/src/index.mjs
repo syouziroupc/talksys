@@ -218,7 +218,7 @@ function startReceiverSession(userId) {
   console.log('[rx] user=' + userId);
 
   const opus = connection.receiver.subscribe(userId, {
-    end: { behavior: EndBehaviorType.AfterSilence, duration: 550 },
+    end: { behavior: EndBehaviorType.AfterSilence, duration: 380 },
   });
   const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
   const ws = new WebSocket(STT_WS_URL);
