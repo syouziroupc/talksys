@@ -4,7 +4,7 @@
 
 ## 試験経路
 
-Discord VC -> Opus -> PCM 48k stereo -> PCM 16k mono -> TalkSys STT (発話ごとに新規Realtime WebSocketを使用し、次発話用ソケットは先行接続 / 429時は `/api/transcribe`) -> `/api/turn-stream` (SSE障害時 `/api/turn`) -> 文単位 `/api/voice/synthesize` -> Discord VC
+Discord VC -> Opus -> PCM 48k stereo -> PCM 16k mono -> TalkSys STT (次発話用WebSocket先行接続 / 異常時は回路遮断して `/api/transcribe`) -> `/api/turn-stream` (35秒上限 / 障害時 `/api/turn`) -> 文単位 `/api/voice/synthesize` (12秒上限) -> Discord VC
 
 Discord側ではTTSしません。返送音声はTalkSys側で生成した音声です。
 
@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File .\update-and-start.ps1
 
 TalkSys側URL、STT WebSocket、`/api/turn-stream`、TalkSys TTSはコード側に設定済みです。診断用raw echoは廃止し、ユーザー音声をVCへ返しません。
 
-起動後、Botが参加しているDiscordサーバーを自動検出し、既存の他コマンドを削除せず、`/talksys` と `/leave` だけを作成・更新します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加します。接続時は「フォーンズです。接続しました。」と1回だけ発声します。検索案内TTSは行いません。`/leave` で退出します。人が話すと受信音声をSTTへ送り、認識結果を `/api/turn-stream` へ渡し、検証済み回答を文単位でTalkSys側TTSへ先行投入してVCへ返します。STTやTTSが失敗しても本人の音声をオウム返しせず、ログへ失敗箇所を出します。フォーンズが回答生成・再生中でも受音を止めず、利用者が話し始めた場合は古い回答生成と再生を中断して新しい発話を優先します。各発話で使用したSTTソケットは使い回さず破棄し、次の発話専用ソケットだけを先に接続して待機させます。/talksys 実行者の受音ストリームは接続直後に先行して準備し、話し始めの取りこぼしを減らします。
+起動後、Botが参加しているDiscordサーバーを自動検出し、既存の他コマンドを削除せず、`/talksys` と `/leave` だけを作成・更新します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加します。接続時は「フォーンズです。接続しました。」と1回だけ発声します。検索案内TTSは行いません。`/leave` で退出します。人が話すと受信音声をSTTへ送り、認識結果を `/api/turn-stream` へ渡し、検証済み回答を文単位でTalkSys側TTSへ先行投入してVCへ返します。Realtime STTが失敗した場合は音声を捨てず必ずbatch STTへ回し、同種障害は指数バックオフで回路遮断します。生成・TTSにも有限の待ち時間を設定し、回答音声を一度も返せない場合は事前キャッシュした「もう一度お願いします」音声を再生して無言停止を避けます。フォーンズが回答生成・再生中でも受音を止めず、利用者が話し始めた場合は古い回答生成と再生を中断して新しい発話を優先します。各発話で使用したSTTソケットは使い回さず破棄し、次の発話専用ソケットだけを先に接続して待機させます。/talksys 実行者の受音ストリームは接続直後に先行して準備し、話し始めの取りこぼしを減らします。
 
 ## 合格条件
 
@@ -62,7 +62,8 @@ TalkSys側URL、STT WebSocket、`/api/turn-stream`、TalkSys TTSはコード側�
 [discord] voice ready
 [rx] user=...
 [stt] websocket open user=... mode=active
-[stt] websocket prewarm user=...\n[stt] ...
+[stt] websocket prewarm user=...
+[stt] ...
 [turn-stream] ...
 [latency] first-audio-ready=...ms source=verifier-stream
 [tts] ... bytes
@@ -70,4 +71,4 @@ TalkSys側URL、STT WebSocket、`/api/turn-stream`、TalkSys TTSはコード側�
 [metrics] voice latency persisted
 ```
 
-再接続、多人数同時発話、長時間安定性は対象外です。
+合格条件には、Realtime STT障害、batch STT障害、生成SSE障害、TTS障害、再生ハング時に永久待ち・発話破棄・無言停止へ入らないことを含みます。多人数同時発話と長時間耐久は別試験です。
