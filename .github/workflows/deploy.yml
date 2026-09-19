@@ -26,6 +26,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      DISCORD_BRIDGE_TOKEN: ${{ secrets.DISCORD_BRIDGE_TOKEN }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
     steps:
       - uses: actions/checkout@v6
@@ -86,6 +87,7 @@ jobs:
           set -euo pipefail
           test -n "${CLOUDFLARE_API_TOKEN:-}"
           test -n "${GEMINI_API_KEY:-}"
+          test -n "${DISCORD_BRIDGE_TOKEN:-}"
           if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
             account_id="$(curl --fail-with-body --silent --show-error \
               -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
@@ -113,7 +115,7 @@ jobs:
           npm test
           npx wrangler deploy --dry-run
 
-      - name: Deploy exact validated revision with Gemini secret
+      - name: Deploy exact validated revision with voice secrets
         shell: bash
         run: |
           set -euo pipefail
@@ -121,9 +123,14 @@ jobs:
           trap 'rm -f "$secrets_file"' EXIT
           SECRETS_FILE="$secrets_file" node <<'NODE'
           const fs = require('fs');
-          const key = process.env.GEMINI_API_KEY || '';
-          if (!key) throw new Error('GEMINI_API_KEY is required');
-          fs.writeFileSync(process.env.SECRETS_FILE, JSON.stringify({ GEMINI_API_KEY: key }));
+          const gemini = process.env.GEMINI_API_KEY || '';
+          const discord = process.env.DISCORD_BRIDGE_TOKEN || '';
+          if (!gemini) throw new Error('GEMINI_API_KEY is required');
+          if (!discord) throw new Error('DISCORD_BRIDGE_TOKEN is required');
+          fs.writeFileSync(process.env.SECRETS_FILE, JSON.stringify({
+            GEMINI_API_KEY: gemini,
+            DISCORD_BRIDGE_TOKEN: discord,
+          }));
           NODE
           npx wrangler deploy --secrets-file "$secrets_file"
 
@@ -237,16 +244,10 @@ jobs:
           out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
           OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||d.route!=='gemini-native-interactions'||d.search!==true||d.genericVerificationAttempted!==true||d.genericVerificationSucceeded!==true||a.length<8||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
 
-      - name: Verify temporary Discord demo TTS
+      - name: Verify permanent Discord bridge TTS
         shell: bash
         run: |
           set -euo pipefail
-          now_epoch="$(date -u +%s)"
-          cutoff_epoch="$(date -u -d '2026-09-18 08:00:00 UTC' +%s)"
-          if (( now_epoch > cutoff_epoch )); then
-            echo 'Temporary Discord demo TTS window has expired; skipping.'
-            exit 0
-          fi
           headers="$(mktemp)"
           audio="$(mktemp)"
           trap 'rm -f "$headers" "$audio"' EXIT
@@ -255,20 +256,20 @@ jobs:
             -w '%{http_code}' \
             -D "$headers" -o "$audio" \
             -H 'content-type: application/json' \
-            -H 'x-talksys-demo: discord-voice-smoke-20260918' \
+            -H "authorization: Bearer $DISCORD_BRIDGE_TOKEN" \
             --data '{"text":"接続テストです。"}' \
             "$PRODUCTION_URL/api/voice/synthesize")"
           curl_rc=$?
           set -e
           cat "$headers"
           if [[ "$curl_rc" -ne 0 || "$http_code" != "200" ]]; then
-            echo "Temporary Discord demo TTS failed: curl=$curl_rc http=$http_code"
+            echo "Permanent Discord bridge TTS failed: curl=$curl_rc http=$http_code"
             cat "$audio" || true
             exit 1
           fi
           grep -Eiq '^content-type: *audio/(mpeg|wav)' "$headers"
           test "$(wc -c < "$audio")" -gt 100
-          echo "Temporary Discord demo TTS returned $(wc -c < "$audio") bytes."
+          echo "Permanent Discord bridge TTS returned $(wc -c < "$audio") bytes."
 
       - name: Verify realtime STT websocket upgrade
         shell: bash
