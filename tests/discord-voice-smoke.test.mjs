@@ -67,7 +67,7 @@ test('Discord smoke registers only its own slash commands without bulk-overwriti
   assert.match(source, /client\.guilds\.cache\.values\(\)/);
   assert.doesNotMatch(source, /DISCORD_GUILD_ID/);
   assert.match(source, /voiceStates\.cache\.get\(interaction\.user\.id\)/);
-  assert.match(source, /connectToVoiceChannel\(channel\)/);
+  assert.match(source, /connectToVoiceChannel\(channel, interaction\.user\.id\)/);
   assert.match(source, /waiting for \/talksys/);
 });
 
