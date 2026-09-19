@@ -15,18 +15,12 @@ test('Discord smoke uses real TalkSys voice paths and never browser-side TTS', (
   assert.doesNotMatch(source, /speechSynthesis|SpeechSynthesisUtterance/);
 });
 
-test('Discord smoke has a realtime STT websocket preflight', () => {
-  assert.match(source, /probeRealtimeStt/);
-  assert.match(source, /\[preflight\] realtime STT websocket open/);
-  assert.match(source, /realtime_stt_probe_timeout/);
-});
-
 test('Discord bridge uses permanent shared-token TTS auth and no expired demo bypass', () => {
   assert.match(source, /authorization: 'Bearer ' \+ BRIDGE_TOKEN/);
   assert.doesNotMatch(source, /x-talksys-demo/);
   assert.doesNotMatch(source, /discord-voice-smoke-20260918/);
-  assert.match(source, /const finalTtsPromise = synthesize\(answer\)/);
-  assert.match(source, /const audio = await finalTtsPromise/);
+  assert.match(source, /const spokenAnswer = voiceSafeText\(answer\)/);
+  assert.match(source, /const audio = await synthesize\(spokenAnswer\)/);
   assert.match(source, /await playMp3\(audio\)/);
 });
 
@@ -44,7 +38,7 @@ test('Discord realtime STT rate limits fall back to batch Whisper instead of dro
   assert.match(source, /\/api\/transcribe/);
   assert.match(source, /content-type': 'audio\/wav'/);
   assert.match(source, /unexpected-response/);
-  assert.match(source, /status === 429/);
+  assert.match(source, /statusCode === 429/);
   assert.match(source, /realtimeSttBackoffUntil = Date\.now\(\) \+ 60_000/);
   assert.match(source, /batch STT forced for 60s/);
   assert.match(source, /\[stt-fallback\] batch success/);
@@ -58,12 +52,20 @@ test('Discord keeps PCM16 audio for fallback transcription when realtime STT fai
   assert.match(source, /writeUInt32LE\(16000, 24\)/);
 });
 
-test('Discord final answer is never blocked by slow search-preface TTS', () => {
-  assert.match(source, /let answerReady = false/);
-  assert.match(source, /const finalTtsPromise = synthesize\(answer\)/);
-  assert.match(source, /skipped because final answer is already ready/);
-  assert.match(source, /if \(prefacePlaybackPromise\)/);
-  assert.doesNotMatch(source, /const answer = await turnPromise;\s*await prefaceTask;/);
+test('Discord runtime omits search-preface work and keeps the core voice path only', () => {
+  assert.doesNotMatch(source, /\/api\/search-preface/);
+  assert.doesNotMatch(source, /searchPreface/);
+  assert.doesNotMatch(source, /prefaceTask|prefacePlaybackPromise|answerReady/);
+  assert.match(source, /const answer = await talk\(text\)/);
+  assert.match(source, /const spokenAnswer = voiceSafeText\(answer\)/);
+  assert.match(source, /const audio = await synthesize\(spokenAnswer\)/);
+});
+
+test('Discord spoken output is compacted before server TTS without changing stored answer history', () => {
+  assert.match(source, /function voiceSafeText\(text\)/);
+  assert.match(source, /sentences\.slice\(0, 4\)/);
+  assert.match(source, /spoken answer compacted chars=/);
+  assert.match(source, /history\.push\(\{ role: 'user', content: text \}, \{ role: 'assistant', content: body\.answer \}\)/);
 });
 
 test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio readiness', () => {
@@ -74,11 +76,10 @@ test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio read
   assert.match(source, /server-total=/);
 });
 
-test('Discord slash join performs a Fones TTS playback preflight', () => {
-  assert.match(source, /フォーンズです。接続しました。/);
-  assert.match(source, /\[tts-preflight\]/);
-  assert.match(source, /x-talksys-voice-source/);
-  assert.match(source, /フォーンズ音声も正常です/);
+test('Discord slash join does not spend TTS time before first user turn', () => {
+  assert.doesNotMatch(source, /フォーンズです。接続しました。/);
+  assert.doesNotMatch(source, /\[tts-preflight\]/);
+  assert.match(source, /TalkSysを「\$\{channel\.name\}」へ接続しました。/);
 });
 
 test('Discord smoke launcher requires only the bot token plus persisted bridge token', () => {
