@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - test/internal-latency-benchmark-20260919
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
