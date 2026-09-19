@@ -35,6 +35,13 @@ if (-not $env:TALKSYS_BASE_URL) {
 
 Write-Host "[setup] installing Discord smoke dependencies..."
 npm install --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) {
+  Write-Warning "通常のnpm installが失敗したため、peer dependency競合を無視して再試行します。"
+  npm install --no-audit --no-fund --legacy-peer-deps
+  if ($LASTEXITCODE -ne 0) {
+    throw "Discord依存関係のインストールに失敗しました。"
+  }
+}
 
 Write-Host "[start] Discord voice smoke"
 Write-Host "[start] TalkSys: $env:TALKSYS_BASE_URL"
