@@ -77,10 +77,12 @@ export async function listTalkLogs(env,limit=100,filters={}){
   const exactSession=clean(filters?.sessionId,180).trim();
   const sessionPrefix=clean(filters?.sessionPrefix,120).replace(/[^A-Za-z0-9._-]/g,'').trim();
   const event=clean(filters?.event,120).trim();
+  const utteranceId=clean(filters?.utteranceId,180).trim();
   const q=clean(filters?.q,500).trim();
   if(exactSession){where.push('session_id = ?');binds.push(exactSession);}
   else if(sessionPrefix){where.push('session_id LIKE ?');binds.push(sessionPrefix+'%');}
   if(event){where.push('event = ?');binds.push(event);}
+  if(utteranceId){where.push("json_extract(result_json, '$.utteranceId') = ?");binds.push(utteranceId);}
   if(q){where.push('user_text LIKE ?');binds.push('%'+q+'%');}
   const sql='SELECT id,session_id,event,timestamp,jst,revision,path,status,user_text,result_json FROM conversation_logs'
     +(where.length?' WHERE '+where.join(' AND '):'')
