@@ -74,6 +74,16 @@ function transcriptFrom(payload) {
   return String(payload?.channel?.alternatives?.[0]?.transcript || payload?.transcript || '').trim();
 }
 
+function voiceSafeText(text) {
+  let value = String(text || '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/(^|\n)\s*(?:#{1,6}|[-+*•]|\d+[.)、])\s*/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const sentences = value.match(/[^。！？!?]+[。！？!?]?/g) || [value];
+  return sentences.slice(0, 4).join('').trim() || value;
+}
 function pcm16MonoToWav16k(pcm) {
   const input = Buffer.isBuffer(pcm) ? pcm : Buffer.from(pcm || []);
   const dataLength = input.length - (input.length % 2);
@@ -216,7 +226,11 @@ async function processTranscript(text, userId, sessionEpoch) {
     const answer = await talk(text);
     if (sessionEpoch !== voiceEpoch) return;
 
-    const audio = await synthesize(answer);
+    const spokenAnswer = voiceSafeText(answer);
+    if (spokenAnswer !== answer) {
+      console.log(`[tts] spoken answer compacted chars=${answer.length}->${spokenAnswer.length}`);
+    }
+    const audio = await synthesize(spokenAnswer);
     if (sessionEpoch !== voiceEpoch) return;
 
     console.log(`[latency] final-audio-ready=${Date.now() - pipelineStarted}ms`);
