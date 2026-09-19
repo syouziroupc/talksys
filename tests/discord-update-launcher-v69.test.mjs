@@ -8,8 +8,12 @@ const readme = fs.readFileSync(new URL('../discord-voice-smoke/README.md', impor
 test('Discord update launcher only fast-forwards a clean local checkout', () => {
   assert.match(updater, /git status --porcelain/);
   assert.match(updater, /git fetch origin main/);
+  assert.match(updater, /git rev-parse --abbrev-ref HEAD/);
+  assert.match(updater, /git merge-base --is-ancestor HEAD origin\/main/);
   assert.match(updater, /git merge --ff-only origin\/main/);
   assert.match(updater, /ローカル変更があります/);
+  assert.match(updater, /Discord試験は main ブランチで実行してください/);
+  assert.match(updater, /先行または分岐しています/);
   assert.doesNotMatch(updater, /reset --hard|clean -f/);
 });
 
