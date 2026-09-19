@@ -20,7 +20,7 @@ test('Discord bridge uses permanent shared-token auth for verified streaming and
   assert.doesNotMatch(source, /x-talksys-demo/);
   assert.doesNotMatch(source, /discord-voice-smoke-20260918/);
   assert.match(source, /\/api\/turn-stream/);
-  assert.match(source, /async function talkStream\(text, onSentence\)/);
+  assert.match(source, /async function talkStream\(text, onSentence, utteranceId = ''\)/);
   assert.match(source, /queueSentence/);
   assert.match(source, /await playMp3\(prefetched\.value\)/);
 });
@@ -57,9 +57,9 @@ test('Discord runtime omits search-preface work and prefers the verified turn st
   assert.doesNotMatch(source, /\/api\/search-preface/);
   assert.doesNotMatch(source, /searchPreface/);
   assert.doesNotMatch(source, /prefaceTask|prefacePlaybackPromise|answerReady/);
-  assert.match(source, /streamedResult = await talkStream\(text, queueSentence\)/);
+  assert.match(source, /streamedResult = await talkStream\(text, queueSentence, utteranceId\)/);
   assert.match(source, /falling back to \/api\/turn/);
-  assert.match(source, /return \{ answer: await talk\(text\), streamed: false/);
+  assert.match(source, /return \{ answer: await talk\(text, utteranceId\), streamed: false/);
 });
 
 test('Discord stores the complete final answer while speaking at most four streamed sentences', () => {
