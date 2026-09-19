@@ -587,17 +587,10 @@ async function realtimeSttResponse(request, env) {
   }
 }
 
-const DISCORD_DEMO_TTS_HEADER = 'discord-voice-smoke-20260918';
-const DISCORD_DEMO_TTS_EXPIRES_AT = Date.parse('2026-09-18T08:00:00Z');
-
-function discordVoiceTtsAuthorized(request, env, nowMs = Date.now()) {
+function discordVoiceTtsAuthorized(request, env) {
   const expected = typeof env?.DISCORD_BRIDGE_TOKEN === 'string' ? env.DISCORD_BRIDGE_TOKEN.trim() : '';
   const supplied = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
-  if (expected) {
-    return Boolean(supplied && supplied.length === expected.length && supplied === expected);
-  }
-  const demo = (request.headers.get('x-talksys-demo') || '').trim();
-  return demo === DISCORD_DEMO_TTS_HEADER && nowMs <= DISCORD_DEMO_TTS_EXPIRES_AT;
+  return Boolean(expected && supplied && supplied.length === expected.length && supplied === expected);
 }
 
 function decodeBase64Bytes(value) {
