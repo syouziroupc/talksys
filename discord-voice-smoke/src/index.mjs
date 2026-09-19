@@ -97,6 +97,7 @@ function pcm16MonoToWav16k(pcm) {
 
 async function batchTranscribePcm16(pcm, reason = 'fallback') {
   if (!pcm?.length) throw new Error('batch_stt_empty_pcm');
+  const started = Date.now();
   const wav = pcm16MonoToWav16k(pcm);
   console.log(`[stt-fallback] batch start reason=${reason} pcm=${pcm.length}B wav=${wav.length}B`);
   const response = await fetch(TALKSYS_BASE_URL + '/api/transcribe', {
@@ -109,6 +110,7 @@ async function batchTranscribePcm16(pcm, reason = 'fallback') {
     throw new Error(body?.error || body?.rejected || `batch_stt_http_${response.status}`);
   }
   console.log(`[stt-fallback] batch success model=${body.model || 'unknown'} elapsed=${body.elapsedMs ?? '?'}ms:`, body.text);
+  console.log(`[latency] batch-stt-http=${Date.now() - started}ms server=${body.elapsedMs ?? '?'}ms`);
   return String(body.text).trim();
 }
 
