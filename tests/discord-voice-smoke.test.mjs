@@ -19,16 +19,18 @@ test('Discord smoke has a realtime STT websocket preflight', () => {
   assert.match(source, /realtime_stt_probe_timeout/);
 });
 
-test('temporary demo path uses TalkSys-side TTS before raw echo fallback', () => {
-  assert.match(source, /x-talksys-demo/);
-  assert.match(source, /discord-voice-smoke-20260918/);
+test('Discord bridge uses permanent shared-token TTS auth and no expired demo bypass', () => {
+  assert.match(source, /authorization: 'Bearer ' \+ BRIDGE_TOKEN/);
+  assert.doesNotMatch(source, /x-talksys-demo/);
+  assert.doesNotMatch(source, /discord-voice-smoke-20260918/);
   assert.match(source, /const audio = await synthesize\(answer\)/);
   assert.match(source, /await playMp3\(audio\)/);
 });
 
-test('raw echo sends buffered PCM even when STT does not produce a transcript', () => {
+test('raw echo and receive-byte diagnostics distinguish Discord receive from STT failure', () => {
   assert.match(source, /Readable\.from\(\[pcm\]\)/);
   assert.match(source, /\[stt\] no transcript/);
+  assert.match(source, /opus=.*pcm48=.*pcm16=/);
   assert.match(source, /playRawPcm48\(rawPcm48\)/);
 });
 
@@ -36,6 +38,8 @@ test('Discord smoke launcher requests only external Discord identifiers and inst
   assert.match(launcher, /DISCORD_TOKEN/);
   assert.match(launcher, /DISCORD_GUILD_ID/);
   assert.match(launcher, /DISCORD_VOICE_CHANNEL_ID/);
+  assert.match(launcher, /DISCORD_BRIDGE_TOKEN/);
+  assert.match(launcher, /Read-Secret "TalkSys Discord Bridge Token"/);
   assert.match(launcher, /npm install --no-audit --no-fund/);
   assert.match(launcher, /Node\.js 22\.12/);
 });
