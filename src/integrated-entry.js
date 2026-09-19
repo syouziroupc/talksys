@@ -9,11 +9,11 @@ export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
-export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
+export const REALTIME_VOICE_REVISION = 'talksys-v65-discord-hearing-tune-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
-export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
-export const GEMINI_TTS_FALLBACK_MODEL = 'gemini-3.1-flash-tts-preview';
+export const GEMINI_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
+export const GEMINI_TTS_FALLBACK_MODEL = 'gemini-2.5-flash-preview-tts';
 
 const GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -611,7 +611,7 @@ async function realtimeSttResponse(request, env) {
       interim_results: 'true',
       punctuate: 'true',
       smart_format: 'true',
-      endpointing: '350',
+      endpointing: '250',
     }, { websocket: true });
   } catch (error) {
     return json({
