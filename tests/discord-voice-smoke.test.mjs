@@ -30,7 +30,9 @@ test('Discord receive never echoes the callers raw voice and finalizes buffered 
   assert.match(source, /sendFinalizeIfReady/);
   assert.match(source, /\[stt\] finalize sent/);
   assert.match(source, /finalize-timeout/);
-  assert.match(source, /utterance dropped after realtime\+batch STT/);
+  assert.doesNotMatch(source, /utterance dropped after realtime\+batch STT/);
+  assert.match(source, /no transcript after realtime\+batch; speaking recovery prompt/);
+  assert.match(source, /speakRecoveryPrompt\('stt-exhausted', sessionEpoch\)/);
   assert.match(source, /opus=.*pcm48=.*pcm16=/);
 });
 
@@ -40,8 +42,9 @@ test('Discord realtime STT rate limits fall back to batch Whisper instead of dro
   assert.match(source, /content-type': 'audio\/wav'/);
   assert.match(source, /unexpected-response/);
   assert.match(source, /statusCode === 429/);
-  assert.match(source, /realtimeSttBackoffUntil = Date\.now\(\) \+ 60_000/);
-  assert.match(source, /batch STT forced for 60s/);
+  assert.match(source, /function registerRealtimeSttFailure\(reason = 'realtime-failed', statusCode = 0\)/);
+  assert.match(source, /Math\.min\(300000, baseMs \* \(2 \*\* Math\.max\(0, realtimeSttFailureCount - 1\)\)\)/);
+  assert.match(source, /Date\.now\(\) < realtimeSttBackoffUntil/);
   assert.match(source, /\[stt-fallback\] batch success/);
 });
 
@@ -99,6 +102,33 @@ test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio read
   assert.match(source, /\[latency\] tts-http=/);
   assert.match(source, /\[latency\] first-audio-ready=/);
   assert.match(source, /server-total=/);
+});
+
+test('Discord voice stages have finite budgets and bounded retries', () => {
+  assert.match(source, /const REQUEST_BUDGET_MS = Object\.freeze/);
+  assert.match(source, /batchStt: 8000/);
+  assert.match(source, /turnStream: 35000/);
+  assert.match(source, /turn: 35000/);
+  assert.match(source, /tts: 12000/);
+  assert.match(source, /function boundedSignal\(parentSignal, timeoutMs\)/);
+  assert.match(source, /function fetchWithRetry\(url, init = \{\}, \{ timeoutMs = 15000, retries = 1, label = 'request' \} = \{\}\)/);
+  assert.match(source, /retries: 0,\n    label: 'turn'/);
+  assert.match(source, /retries: 0,\n    label: 'tts'/);
+});
+
+test('Discord pre-caches a recovery voice and speaks it instead of going silent', () => {
+  assert.match(source, /const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。'/);
+  assert.match(source, /async function warmRecoveryAudio\(\)/);
+  assert.match(source, /async function speakRecoveryPrompt\(reason = 'pipeline-failure', sessionEpoch = voiceEpoch\)/);
+  assert.match(source, /warmRecoveryAudio\(\)\.catch/);
+  assert.match(source, /playedSentenceCount === 0/);
+  assert.match(source, /speakRecoveryPrompt\('answer-pipeline-failed', sessionEpoch\)/);
+});
+
+test('Discord playback watchdog kills stuck ffmpeg instead of leaking the pipeline', () => {
+  assert.match(source, /ffmpeg\.kill\('SIGKILL'\)/);
+  assert.match(source, /player\.stop\(true\)/);
+  assert.match(source, /playback_timeout/);
 });
 
 test('Discord slash join restores the audible connection greeting without making failure fatal', () => {
