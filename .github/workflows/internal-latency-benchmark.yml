@@ -1,0 +1,163 @@
+name: Internal TalkSys latency benchmark
+
+on:
+  push:
+    branches:
+      - test/internal-latency-benchmark-20260919
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PROD: https://talksys.syouziroupc.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install synthetic speech tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq espeak-ng ffmpeg >/dev/null
+
+      - name: Measure health and realtime STT handshake
+        shell: bash
+        run: |
+          set -euo pipefail
+          health_time="$(curl -fsS -o /tmp/health.json -w '%{time_total}' "$PROD/voice-health")"
+          echo "HEALTH_TOTAL_SEC=$health_time"
+
+          set +e
+          ws_time="$(curl --silent --show-error --http1.1 --max-time 5 \
+            -D /tmp/ws-headers.txt -o /tmp/ws-body.txt -w '%{time_starttransfer}' \
+            -H 'Connection: Upgrade' \
+            -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Version: 13' \
+            -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            "$PROD/api/realtime-stt")"
+          ws_rc=$?
+          set -e
+          cat /tmp/ws-headers.txt
+          echo "REALTIME_STT_HANDSHAKE_SEC=$ws_time curl_rc=$ws_rc"
+          grep -Eq '^HTTP/1\.[01] 101 ' /tmp/ws-headers.txt
+
+      - name: Measure batch STT
+        shell: bash
+        run: |
+          set -euo pipefail
+          espeak-ng -v ja -s 145 -w /tmp/stt-source.wav 'こんにちは。応答速度の内部テストです。'
+          ffmpeg -hide_banner -loglevel error -y -i /tmp/stt-source.wav -ar 16000 -ac 1 -sample_fmt s16 /tmp/stt.wav
+          stt_time="$(curl -sS -o /tmp/stt.json -w '%{time_total}' \
+            -H 'content-type: audio/wav' --data-binary @/tmp/stt.wav "$PROD/api/transcribe")"
+          echo "BATCH_STT_TOTAL_SEC=$stt_time"
+          cat /tmp/stt.json
+          echo
+          STT_JSON="$(cat /tmp/stt.json)" node - <<'NODE'
+          const d = JSON.parse(process.env.STT_JSON || '{}');
+          console.log('BATCH_STT_OK=' + Boolean(d.ok));
+          console.log('BATCH_STT_SERVER_MS=' + (d.elapsedMs ?? 'NA'));
+          console.log('BATCH_STT_TEXT=' + String(d.text || d.error || d.rejected || ''));
+          NODE
+
+      - name: Measure production answer latency
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const { performance } = require('perf_hooks');
+          const base = process.env.PROD;
+          const cases = [
+            { name: 'greeting', text: 'こんにちは' },
+            { name: 'arithmetic', text: '12345÷15は？' },
+            { name: 'factual', text: 'Panasonic CF-SV8はWindows 11に対応している？' },
+            { name: 'current_search', text: '別府市の今日の天気は？' },
+          ];
+          const rows = [];
+          const runsPerCase = 2;
+
+          for (const c of cases) {
+            for (let run = 1; run <= runsPerCase; run++) {
+              const t0 = performance.now();
+              let response;
+              let body = {};
+              try {
+                response = await fetch(base + '/api/turn', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    text: c.text,
+                    history: [],
+                    sessionId: 'internal-latency-benchmark',
+                    channel: 'internal-benchmark',
+                  }),
+                  signal: AbortSignal.timeout(120000),
+                });
+                body = await response.json();
+              } catch (error) {
+                rows.push({ case: c.name, run, ok: false, clientMs: Math.round(performance.now() - t0), error: String(error?.message || error) });
+                continue;
+              }
+              const clientMs = Math.round(performance.now() - t0);
+              rows.push({
+                case: c.name,
+                run,
+                ok: Boolean(response.ok && body?.ok),
+                http: response.status,
+                clientMs,
+                serverTotalMs: Number(body?.timings?.totalMs ?? NaN),
+                primaryMs: Number(body?.timings?.primaryMs ?? NaN),
+                verifierMs: Number(body?.timings?.verifierMs ?? NaN),
+                search: Boolean(body?.search),
+                verified: Boolean(body?.genericVerificationSucceeded),
+                route: body?.route || '',
+                answerChars: String(body?.answer || '').length,
+              });
+              console.log('RESULT ' + JSON.stringify(rows.at(-1)));
+            }
+          }
+
+          function median(values) {
+            const a = values.filter(Number.isFinite).sort((x,y)=>x-y);
+            if (!a.length) return null;
+            const m = Math.floor(a.length / 2);
+            return a.length % 2 ? a[m] : Math.round((a[m-1] + a[m]) / 2);
+          }
+          const summary = {};
+          for (const c of cases) {
+            const rs = rows.filter(r => r.case === c.name && r.ok);
+            summary[c.name] = {
+              successes: rs.length,
+              medianClientMs: median(rs.map(r => r.clientMs)),
+              medianServerMs: median(rs.map(r => r.serverTotalMs)),
+              medianPrimaryMs: median(rs.map(r => r.primaryMs)),
+              medianVerifierMs: median(rs.map(r => r.verifierMs)),
+            };
+          }
+          const output = { generatedAt: new Date().toISOString(), rows, summary };
+          fs.writeFileSync('/tmp/talksys-latency.json', JSON.stringify(output, null, 2));
+          console.log('SUMMARY ' + JSON.stringify(summary));
+          NODE
+
+      - name: Print compact result
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '--- latency result ---'
+          cat /tmp/talksys-latency.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: talksys-internal-latency
+          path: |
+            /tmp/talksys-latency.json
+            /tmp/stt.json
+            /tmp/health.json
