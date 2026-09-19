@@ -59,10 +59,10 @@ test('realtime STT endpoint uses Japanese Nova-3 websocket with interim results 
   assert.equal(call.args.encoding, 'linear16');
   assert.equal(call.args.sample_rate, '16000');
   assert.equal(call.args.language, 'ja');
-  assert.equal(call.args.interim_results, true);
-  assert.equal(typeof call.args.interim_results, 'boolean');
-  assert.equal(call.args.punctuate, true);
-  assert.equal(call.args.smart_format, true);
+  assert.equal(call.args.interim_results, 'true');
+  assert.equal(typeof call.args.interim_results, 'string');
+  assert.equal(call.args.punctuate, 'true');
+  assert.equal(call.args.smart_format, 'true');
   assert.equal(call.args.endpointing, '350');
   assert.equal('vad_events' in call.args, false);
   assert.equal('utterance_end_ms' in call.args, false);
