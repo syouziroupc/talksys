@@ -41,6 +41,13 @@ const history = [];
 let previousInteractionId = '';
 let connection;
 let answering = false;
+let voiceEpoch = 0;
+
+function resetConversationState() {
+  history.splice(0, history.length);
+  previousInteractionId = '';
+  answering = false;
+}
 
 function mono16kFromStereo48k(chunk) {
   const input = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -180,27 +187,31 @@ async function playRawPcm48(pcm) {
   });
 }
 
-async function processTranscript(text, userId, rawPcm48) {
-  if (!text || answering) return;
+async function processTranscript(text, userId, rawPcm48, sessionEpoch) {
+  if (!text || answering || sessionEpoch !== voiceEpoch) return;
   answering = true;
   try {
     console.log(`[stt] final user=${userId}:`, text);
     const answer = await talk(text);
+    if (sessionEpoch !== voiceEpoch) return;
     const audio = await synthesize(answer);
+    if (sessionEpoch !== voiceEpoch) return;
     await playMp3(audio);
   } catch (error) {
+    if (sessionEpoch !== voiceEpoch) return;
     console.error('[pipeline]', error?.stack || error);
     if (rawPcm48?.length) {
       try { await playRawPcm48(rawPcm48); }
       catch (echoError) { console.error('[echo]', echoError?.stack || echoError); }
     }
   } finally {
-    answering = false;
+    if (sessionEpoch === voiceEpoch) answering = false;
   }
 }
 
 function startReceiverSession(userId) {
   if (!connection || sessions.has(userId) || answering) return;
+  const sessionEpoch = voiceEpoch;
   console.log('[rx] user=' + userId);
 
   const opus = connection.receiver.subscribe(userId, {
@@ -236,7 +247,8 @@ function startReceiverSession(userId) {
       sessions.delete(userId);
       const rawPcm48 = Buffer.concat(rawPcm48Chunks);
       console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B`);
-      if (text) processTranscript(text, userId, rawPcm48);
+      if (sessionEpoch !== voiceEpoch) return;
+      if (text) processTranscript(text, userId, rawPcm48, sessionEpoch);
       else {
         console.log('[stt] no transcript; echoing captured PCM to prove Discord receive path');
         if (rawPcm48.length) {
@@ -303,6 +315,8 @@ function startReceiverSession(userId) {
 }
 
 function destroyVoiceConnection() {
+  voiceEpoch += 1;
+  resetConversationState();
   for (const session of sessions.values()) {
     try { session.opus?.destroy(); } catch {}
     try { session.decoder?.destroy(); } catch {}
@@ -316,7 +330,7 @@ function destroyVoiceConnection() {
 
 async function connectToVoiceChannel(channel) {
   if (!channel || !channel.isVoiceBased()) throw new Error('target channel is not voice based');
-  if (connection) destroyVoiceConnection();
+  destroyVoiceConnection();
 
   connection = joinVoiceChannel({
     channelId: channel.id,
@@ -337,19 +351,30 @@ async function connectToVoiceChannel(channel) {
   return channel;
 }
 
+const TALKSYS_COMMANDS = [
+  {
+    name: 'talksys',
+    description: 'TalkSysを現在参加中のVCへ呼び出します',
+  },
+  {
+    name: 'leave',
+    description: 'TalkSysをVCから退出させます',
+  },
+];
+
+async function ensureTalkSysCommands(guild) {
+  const existing = await guild.commands.fetch();
+  for (const data of TALKSYS_COMMANDS) {
+    const command = existing.find((item) => item.name === data.name);
+    if (command) await guild.commands.edit(command.id, data);
+    else await guild.commands.create(data);
+  }
+}
+
 client.once('ready', async () => {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
-    await guild.commands.set([
-      {
-        name: 'talksys',
-        description: 'TalkSysを現在参加中のVCへ呼び出します',
-      },
-      {
-        name: 'leave',
-        description: 'TalkSysをVCから退出させます',
-      },
-    ]);
+    await ensureTalkSysCommands(guild);
     console.log('[discord] slash commands ready: /talksys /leave');
     console.log('[discord] TalkSys realtime STT:', STT_WS_URL);
     console.log('[discord] output mode: TalkSys TTS (permanent shared token)');
