@@ -220,6 +220,7 @@ async function commitVoice(reason){
 
 const ASK_V58 = String.raw`
 async function ask(text,spokenBackchannelOverride=''){
+  const plan={search:false,ack:'',planner:'gemini-native'};
   const spokenBackchannel=spokenBackchannelOverride||backchannelFor(text);
   abortActiveTurn('new-turn');
   const seq=++turnSeq,previous=history.slice(-MAX_HISTORY),controller=new AbortController();activeTurnController=controller;
