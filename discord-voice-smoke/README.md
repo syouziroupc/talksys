@@ -61,11 +61,14 @@ TalkSys側URL、STT WebSocket、`/api/turn-stream`、TalkSys TTSはコード側�
 ```
 [discord] voice ready
 [rx] user=...
-[stt] websocket open
+[stt] websocket open user=... reusable=true
+[stt] websocket reuse user=... state=1
 [stt] ...
-[turn] ...
+[turn-stream] ...
+[latency] first-audio-ready=...ms source=verifier-stream
 [tts] ... bytes
 [tx] playback started
+[metrics] voice latency persisted
 ```
 
 再接続、多人数同時発話、長時間安定性は対象外です。
