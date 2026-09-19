@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { Client, GatewayIntentBits } from 'discord.js';
 import {
   AudioPlayerStatus,
@@ -40,6 +41,7 @@ let connection;
 let answering = false;
 let voiceEpoch = 0;
 let realtimeSttBackoffUntil = 0;
+let discordSessionId = '';
 const pendingTurns = [];
 
 function resetConversationState() {
@@ -47,6 +49,7 @@ function resetConversationState() {
   previousInteractionId = '';
   answering = false;
   pendingTurns.splice(0, pendingTurns.length);
+  discordSessionId = '';
 }
 
 function mono16kFromStereo48k(chunk) {
@@ -84,6 +87,12 @@ function voiceSafeText(text) {
   const sentences = value.match(/[^。！？!?]+[。！？!?]?/g) || [value];
   return sentences.slice(0, 4).join('').trim() || value;
 }
+function voiceChunks(text) {
+  const value = voiceSafeText(text);
+  const sentences = value.match(/[^。！？!?]+[。！？!?]?/g) || [value];
+  return sentences.map((sentence) => sentence.trim()).filter(Boolean).slice(0, 4);
+}
+
 function pcm16MonoToWav16k(pcm) {
   const input = Buffer.isBuffer(pcm) ? pcm : Buffer.from(pcm || []);
   const dataLength = input.length - (input.length % 2);
@@ -133,6 +142,7 @@ async function talk(text) {
     body: JSON.stringify({
       text,
       history: history.slice(-12),
+      sessionId: discordSessionId || `discord-${randomUUID()}`,
       previousInteractionId,
       channel: 'discord-voice-smoke',
     }),
@@ -230,11 +240,17 @@ async function processTranscript(text, userId, sessionEpoch) {
     if (spokenAnswer !== answer) {
       console.log(`[tts] spoken answer compacted chars=${answer.length}->${spokenAnswer.length}`);
     }
-    const audio = await synthesize(spokenAnswer);
+    const chunks = voiceChunks(spokenAnswer);
+    let audio = await synthesize(chunks[0] || spokenAnswer);
     if (sessionEpoch !== voiceEpoch) return;
 
-    console.log(`[latency] final-audio-ready=${Date.now() - pipelineStarted}ms`);
-    await playMp3(audio);
+    console.log(`[latency] first-audio-ready=${Date.now() - pipelineStarted}ms chunks=${chunks.length || 1}`);
+    for (let index = 0; index < Math.max(1, chunks.length); index += 1) {
+      const nextAudio = index + 1 < chunks.length ? synthesize(chunks[index + 1]) : null;
+      await playMp3(audio);
+      if (sessionEpoch !== voiceEpoch) return;
+      if (nextAudio) audio = await nextAudio;
+    }
     console.log(`[latency] pipeline-complete=${Date.now() - pipelineStarted}ms`);
   } catch (error) {
     if (sessionEpoch !== voiceEpoch) return;
@@ -474,7 +490,9 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
     console.log('[rx] pre-armed user=' + initialUserId);
   }
 
+  discordSessionId = `discord-${channel.guild.id}-${channel.id}-${randomUUID()}`;
   console.log('[discord] voice ready:', channel.name);
+  console.log('[discord] conversation session:', discordSessionId);
   return channel;
 }
 
