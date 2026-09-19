@@ -1593,6 +1593,8 @@ export const __test = {
   searchAnnouncementTopic,
   searchPreface,
   normalizeSpokenJapanese,
+  splitCompleteSpokenSentences,
+  firstSpokenSentence,
   interactionOutputText,
   interactionQueries,
   interactionSources,
