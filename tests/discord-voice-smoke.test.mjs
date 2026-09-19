@@ -60,7 +60,7 @@ test('Discord runtime omits search-preface work and keeps the core voice path on
   assert.match(source, /const answer = await talk\(text\)/);
   assert.match(source, /const spokenAnswer = voiceSafeText\(answer\)/);
   assert.match(source, /const chunks = voiceChunks\(spokenAnswer\)/);
-  assert.match(source, /const nextAudio = index \+ 1 < chunks\.length \? synthesize\(chunks\[index \+ 1\]\) : null/);
+  assert.match(source, /const nextAudio = index \\+ 1 < chunks\\.length/);
 });
 
 test('Discord spoken output is compacted before server TTS without changing stored answer history', () => {
@@ -79,9 +79,10 @@ test('Discord assigns one persistent conversation session id per VC connection',
 
 test('Discord pipelines later sentence TTS generation while the current sentence is playing', () => {
   assert.match(source, /function voiceChunks\(text\)/);
-  assert.match(source, /const nextAudio = index \+ 1 < chunks\.length \? synthesize\(chunks\[index \+ 1\]\) : null/);
+  assert.match(source, /const nextAudio = index \\+ 1 < chunks\\.length/);
   assert.match(source, /await playMp3\(audio\)/);
-  assert.match(source, /if \(nextAudio\) audio = await nextAudio/);
+  assert.match(source, /const prefetched = await nextAudio/);
+  assert.match(source, /if \(prefetched\.error\) throw prefetched\.error/);
 });
 
 test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio readiness', () => {
