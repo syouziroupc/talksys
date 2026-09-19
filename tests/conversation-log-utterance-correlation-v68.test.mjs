@@ -14,3 +14,9 @@ test('voice metric endpoint forwards utterance id into conversation logging', ()
   assert.match(server, /utteranceId: compact\(body\?\.utteranceId, 180\)/);
   assert.match(server, /scheduleConversationLog\(ctx, env, request, logBody, result, 'voice-metrics', 202\)/);
 });
+
+test('private log lookup can select one utterance id through D1 JSON extraction', () => {
+  assert.match(logSource, /const utteranceId=clean\(filters\?\.utteranceId,180\)\.trim\(\)/);
+  assert.match(logSource, /json_extract\(result_json, '\$\.utteranceId'\) = \?/);
+  assert.match(server, /utteranceId: url\.searchParams\.get\('utteranceId'\) \|\| ''/);
+});
