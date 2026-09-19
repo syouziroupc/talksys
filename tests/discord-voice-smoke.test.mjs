@@ -20,7 +20,7 @@ test('Discord bridge uses permanent shared-token auth for verified streaming and
   assert.doesNotMatch(source, /x-talksys-demo/);
   assert.doesNotMatch(source, /discord-voice-smoke-20260918/);
   assert.match(source, /\/api\/turn-stream/);
-  assert.match(source, /async function talkStream\(text, onSentence, utteranceId = '', signal\)/);
+  assert.match(source, /async function talkStream\(text, onSentence, utteranceId = '', signal, onSpeculative = null\)/);
   assert.match(source, /queueSentence/);
   assert.match(source, /await playMp3\(prefetched\.value\)/);
 });
@@ -60,7 +60,7 @@ test('Discord runtime omits search-preface work and prefers the verified turn st
   assert.doesNotMatch(source, /\/api\/search-preface/);
   assert.doesNotMatch(source, /searchPreface/);
   assert.doesNotMatch(source, /prefaceTask|prefacePlaybackPromise|answerReady/);
-  assert.match(source, /streamedResult = await talkStream\(text, queueSentence, utteranceId, controller\.signal\)/);
+  assert.match(source, /streamedResult = await talkStream\(text, queueSentence, utteranceId, controller\.signal, prefetchSpeculative\)/);
   assert.match(source, /falling back to \/api\/turn/);
   assert.match(source, /return \{ answer: await talk\(text, utteranceId, signal\), streamed: false/);
 });
@@ -88,11 +88,11 @@ test('Discord assigns one persistent conversation session id per VC connection',
 });
 
 test('Discord starts TTS as verified sentences arrive and serializes playback', () => {
-  assert.match(source, /const audioPromise = synthesize\(sentence, controller\.signal\)/);
+  assert.match(source, /const audioPromise = speculativeMatch/);
   assert.match(source, /playbackChain = playbackChain\.then/);
   assert.match(source, /const prefetched = await audioPromise/);
   assert.match(source, /await playMp3\(prefetched\.value\)/);
-  assert.match(source, /source=verifier-stream/);
+  assert.match(source, /speculative-prefetch|verifier-stream/);
 });
 
 test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio readiness', () => {
