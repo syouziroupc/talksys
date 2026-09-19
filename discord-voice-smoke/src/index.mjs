@@ -16,7 +16,7 @@ import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import WebSocket from 'ws';
 
-const required = ['DISCORD_TOKEN', 'DISCORD_GUILD_ID', 'DISCORD_VOICE_CHANNEL_ID'];
+const required = ['DISCORD_TOKEN', 'DISCORD_GUILD_ID', 'DISCORD_VOICE_CHANNEL_ID', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
   if (!process.env[key]) {
     console.error(`[fatal] missing ${key}`);
@@ -28,7 +28,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const VOICE_CHANNEL_ID = process.env.DISCORD_VOICE_CHANNEL_ID;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
-const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN || '';
+const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
 
 const client = new Client({
@@ -116,9 +116,7 @@ async function synthesize(text) {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      ...(BRIDGE_TOKEN
-        ? { authorization: 'Bearer ' + BRIDGE_TOKEN }
-        : { 'x-talksys-demo': 'discord-voice-smoke-20260918' }),
+      authorization: 'Bearer ' + BRIDGE_TOKEN,
     },
     body: JSON.stringify({ text }),
   });
@@ -215,6 +213,9 @@ function startReceiverSession(userId) {
   let finalText = '';
   let ended = false;
   const rawPcm48Chunks = [];
+  let opusBytes = 0;
+  let pcm48Bytes = 0;
+  let pcm16Bytes = 0;
   let finishTimer;
 
   const session = { opus, decoder, ws };
@@ -234,10 +235,11 @@ function startReceiverSession(userId) {
       try { ws.close(1000, 'utterance-complete'); } catch {}
       sessions.delete(userId);
       const rawPcm48 = Buffer.concat(rawPcm48Chunks);
+      console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B`);
       if (text) processTranscript(text, userId, rawPcm48);
       else {
-        console.log('[stt] no transcript');
-        if (!BRIDGE_TOKEN && rawPcm48.length) {
+        console.log('[stt] no transcript; echoing captured PCM to prove Discord receive path');
+        if (rawPcm48.length) {
           playRawPcm48(rawPcm48).catch((error) => console.error('[echo]', error?.stack || error));
         }
       }
@@ -274,8 +276,10 @@ function startReceiverSession(userId) {
   });
 
   decoder.on('data', (pcm48) => {
+    pcm48Bytes += pcm48.length;
     if (rawPcm48Chunks.length < 500) rawPcm48Chunks.push(Buffer.from(pcm48));
     const pcm16 = mono16kFromStereo48k(pcm48);
+    pcm16Bytes += pcm16.length;
     if (!pcm16.length) return;
     if (ws.readyState === WebSocket.OPEN) ws.send(pcm16);
     else if (ws.readyState === WebSocket.CONNECTING) {
@@ -289,6 +293,7 @@ function startReceiverSession(userId) {
     finish();
   });
 
+  opus.on('data', (chunk) => { opusBytes += chunk.length; });
   opus.on('error', (error) => {
     console.error('[opus]', error.message);
     finish();
@@ -315,7 +320,7 @@ client.once('ready', async () => {
     await entersState(connection, VoiceConnectionStatus.Ready, 15000);
     console.log('[discord] voice ready:', channel.name);
     console.log('[discord] TalkSys realtime STT:', STT_WS_URL);
-    console.log('[discord] output mode:', BRIDGE_TOKEN ? 'TalkSys TTS (shared token)' : 'TalkSys TTS (temporary demo)');
+    console.log('[discord] output mode: TalkSys TTS (permanent shared token)');
     try {
       await probeRealtimeStt();
     } catch (error) {
