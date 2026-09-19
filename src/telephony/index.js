@@ -176,14 +176,14 @@ async function transcribeSamples(env, samples) {
   return { ok: true, text: clean(payload.text, 1800) };
 }
 
-async function answerWithTalkSys(deps, text, history, signal, spokenBackchannel = '') {
+async function answerWithTalkSys(deps, text, history, signal, spokenBackchannel = '', sessionId = '') {
   if (typeof deps?.turn !== 'function') return { ok: false, error: 'talksys_turn_not_connected' };
   try {
     const current = clean(text, 1800);
     const last = history.at(-1);
     const lastIsCurrent = last?.role === 'user' && clean(last?.content, 1800) === current;
     const priorHistory = (lastIsCurrent ? history.slice(0, -1) : history).slice(-16);
-    const payload = await deps.turn({ text: current, history: priorHistory, channel: 'phone', spokenBackchannel }, signal);
+    const payload = await deps.turn({ text: current, history: priorHistory, channel: 'phone', sessionId: clean(sessionId, 200), spokenBackchannel }, signal);
     const answer = clean(payload?.answer || payload?.response || payload?.text || '', 9000);
     if (!answer) return { ok: false, error: payload?.error || 'empty_answer' };
     return { ok: true, answer, payload };
@@ -429,7 +429,7 @@ function mediaBridge(request, env, deps) {
       try {
         const reaction = fastReaction(stt.text);
         const spokenBackchannel = reaction.shouldSpeak ? reaction.text : '';
-        const turnPromise = answerWithTalkSys(deps, stt.text, history, controller.signal, spokenBackchannel);
+        const turnPromise = answerWithTalkSys(deps, stt.text, history, controller.signal, spokenBackchannel, callId);
         if (spokenBackchannel && myVersion === turnVersion) {
           const reacted = await speak(spokenBackchannel);
           if (reacted) console.log(JSON.stringify({ type: 'phone_fast_reaction', kind: reaction.kind, text: spokenBackchannel }));
