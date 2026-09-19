@@ -23,9 +23,20 @@ Discord返答音声は恒久運用の `DISCORD_BRIDGE_TOKEN` で認証します�
 
 `start.ps1` は環境変数にトークンが無い場合だけ安全入力を求めます。トークンをチャットやログへ貼り付ける必要はありません。
 
+## 初回セットアップ
+
+Cloudflareの `DISCORD_BRIDGE_TOKEN` とローカル側の同一トークンは、手入力せず次で一度だけ作成できます。
+
+```powershell
+cd discord-voice-smoke
+powershell -ExecutionPolicy Bypass -File .\setup-bridge-secret.ps1
+```
+
+32byteのランダム値を生成し、Cloudflare Worker Secretへ登録したうえで、同じ値をWindows DPAPIで暗号化して `%LOCALAPPDATA%\TalkSys` に保存します。平文トークンを表示・リポジトリ保存しません。
+
 ## 起動
 
-Windowsでは `start.ps1` を実行してください。Node.js 22.12以上を確認し、依存関係を自動導入したうえで、未設定のDiscord値だけ対話入力します。
+Windowsでは `start.ps1` を実行してください。Node.js 22.12以上を確認し、依存関係を自動導入します。Discord Bot Tokenは初回入力後にWindows DPAPIで保存し、Guild IDもローカル保存するため、2回目以降は通常そのまま起動できます。
 
 ```powershell
 cd discord-voice-smoke
@@ -42,7 +53,7 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 TalkSys側URL、STT WebSocket、`/api/turn`、TalkSys TTS、raw echo fallbackはコード側に設定済みです。
 
-起動後、Botは `/talksys` と `/leave` を対象サーバーへ登録します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加します。`/leave` で退出します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSでMP3化してVCへ返します。TTSなど後段が失敗した場合は、受信した実音声をそのまま返すraw echoへフォールバックします。STTが文字を返さない場合もraw echoを行い、Discord受信自体が成立しているか切り分けできます。
+起動後、Botは既存の他コマンドを削除せず、`/talksys` と `/leave` だけを対象サーバーへ作成・更新します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加します。`/leave` で退出します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSでMP3化してVCへ返します。TTSなど後段が失敗した場合は、受信した実音声をそのまま返すraw echoへフォールバックします。STTが文字を返さない場合もraw echoを行い、Discord受信自体が成立しているか切り分けできます。
 
 ## 合格条件
 

@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Set-Location $PSScriptRoot
+. "$PSScriptRoot\secret-store.ps1"
 
 function Require-Node {
   try {
@@ -16,26 +17,27 @@ function Require-Node {
   Write-Host "[ok] Node.js $versionText"
 }
 
-function Read-Secret([string]$Prompt) {
-  $secure = Read-Host $Prompt -AsSecureString
-  $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-  try {
-    return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
-  } finally {
-    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
-  }
-}
-
 Require-Node
 
 if (-not $env:DISCORD_TOKEN) {
-  $env:DISCORD_TOKEN = Read-Secret "Discord Bot Token"
+  $env:DISCORD_TOKEN = Read-TalkSysSecret 'discord-bot-token' 'Discord Bot Token'
 }
 if (-not $env:DISCORD_GUILD_ID) {
-  $env:DISCORD_GUILD_ID = Read-Host "Discord Guild (Server) ID"
+  $guildFile = Join-Path $env:LOCALAPPDATA 'TalkSys\discord-guild-id.txt'
+  if (Test-Path $guildFile) {
+    $env:DISCORD_GUILD_ID = (Get-Content -LiteralPath $guildFile -Raw).Trim()
+    Write-Host "[ok] loaded saved Discord Guild ID"
+  } else {
+    $env:DISCORD_GUILD_ID = Read-Host "Discord Guild (Server) ID"
+    Set-Content -LiteralPath $guildFile -Value $env:DISCORD_GUILD_ID -Encoding UTF8 -NoNewline
+  }
 }
 if (-not $env:DISCORD_BRIDGE_TOKEN) {
-  $env:DISCORD_BRIDGE_TOKEN = Read-Secret "TalkSys Discord Bridge Token"
+  $env:DISCORD_BRIDGE_TOKEN = Get-TalkSysPersistedSecret 'discord-bridge-token'
+  if (-not $env:DISCORD_BRIDGE_TOKEN) {
+    throw "DISCORD_BRIDGE_TOKEN が未設定です。先に .\setup-bridge-secret.ps1 を実行してください。"
+  }
+  Write-Host "[ok] loaded saved TalkSys Discord Bridge Token"
 }
 if (-not $env:TALKSYS_BASE_URL) {
   $env:TALKSYS_BASE_URL = "https://talksys.syouziroupc.workers.dev"
