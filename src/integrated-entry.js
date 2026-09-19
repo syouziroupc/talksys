@@ -11,7 +11,7 @@ export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1'
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
-export const DISCORD_PIPELINE_REVISION = 'talksys-v65-persistent-logs-chunked-tts-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v66-verifier-stream-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -566,6 +566,324 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   };
 }
 
+
+function sseData(value) {
+  return `data: ${JSON.stringify(value)}\n\n`;
+}
+
+function splitCompleteSpokenSentences(value = '') {
+  let rest = String(value || '');
+  const sentences = [];
+  while (rest) {
+    const match = rest.match(/[。！？!?]/);
+    if (!match) break;
+    const end = Number(match.index) + 1;
+    const sentence = rest.slice(0, end).trim();
+    rest = rest.slice(end);
+    if (sentence) sentences.push(sentence);
+  }
+  return { sentences, rest };
+}
+
+async function createGeminiInteractionStream(env, body = {}, signal, { forceSearch = true, now = new Date(), immediateTransit = false } = {}) {
+  const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
+  if (!key) throw new Error('gemini_api_key_missing');
+  const inputBody = { ...body, previousInteractionId: '' };
+  const searchAllowed = forceSearch || !TRIVIAL_CONVERSATION_RE.test(resolvedUserQuestion(inputBody));
+  const requestBody = {
+    model: GEMINI_MODEL,
+    input: interactionInput(inputBody, { forceSearch, immediateTransit, now }),
+    system_instruction: buildTalkSysSystemInstruction(now, { forceSearch, immediateTransit }),
+    ...(searchAllowed ? { tools: [{ type: 'google_search' }] } : {}),
+    stream: true,
+  };
+  const response = await fetch(GEMINI_INTERACTIONS_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-goog-api-key': key,
+    },
+    body: JSON.stringify(requestBody),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    const raw = await response.text().catch(() => '');
+    let payload = {};
+    try { payload = raw ? JSON.parse(raw) : {}; } catch {}
+    const detail = compact(payload?.error?.message || raw || response.statusText, 700);
+    throw new Error(`gemini_interactions_stream_http_${response.status}${detail ? `:${detail}` : ''}`);
+  }
+  return response;
+}
+
+async function consumeInteractionSse(response, onEvent) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) buffer += decoder.decode(value, { stream: !done }).replace(/\r/g, '');
+    let boundary;
+    while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const data = block.split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n')
+        .trim();
+      if (!data || data === '[DONE]') continue;
+      let event = null;
+      try { event = JSON.parse(data); } catch {}
+      if (event) await onEvent(event);
+    }
+    if (done) break;
+  }
+}
+
+function streamedTurnResult({ answer, primary, interactionId = '', interactionStatus = 'completed', primaryMs = 0, verifierMs = 0, verifierSearched = false, verificationSucceeded = false, verificationFailOpen = false, started = Date.now(), now = new Date() }) {
+  const searched = searchedInInteraction(primary?.payload || {}) || verifierSearched;
+  return {
+    ok: true,
+    answer,
+    route: 'gemini-native-interactions-stream',
+    planner: 'gemini-native-personalized-v55',
+    search: searched,
+    searchUseful: searched,
+    searchPolicy: 'aggressive-native-google-search',
+    searchRetried: false,
+    genericVerificationAttempted: true,
+    genericVerificationSucceeded: verificationSucceeded,
+    genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
+    verifierSearched,
+    verificationFailOpen,
+    temporalTransitGuard: false,
+    temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
+    temporalRepairRetried: false,
+    temporalRepairAttempts: 0,
+    authoritativeJst: currentJstIso(now),
+    queries: interactionQueries(primary?.payload || {}),
+    sources: interactionSources(primary?.payload || {}),
+    apiSources: [],
+    interactionId: compact(interactionId, 400),
+    interactionStatus: compact(interactionStatus, 80),
+    model: GEMINI_MODEL,
+    generationProvider: 'gemini',
+    generationModel: GEMINI_MODEL,
+    personalizationRevision: PERSONALIZATION_REVISION,
+    languageMode: 'ja-spoken',
+    speechOptimized: true,
+    nativeGeminiAnswerPath: true,
+    nativeGoogleSearch: true,
+    customTruthGateApplied: false,
+    blanketFailClosed: false,
+    legacyGlmExecution: false,
+    streamedFinalVerification: true,
+    timings: {
+      totalMs: Date.now() - started,
+      geminiMs: Date.now() - started,
+      primaryMs,
+      searchRetryMs: 0,
+      verifierMs,
+      searchMs: 0,
+    },
+  };
+}
+
+function discordTurnStreamResponse(request, env, body, ctx) {
+  const encoder = new TextEncoder();
+  const stream = new TransformStream();
+  const writer = stream.writable.getWriter();
+  const started = Date.now();
+  const now = new Date();
+  let primary = null;
+  let emittedSentences = 0;
+
+  const send = (value) => writer.write(encoder.encode(sseData(value)));
+  const emitSentence = async (sentence) => {
+    if (emittedSentences >= 4) return;
+    const text = normalizeSpokenJapanese(sentence);
+    if (!text) return;
+    emittedSentences += 1;
+    await send({ type: 'sentence', text, index: emittedSentences - 1 });
+  };
+  const emitWholeAnswer = async (answer) => {
+    const normalized = normalizeSpokenJapanese(answer);
+    const parts = normalized.match(/[^。！？!?]+[。！？!?]?/g) || [normalized];
+    for (const part of parts.slice(0, 4)) await emitSentence(part);
+    return normalized;
+  };
+
+  (async () => {
+    try {
+      const text = resolvedUserQuestion(body);
+      if (!text) throw new Error('empty_user_input');
+
+      if (isImmediateTransitQuestion(text)) {
+        const result = await runGeminiTurn(body, env, request.signal, { now });
+        await emitWholeAnswer(result.answer);
+        scheduleConversationLog(ctx, env, request, body, result, 'turn', 200);
+        await send({ type: 'done', ...result, streamedFinalVerification: false });
+        return;
+      }
+
+      const trivialConversation = TRIVIAL_CONVERSATION_RE.test(text);
+      const primaryStarted = Date.now();
+      primary = await createGeminiInteraction(env, body, request.signal, {
+        allowPrevious: true,
+        forceSearch: !trivialConversation,
+        now,
+        immediateTransit: false,
+      });
+      const primaryMs = Date.now() - primaryStarted;
+
+      if (!shouldRunGenericVerification(text, primary.payload)) {
+        const answer = await emitWholeAnswer(primary.answer);
+        const result = streamedTurnResult({
+          answer,
+          primary,
+          interactionId: primary.payload?.id,
+          interactionStatus: primary.payload?.status,
+          primaryMs,
+          verifierMs: 0,
+          verifierSearched: false,
+          verificationSucceeded: false,
+          verificationFailOpen: false,
+          started,
+          now,
+        });
+        result.genericVerificationAttempted = false;
+        result.streamedFinalVerification = false;
+        scheduleConversationLog(ctx, env, request, body, result, 'turn', 200);
+        await send({ type: 'done', ...result });
+        return;
+      }
+
+      const verifyBody = {
+        text: buildGenericVerificationInput(body, primary, now),
+        history: [],
+        previousInteractionId: '',
+      };
+      const verifierStarted = Date.now();
+      const upstream = await createGeminiInteractionStream(env, verifyBody, request.signal, {
+        forceSearch: true,
+        now,
+        immediateTransit: false,
+      });
+      let rawAnswer = '';
+      let sentenceBuffer = '';
+      let interactionId = '';
+      let interactionStatus = 'in_progress';
+      let verifierSearched = false;
+
+      await consumeInteractionSse(upstream, async (event) => {
+        if (event?.event_type === 'interaction.created') {
+          interactionId = compact(event?.interaction?.id, 400);
+          interactionStatus = compact(event?.interaction?.status || interactionStatus, 80);
+          return;
+        }
+        if (event?.event_type === 'step.start') {
+          const type = String(event?.step?.type || '');
+          if (/^google_search_/.test(type)) verifierSearched = true;
+          return;
+        }
+        if (event?.event_type === 'step.delta' && event?.delta?.type === 'text' && typeof event?.delta?.text === 'string') {
+          rawAnswer += event.delta.text;
+          sentenceBuffer += event.delta.text;
+          const split = splitCompleteSpokenSentences(sentenceBuffer);
+          sentenceBuffer = split.rest;
+          for (const sentence of split.sentences) await emitSentence(sentence);
+          return;
+        }
+        if (event?.event_type === 'interaction.completed') {
+          interactionId = compact(event?.interaction?.id || interactionId, 400);
+          interactionStatus = compact(event?.interaction?.status || 'completed', 80);
+        }
+      });
+
+      if (!compact(rawAnswer, 12000)) throw new Error('empty_streamed_verifier_answer');
+      if (sentenceBuffer.trim()) await emitSentence(sentenceBuffer);
+      const verifierMs = Date.now() - verifierStarted;
+      const answer = normalizeSpokenJapanese(rawAnswer);
+      const result = streamedTurnResult({
+        answer,
+        primary,
+        interactionId,
+        interactionStatus,
+        primaryMs,
+        verifierMs,
+        verifierSearched,
+        verificationSucceeded: true,
+        verificationFailOpen: false,
+        started,
+        now,
+      });
+      scheduleConversationLog(ctx, env, request, body, result, 'turn', 200);
+      await send({ type: 'done', ...result });
+    } catch (error) {
+      if (emittedSentences === 0 && primary) {
+        try {
+          const fallbackStarted = Date.now();
+          let selected = primary;
+          let verificationSucceeded = false;
+          let verificationFailOpen = false;
+          let verifierSearched = false;
+          try {
+            const verified = await runGenericGeminiVerification(env, body, primary, request.signal, now);
+            if (verified?.answer) {
+              selected = verified;
+              verificationSucceeded = true;
+              verifierSearched = searchedInInteraction(verified.payload);
+            }
+          } catch {
+            verificationFailOpen = true;
+          }
+          const answer = await emitWholeAnswer(selected.answer);
+          const result = streamedTurnResult({
+            answer,
+            primary,
+            interactionId: selected.payload?.id,
+            interactionStatus: selected.payload?.status,
+            primaryMs: Math.max(0, fallbackStarted - started),
+            verifierMs: Date.now() - fallbackStarted,
+            verifierSearched,
+            verificationSucceeded,
+            verificationFailOpen,
+            started,
+            now,
+          });
+          result.streamFallback = true;
+          scheduleConversationLog(ctx, env, request, body, result, 'turn', 200);
+          await send({ type: 'done', ...result });
+          return;
+        } catch {}
+      }
+
+      scheduleConversationLog(ctx, env, request, body, {
+        ok: false,
+        error: compact(error?.message || error, 900),
+        route: 'gemini-native-interactions-stream',
+        timings: { totalMs: Date.now() - started },
+      }, 'turn-error', error?.name === 'AbortError' ? 499 : 502);
+      await send({ type: 'error', error: compact(error?.message || error, 900), partial: emittedSentences > 0 });
+    } finally {
+      try { await writer.close(); } catch {}
+    }
+  })();
+
+  return new Response(stream.readable, {
+    status: 200,
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-accel-buffering': 'no',
+      'x-talksys-integrated-entry-revision': INTEGRATED_ENTRY_REVISION,
+      'x-talksys-discord-pipeline-revision': DISCORD_PIPELINE_REVISION,
+    },
+  });
+}
+
 function json(data, status = 200, headers = {}) {
   const out = new Headers(headers);
   out.set('content-type', 'application/json; charset=utf-8');
@@ -857,6 +1175,8 @@ async function voiceHealth(request, env, ctx) {
       realtimeSttModel: REALTIME_STT_MODEL,
       realtimeVoiceRevision: REALTIME_VOICE_REVISION,
       discordPipelineRevision: DISCORD_PIPELINE_REVISION,
+      discordTurnStream: true,
+      discordTurnStreamEndpoint: '/api/turn-stream',
       discordBridgeConfigured: typeof env?.DISCORD_BRIDGE_TOKEN === 'string' && env.DISCORD_BRIDGE_TOKEN.trim().length > 0,
       persistentConversationLogs: env?.TALKSYS_LOG_DB ? 'd1-private' : 'disabled',
       conversationLogEndpoint: '/api/conversation-logs',
@@ -896,6 +1216,14 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/api/voice/synthesize') {
       return discordVoiceSynthesize(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/turn-stream') {
+      if (!discordVoiceTtsAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+      let body = {};
+      try { body = await request.json(); }
+      catch { return json({ ok: false, error: 'invalid_json' }, 400); }
+      return discordTurnStreamResponse(request, env, body, ctx);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/fast-reaction') {
