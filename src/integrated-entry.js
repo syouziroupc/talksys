@@ -2,14 +2,15 @@ import talksys from './entry.js';
 import { handleTelephonyRequest } from './telephony/index.js';
 import { fastReaction, FAST_REACTION_REVISION } from './voice-fast-reaction.js';
 import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
+import { persistTalkLog, listTalkLogs } from './log-v42.js';
 
-export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v2';
+export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v3';
 export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
-export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
+export const REALTIME_VOICE_REVISION = 'talksys-v65-persistent-logs-chunked-tts-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -574,8 +575,56 @@ function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), { status, headers: out });
 }
 
-async function runTalkSysTurn(request, env, body, signal = request.signal) {
-  return runGeminiTurn(body || {}, env, signal);
+function scheduleConversationLog(ctx, env, request, body, result, event = 'turn', status = 200) {
+  const task = persistTalkLog(env, {
+    request,
+    body: body || {},
+    result,
+    event,
+    status,
+    revision: INTEGRATED_ENTRY_REVISION,
+    extra: { channel: compact(body?.channel || 'web', 80) },
+  });
+  if (ctx?.waitUntil) ctx.waitUntil(task);
+  else task.catch(() => {});
+}
+
+async function runTalkSysTurn(request, env, body, signal = request.signal, ctx = null) {
+  try {
+    const result = await runGeminiTurn(body || {}, env, signal);
+    scheduleConversationLog(ctx, env, request, body, result, 'turn', 200);
+    return result;
+  } catch (error) {
+    scheduleConversationLog(ctx, env, request, body, {
+      ok: false,
+      error: compact(error?.message || error, 900),
+      route: 'gemini-native-interactions',
+      timings: null,
+    }, 'turn-error', error?.name === 'AbortError' ? 499 : 502);
+    throw error;
+  }
+}
+
+function conversationLogAdminToken(env) {
+  return compact(env?.TALKSYS_LOG_ADMIN_TOKEN || env?.TELEPHONY_ADMIN_TOKEN || env?.DISCORD_BRIDGE_TOKEN || '', 500);
+}
+
+function conversationLogAuthorized(request, env) {
+  const expected = conversationLogAdminToken(env);
+  if (!expected) return false;
+  const supplied = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  return supplied.length === expected.length && supplied === expected;
+}
+
+async function conversationLogsResponse(request, env) {
+  if (!conversationLogAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+  try {
+    const limit = Number(new URL(request.url).searchParams.get('limit') || 100);
+    const logs = await listTalkLogs(env, limit);
+    return json({ ok: true, count: logs.length, logs });
+  } catch (error) {
+    return json({ ok: false, error: 'conversation_log_read_failed', detail: compact(error?.message || error, 500) }, 503);
+  }
 }
 
 async function transcribeWithFastReaction(request, env, ctx) {
@@ -807,6 +856,8 @@ async function voiceHealth(request, env, ctx) {
       realtimeSttModel: REALTIME_STT_MODEL,
       realtimeVoiceRevision: REALTIME_VOICE_REVISION,
       discordBridgeConfigured: typeof env?.DISCORD_BRIDGE_TOKEN === 'string' && env.DISCORD_BRIDGE_TOKEN.trim().length > 0,
+      persistentConversationLogs: env?.TALKSYS_LOG_DB ? 'd1-private' : 'disabled',
+      conversationLogEndpoint: '/api/conversation-logs',
       fastReactionRevision: FAST_REACTION_REVISION,
       genericGeminiVerification: true,
       genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
@@ -825,9 +876,13 @@ export default {
     const url = new URL(request.url);
 
     const telephonyResponse = await handleTelephonyRequest(request, env, ctx, {
-      turn: (body, signal) => runTalkSysTurn(request, env, body, signal || request.signal),
+      turn: (body, signal) => runTalkSysTurn(request, env, body, signal || request.signal, ctx),
     });
     if (telephonyResponse) return telephonyResponse;
+
+    if (request.method === 'GET' && url.pathname === '/api/conversation-logs') {
+      return conversationLogsResponse(request, env);
+    }
 
     if (request.method === 'GET' && url.pathname === '/api/realtime-stt') {
       return realtimeSttResponse(request, env);
@@ -870,7 +925,7 @@ export default {
       try { body = await request.json(); }
       catch { return json({ ok: false, error: 'invalid_json' }, 400); }
       try {
-        return json(await runGeminiTurn(body, env, request.signal));
+        return json(await runTalkSysTurn(request, env, body, request.signal, ctx));
       } catch (error) {
         return json({
           ok: false,
