@@ -1,4 +1,4 @@
-name: Post-v73 production benchmark
+name: Post-v74 production benchmark
 
 on:
   pull_request:
@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Wait for v73 production contract
+      - name: Wait for v74 production contract
         shell: bash
         run: |
           set -euo pipefail
@@ -36,14 +36,14 @@ jobs:
           NODE
             )"
             echo "HEALTH attempt=$attempt $state"
-            good="$(STATE="$state" node -e "const d=JSON.parse(process.env.STATE);process.stdout.write(String(d.ok&&d.pipeline==='talksys-v67-speculative-tts-r1'&&d.verifier==='talksys-v58-gemini-continuation-verify-r1'&&d.model==='gemini-3.5-flash-lite'))")"
+            good="$(STATE="$state" node -e "const d=JSON.parse(process.env.STATE);process.stdout.write(String(d.ok&&d.pipeline==='talksys-v68-fast-verified-r1'&&d.verifier==='talksys-v59-evidence-reuse-verify-r1'&&d.model==='gemini-3.5-flash-lite'))")"
             if [[ "$good" == "true" ]]; then
               printf '%s' "$body" > /tmp/health.json
               exit 0
             fi
             sleep 4
           done
-          echo "v73 production contract was not observed"
+          echo "v74 production contract was not observed"
           exit 1
 
       - name: Benchmark production turns
@@ -68,7 +68,7 @@ jobs:
                 const response=await fetch(base+'/api/turn',{
                   method:'POST',
                   headers:{'content-type':'application/json'},
-                  body:JSON.stringify({text:c.text,history:[],sessionId:'post-v73-bench',channel:'internal-benchmark'}),
+                  body:JSON.stringify({text:c.text,history:[],sessionId:'post-v74-bench',channel:'internal-benchmark'}),
                   signal:AbortSignal.timeout(120000),
                 });
                 const body=await response.json();
@@ -108,16 +108,16 @@ jobs:
             };
           }
           const output={generatedAt:new Date().toISOString(),rows,summary};
-          fs.writeFileSync('/tmp/post-v73-benchmark.json',JSON.stringify(output,null,2));
+          fs.writeFileSync('/tmp/post-v74-benchmark.json',JSON.stringify(output,null,2));
           console.log('SUMMARY '+JSON.stringify(summary));
           NODE
 
       - name: Show result
-        run: cat /tmp/post-v73-benchmark.json
+        run: cat /tmp/post-v74-benchmark.json
 
       - uses: actions/upload-artifact@v4
         with:
-          name: post-v73-production-benchmark
+          name: post-v74-production-benchmark
           path: |
             /tmp/health.json
-            /tmp/post-v73-benchmark.json
+            /tmp/post-v74-benchmark.json
