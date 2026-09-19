@@ -413,7 +413,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
       clientTimings.streamed = Boolean(streamedResult?.streamed);
     } catch (error) {
       streamError = error;
-      if (!error?.partial && queuedSentences === 0) {
+      if (!controller.signal.aborted && !error?.partial && queuedSentences === 0) {
         console.warn('[turn-stream] runtime failure before audio; falling back to /api/turn:', error?.message || error);
         try {
           const answer = await talk(text, utteranceId, controller.signal);
