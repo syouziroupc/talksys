@@ -114,48 +114,6 @@ async function batchTranscribePcm16(pcm, reason = 'fallback') {
   return String(body.text).trim();
 }
 
-async function probeRealtimeStt() {
-  await new Promise((resolve, reject) => {
-    const ws = new WebSocket(STT_WS_URL);
-    const timer = setTimeout(() => {
-      try { ws.terminate(); } catch {}
-      reject(new Error('realtime_stt_probe_timeout'));
-    }, 8000);
-    const cleanup = () => clearTimeout(timer);
-    ws.once('open', () => {
-      cleanup();
-      console.log('[preflight] realtime STT websocket open');
-      try { ws.close(1000, 'preflight'); } catch {}
-      resolve();
-    });
-    ws.once('unexpected-response', (_request, response) => {
-      cleanup();
-      const status = Number(response?.statusCode || 0);
-      if (status === 429) realtimeSttBackoffUntil = Date.now() + 60_000;
-      try { ws.terminate(); } catch {}
-      reject(new Error(`realtime_stt_probe_http_${status || 'unknown'}`));
-    });
-    ws.once('error', (error) => {
-      cleanup();
-      if (/\b429\b/.test(String(error?.message || ''))) realtimeSttBackoffUntil = Date.now() + 60_000;
-      reject(error);
-    });
-  });
-}
-
-async function searchPreface(text) {
-  const started = Date.now();
-  const response = await fetch(TALKSYS_BASE_URL + '/api/search-preface', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text }),
-  });
-  const body = await response.json().catch(() => ({}));
-  console.log(`[latency] search-preface-http=${Date.now() - started}ms`);
-  if (!response.ok || !body?.ok) return { shouldSpeak: false, topic: '', text: '' };
-  return body;
-}
-
 async function talk(text) {
   const started = Date.now();
   console.log('[turn] user:', text);
@@ -251,52 +209,19 @@ async function processTranscript(text, userId, sessionEpoch) {
 
   const pipelineStarted = Date.now();
   answering = true;
-  let answerReady = false;
-  let prefacePlaybackPromise = null;
-
   try {
     console.log(`[stt] final user=${userId}:`, text);
     console.log('[latency] pipeline-start');
 
-    const turnPromise = talk(text);
-    const prefaceTask = (async () => {
-      try {
-        const preface = await searchPreface(text);
-        if (sessionEpoch !== voiceEpoch || answerReady || !preface?.shouldSpeak || !preface?.text) return;
-        console.log('[preface]', preface.text);
-        const prefaceAudio = await synthesize(preface.text);
-        if (sessionEpoch !== voiceEpoch || answerReady) {
-          console.log('[preface] skipped because final answer is already ready');
-          return;
-        }
-        prefacePlaybackPromise = playMp3(prefaceAudio);
-        await prefacePlaybackPromise;
-      } catch (error) {
-        if (sessionEpoch === voiceEpoch) console.error('[preface]', error?.message || error);
-      }
-    })();
-
-    const answer = await turnPromise;
-    answerReady = true;
+    const answer = await talk(text);
     if (sessionEpoch !== voiceEpoch) return;
 
-    // Final TTS starts immediately when Gemini returns. A slow search-preface
-    // synthesis must never block the final answer.
-    const finalTtsPromise = synthesize(answer);
-
-    // Only wait for a preface that has already started playing. If its TTS is
-    // merely slow, it is skipped by answerReady above.
-    if (prefacePlaybackPromise) {
-      await prefacePlaybackPromise.catch(() => {});
-    }
-
-    const audio = await finalTtsPromise;
+    const audio = await synthesize(answer);
     if (sessionEpoch !== voiceEpoch) return;
+
     console.log(`[latency] final-audio-ready=${Date.now() - pipelineStarted}ms`);
     await playMp3(audio);
     console.log(`[latency] pipeline-complete=${Date.now() - pipelineStarted}ms`);
-
-    prefaceTask.catch(() => {});
   } catch (error) {
     if (sessionEpoch !== voiceEpoch) return;
     console.error('[pipeline]', error?.stack || error);
@@ -571,12 +496,6 @@ client.once('ready', async () => {
     console.log('[discord] TalkSys realtime STT:', STT_WS_URL);
     console.log('[discord] output mode: TalkSys TTS (permanent shared token)');
 
-    try {
-      await probeRealtimeStt();
-    } catch (error) {
-      console.error('[preflight] realtime STT websocket failed:', error?.message || error);
-    }
-
     console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
     console.error('[fatal]', error?.stack || error);
@@ -599,15 +518,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.deferReply({ ephemeral: true });
       const channel = await interaction.guild.channels.fetch(channelId);
       await connectToVoiceChannel(channel, interaction.user.id);
-
-      try {
-        const readyAudio = await synthesize('フォーンズです。接続しました。');
-        await playMp3(readyAudio);
-        await interaction.editReply(`TalkSysを「${channel.name}」へ接続しました。フォーンズ音声も正常です。`);
-      } catch (error) {
-        console.error('[tts-preflight]', error?.stack || error);
-        await interaction.editReply(`TalkSysを「${channel.name}」へ接続しましたが、フォーンズ音声の初期テストに失敗しました。`);
-      }
+      await interaction.editReply(`TalkSysを「${channel.name}」へ接続しました。`);
       return;
     }
 
