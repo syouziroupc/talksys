@@ -246,10 +246,16 @@ async function processTranscript(text, userId, sessionEpoch) {
 
     console.log(`[latency] first-audio-ready=${Date.now() - pipelineStarted}ms chunks=${chunks.length || 1}`);
     for (let index = 0; index < Math.max(1, chunks.length); index += 1) {
-      const nextAudio = index + 1 < chunks.length ? synthesize(chunks[index + 1]) : null;
+      const nextAudio = index + 1 < chunks.length
+        ? synthesize(chunks[index + 1]).then((value) => ({ value }), (error) => ({ error }))
+        : null;
       await playMp3(audio);
       if (sessionEpoch !== voiceEpoch) return;
-      if (nextAudio) audio = await nextAudio;
+      if (nextAudio) {
+        const prefetched = await nextAudio;
+        if (prefetched.error) throw prefetched.error;
+        audio = prefetched.value;
+      }
     }
     console.log(`[latency] pipeline-complete=${Date.now() - pipelineStarted}ms`);
   } catch (error) {
@@ -480,6 +486,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   connection.subscribe(player);
 
   await entersState(connection, VoiceConnectionStatus.Ready, 15000);
+  discordSessionId = `discord-${channel.guild.id}-${channel.id}-${randomUUID()}`;
   connection.receiver.speaking.on('start', (userId) => {
     if (userId === client.user.id) return;
     startReceiverSession(userId);
@@ -490,7 +497,6 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
     console.log('[rx] pre-armed user=' + initialUserId);
   }
 
-  discordSessionId = `discord-${channel.guild.id}-${channel.id}-${randomUUID()}`;
   console.log('[discord] voice ready:', channel.name);
   console.log('[discord] conversation session:', discordSessionId);
   return channel;
