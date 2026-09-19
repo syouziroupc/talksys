@@ -1145,6 +1145,7 @@ function discordVoiceMetricsResponse(request, env, ctx) {
     const logBody = {
       text: compact(body?.text, 5000),
       sessionId: compact(body?.sessionId, 180),
+      utteranceId: compact(body?.utteranceId, 180),
       channel: 'discord-voice-smoke',
       history: [],
     };
