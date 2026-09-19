@@ -221,6 +221,9 @@ jobs:
             && d.generationModel==='gemini-3.5-flash-lite'
             && d.geminiConfigured===true
             && d.discordBridgeConfigured===true
+            && d.discordVoiceMetricsEndpoint==='/api/voice-metrics'
+            && d.persistentConversationLogs==='d1-private'
+            && d.conversationLogEndpoint==='/api/conversation-logs'
             && d.legacyGlmExecution===false;
           process.stdout.write(String(Boolean(ok)));
           NODE
@@ -309,6 +312,16 @@ jobs:
           [[ "$http_code" == "401" ]]
           BODY="$(cat "$body")" node -e "const d=JSON.parse(process.env.BODY||'{}');if(d.error!=='unauthorized')throw new Error(process.env.BODY);"
           echo 'Discord bridge TTS correctly requires the permanent shared token.'
+
+          metrics_code="$(curl --silent --show-error --max-time 20 \
+            -w '%{http_code}' -o "$body" \
+            -H 'content-type: application/json' \
+            --data '{"text":"metrics-auth-test","sessionId":"discord-deploy-smoke","timings":{"sttMs":1}}' \
+            "$PRODUCTION_URL/api/voice-metrics")"
+          cat "$body"
+          [[ "$metrics_code" == "401" ]]
+          BODY="$(cat "$body")" node -e "const d=JSON.parse(process.env.BODY||'{}');if(d.error!=='unauthorized')throw new Error(process.env.BODY);"
+          echo 'Discord voice metrics correctly requires the permanent shared token.'
 
       - name: Verify realtime STT websocket upgrade
         shell: bash
