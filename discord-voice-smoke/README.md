@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 TalkSys側URL、STT WebSocket、`/api/turn`、TalkSys TTSはコード側に設定済みです。診断用raw echoは廃止し、ユーザー音声をVCへ返しません。
 
-起動後、Botが参加しているDiscordサーバーを自動検出し、既存の他コマンドを削除せず、`/talksys` と `/leave` だけを作成・更新します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加し、最初にフォーンズが「接続しました」と発声してTTS経路を確認します。`/leave` で退出します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSで音声化してVCへ返します。STTやTTSが失敗しても本人の音声をオウム返しせず、ログへ失敗箇所を出します。
+起動後、Botが参加しているDiscordサーバーを自動検出し、既存の他コマンドを削除せず、`/talksys` と `/leave` だけを作成・更新します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加し、最初にフォーンズが「接続しました」と発声してTTS経路を確認します。`/leave` で退出します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSで音声化してVCへ返します。STTやTTSが失敗しても本人の音声をオウム返しせず、ログへ失敗箇所を出します。フォーンズが回答生成・再生中でも受音を止めず、次の発話は最大3件まで順番待ちに入れます。/talksys 実行者の受音ストリームは接続直後に先行して準備し、話し始めの取りこぼしを減らします。
 
 ## 合格条件
 

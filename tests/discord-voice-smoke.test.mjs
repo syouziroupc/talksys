@@ -67,7 +67,7 @@ test('Discord smoke registers only its own slash commands without bulk-overwriti
   assert.match(source, /client\.guilds\.cache\.values\(\)/);
   assert.doesNotMatch(source, /DISCORD_GUILD_ID/);
   assert.match(source, /voiceStates\.cache\.get\(interaction\.user\.id\)/);
-  assert.match(source, /connectToVoiceChannel\(channel\)/);
+  assert.match(source, /connectToVoiceChannel\(channel, interaction\.user\.id\)/);
   assert.match(source, /waiting for \/talksys/);
 });
 
@@ -78,6 +78,20 @@ test('Discord voice session resets conversation state and ignores stale replies 
   assert.match(source, /sessionEpoch !== voiceEpoch/);
   assert.match(source, /history\.splice\(0, history\.length\)/);
   assert.match(source, /previousInteractionId = ''/);
+});
+
+test('Discord receiver remains active while Fones is answering and queues user turns', () => {
+  assert.doesNotMatch(source, /sessions\.has\(userId\) \|\| answering/);
+  assert.match(source, /const pendingTurns = \[\]/);
+  assert.match(source, /\[queue\] buffered user=/);
+  assert.match(source, /pendingTurns\.shift\(\)/);
+});
+
+test('Discord slash join pre-arms the invoking user receive stream', () => {
+  assert.match(source, /connectToVoiceChannel\(channel, initialUserId = ''\)/);
+  assert.match(source, /startReceiverSession\(initialUserId\)/);
+  assert.match(source, /\[rx\] pre-armed user=/);
+  assert.match(source, /connectToVoiceChannel\(channel, interaction\.user\.id\)/);
 });
 
 test('Discord bridge secret setup persists the same random token locally with Windows DPAPI', () => {

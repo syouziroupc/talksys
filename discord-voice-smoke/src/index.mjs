@@ -39,11 +39,13 @@ let previousInteractionId = '';
 let connection;
 let answering = false;
 let voiceEpoch = 0;
+const pendingTurns = [];
 
 function resetConversationState() {
   history.splice(0, history.length);
   previousInteractionId = '';
   answering = false;
+  pendingTurns.splice(0, pendingTurns.length);
 }
 
 function mono16kFromStereo48k(chunk) {
@@ -180,7 +182,16 @@ async function playMp3(mp3) {
 }
 
 async function processTranscript(text, userId, sessionEpoch) {
-  if (!text || answering || sessionEpoch !== voiceEpoch) return;
+  if (!text || sessionEpoch !== voiceEpoch) return;
+  if (answering) {
+    if (pendingTurns.length < 3) {
+      pendingTurns.push({ text, userId, sessionEpoch });
+      console.log(`[queue] buffered user=${userId}: ${text}`);
+    } else {
+      console.warn(`[queue] dropped user=${userId}: queue full`);
+    }
+    return;
+  }
   answering = true;
   try {
     console.log(`[stt] final user=${userId}:`, text);
@@ -208,12 +219,18 @@ async function processTranscript(text, userId, sessionEpoch) {
     if (sessionEpoch !== voiceEpoch) return;
     console.error('[pipeline]', error?.stack || error);
   } finally {
-    if (sessionEpoch === voiceEpoch) answering = false;
+    if (sessionEpoch === voiceEpoch) {
+      answering = false;
+      const next = pendingTurns.shift();
+      if (next && next.sessionEpoch === voiceEpoch) {
+        setTimeout(() => processTranscript(next.text, next.userId, next.sessionEpoch), 0);
+      }
+    }
   }
 }
 
 function startReceiverSession(userId) {
-  if (!connection || sessions.has(userId) || answering) return;
+  if (!connection || sessions.has(userId)) return;
   const sessionEpoch = voiceEpoch;
   console.log('[rx] user=' + userId);
 
@@ -355,7 +372,7 @@ function destroyVoiceConnection() {
   connection = undefined;
 }
 
-async function connectToVoiceChannel(channel) {
+async function connectToVoiceChannel(channel, initialUserId = '') {
   if (!channel || !channel.isVoiceBased()) throw new Error('target channel is not voice based');
   destroyVoiceConnection();
 
@@ -373,6 +390,11 @@ async function connectToVoiceChannel(channel) {
     if (userId === client.user.id) return;
     startReceiverSession(userId);
   });
+
+  if (initialUserId && initialUserId !== client.user.id) {
+    startReceiverSession(initialUserId);
+    console.log('[rx] pre-armed user=' + initialUserId);
+  }
 
   console.log('[discord] voice ready:', channel.name);
   return channel;
@@ -437,7 +459,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.deferReply({ ephemeral: true });
       const channel = await interaction.guild.channels.fetch(channelId);
-      await connectToVoiceChannel(channel);
+      await connectToVoiceChannel(channel, interaction.user.id);
 
       try {
         const readyAudio = await synthesize('フォーンズです。接続しました。');
