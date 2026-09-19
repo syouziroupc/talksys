@@ -4,21 +4,29 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
-test('Discord bridge opens a fresh realtime STT websocket for every utterance', () => {
-  assert.match(source, /function acquireRealtimeSttSocket\(userId, sessionEpoch\)/);
-  assert.match(source, /destroyReusableSttSocket\(userId, 'fresh-utterance'\)/);
-  assert.match(source, /reusable=false/);
+test('Discord bridge prewarms a fresh STT websocket without reusing a finalized utterance socket', () => {
+  assert.match(source, /function prewarmRealtimeSttSocket\(userId, sessionEpoch\)/);
+  assert.match(source, /websocket prewarm user=/);
+  assert.match(source, /websocket prewarm claimed user=/);
   assert.match(source, /destroyReusableSttSocket\(userId, 'utterance-complete'\)/);
+  assert.match(source, /prewarmRealtimeSttSocket\(userId, sessionEpoch\)/);
   assert.doesNotMatch(source, /websocket reuse user=/);
-  assert.doesNotMatch(source, /JSON\.stringify\(\{ type: 'KeepAlive' \}\)/);
 });
 
-test('Finalize flushes the current utterance but the socket is not reused afterward', () => {
+test('idle prewarmed STT sockets stay alive until claimed by the next utterance', () => {
+  assert.match(source, /JSON\.stringify\(\{ type: 'KeepAlive' \}\)/);
+  assert.match(source, /Date\.now\(\) - transport\.lastAudioAt < 3000/);
+  assert.match(source, /existing\.claimed = true/);
+  assert.match(source, /existing\.epoch === sessionEpoch && !existing\.claimed/);
+});
+
+test('Finalize flushes the current utterance and the next turn gets a different prewarmed socket', () => {
   assert.match(source, /JSON\.stringify\(\{ type: 'Finalize' \}\)/);
   assert.match(source, /payload\?\.from_finalize/);
   assert.match(source, /complete\('from-finalize'\)/);
   assert.match(source, /detachWsListeners\(\)/);
   assert.match(source, /destroyReusableSttSocket\(userId, 'utterance-complete'\)/);
+  assert.match(source, /\}, 1500\)/);
 });
 
 test('broken realtime STT still fails over to batch STT and backs off on 429', () => {
@@ -26,10 +34,11 @@ test('broken realtime STT still fails over to batch STT and backs off on 429', (
   assert.match(source, /realtimeSttBackoffUntil = Date\.now\(\) \+ 60_000/);
   assert.match(source, /batchTranscribePcm16\(pcm16, realtimeFailureReason \|\| reason\)/);
   assert.match(source, /markRealtimeFailed\('finalize-timeout'\)/);
+  assert.match(source, /Date\.now\(\) < realtimeSttBackoffUntil/);
 });
 
-test('voice disconnect closes any current STT socket and exposes a versioned recovery revision', () => {
+test('voice disconnect closes any current STT socket and exposes the responsiveness revision', () => {
   assert.match(source, /for \(const userId of \[\.\.\.realtimeSttSockets\.keys\(\)\]\)/);
   assert.match(source, /destroyReusableSttSocket\(userId, 'voice-disconnect'\)/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v70-reply-recovery-r1'/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v71-prewarm-bargein-r1'/);
 });
