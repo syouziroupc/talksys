@@ -5,6 +5,8 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(new URL('../discord-voice-smoke/package.json', import.meta.url), 'utf8'));
 const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
+const setupSecret = fs.readFileSync(new URL('../discord-voice-smoke/setup-bridge-secret.ps1', import.meta.url), 'utf8');
+const secretStore = fs.readFileSync(new URL('../discord-voice-smoke/secret-store.ps1', import.meta.url), 'utf8');
 
 test('Discord smoke uses real TalkSys voice paths and never browser-side TTS', () => {
   assert.match(source, /\/api\/realtime-stt/);
@@ -45,14 +47,36 @@ test('Discord smoke launcher requires tokens but no longer requires a fixed voic
   assert.match(launcher, /Node\.js 22\.12/);
 });
 
-test('Discord smoke registers slash commands and joins the invoking users voice channel', () => {
-  assert.match(source, /guild\.commands\.set/);
+test('Discord smoke registers only its own slash commands without bulk-overwriting unrelated commands', () => {
+  assert.match(source, /guild\.commands\.fetch\(\)/);
+  assert.match(source, /guild\.commands\.edit/);
+  assert.match(source, /guild\.commands\.create/);
+  assert.doesNotMatch(source, /guild\.commands\.set\(/);
   assert.match(source, /name: 'talksys'/);
   assert.match(source, /name: 'leave'/);
   assert.match(source, /voiceStates\.cache\.get\(interaction\.user\.id\)/);
   assert.match(source, /connectToVoiceChannel\(channel\)/);
-  assert.match(source, /destroyVoiceConnection\(\)/);
   assert.match(source, /waiting for \/talksys/);
+});
+
+test('Discord voice session resets conversation state and ignores stale replies after reconnect', () => {
+  assert.match(source, /let voiceEpoch = 0/);
+  assert.match(source, /resetConversationState/);
+  assert.match(source, /voiceEpoch \+= 1/);
+  assert.match(source, /sessionEpoch !== voiceEpoch/);
+  assert.match(source, /history\.splice\(0, history\.length\)/);
+  assert.match(source, /previousInteractionId = ''/);
+});
+
+test('Discord bridge secret setup persists the same random token locally with Windows DPAPI', () => {
+  assert.match(setupSecret, /RandomNumberGenerator/);
+  assert.match(setupSecret, /wrangler secret put DISCORD_BRIDGE_TOKEN/);
+  assert.match(setupSecret, /Save-TalkSysPersistedSecret 'discord-bridge-token'/);
+  assert.match(secretStore, /ConvertFrom-SecureString/);
+  assert.match(secretStore, /ConvertTo-SecureString/);
+  assert.match(secretStore, /LOCALAPPDATA/);
+  assert.match(launcher, /Get-TalkSysPersistedSecret 'discord-bridge-token'/);
+  assert.match(launcher, /setup-bridge-secret\.ps1/);
 });
 
 test('Discord voice dependencies are pinned to expected major lines', () => {
