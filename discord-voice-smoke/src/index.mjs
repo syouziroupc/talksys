@@ -126,8 +126,16 @@ async function probeRealtimeStt() {
       try { ws.close(1000, 'preflight'); } catch {}
       resolve();
     });
+    ws.once('unexpected-response', (_request, response) => {
+      cleanup();
+      const status = Number(response?.statusCode || 0);
+      if (status === 429) realtimeSttBackoffUntil = Date.now() + 60_000;
+      try { ws.terminate(); } catch {}
+      reject(new Error(`realtime_stt_probe_http_${status || 'unknown'}`));
+    });
     ws.once('error', (error) => {
       cleanup();
+      if (/\b429\b/.test(String(error?.message || ''))) realtimeSttBackoffUntil = Date.now() + 60_000;
       reject(error);
     });
   });
