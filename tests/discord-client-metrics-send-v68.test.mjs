@@ -39,3 +39,10 @@ test('queued turns preserve their original speech metrics', () => {
   assert.match(source, /processTranscript\(next\.text, next\.userId, next\.sessionEpoch, next\.speechMetrics\)/);
   assert.match(source, /talksys-discord-bridge-v68-client-metrics-r1/);
 });
+
+test('one utterance id links the turn request and its voice metrics event', () => {
+  assert.match(source, /const utteranceId = String\(speechMetrics\?\.utteranceId \|\| `utt-\$\{randomUUID\(\)\}`\)/);
+  assert.match(source, /talkStream\(text, queueSentence, utteranceId\)/);
+  assert.match(source, /utteranceId,/);
+  assert.match(source, /postVoiceMetrics\(text, clientTimings, utteranceId\)/);
+});
