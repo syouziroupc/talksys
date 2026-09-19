@@ -37,5 +37,5 @@ test('broken reusable sockets still fail over to batch STT and back off on 429',
 test('voice disconnect closes idle reusable sockets and identifies bridge revision', () => {
   assert.match(source, /for \(const userId of \[\.\.\.realtimeSttSockets\.keys\(\)\]\)/);
   assert.match(source, /destroyReusableSttSocket\(userId, 'voice-disconnect'\)/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v\\d+-[^']+'/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v\d+-[^']+'/);
 });
