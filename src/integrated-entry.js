@@ -9,7 +9,7 @@ export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
-export const REALTIME_VOICE_REVISION = 'talksys-v59.2-realtime-stt-minimal-r1';
+export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
@@ -607,7 +607,10 @@ async function realtimeSttResponse(request, env) {
       encoding: 'linear16',
       sample_rate: '16000',
       language: 'ja',
-      interim_results: 'true',
+      interim_results: true,
+      punctuate: true,
+      smart_format: true,
+      endpointing: '350',
     }, { websocket: true });
   } catch (error) {
     return json({
