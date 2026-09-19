@@ -75,37 +75,13 @@ export async function listTalkLogs(env,limit=100,filters={}){
   const count=Math.max(1,Math.min(500,Number(limit)||100));
   const where=[],binds=[];
   const exactSession=clean(filters?.sessionId,180).trim();
-  const sessionPrefix=clean(filters?.sessionPrefix,120).trim();
+  const sessionPrefix=clean(filters?.sessionPrefix,120).replace(/[^A-Za-z0-9._-]/g,'').trim();
   const event=clean(filters?.event,120).trim();
   const q=clean(filters?.q,500).trim();
   if(exactSession){where.push('session_id = ?');binds.push(exactSession);}
-  else if(sessionPrefix){where.push('session_id LIKE ?');binds.push(sessionPrefix.replace(/[\\%_]/g,'\\export async function listTalkLogs(env,limit=100){
-  if(!(await ensureConversationLogSchema(env)))throw new Error('TALKSYS_LOG_DB binding missing');
-  const count=Math.max(1,Math.min(500,Number(limit)||100));
-  const data=await env.TALKSYS_LOG_DB.prepare('SELECT id,session_id,event,timestamp,jst,revision,path,status,user_text,result_json FROM conversation_logs ORDER BY timestamp DESC LIMIT ?').bind(count).all();
-  return (data?.results||[]).map((row)=>{
-    let result={};try{result=JSON.parse(row.result_json||'{}')||{};}catch{}
-    return {
-      id:row.id,sessionId:row.session_id,event:row.event,timestamp:row.timestamp,jst:row.jst,revision:row.revision,path:row.path,status:row.status,
-      channel:clean(result?.channel,80),userText:clean(row.user_text,5000),assistantText:clean(result?.answer||result?.text,9000),
-      route:clean(result?.route,180),search:Boolean(result?.search),timings:result?.timings&&typeof result.timings==='object'?result.timings:null
-    };
-  });
-}')+'%');}
+  else if(sessionPrefix){where.push('session_id LIKE ?');binds.push(sessionPrefix+'%');}
   if(event){where.push('event = ?');binds.push(event);}
-  if(q){where.push('user_text LIKE ?');binds.push('%'+q.replace(/[\\%_]/g,'\\export async function listTalkLogs(env,limit=100){
-  if(!(await ensureConversationLogSchema(env)))throw new Error('TALKSYS_LOG_DB binding missing');
-  const count=Math.max(1,Math.min(500,Number(limit)||100));
-  const data=await env.TALKSYS_LOG_DB.prepare('SELECT id,session_id,event,timestamp,jst,revision,path,status,user_text,result_json FROM conversation_logs ORDER BY timestamp DESC LIMIT ?').bind(count).all();
-  return (data?.results||[]).map((row)=>{
-    let result={};try{result=JSON.parse(row.result_json||'{}')||{};}catch{}
-    return {
-      id:row.id,sessionId:row.session_id,event:row.event,timestamp:row.timestamp,jst:row.jst,revision:row.revision,path:row.path,status:row.status,
-      channel:clean(result?.channel,80),userText:clean(row.user_text,5000),assistantText:clean(result?.answer||result?.text,9000),
-      route:clean(result?.route,180),search:Boolean(result?.search),timings:result?.timings&&typeof result.timings==='object'?result.timings:null
-    };
-  });
-}')+'%');}
+  if(q){where.push('user_text LIKE ?');binds.push('%'+q+'%');}
   const sql='SELECT id,session_id,event,timestamp,jst,revision,path,status,user_text,result_json FROM conversation_logs'
     +(where.length?' WHERE '+where.join(' AND '):'')
     +' ORDER BY timestamp DESC LIMIT ?';
