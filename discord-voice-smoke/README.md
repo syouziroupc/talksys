@@ -13,8 +13,9 @@ Discord側ではTTSしません。返送音声はTalkSys側で生成したMP3で
 - View Channels
 - Connect
 - Speak
+- Use Application Commands
 
-Botはサーバーに追加済みである必要があります。Message Content Intentは不要です。
+Botはサーバーに追加済みである必要があります。Message Content Intentは不要です。既存招待に application commands 権限が無い場合は、Discord Developer Portal からBotを再招待してください。
 
 ## TalkSys側
 
@@ -35,12 +36,13 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 - `DISCORD_TOKEN`
 - `DISCORD_GUILD_ID`
-- `DISCORD_VOICE_CHANNEL_ID`
 - `DISCORD_BRIDGE_TOKEN`
+
+`DISCORD_VOICE_CHANNEL_ID` は任意です。設定した場合だけ起動直後にそのVCへ自動参加します。通常は不要です。
 
 TalkSys側URL、STT WebSocket、`/api/turn`、TalkSys TTS、raw echo fallbackはコード側に設定済みです。
 
-起動後、自動で指定VCへ参加します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSでMP3化してVCへ返します。TTSなど後段が失敗した場合は、受信した実音声をそのまま返すraw echoへフォールバックします。STTが文字を返さない場合もraw echoを行い、Discord受信自体が成立しているか切り分けできます。
+起動後、Botは `/talksys` と `/leave` を対象サーバーへ登録します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加します。`/leave` で退出します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSでMP3化してVCへ返します。TTSなど後段が失敗した場合は、受信した実音声をそのまま返すraw echoへフォールバックします。STTが文字を返さない場合もraw echoを行い、Discord受信自体が成立しているか切り分けできます。
 
 ## 合格条件
 
