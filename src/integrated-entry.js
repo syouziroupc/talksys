@@ -944,6 +944,7 @@ async function conversationLogsResponse(request, env) {
       sessionId: url.searchParams.get('sessionId') || '',
       sessionPrefix: url.searchParams.get('sessionPrefix') || '',
       event: url.searchParams.get('event') || '',
+      utteranceId: url.searchParams.get('utteranceId') || '',
       q: url.searchParams.get('q') || '',
     };
     const logs = await listTalkLogs(env, limit, filters);
@@ -1152,6 +1153,7 @@ function discordVoiceMetricsResponse(request, env, ctx) {
     const logBody = {
       text: compact(body?.text, 5000),
       sessionId: compact(body?.sessionId, 180),
+      utteranceId: compact(body?.utteranceId, 180),
       channel: 'discord-voice-smoke',
       history: [],
     };
