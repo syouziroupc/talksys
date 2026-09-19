@@ -28,7 +28,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v68-client-metrics-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v70-reply-recovery-r1';
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
@@ -401,6 +401,22 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
       clientTimings.streamed = Boolean(streamedResult?.streamed);
     } catch (error) {
       streamError = error;
+      if (!error?.partial && queuedSentences === 0) {
+        console.warn('[turn-stream] runtime failure before audio; falling back to /api/turn:', error?.message || error);
+        try {
+          const answer = await talk(text, utteranceId);
+          streamedResult = {
+            answer,
+            streamed: false,
+            sentenceCount: 0,
+            clientElapsedMs: Date.now() - pipelineStarted,
+            timings: {},
+          };
+          streamError = null;
+        } catch (fallbackError) {
+          streamError = fallbackError;
+        }
+      }
     }
 
     if (!streamError && streamedResult && !streamedResult.streamed) {
@@ -445,12 +461,7 @@ function destroyReusableSttSocket(userId, reason = 'reset') {
 
 function acquireRealtimeSttSocket(userId, sessionEpoch) {
   const existing = realtimeSttSockets.get(userId);
-  if (existing && existing.epoch === sessionEpoch
-    && (existing.ws?.readyState === WebSocket.OPEN || existing.ws?.readyState === WebSocket.CONNECTING)) {
-    console.log(`[stt] websocket reuse user=${userId} state=${existing.ws.readyState}`);
-    return { transport: existing, reused: true };
-  }
-  if (existing) destroyReusableSttSocket(userId, 'stale-session');
+  if (existing) destroyReusableSttSocket(userId, 'fresh-utterance');
 
   const ws = new WebSocket(STT_WS_URL);
   const transport = {
@@ -464,27 +475,17 @@ function acquireRealtimeSttSocket(userId, sessionEpoch) {
 
   ws.on('open', () => {
     transport.openedAt = Date.now();
-    console.log(`[stt] websocket open user=${userId} reusable=true`);
-    clearInterval(transport.keepAliveTimer);
-    transport.keepAliveTimer = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      if (Date.now() - transport.lastAudioAt < 3000) return;
-      try {
-        ws.send(JSON.stringify({ type: 'KeepAlive' }));
-        console.log(`[stt] keepalive user=${userId}`);
-      } catch {}
-    }, 4000);
+    console.log(`[stt] websocket open user=${userId} reusable=false`);
   });
 
   ws.on('unexpected-response', (_request, response) => {
     const status = Number(response?.statusCode || 0);
     if (status === 429) {
       realtimeSttBackoffUntil = Date.now() + 60_000;
-      console.warn('[stt] reusable websocket 429; batch STT forced for 60s');
+      console.warn('[stt] websocket 429; batch STT forced for 60s');
     }
     if (realtimeSttSockets.get(userId) === transport) {
       realtimeSttSockets.delete(userId);
-      clearInterval(transport.keepAliveTimer);
     }
   });
 
@@ -495,9 +496,8 @@ function acquireRealtimeSttSocket(userId, sessionEpoch) {
   });
 
   ws.on('close', (code, reason) => {
-    clearInterval(transport.keepAliveTimer);
     if (realtimeSttSockets.get(userId) === transport) realtimeSttSockets.delete(userId);
-    console.log('[stt] reusable websocket close', code, String(reason || ''), 'user=' + userId);
+    console.log('[stt] websocket close', code, String(reason || ''), 'user=' + userId);
   });
 
   return { transport, reused: false };
@@ -564,6 +564,7 @@ function startReceiverSession(userId) {
     clearTimeout(settleTimer);
     detachWsListeners();
     sessions.delete(userId);
+    destroyReusableSttSocket(userId, 'utterance-complete');
 
     let text = (finalParts.join(' ').trim() || latest).trim();
     const pcm16 = Buffer.concat(pcm16Chunks);
@@ -745,6 +746,16 @@ function destroyVoiceConnection() {
   connection = undefined;
 }
 
+async function playConnectionGreeting() {
+  try {
+    const audio = await synthesize('フォーンズです。接続しました。');
+    await playMp3(audio);
+    console.log('[greeting] connection greeting played');
+  } catch (error) {
+    console.warn('[greeting] connection greeting failed; voice connection remains active:', error?.message || error);
+  }
+}
+
 async function connectToVoiceChannel(channel, initialUserId = '') {
   if (!channel || !channel.isVoiceBased()) throw new Error('target channel is not voice based');
   destroyVoiceConnection();
@@ -772,6 +783,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
   console.log('[discord] voice ready:', channel.name);
   console.log('[discord] conversation session:', discordSessionId);
+  await playConnectionGreeting();
   return channel;
 }
 
