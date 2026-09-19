@@ -14,8 +14,8 @@ const {
 
 const FIXED = new Date('2026-09-17T11:00:00Z'); // 20:00 JST
 
-test('quality-first verifier restores the detailed independent review prompt', () => {
-  assert.equal(GENERIC_VERIFICATION_REVISION, 'talksys-v57-gemini-self-verify-r1');
+test('quality-first verifier preserves the detailed review prompt while reusing primary context', () => {
+  assert.equal(GENERIC_VERIFICATION_REVISION, 'talksys-v58-gemini-continuation-verify-r1');
   const input = buildGenericVerificationInput(
     { text: '今営業している店を教えて' },
     {
