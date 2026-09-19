@@ -36,9 +36,10 @@ test('raw echo and receive-byte diagnostics distinguish Discord receive from STT
   assert.match(source, /playRawPcm48\(rawPcm48\)/);
 });
 
-test('Discord smoke launcher requires tokens but no longer requires a fixed voice channel', () => {
+test('Discord smoke launcher requires only the bot token plus persisted bridge token', () => {
   assert.match(launcher, /DISCORD_TOKEN/);
-  assert.match(launcher, /DISCORD_GUILD_ID/);
+  assert.doesNotMatch(launcher, /DISCORD_GUILD_ID/);
+  assert.doesNotMatch(launcher, /Discord Guild \(Server\) ID/);
   assert.doesNotMatch(launcher, /Read-Host "Discord Voice Channel ID"/);
   assert.match(launcher, /DISCORD_BRIDGE_TOKEN/);
   assert.match(launcher, /Get-TalkSysPersistedSecret 'discord-bridge-token'/);
@@ -54,6 +55,8 @@ test('Discord smoke registers only its own slash commands without bulk-overwriti
   assert.doesNotMatch(source, /guild\.commands\.set\(/);
   assert.match(source, /name: 'talksys'/);
   assert.match(source, /name: 'leave'/);
+  assert.match(source, /client\.guilds\.cache\.values\(\)/);
+  assert.doesNotMatch(source, /DISCORD_GUILD_ID/);
   assert.match(source, /voiceStates\.cache\.get\(interaction\.user\.id\)/);
   assert.match(source, /connectToVoiceChannel\(channel\)/);
   assert.match(source, /waiting for \/talksys/);
