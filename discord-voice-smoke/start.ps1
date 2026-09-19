@@ -22,16 +22,6 @@ Require-Node
 if (-not $env:DISCORD_TOKEN) {
   $env:DISCORD_TOKEN = Read-TalkSysSecret 'discord-bot-token' 'Discord Bot Token'
 }
-if (-not $env:DISCORD_GUILD_ID) {
-  $guildFile = Join-Path $env:LOCALAPPDATA 'TalkSys\discord-guild-id.txt'
-  if (Test-Path $guildFile) {
-    $env:DISCORD_GUILD_ID = (Get-Content -LiteralPath $guildFile -Raw).Trim()
-    Write-Host "[ok] loaded saved Discord Guild ID"
-  } else {
-    $env:DISCORD_GUILD_ID = Read-Host "Discord Guild (Server) ID"
-    Set-Content -LiteralPath $guildFile -Value $env:DISCORD_GUILD_ID -Encoding UTF8 -NoNewline
-  }
-}
 if (-not $env:DISCORD_BRIDGE_TOKEN) {
   $env:DISCORD_BRIDGE_TOKEN = Get-TalkSysPersistedSecret 'discord-bridge-token'
   if (-not $env:DISCORD_BRIDGE_TOKEN) {
