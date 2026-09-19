@@ -31,10 +31,10 @@ const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt
 const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v72-failure-containment-r1';
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const REQUEST_BUDGET_MS = Object.freeze({
-  batchStt: 12000,
-  turnStream: 45000,
-  turn: 45000,
-  tts: 15000,
+  batchStt: 8000,
+  turnStream: 35000,
+  turn: 35000,
+  tts: 12000,
   metrics: 5000,
 });
 
@@ -253,7 +253,7 @@ async function talk(text, utteranceId = '', signal) {
     }),
   }, {
     timeoutMs: REQUEST_BUDGET_MS.turn,
-    retries: 1,
+    retries: 0,
     label: 'turn',
   });
   const body = await response.json().catch(() => ({}));
@@ -369,7 +369,7 @@ async function synthesize(text, signal) {
     body: JSON.stringify({ text }),
   }, {
     timeoutMs: REQUEST_BUDGET_MS.tts,
-    retries: 1,
+    retries: 0,
     label: 'tts',
   });
   if (!response.ok) {
@@ -477,11 +477,12 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     sttReused: Boolean(speechMetrics?.sttReused),
   };
   answering = true;
+  let firstAudioReadyLogged = false;
+  let playedSentenceCount = 0;
   try {
     console.log(`[stt] final user=${userId}:`, text);
     console.log('[latency] pipeline-start');
 
-    let firstAudioReadyLogged = false;
     let firstTtsRecorded = false;
     let playbackChain = Promise.resolve();
     let playbackError = null;
@@ -509,6 +510,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
         }
         const playbackStarted = Date.now();
         await playMp3(prefetched.value);
+        playedSentenceCount += 1;
         totalPlaybackMs += Date.now() - playbackStarted;
       });
       playbackChain.catch((error) => { playbackError ||= error; });
@@ -562,7 +564,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
       console.log(`[pipeline] interrupted utterance=${utteranceId}`);
     } else {
       console.error('[pipeline]', error?.stack || error);
-      if (!firstAudioReadyLogged) {
+      if (playedSentenceCount === 0) {
         await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch);
       }
     }
