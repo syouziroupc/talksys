@@ -12,8 +12,8 @@ export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v65-discord-hearing-tune-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
-export const GEMINI_TTS_MODEL = 'gemini-3.1-flash-tts-preview';
-export const GEMINI_TTS_FALLBACK_MODEL = 'gemini-2.5-flash-preview-tts';
+export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
+export const GEMINI_TTS_FALLBACK_MODEL = 'gemini-3.1-flash-tts-preview';
 
 const GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
