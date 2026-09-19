@@ -28,6 +28,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v67-persistent-stt-r1';
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
@@ -739,6 +740,7 @@ client.once('ready', async () => {
       console.log(`[discord] slash commands ready guild=${guild.name}: /talksys /leave`);
     }
     console.log('[discord] TalkSys realtime STT:', STT_WS_URL);
+    console.log('[discord] bridge revision:', DISCORD_BRIDGE_REVISION);
     console.log('[discord] output mode: TalkSys TTS (permanent shared token)');
 
     console.log('[discord] waiting for /talksys from a user in a voice channel');
