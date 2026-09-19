@@ -57,7 +57,15 @@ test('Discord runtime omits search-preface work and keeps the core voice path on
   assert.doesNotMatch(source, /searchPreface/);
   assert.doesNotMatch(source, /prefaceTask|prefacePlaybackPromise|answerReady/);
   assert.match(source, /const answer = await talk\(text\)/);
-  assert.match(source, /const audio = await synthesize\(answer\)/);
+  assert.match(source, /const spokenAnswer = voiceSafeText\(answer\)/);
+  assert.match(source, /const audio = await synthesize\(spokenAnswer\)/);
+});
+
+test('Discord spoken output is compacted before server TTS without changing stored answer history', () => {
+  assert.match(source, /function voiceSafeText\(text\)/);
+  assert.match(source, /sentences\.slice\(0, 4\)/);
+  assert.match(source, /spoken answer compacted chars=/);
+  assert.match(source, /history\.push\(\{ role: 'user', content: text \}, \{ role: 'assistant', content: body\.answer \}\)/);
 });
 
 test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio readiness', () => {
