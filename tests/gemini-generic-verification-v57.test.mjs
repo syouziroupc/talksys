@@ -14,8 +14,8 @@ const {
 
 const FIXED = new Date('2026-09-17T11:00:00Z'); // 20:00 JST
 
-test('quality-first verifier preserves the detailed review prompt while reusing primary context', () => {
-  assert.equal(GENERIC_VERIFICATION_REVISION, 'talksys-v58-gemini-continuation-verify-r1');
+test('quality-first verifier preserves the detailed review prompt while reusing inherited evidence', () => {
+  assert.equal(GENERIC_VERIFICATION_REVISION, 'talksys-v59-evidence-reuse-verify-r1');
   const input = buildGenericVerificationInput(
     { text: '今営業している店を教えて' },
     {
@@ -35,7 +35,7 @@ test('quality-first verifier preserves the detailed review prompt while reusing 
   assert.match(input, /候補回答: A店が営業中です/);
   assert.match(input, /価格、在庫、営業状態/);
   assert.match(input, /別地域、別型番、別条件/);
-  assert.match(input, /Google検索を使って再確認/);
+  assert.match(input, /一次回答のGoogle検索tool contextはprevious interactionとして引き継がれています/);
   assert.match(input, /回答全体を「確認できません」「分かりません」に置き換えない/);
 });
 
@@ -76,7 +76,7 @@ test('same Gemini repairs a stale current-state answer after an independent sear
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
 
-    assert.match(req.system_instruction, /Google検索は積極的に使って/);
+    assert.match(req.system_instruction, /検索済み候補の自己検証/);
     assert.match(req.system_instruction, /Google検索を必ず実行/);
     assert.match(req.input, /最終回答前の自己検証/);
     assert.match(req.input, /候補回答: A店は今営業しています/);

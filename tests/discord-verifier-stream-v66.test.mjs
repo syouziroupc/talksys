@@ -26,7 +26,7 @@ test('streamed final sentences stay behind generic verification and preserve the
 });
 
 test('immediate transit keeps the complete temporal guard before any streamed speech', () => {
-  assert.match(server, /if \(isImmediateTransitQuestion\(text\)\) \{/);
+  assert.match(server, /if \(arithmeticExpressionFromQuestion\(text\) \|\| isImmediateTransitQuestion\(text\)\) \{/);
   assert.match(server, /const result = await runGeminiTurn\(body, env, request\.signal, \{ now \}\)/);
   assert.match(server, /await emitWholeAnswer\(result\.answer\)/);
 });
