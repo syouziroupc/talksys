@@ -29,16 +29,20 @@ test('Finalize flushes the current utterance and the next turn gets a different 
   assert.match(source, /\}, 1500\)/);
 });
 
-test('broken realtime STT still fails over to batch STT and backs off on 429', () => {
+test('broken realtime STT always falls back and opens a bounded circuit breaker', () => {
   assert.match(source, /destroyReusableSttSocket\(userId, 'realtime-failed'\)/);
-  assert.match(source, /realtimeSttBackoffUntil = Date\.now\(\) \+ 60_000/);
+  assert.match(source, /registerRealtimeSttFailure\(realtimeFailureReason, statusCode\)/);
+  assert.match(source, /realtimeSttFailureCount = Math\.min\(6, realtimeSttFailureCount \+ 1\)/);
+  assert.match(source, /realtimeSttBackoffUntil = Math\.max/);
+  assert.match(source, /if \(!text && pcm16\.length\) \{/);
   assert.match(source, /batchTranscribePcm16\(pcm16, realtimeFailureReason \|\| reason\)/);
   assert.match(source, /markRealtimeFailed\('finalize-timeout'\)/);
   assert.match(source, /Date\.now\(\) < realtimeSttBackoffUntil/);
+  assert.match(source, /registerRealtimeSttHealthy\(\)/);
 });
 
 test('voice disconnect closes any current STT socket and exposes the responsiveness revision', () => {
   assert.match(source, /for \(const userId of \[\.\.\.realtimeSttSockets\.keys\(\)\]\)/);
   assert.match(source, /destroyReusableSttSocket\(userId, 'voice-disconnect'\)/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v71-prewarm-bargein-r1'/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v72-failure-containment-r1'/);
 });
