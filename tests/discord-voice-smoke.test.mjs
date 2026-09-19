@@ -19,8 +19,8 @@ test('Discord bridge uses permanent shared-token TTS auth and no expired demo by
   assert.match(source, /authorization: 'Bearer ' \+ BRIDGE_TOKEN/);
   assert.doesNotMatch(source, /x-talksys-demo/);
   assert.doesNotMatch(source, /discord-voice-smoke-20260918/);
-  assert.match(source, /const finalTtsPromise = synthesize\(answer\)/);
-  assert.match(source, /const audio = await finalTtsPromise/);
+  assert.match(source, /const spokenAnswer = voiceSafeText\(answer\)/);
+  assert.match(source, /const audio = await synthesize\(spokenAnswer\)/);
   assert.match(source, /await playMp3\(audio\)/);
 });
 
@@ -38,7 +38,7 @@ test('Discord realtime STT rate limits fall back to batch Whisper instead of dro
   assert.match(source, /\/api\/transcribe/);
   assert.match(source, /content-type': 'audio\/wav'/);
   assert.match(source, /unexpected-response/);
-  assert.match(source, /status === 429/);
+  assert.match(source, /statusCode === 429/);
   assert.match(source, /realtimeSttBackoffUntil = Date\.now\(\) \+ 60_000/);
   assert.match(source, /batch STT forced for 60s/);
   assert.match(source, /\[stt-fallback\] batch success/);
