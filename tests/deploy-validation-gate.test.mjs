@@ -32,16 +32,17 @@ test('production deploy revalidates architecture, source graph, archived syntax,
   assert.match(workflow, /npx wrangler deploy --secrets-file "\$secrets_file"/);
 });
 
-test('production deploy requires Gemini and Discord bridge secrets and uploads both only as Worker secrets', () => {
+test('production deploy preserves the Cloudflare Discord secret and uploads only the rotating Gemini secret', () => {
   assert.match(workflow, /GEMINI_API_KEY:\s*\$\{\{ secrets\.GEMINI_API_KEY \}\}/);
-  assert.match(workflow, /DISCORD_BRIDGE_TOKEN:\s*\$\{\{ secrets\.DISCORD_BRIDGE_TOKEN \}\}/);
+  assert.doesNotMatch(workflow, /DISCORD_BRIDGE_TOKEN:\s*\$\{\{ secrets\.DISCORD_BRIDGE_TOKEN \}\}/);
   assert.match(workflow, /test -n "\$\{GEMINI_API_KEY:-\}"/);
-  assert.match(workflow, /test -n "\$\{DISCORD_BRIDGE_TOKEN:-\}"/);
-  assert.match(workflow, /GEMINI_API_KEY: gemini/);
-  assert.match(workflow, /DISCORD_BRIDGE_TOKEN: discord/);
+  assert.match(workflow, /wrangler secret list --format json/);
+  assert.match(workflow, /row\?\.name === 'DISCORD_BRIDGE_TOKEN'/);
+  assert.match(workflow, /JSON\.stringify\(\{ GEMINI_API_KEY: gemini \}\)/);
   assert.match(workflow, /--secrets-file "\$secrets_file"/);
-  assert.match(workflow, /Verify permanent Discord bridge TTS/);
-  assert.match(workflow, /authorization: Bearer \$DISCORD_BRIDGE_TOKEN/);
+  assert.match(workflow, /d\.discordBridgeConfigured===true/);
+  assert.match(workflow, /Verify Discord bridge auth is enforced/);
+  assert.match(workflow, /"\$http_code" == "401"/);
   assert.match(workflow, /\/gemini-health/);
   assert.match(workflow, /generationProvider==='gemini'/);
   assert.match(workflow, /generationModel==='gemini-3\.5-flash-lite'/);
