@@ -1,0 +1,123 @@
+name: Post-v73 production benchmark
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PROD: https://talksys.syouziroupc.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Wait for v73 production contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            body="$(curl -fsS --max-time 15 "$PROD/voice-health" || true)"
+            state="$(BODY="$body" node - <<'NODE'
+          let d={}; try{d=JSON.parse(process.env.BODY||'{}')}catch{}
+          process.stdout.write(JSON.stringify({
+            ok:d.ok===true,
+            pipeline:d.discordPipelineRevision||'',
+            verifier:d.genericVerificationRevision||'',
+            model:d.generationModel||'',
+          }))
+          NODE
+            )"
+            echo "HEALTH attempt=$attempt $state"
+            good="$(STATE="$state" node -e "const d=JSON.parse(process.env.STATE);process.stdout.write(String(d.ok&&d.pipeline==='talksys-v67-speculative-tts-r1'&&d.verifier==='talksys-v58-gemini-continuation-verify-r1'&&d.model==='gemini-3.5-flash-lite'))")"
+            if [[ "$good" == "true" ]]; then
+              printf '%s' "$body" > /tmp/health.json
+              exit 0
+            fi
+            sleep 4
+          done
+          echo "v73 production contract was not observed"
+          exit 1
+
+      - name: Benchmark production turns
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { performance } from 'node:perf_hooks';
+          const base=process.env.PROD;
+          const cases=[
+            {name:'greeting',text:'こんにちは'},
+            {name:'arithmetic',text:'12345÷15は？'},
+            {name:'factual',text:'Panasonic CF-SV8はWindows 11に対応している？'},
+            {name:'current_search',text:'別府市の今日の天気は？'},
+          ];
+          const rows=[];
+          for(const c of cases){
+            for(let run=1;run<=3;run++){
+              const t0=performance.now();
+              try{
+                const response=await fetch(base+'/api/turn',{
+                  method:'POST',
+                  headers:{'content-type':'application/json'},
+                  body:JSON.stringify({text:c.text,history:[],sessionId:'post-v73-bench',channel:'internal-benchmark'}),
+                  signal:AbortSignal.timeout(120000),
+                });
+                const body=await response.json();
+                rows.push({
+                  case:c.name,run,ok:Boolean(response.ok&&body?.ok),
+                  clientMs:Math.round(performance.now()-t0),
+                  serverTotalMs:Number(body?.timings?.totalMs??NaN),
+                  primaryMs:Number(body?.timings?.primaryMs??NaN),
+                  verifierMs:Number(body?.timings?.verifierMs??NaN),
+                  verified:Boolean(body?.genericVerificationSucceeded),
+                  verifierSearched:Boolean(body?.verifierSearched),
+                  search:Boolean(body?.search),
+                });
+              }catch(error){
+                rows.push({case:c.name,run,ok:false,clientMs:Math.round(performance.now()-t0),error:String(error?.message||error)});
+              }
+              console.log('RESULT '+JSON.stringify(rows.at(-1)));
+            }
+          }
+          const median=(v)=>{
+            const a=v.filter(Number.isFinite).sort((x,y)=>x-y);
+            if(!a.length)return null;
+            const i=Math.floor(a.length/2);
+            return a.length%2?a[i]:Math.round((a[i-1]+a[i])/2);
+          };
+          const summary={};
+          for(const c of cases){
+            const rs=rows.filter(r=>r.case===c.name&&r.ok);
+            summary[c.name]={
+              successes:rs.length,
+              medianClientMs:median(rs.map(r=>r.clientMs)),
+              medianServerMs:median(rs.map(r=>r.serverTotalMs)),
+              medianPrimaryMs:median(rs.map(r=>r.primaryMs)),
+              medianVerifierMs:median(rs.map(r=>r.verifierMs)),
+              verifiedAll:rs.length>0&&rs.every(r=>r.verified||c.name==='greeting'),
+              verifierSearchedAll:rs.length>0&&rs.every(r=>r.verifierSearched||c.name==='greeting'),
+            };
+          }
+          const output={generatedAt:new Date().toISOString(),rows,summary};
+          fs.writeFileSync('/tmp/post-v73-benchmark.json',JSON.stringify(output,null,2));
+          console.log('SUMMARY '+JSON.stringify(summary));
+          NODE
+
+      - name: Show result
+        run: cat /tmp/post-v73-benchmark.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: post-v73-production-benchmark
+          path: |
+            /tmp/health.json
+            /tmp/post-v73-benchmark.json
