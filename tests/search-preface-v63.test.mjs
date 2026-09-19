@@ -39,11 +39,13 @@ test('browser client starts the real turn and parallel search preface path', () 
   assert.match(TALK_CLIENT_V45, /await searchAnnouncementTask/);
 });
 
-test('Discord voice bridge plays the same preface while the answer request runs', () => {
+test('Discord voice bridge runs search preface in parallel without blocking the final answer', () => {
   assert.match(discord, /async function searchPreface\(text\)/);
   assert.match(discord, /\/api\/search-preface/);
   assert.match(discord, /const turnPromise = talk\(text\);/);
   assert.match(discord, /const prefaceTask = \(async \(\) =>/);
-  assert.match(discord, /await prefaceTask;/);
-  assert.ok(discord.indexOf('const turnPromise = talk(text);') < discord.indexOf('await prefaceTask;'));
+  assert.match(discord, /let answerReady = false/);
+  assert.match(discord, /skipped because final answer is already ready/);
+  assert.match(discord, /const finalTtsPromise = synthesize\(answer\)/);
+  assert.doesNotMatch(discord, /const answer = await turnPromise;\s*await prefaceTask;/);
 });
