@@ -34,9 +34,6 @@ if (-not $env:DISCORD_TOKEN) {
 if (-not $env:DISCORD_GUILD_ID) {
   $env:DISCORD_GUILD_ID = Read-Host "Discord Guild (Server) ID"
 }
-if (-not $env:DISCORD_VOICE_CHANNEL_ID) {
-  $env:DISCORD_VOICE_CHANNEL_ID = Read-Host "Discord Voice Channel ID"
-}
 if (-not $env:DISCORD_BRIDGE_TOKEN) {
   $env:DISCORD_BRIDGE_TOKEN = Read-Secret "TalkSys Discord Bridge Token"
 }
@@ -49,5 +46,5 @@ npm install --no-audit --no-fund
 
 Write-Host "[start] Discord voice smoke"
 Write-Host "[start] TalkSys: $env:TALKSYS_BASE_URL"
-Write-Host "[start] mode: TalkSys STT/turn + TalkSys TTS permanent bridge auth; raw echo on pipeline failure"
+Write-Host "[start] mode: /talksys joins caller VC; /leave disconnects; TalkSys STT/turn/TTS permanent bridge auth"
 npm start
