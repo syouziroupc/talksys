@@ -58,18 +58,23 @@ jobs:
           set -euo pipefail
           espeak-ng -v ja -s 145 -w /tmp/stt-source.wav 'こんにちは。応答速度の内部テストです。'
           ffmpeg -hide_banner -loglevel error -y -i /tmp/stt-source.wav -ar 16000 -ac 1 -sample_fmt s16 /tmp/stt.wav
-          stt_time="$(curl -sS -o /tmp/stt.json -w '%{time_total}' \
-            -H 'content-type: audio/wav' --data-binary @/tmp/stt.wav "$PROD/api/transcribe")"
-          echo "BATCH_STT_TOTAL_SEC=$stt_time"
-          cat /tmp/stt.json
-          echo
-          STT_JSON="$(cat /tmp/stt.json)" node - <<'NODE'
+          : > /tmp/stt-times.txt
+          for run in 1 2 3; do
+            stt_time="$(curl -sS -o "/tmp/stt-$run.json" -w '%{time_total}' \
+              -H 'content-type: audio/wav' --data-binary @/tmp/stt.wav "$PROD/api/transcribe")"
+            echo "$stt_time" >> /tmp/stt-times.txt
+            echo "BATCH_STT_RUN_${run}_TOTAL_SEC=$stt_time"
+            STT_JSON="$(cat "/tmp/stt-$run.json")" RUN="$run" node - <<'NODE'
           const d = JSON.parse(process.env.STT_JSON || '{}');
-          console.log('BATCH_STT_OK=' + Boolean(d.ok));
-          console.log('BATCH_STT_SERVER_MS=' + (d.elapsedMs ?? 'NA'));
-          console.log('BATCH_STT_TEXT=' + String(d.text || d.error || d.rejected || ''));
+          console.log('BATCH_STT_RUN_' + process.env.RUN + '_OK=' + Boolean(d.ok));
+          console.log('BATCH_STT_RUN_' + process.env.RUN + '_SERVER_MS=' + (d.elapsedMs ?? 'NA'));
+          console.log('BATCH_STT_RUN_' + process.env.RUN + '_TEXT=' + String(d.text || d.error || d.rejected || ''));
           NODE
-
+          done
+          sort -n /tmp/stt-times.txt > /tmp/stt-times-sorted.txt
+          median="$(sed -n '2p' /tmp/stt-times-sorted.txt)"
+          echo "BATCH_STT_MEDIAN_SEC=$median"
+          cp /tmp/stt-3.json /tmp/stt.json
       - name: Measure production answer latency
         shell: bash
         run: |
