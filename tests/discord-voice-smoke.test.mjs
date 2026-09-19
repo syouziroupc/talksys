@@ -41,7 +41,7 @@ test('Discord smoke launcher requires tokens but no longer requires a fixed voic
   assert.match(launcher, /DISCORD_GUILD_ID/);
   assert.doesNotMatch(launcher, /Read-Host "Discord Voice Channel ID"/);
   assert.match(launcher, /DISCORD_BRIDGE_TOKEN/);
-  assert.match(launcher, /Read-Secret "TalkSys Discord Bridge Token"/);
+  assert.match(launcher, /Get-TalkSysPersistedSecret 'discord-bridge-token'/);
   assert.match(launcher, /\/talksys joins caller VC/);
   assert.match(launcher, /npm install --no-audit --no-fund/);
   assert.match(launcher, /Node\.js 22\.12/);
