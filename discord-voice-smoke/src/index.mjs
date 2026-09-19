@@ -28,7 +28,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v72-failure-containment-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v73-speculative-latency-r1';
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const REQUEST_BUDGET_MS = Object.freeze({
   batchStt: 8000,
@@ -181,13 +181,14 @@ function pcm16MonoToWav16k(pcm) {
   return out;
 }
 
-async function batchTranscribePcm16(pcm, reason = 'fallback') {
+async function batchTranscribePcm16(pcm, reason = 'fallback', signal) {
   if (!pcm?.length) throw new Error('batch_stt_empty_pcm');
   const started = Date.now();
   const wav = pcm16MonoToWav16k(pcm);
   console.log(`[stt-fallback] batch start reason=${reason} pcm=${pcm.length}B wav=${wav.length}B`);
   const response = await fetchWithRetry(TALKSYS_BASE_URL + '/api/transcribe', {
     method: 'POST',
+    signal,
     headers: { 'content-type': 'audio/wav' },
     body: wav,
   }, {
@@ -269,7 +270,7 @@ async function talk(text, utteranceId = '', signal) {
   return body.answer;
 }
 
-async function talkStream(text, onSentence, utteranceId = '', signal) {
+async function talkStream(text, onSentence, utteranceId = '', signal, onSpeculative = null) {
   const started = Date.now();
   console.log('[turn-stream] user:', text);
   const response = await fetch(TALKSYS_BASE_URL + '/api/turn-stream', {
@@ -310,6 +311,10 @@ async function talkStream(text, onSentence, utteranceId = '', signal) {
     if (!data) return;
     let event = null;
     try { event = JSON.parse(data); } catch { return; }
+    if (event?.type === 'speculative' && event?.text) {
+      if (typeof onSpeculative === 'function') onSpeculative(String(event.text));
+      return;
+    }
     if (event?.type === 'sentence' && event?.text) {
       sentenceCount += 1;
       onSentence(String(event.text));
@@ -473,6 +478,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
   activeTurnAbortController = controller;
   const clientTimings = {
     sttMs: Number(speechMetrics?.sttMs) || 0,
+    batchSttMs: Number(speechMetrics?.batchSttMs) || 0,
     sttMode: speechMetrics?.sttMode || 'unknown',
     sttReused: Boolean(speechMetrics?.sttReused),
   };
@@ -488,13 +494,33 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     let playbackError = null;
     let queuedSentences = 0;
     let totalPlaybackMs = 0;
+    let speculativeText = '';
+    let speculativeAudioPromise = null;
+
+    const timedSynthesize = (sentence) => {
+      const ttsStarted = Date.now();
+      return synthesize(sentence, controller.signal)
+        .then((value) => ({ value, elapsedMs: Date.now() - ttsStarted }), (error) => ({ error }));
+    };
+
+    const prefetchSpeculative = (sentence) => {
+      const safe = voiceSafeText(sentence);
+      if (!safe || speculativeAudioPromise || controller.signal.aborted) return;
+      speculativeText = safe;
+      speculativeAudioPromise = timedSynthesize(safe);
+      console.log('[tts-prefetch] speculative primary sentence queued');
+    };
 
     const queueSentence = (sentence) => {
       if (!sentence || queuedSentences >= 4) return;
+      const safe = voiceSafeText(sentence);
+      if (!safe) return;
       queuedSentences += 1;
-      const ttsStarted = Date.now();
-      const audioPromise = synthesize(sentence, controller.signal)
-        .then((value) => ({ value, elapsedMs: Date.now() - ttsStarted }), (error) => ({ error }));
+      const speculativeMatch = Boolean(speculativeAudioPromise && speculativeText === safe);
+      const audioPromise = speculativeMatch
+        ? speculativeAudioPromise.then((result) => result?.error ? timedSynthesize(safe) : result)
+        : timedSynthesize(safe);
+      if (speculativeMatch) console.log('[tts-prefetch] verified exact match; reusing prefetched audio');
       playbackChain = playbackChain.then(async () => {
         const prefetched = await audioPromise;
         if (prefetched.error) throw prefetched.error;
@@ -506,7 +532,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
         if (!firstAudioReadyLogged) {
           firstAudioReadyLogged = true;
           clientTimings.firstAudioReadyMs = Date.now() - pipelineStarted;
-          console.log(`[latency] first-audio-ready=${clientTimings.firstAudioReadyMs}ms source=verifier-stream`);
+          console.log(`[latency] first-audio-ready=${clientTimings.firstAudioReadyMs}ms source=${speculativeMatch ? 'speculative-prefetch' : 'verifier-stream'}`);
         }
         const playbackStarted = Date.now();
         await playMp3(prefetched.value);
@@ -519,7 +545,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     let streamedResult;
     let streamError = null;
     try {
-      streamedResult = await talkStream(text, queueSentence, utteranceId, controller.signal);
+      streamedResult = await talkStream(text, queueSentence, utteranceId, controller.signal, prefetchSpeculative);
       clientTimings.turnStreamMs = Number(streamedResult?.clientElapsedMs) || 0;
       clientTimings.serverTotalMs = Number(streamedResult?.timings?.totalMs) || 0;
       clientTimings.primaryMs = Number(streamedResult?.timings?.primaryMs) || 0;
@@ -707,9 +733,56 @@ function startReceiverSession(userId) {
   let reusedSocket = false;
   let inputEndedAt = 0;
   let usedBatchStt = false;
+  let batchSttMs = 0;
+  let hedgedBatchTimer = null;
+  let hedgedBatchController = null;
+  let hedgedBatchPromise = null;
 
-  const session = { opus, decoder, ws: null };
+  const session = { opus, decoder, ws: null, batchAbortController: null };
   sessions.set(userId, session);
+
+  const cancelHedgedBatch = () => {
+    if (hedgedBatchTimer) {
+      clearTimeout(hedgedBatchTimer);
+      hedgedBatchTimer = null;
+    }
+    try { hedgedBatchController?.abort(); } catch {}
+  };
+
+  const startHedgedBatch = (delayMs = 150, reason = 'realtime-finalize-hedge') => {
+    if (hedgedBatchPromise || finalParts.length || latest) return hedgedBatchPromise;
+    const pcmSnapshot = Buffer.concat(pcm16Chunks);
+    if (!pcmSnapshot.length) return null;
+    hedgedBatchController = new AbortController();
+    session.batchAbortController = hedgedBatchController;
+    const hedgeStarted = Date.now();
+    hedgedBatchPromise = (async () => {
+      if (delayMs > 0) {
+        await new Promise((resolve) => {
+          hedgedBatchTimer = setTimeout(() => {
+            hedgedBatchTimer = null;
+            resolve();
+          }, delayMs);
+          hedgedBatchController.signal.addEventListener('abort', () => {
+            if (hedgedBatchTimer) {
+              clearTimeout(hedgedBatchTimer);
+              hedgedBatchTimer = null;
+            }
+            resolve();
+          }, { once: true });
+        });
+      }
+      if (hedgedBatchController.signal.aborted) return { cancelled: true, elapsedMs: Date.now() - hedgeStarted };
+      try {
+        const text = await batchTranscribePcm16(pcmSnapshot, reason, hedgedBatchController.signal);
+        return { text, elapsedMs: Date.now() - hedgeStarted };
+      } catch (error) {
+        return { error, elapsedMs: Date.now() - hedgeStarted };
+      }
+    })();
+    console.log(`[stt-hedge] armed delay=${delayMs}ms reason=${reason}`);
+    return hedgedBatchPromise;
+  };
 
   const detachWsListeners = () => {
     if (!ws) return;
@@ -742,12 +815,26 @@ function startReceiverSession(userId) {
     let text = (finalParts.join(' ').trim() || latest).trim();
     const pcm16 = Buffer.concat(pcm16Chunks);
     console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B reason=${reason} sttReuse=${reusedSocket}`);
-    if (sessionEpoch !== voiceEpoch) return;
+    if (sessionEpoch !== voiceEpoch) {
+      cancelHedgedBatch();
+      return;
+    }
 
-    if (!text && pcm16.length) {
+    if (text) {
+      cancelHedgedBatch();
+    } else if (pcm16.length) {
       try {
         usedBatchStt = true;
-        text = await batchTranscribePcm16(pcm16, realtimeFailureReason || reason);
+        const fallbackStarted = Date.now();
+        const fallback = hedgedBatchPromise
+          ? await hedgedBatchPromise
+          : { text: await batchTranscribePcm16(pcm16, realtimeFailureReason || reason), elapsedMs: Date.now() - fallbackStarted };
+        if (fallback?.text) {
+          text = fallback.text;
+          batchSttMs = Number(fallback.elapsedMs) || (Date.now() - fallbackStarted);
+        } else if (fallback?.error) {
+          throw fallback.error;
+        }
       } catch (error) {
         console.error('[stt-fallback]', error?.message || error);
       }
@@ -758,6 +845,7 @@ function startReceiverSession(userId) {
     if (text) {
       processTranscript(text, userId, sessionEpoch, {
         sttMs,
+        batchSttMs,
         sttMode: usedBatchStt ? 'batch' : 'realtime',
         sttReused: reusedSocket,
         utteranceId: `utt-${randomUUID()}`,
@@ -793,10 +881,14 @@ function startReceiverSession(userId) {
     try { decoder.destroy(); } catch {}
 
     if (realtimeFailed || !ws) {
+      startHedgedBatch(0, realtimeFailureReason || 'batch-fallback');
       complete('batch-fallback');
       return;
     }
 
+    if (!latest && finalParts.length === 0) {
+      startHedgedBatch(150, 'realtime-finalize-hedge');
+    }
     sendFinalizeIfReady();
     if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
       markRealtimeFailed('websocket-closed-before-finalize');
@@ -816,6 +908,7 @@ function startReceiverSession(userId) {
     const text = transcriptFrom(payload);
     if (text) {
       latest = text;
+      cancelHedgedBatch();
       registerRealtimeSttHealthy();
       console.log('[stt]', payload?.is_final ? 'final-part:' : 'interim:', text);
       if (payload?.is_final) {
@@ -912,6 +1005,7 @@ function destroyVoiceConnection() {
   voiceEpoch += 1;
   resetConversationState();
   for (const session of sessions.values()) {
+    try { session.batchAbortController?.abort(); } catch {}
     try { session.opus?.destroy(); } catch {}
     try { session.decoder?.destroy(); } catch {}
   }

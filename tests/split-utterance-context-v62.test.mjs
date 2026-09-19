@@ -71,7 +71,7 @@ test('verification question also contains every unanswered split fragment', () =
   assert.match(input, /元の利用者の質問: QCM1250のアダプターで この型番は使えますか/);
 });
 
-test('split follow-up preserves the first fragment through primary search and independent verification', async () => {
+test('split follow-up preserves the first fragment through primary search and continuation verification', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (_url, options) => {
@@ -94,7 +94,7 @@ test('split follow-up preserves the first fragment through primary search and in
     }
 
     assert.equal(calls, 2);
-    assert.equal(req.previous_interaction_id, undefined);
+    assert.equal(req.previous_interaction_id, 'primary');
     assert.match(req.input, /QCM1250のアダプターで この型番は使えますか/);
     assert.match(req.input, /最終回答前の自己検証/);
     return new Response(JSON.stringify({

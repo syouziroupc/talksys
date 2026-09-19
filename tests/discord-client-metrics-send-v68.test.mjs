@@ -39,12 +39,12 @@ test('STT completion reports realtime versus batch and records prewarmed socket 
 test('queued turns preserve their original speech metrics', () => {
   assert.match(source, /pendingTurns\.push\(\{ text, userId, sessionEpoch, speechMetrics \}\)/);
   assert.match(source, /processTranscript\(next\.text, next\.userId, next\.sessionEpoch, next\.speechMetrics\)/);
-  assert.match(source, /talksys-discord-bridge-v72-failure-containment-r1/);
+  assert.match(source, /talksys-discord-bridge-v73-speculative-latency-r1/);
 });
 
 test('one utterance id links the turn request and its voice metrics event', () => {
   assert.match(source, /const utteranceId = String\(speechMetrics\?\.utteranceId \|\| `utt-\$\{randomUUID\(\)\}`\)/);
-  assert.match(source, /talkStream\(text, queueSentence, utteranceId, controller\.signal\)/);
+  assert.match(source, /talkStream\(text, queueSentence, utteranceId, controller\.signal, prefetchSpeculative\)/);
   assert.match(source, /utteranceId,/);
   assert.match(source, /postVoiceMetrics\(text, clientTimings, utteranceId\)/);
 });

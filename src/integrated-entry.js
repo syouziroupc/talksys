@@ -7,11 +7,11 @@ import { persistTalkLog, listTalkLogs } from './log-v42.js';
 export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v3';
 export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
-export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
+export const GENERIC_VERIFICATION_REVISION = 'talksys-v58-gemini-continuation-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
-export const DISCORD_PIPELINE_REVISION = 'talksys-v66-verifier-stream-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v67-speculative-tts-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -378,7 +378,7 @@ function buildGenericVerificationInput(body = {}, primary = {}, now = new Date()
     '候補回答をそのまま信じず、検索結果と利用者条件を照合してください。検索結果自体が古い、別地域、別型番、別条件でないかも確認してください。',
     '外部事実や現在性が関係する場合はGoogle検索を使って再確認してください。最初の検索結果が曖昧なら検索語を変えてください。',
     '候補回答に明白な誤りや条件違反があれば、正しい情報へ修正した最終回答を書いてください。',
-    '候補回答が妥当なら、内容を維持した自然な最終回答を書いてください。「検証しました」「候補回答は正しいです」などの審査コメントは出さないでください。',
+    '候補回答が妥当なら、語句や文順をむやみに書き換えず候補回答をそのまま返してください。修正が必要な箇所だけ直してください。「検証しました」「候補回答は正しいです」などの審査コメントは出さないでください。',
     '重要: 情報が一部不足しているだけで回答全体を「確認できません」「分かりません」に置き換えないでください。確認できた部分は残してください。単に裏付けが薄いだけなら、候補回答の有用な部分を消さず、必要な箇所だけ慎重な表現へ直してください。',
     'これは電話でそのまま読み上げる回答です。Markdown、箇条書き、URL、引用番号、画面向け記号を出さず、自然で簡潔な日本語の最終回答だけを返してください。',
   ].join('\n');
@@ -388,10 +388,10 @@ async function runGenericGeminiVerification(env, body = {}, primary = {}, signal
   const verifyBody = {
     text: buildGenericVerificationInput(body, primary, now),
     history: [],
-    previousInteractionId: '',
+    previousInteractionId: compact(primary?.payload?.id, 400),
   };
   return createGeminiInteraction(env, verifyBody, signal, {
-    allowPrevious: false,
+    allowPrevious: true,
     forceSearch: true,
     now,
     immediateTransit: isImmediateTransitQuestion(resolvedUserQuestion(body)),
@@ -585,16 +585,25 @@ function splitCompleteSpokenSentences(value = '') {
   return { sentences, rest };
 }
 
-async function createGeminiInteractionStream(env, body = {}, signal, { forceSearch = true, now = new Date(), immediateTransit = false } = {}) {
+function firstSpokenSentence(value = '') {
+  const normalized = normalizeSpokenJapanese(value);
+  if (!normalized) return '';
+  const parts = normalized.match(/[^。！？!?]+[。！？!?]?/g) || [normalized];
+  return compact(parts[0] || '', 1200);
+}
+
+async function createGeminiInteractionStream(env, body = {}, signal, { allowPrevious = true, forceSearch = true, now = new Date(), immediateTransit = false } = {}) {
   const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
   if (!key) throw new Error('gemini_api_key_missing');
-  const inputBody = { ...body, previousInteractionId: '' };
+  const previousInteractionId = allowPrevious ? compact(body?.previousInteractionId, 400) : '';
+  const inputBody = allowPrevious ? body : { ...body, previousInteractionId: '' };
   const searchAllowed = forceSearch || !TRIVIAL_CONVERSATION_RE.test(resolvedUserQuestion(inputBody));
   const requestBody = {
     model: GEMINI_MODEL,
     input: interactionInput(inputBody, { forceSearch, immediateTransit, now }),
     system_instruction: buildTalkSysSystemInstruction(now, { forceSearch, immediateTransit }),
     ...(searchAllowed ? { tools: [{ type: 'google_search' }] } : {}),
+    ...(previousInteractionId ? { previous_interaction_id: previousInteractionId } : {}),
     stream: true,
   };
   const response = await fetch(GEMINI_INTERACTIONS_ENDPOINT, {
@@ -612,6 +621,12 @@ async function createGeminiInteractionStream(env, body = {}, signal, { forceSear
     let payload = {};
     try { payload = raw ? JSON.parse(raw) : {}; } catch {}
     const detail = compact(payload?.error?.message || raw || response.statusText, 700);
+    const invalidPrevious = Boolean(previousInteractionId)
+      && (response.status === 400 || response.status === 404)
+      && /previous|interaction|not found|invalid/i.test(detail);
+    if (invalidPrevious && allowPrevious) {
+      return createGeminiInteractionStream(env, body, signal, { allowPrevious: false, forceSearch, now, immediateTransit });
+    }
     throw new Error(`gemini_interactions_stream_http_${response.status}${detail ? `:${detail}` : ''}`);
   }
   return response;
@@ -760,13 +775,19 @@ function discordTurnStreamResponse(request, env, body, ctx) {
         return;
       }
 
+      const speculativeSentence = firstSpokenSentence(primary.answer);
+      if (speculativeSentence) {
+        await send({ type: 'speculative', text: speculativeSentence, source: 'primary-verified-before-playback' });
+      }
+
       const verifyBody = {
         text: buildGenericVerificationInput(body, primary, now),
         history: [],
-        previousInteractionId: '',
+        previousInteractionId: compact(primary?.payload?.id, 400),
       };
       const verifierStarted = Date.now();
       const upstream = await createGeminiInteractionStream(env, verifyBody, request.signal, {
+        allowPrevious: true,
         forceSearch: true,
         now,
         immediateTransit: false,
