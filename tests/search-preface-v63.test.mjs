@@ -42,6 +42,6 @@ test('browser client starts the real turn and parallel search preface path', () 
 test('Discord voice bridge intentionally omits the web search preface for lower latency', () => {
   assert.doesNotMatch(discord, /\/api\/search-preface/);
   assert.doesNotMatch(discord, /searchPreface|prefaceTask|prefacePlaybackPromise/);
-  assert.match(discord, /streamedResult = await talkStream\(text, queueSentence, utteranceId\)/);
+  assert.match(discord, /streamedResult = await talkStream\(text, queueSentence, utteranceId, controller\.signal\)/);
   assert.match(discord, /falling back to \/api\/turn/);
 });
