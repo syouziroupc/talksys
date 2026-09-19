@@ -28,7 +28,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v70-reply-recovery-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v71-prewarm-bargein-r1';
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
@@ -45,8 +45,13 @@ let voiceEpoch = 0;
 let realtimeSttBackoffUntil = 0;
 let discordSessionId = '';
 const pendingTurns = [];
+let activeTurnAbortController = null;
+let activeTurnSerial = 0;
 
 function resetConversationState() {
+  try { activeTurnAbortController?.abort(); } catch {}
+  activeTurnAbortController = null;
+  activeTurnSerial += 1;
   history.splice(0, history.length);
   previousInteractionId = '';
   answering = false;
@@ -163,11 +168,12 @@ async function postVoiceMetrics(text, timings = {}, utteranceId = '') {
   }
 }
 
-async function talk(text, utteranceId = '') {
+async function talk(text, utteranceId = '', signal) {
   const started = Date.now();
   console.log('[turn] user:', text);
   const response = await fetch(TALKSYS_BASE_URL + '/api/turn', {
     method: 'POST',
+    signal,
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       text,
@@ -191,11 +197,12 @@ async function talk(text, utteranceId = '') {
   return body.answer;
 }
 
-async function talkStream(text, onSentence, utteranceId = '') {
+async function talkStream(text, onSentence, utteranceId = '', signal) {
   const started = Date.now();
   console.log('[turn-stream] user:', text);
   const response = await fetch(TALKSYS_BASE_URL + '/api/turn-stream', {
     method: 'POST',
+    signal,
     headers: {
       'content-type': 'application/json',
       authorization: 'Bearer ' + BRIDGE_TOKEN,
@@ -213,7 +220,7 @@ async function talkStream(text, onSentence, utteranceId = '') {
   if (!response.ok || !/text\/event-stream/i.test(type) || !response.body) {
     const detail = await response.text().catch(() => '');
     console.warn(`[turn-stream] unavailable status=${response.status}; falling back to /api/turn ${detail.slice(0, 160)}`);
-    return { answer: await talk(text, utteranceId), streamed: false, sentenceCount: 0, clientElapsedMs: Date.now() - started, timings: {} };
+    return { answer: await talk(text, utteranceId, signal), streamed: false, sentenceCount: 0, clientElapsedMs: Date.now() - started, timings: {} };
   }
 
   const reader = response.body.getReader();
@@ -262,7 +269,7 @@ async function talkStream(text, onSentence, utteranceId = '') {
   if (!doneBody?.answer) {
     if (sentenceCount === 0) {
       console.warn('[turn-stream] ended without done event; falling back to /api/turn');
-      return { answer: await talk(text, utteranceId), streamed: false, sentenceCount: 0, clientElapsedMs: Date.now() - started, timings: {} };
+      return { answer: await talk(text, utteranceId, signal), streamed: false, sentenceCount: 0, clientElapsedMs: Date.now() - started, timings: {} };
     }
     const error = new Error('turn_stream_ended_after_partial_output');
     error.partial = true;
@@ -278,10 +285,11 @@ async function talkStream(text, onSentence, utteranceId = '') {
   return { answer: doneBody.answer, streamed: sentenceCount > 0, sentenceCount, clientElapsedMs: elapsed, timings: doneBody?.timings || {} };
 }
 
-async function synthesize(text) {
+async function synthesize(text, signal) {
   const started = Date.now();
   const response = await fetch(TALKSYS_BASE_URL + '/api/voice/synthesize', {
     method: 'POST',
+    signal,
     headers: {
       'content-type': 'application/json',
       authorization: 'Bearer ' + BRIDGE_TOKEN,
@@ -347,6 +355,10 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
 
   const pipelineStarted = Date.now();
   const utteranceId = String(speechMetrics?.utteranceId || `utt-${randomUUID()}`);
+  const turnSerial = ++activeTurnSerial;
+  const controller = new AbortController();
+  try { activeTurnAbortController?.abort(); } catch {}
+  activeTurnAbortController = controller;
   const clientTimings = {
     sttMs: Number(speechMetrics?.sttMs) || 0,
     sttMode: speechMetrics?.sttMode || 'unknown',
@@ -368,12 +380,12 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
       if (!sentence || queuedSentences >= 4) return;
       queuedSentences += 1;
       const ttsStarted = Date.now();
-      const audioPromise = synthesize(sentence)
+      const audioPromise = synthesize(sentence, controller.signal)
         .then((value) => ({ value, elapsedMs: Date.now() - ttsStarted }), (error) => ({ error }));
       playbackChain = playbackChain.then(async () => {
         const prefetched = await audioPromise;
         if (prefetched.error) throw prefetched.error;
-        if (sessionEpoch !== voiceEpoch) return;
+        if (controller.signal.aborted || turnSerial !== activeTurnSerial || sessionEpoch !== voiceEpoch) return;
         if (!firstTtsRecorded) {
           firstTtsRecorded = true;
           clientTimings.firstTtsMs = prefetched.elapsedMs;
@@ -393,7 +405,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     let streamedResult;
     let streamError = null;
     try {
-      streamedResult = await talkStream(text, queueSentence, utteranceId);
+      streamedResult = await talkStream(text, queueSentence, utteranceId, controller.signal);
       clientTimings.turnStreamMs = Number(streamedResult?.clientElapsedMs) || 0;
       clientTimings.serverTotalMs = Number(streamedResult?.timings?.totalMs) || 0;
       clientTimings.primaryMs = Number(streamedResult?.timings?.primaryMs) || 0;
@@ -401,10 +413,10 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
       clientTimings.streamed = Boolean(streamedResult?.streamed);
     } catch (error) {
       streamError = error;
-      if (!error?.partial && queuedSentences === 0) {
+      if (!controller.signal.aborted && !error?.partial && queuedSentences === 0) {
         console.warn('[turn-stream] runtime failure before audio; falling back to /api/turn:', error?.message || error);
         try {
-          const answer = await talk(text, utteranceId);
+          const answer = await talk(text, utteranceId, controller.signal);
           streamedResult = {
             answer,
             streamed: false,
@@ -434,11 +446,16 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     console.log(`[latency] pipeline-complete=${clientTimings.pipelineCompleteMs}ms streamed=${Boolean(streamedResult?.streamed)} sentences=${queuedSentences}`);
   } catch (error) {
     if (sessionEpoch !== voiceEpoch) return;
-    console.error('[pipeline]', error?.stack || error);
+    if (controller.signal.aborted || turnSerial !== activeTurnSerial) {
+      console.log(`[pipeline] interrupted utterance=${utteranceId}`);
+    } else {
+      console.error('[pipeline]', error?.stack || error);
+    }
   } finally {
     if (!clientTimings.pipelineCompleteMs) clientTimings.pipelineCompleteMs = Date.now() - pipelineStarted;
     postVoiceMetrics(text, clientTimings, utteranceId).catch(() => {});
-    if (sessionEpoch === voiceEpoch) {
+    if (activeTurnAbortController === controller) activeTurnAbortController = null;
+    if (turnSerial === activeTurnSerial && sessionEpoch === voiceEpoch) {
       answering = false;
       const next = pendingTurns.shift();
       if (next && next.sessionEpoch === voiceEpoch) {
@@ -446,6 +463,19 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
       }
     }
   }
+}
+
+function interruptActiveAnswer(reason = 'user-speech') {
+  if (!answering && player.state.status !== AudioPlayerStatus.Playing) return false;
+  activeTurnSerial += 1;
+  const controller = activeTurnAbortController;
+  activeTurnAbortController = null;
+  try { controller?.abort(); } catch {}
+  player.stop(true);
+  answering = false;
+  pendingTurns.splice(0, pendingTurns.length);
+  console.log(`[barge-in] interrupted active answer reason=${reason}`);
+  return true;
 }
 
 function destroyReusableSttSocket(userId, reason = 'reset') {
@@ -459,10 +489,7 @@ function destroyReusableSttSocket(userId, reason = 'reset') {
   } catch {}
 }
 
-function acquireRealtimeSttSocket(userId, sessionEpoch) {
-  const existing = realtimeSttSockets.get(userId);
-  if (existing) destroyReusableSttSocket(userId, 'fresh-utterance');
-
+function createRealtimeSttTransport(userId, sessionEpoch, claimed = true) {
   const ws = new WebSocket(STT_WS_URL);
   const transport = {
     ws,
@@ -470,12 +497,19 @@ function acquireRealtimeSttSocket(userId, sessionEpoch) {
     lastAudioAt: 0,
     openedAt: 0,
     keepAliveTimer: null,
+    claimed,
   };
   realtimeSttSockets.set(userId, transport);
 
   ws.on('open', () => {
     transport.openedAt = Date.now();
-    console.log(`[stt] websocket open user=${userId} reusable=false`);
+    console.log(`[stt] websocket open user=${userId} mode=${transport.claimed ? 'active' : 'prewarm'}`);
+    clearInterval(transport.keepAliveTimer);
+    transport.keepAliveTimer = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - transport.lastAudioAt < 3000) return;
+      try { ws.send(JSON.stringify({ type: 'KeepAlive' })); } catch {}
+    }, 4000);
   });
 
   ws.on('unexpected-response', (_request, response) => {
@@ -484,9 +518,8 @@ function acquireRealtimeSttSocket(userId, sessionEpoch) {
       realtimeSttBackoffUntil = Date.now() + 60_000;
       console.warn('[stt] websocket 429; batch STT forced for 60s');
     }
-    if (realtimeSttSockets.get(userId) === transport) {
-      realtimeSttSockets.delete(userId);
-    }
+    clearInterval(transport.keepAliveTimer);
+    if (realtimeSttSockets.get(userId) === transport) realtimeSttSockets.delete(userId);
   });
 
   ws.on('error', (error) => {
@@ -496,11 +529,39 @@ function acquireRealtimeSttSocket(userId, sessionEpoch) {
   });
 
   ws.on('close', (code, reason) => {
+    clearInterval(transport.keepAliveTimer);
     if (realtimeSttSockets.get(userId) === transport) realtimeSttSockets.delete(userId);
     console.log('[stt] websocket close', code, String(reason || ''), 'user=' + userId);
   });
 
-  return { transport, reused: false };
+  return transport;
+}
+
+function acquireRealtimeSttSocket(userId, sessionEpoch) {
+  const existing = realtimeSttSockets.get(userId);
+  if (existing && existing.epoch === sessionEpoch && !existing.claimed
+    && (existing.ws?.readyState === WebSocket.OPEN || existing.ws?.readyState === WebSocket.CONNECTING)) {
+    existing.claimed = true;
+    console.log(`[stt] websocket prewarm claimed user=${userId} state=${existing.ws.readyState}`);
+    return { transport: existing, reused: true };
+  }
+  if (existing) destroyReusableSttSocket(userId, 'fresh-utterance');
+
+  return { transport: createRealtimeSttTransport(userId, sessionEpoch, true), reused: false };
+}
+
+function prewarmRealtimeSttSocket(userId, sessionEpoch) {
+  if (sessionEpoch !== voiceEpoch || Date.now() < realtimeSttBackoffUntil) return false;
+  const existing = realtimeSttSockets.get(userId);
+  if (existing) {
+    if (existing.epoch === sessionEpoch && !existing.claimed
+      && (existing.ws?.readyState === WebSocket.OPEN || existing.ws?.readyState === WebSocket.CONNECTING)) return true;
+    if (existing.claimed) return false;
+    destroyReusableSttSocket(userId, 'stale-prewarm');
+  }
+  createRealtimeSttTransport(userId, sessionEpoch, false);
+  console.log(`[stt] websocket prewarm user=${userId}`);
+  return true;
 }
 
 function startReceiverSession(userId) {
@@ -565,6 +626,7 @@ function startReceiverSession(userId) {
     detachWsListeners();
     sessions.delete(userId);
     destroyReusableSttSocket(userId, 'utterance-complete');
+    if (!realtimeFailed) prewarmRealtimeSttSocket(userId, sessionEpoch);
 
     let text = (finalParts.join(' ').trim() || latest).trim();
     const pcm16 = Buffer.concat(pcm16Chunks);
@@ -600,7 +662,7 @@ function startReceiverSession(userId) {
       completionTimer = setTimeout(() => {
         markRealtimeFailed('finalize-timeout');
         complete('finalize-timeout');
-      }, 3000);
+      }, 1500);
     } catch (error) {
       console.error('[stt] finalize failed:', error.message);
       markRealtimeFailed('finalize-error');
@@ -773,6 +835,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   discordSessionId = `discord-${channel.guild.id}-${channel.id}-${randomUUID()}`;
   connection.receiver.speaking.on('start', (userId) => {
     if (userId === client.user.id) return;
+    interruptActiveAnswer('user-speech');
     startReceiverSession(userId);
   });
 

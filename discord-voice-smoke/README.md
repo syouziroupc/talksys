@@ -4,7 +4,7 @@
 
 ## 試験経路
 
-Discord VC -> Opus -> PCM 48k stereo -> PCM 16k mono -> TalkSys STT (発話ごとにRealtime WebSocket新規接続 / 429時は `/api/transcribe`) -> `/api/turn-stream` (SSE障害時 `/api/turn`) -> 文単位 `/api/voice/synthesize` -> Discord VC
+Discord VC -> Opus -> PCM 48k stereo -> PCM 16k mono -> TalkSys STT (発話ごとに新規Realtime WebSocketを使用し、次発話用ソケットは先行接続 / 429時は `/api/transcribe`) -> `/api/turn-stream` (SSE障害時 `/api/turn`) -> 文単位 `/api/voice/synthesize` -> Discord VC
 
 Discord側ではTTSしません。返送音声はTalkSys側で生成した音声です。
 
@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File .\update-and-start.ps1
 
 TalkSys側URL、STT WebSocket、`/api/turn-stream`、TalkSys TTSはコード側に設定済みです。診断用raw echoは廃止し、ユーザー音声をVCへ返しません。
 
-起動後、Botが参加しているDiscordサーバーを自動検出し、既存の他コマンドを削除せず、`/talksys` と `/leave` だけを作成・更新します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加します。接続時は「フォーンズです。接続しました。」と1回だけ発声します。検索案内TTSは行いません。`/leave` で退出します。人が話すと受信音声をSTTへ送り、認識結果を `/api/turn-stream` へ渡し、検証済み回答を文単位でTalkSys側TTSへ先行投入してVCへ返します。STTやTTSが失敗しても本人の音声をオウム返しせず、ログへ失敗箇所を出します。フォーンズが回答生成・再生中でも受音を止めず、次の発話は最大3件まで順番待ちに入れます。/talksys 実行者の受音ストリームは接続直後に先行して準備し、話し始めの取りこぼしを減らします。
+起動後、Botが参加しているDiscordサーバーを自動検出し、既存の他コマンドを削除せず、`/talksys` と `/leave` だけを作成・更新します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加します。接続時は「フォーンズです。接続しました。」と1回だけ発声します。検索案内TTSは行いません。`/leave` で退出します。人が話すと受信音声をSTTへ送り、認識結果を `/api/turn-stream` へ渡し、検証済み回答を文単位でTalkSys側TTSへ先行投入してVCへ返します。STTやTTSが失敗しても本人の音声をオウム返しせず、ログへ失敗箇所を出します。フォーンズが回答生成・再生中でも受音を止めず、利用者が話し始めた場合は古い回答生成と再生を中断して新しい発話を優先します。各発話で使用したSTTソケットは使い回さず破棄し、次の発話専用ソケットだけを先に接続して待機させます。/talksys 実行者の受音ストリームは接続直後に先行して準備し、話し始めの取りこぼしを減らします。
 
 ## 合格条件
 
@@ -61,8 +61,8 @@ TalkSys側URL、STT WebSocket、`/api/turn-stream`、TalkSys TTSはコード側�
 ```
 [discord] voice ready
 [rx] user=...
-[stt] websocket open user=... reusable=false
-[stt] ...
+[stt] websocket open user=... mode=active
+[stt] websocket prewarm user=...\n[stt] ...
 [turn-stream] ...
 [latency] first-audio-ready=...ms source=verifier-stream
 [tts] ... bytes

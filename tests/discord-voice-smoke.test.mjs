@@ -20,7 +20,7 @@ test('Discord bridge uses permanent shared-token auth for verified streaming and
   assert.doesNotMatch(source, /x-talksys-demo/);
   assert.doesNotMatch(source, /discord-voice-smoke-20260918/);
   assert.match(source, /\/api\/turn-stream/);
-  assert.match(source, /async function talkStream\(text, onSentence, utteranceId = ''\)/);
+  assert.match(source, /async function talkStream\(text, onSentence, utteranceId = '', signal\)/);
   assert.match(source, /queueSentence/);
   assert.match(source, /await playMp3\(prefetched\.value\)/);
 });
@@ -57,14 +57,14 @@ test('Discord runtime omits search-preface work and prefers the verified turn st
   assert.doesNotMatch(source, /\/api\/search-preface/);
   assert.doesNotMatch(source, /searchPreface/);
   assert.doesNotMatch(source, /prefaceTask|prefacePlaybackPromise|answerReady/);
-  assert.match(source, /streamedResult = await talkStream\(text, queueSentence, utteranceId\)/);
+  assert.match(source, /streamedResult = await talkStream\(text, queueSentence, utteranceId, controller\.signal\)/);
   assert.match(source, /falling back to \/api\/turn/);
-  assert.match(source, /return \{ answer: await talk\(text, utteranceId\), streamed: false/);
+  assert.match(source, /return \{ answer: await talk\(text, utteranceId, signal\), streamed: false/);
 });
 
 test('Discord falls back to the normal turn endpoint when SSE fails before any audio', () => {
   assert.match(source, /runtime failure before audio; falling back to \/api\/turn/);
-  assert.match(source, /const answer = await talk\(text, utteranceId\)/);
+  assert.match(source, /const answer = await talk\(text, utteranceId, controller\.signal\)/);
   assert.match(source, /queuedSentences === 0/);
   assert.match(source, /!error\?\.partial/);
 });
@@ -85,7 +85,7 @@ test('Discord assigns one persistent conversation session id per VC connection',
 });
 
 test('Discord starts TTS as verified sentences arrive and serializes playback', () => {
-  assert.match(source, /const audioPromise = synthesize\(sentence\)/);
+  assert.match(source, /const audioPromise = synthesize\(sentence, controller\.signal\)/);
   assert.match(source, /playbackChain = playbackChain\.then/);
   assert.match(source, /const prefetched = await audioPromise/);
   assert.match(source, /await playMp3\(prefetched\.value\)/);
@@ -144,11 +144,14 @@ test('Discord voice session resets conversation state and ignores stale replies 
   assert.match(source, /previousInteractionId = ''/);
 });
 
-test('Discord receiver remains active while Fones is answering and queues user turns', () => {
-  assert.doesNotMatch(source, /sessions\.has\(userId\) \|\| answering/);
-  assert.match(source, /const pendingTurns = \[\]/);
-  assert.match(source, /\[queue\] buffered user=/);
-  assert.match(source, /pendingTurns\.shift\(\)/);
+test('Discord allows caller barge-in instead of waiting for long playback to finish', () => {
+  assert.match(source, /function interruptActiveAnswer\(reason = 'user-speech'\)/);
+  assert.match(source, /activeTurnAbortController/);
+  assert.match(source, /controller\?\.abort\(\)/);
+  assert.match(source, /player\.stop\(true\)/);
+  assert.match(source, /\[barge-in\] interrupted active answer/);
+  assert.match(source, /interruptActiveAnswer\('user-speech'\)/);
+  assert.match(source, /turnSerial !== activeTurnSerial/);
 });
 
 test('Discord slash join pre-arms the invoking user receive stream', () => {
