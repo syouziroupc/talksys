@@ -32,11 +32,16 @@ test('production deploy revalidates architecture, source graph, archived syntax,
   assert.match(workflow, /npx wrangler deploy --secrets-file "\$secrets_file"/);
 });
 
-test('production deploy requires the Gemini key and uploads it only as a Worker secret', () => {
+test('production deploy requires Gemini and Discord bridge secrets and uploads both only as Worker secrets', () => {
   assert.match(workflow, /GEMINI_API_KEY:\s*\$\{\{ secrets\.GEMINI_API_KEY \}\}/);
+  assert.match(workflow, /DISCORD_BRIDGE_TOKEN:\s*\$\{\{ secrets\.DISCORD_BRIDGE_TOKEN \}\}/);
   assert.match(workflow, /test -n "\$\{GEMINI_API_KEY:-\}"/);
-  assert.match(workflow, /JSON\.stringify\(\{ GEMINI_API_KEY: key \}\)/);
+  assert.match(workflow, /test -n "\$\{DISCORD_BRIDGE_TOKEN:-\}"/);
+  assert.match(workflow, /GEMINI_API_KEY: gemini/);
+  assert.match(workflow, /DISCORD_BRIDGE_TOKEN: discord/);
   assert.match(workflow, /--secrets-file "\$secrets_file"/);
+  assert.match(workflow, /Verify permanent Discord bridge TTS/);
+  assert.match(workflow, /authorization: Bearer \$DISCORD_BRIDGE_TOKEN/);
   assert.match(workflow, /\/gemini-health/);
   assert.match(workflow, /generationProvider==='gemini'/);
   assert.match(workflow, /generationModel==='gemini-3\.5-flash-lite'/);
