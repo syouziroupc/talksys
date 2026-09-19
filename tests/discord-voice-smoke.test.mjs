@@ -82,8 +82,10 @@ test('Discord bridge secret setup persists the same random token locally with Wi
   assert.match(launcher, /setup-bridge-secret\.ps1/);
 });
 
-test('Discord voice dependencies are pinned to expected major lines', () => {
+test('Discord voice dependencies use a prism-media-compatible Opus line', () => {
   assert.match(packageJson.dependencies['@discordjs/voice'], /^\^0\.19\./);
   assert.match(packageJson.dependencies['discord.js'], /^\^14\./);
+  assert.equal(packageJson.dependencies.opusscript, '^0.0.8');
   assert.match(packageJson.dependencies.ws, /^\^8\./);
+  assert.match(launcher, /--legacy-peer-deps/);
 });
