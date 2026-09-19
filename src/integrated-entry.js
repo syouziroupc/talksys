@@ -607,9 +607,9 @@ async function realtimeSttResponse(request, env) {
       encoding: 'linear16',
       sample_rate: '16000',
       language: 'ja',
-      interim_results: true,
-      punctuate: true,
-      smart_format: true,
+      interim_results: 'true',
+      punctuate: 'true',
+      smart_format: 'true',
       endpointing: '350',
     }, { websocket: true });
   } catch (error) {
