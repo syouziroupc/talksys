@@ -8,6 +8,7 @@ export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v57-gemini-self-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
+export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v59.2-realtime-stt-minimal-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
@@ -229,6 +230,38 @@ export function shouldStronglyPreferSearch(text = '') {
   if (!value) return false;
   if (TRIVIAL_CONVERSATION_RE.test(value)) return false;
   return true;
+}
+
+export function searchAnnouncementTopic(text = '') {
+  let topic = compact(text, 400)
+    .replace(/[「」『』]/g, '')
+    .replace(/[？?！!。…]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  topic = topic
+    .replace(/(?:を|について)?(?:検索|調べ|確認|探して|見つけて)(?:ください|下さい|くれ|ほしい|欲しい)?$/i, '')
+    .replace(/(?:を|について)?(?:教えて(?:ください|下さい)?|知りたい|お願い(?:します)?|お願いします?)$/i, '')
+    .replace(/(?:は)?(?:どう|どれ|どっち|何|なに|誰|どこ|いつ|いくら)(?:ですか|なの|か)?$/i, '')
+    .replace(/[はをが]\s*$/u, '')
+    .trim();
+
+  if (!topic) topic = '必要な情報';
+  if (topic.length > 48) topic = topic.slice(0, 48).trim();
+  return topic;
+}
+
+export function searchPreface(text = '') {
+  const value = compact(text, 4000);
+  if (!shouldStronglyPreferSearch(value)) {
+    return { shouldSpeak: false, topic: '', text: '' };
+  }
+  const topic = searchAnnouncementTopic(value);
+  return {
+    shouldSpeak: true,
+    topic,
+    text: `${topic}について検索しています。`,
+  };
 }
 
 export function normalizeSpokenJapanese(value = '') {
@@ -723,6 +756,8 @@ async function voiceHealth(request, env, ctx) {
       nativeGeminiAnswerPath: true,
       nativeGoogleSearch: true,
       searchDefault: 'aggressive-native-google-search',
+      searchPrefaceRevision: SEARCH_PREFACE_REVISION,
+      searchPrefaceParallel: true,
       routerFirst: false,
       customTruthGateApplied: false,
       blanketFailClosed: false,
@@ -778,6 +813,17 @@ export default {
       });
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/search-preface') {
+      let body = {};
+      try { body = await request.json(); }
+      catch { return json({ ok: false, error: 'invalid_json' }, 400); }
+      return json({
+        ok: true,
+        ...searchPreface(body?.text || ''),
+        revision: SEARCH_PREFACE_REVISION,
+      });
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/turn') {
       let body = {};
       try { body = await request.json(); }
@@ -808,6 +854,8 @@ export default {
         api: 'interactions',
         nativeGoogleSearch: true,
         searchDefault: 'aggressive-native-google-search',
+        searchPrefaceRevision: SEARCH_PREFACE_REVISION,
+        searchPrefaceParallel: true,
         personalizationRevision: PERSONALIZATION_REVISION,
         speechOptimized: true,
         realtimeStt: true,
@@ -863,6 +911,8 @@ export const __test = {
   isImmediateTransitQuestion,
   pastImmediateTransitDepartures,
   shouldStronglyPreferSearch,
+  searchAnnouncementTopic,
+  searchPreface,
   normalizeSpokenJapanese,
   interactionOutputText,
   interactionQueries,

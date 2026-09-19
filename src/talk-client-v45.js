@@ -4,6 +4,7 @@ export const CLIENT_REVISION = 'talksys-v46-streaming-vad';
 export const INTERACTION_REVISION = 'talksys-v52-native-gemini-3-5-flash-lite-r1';
 export const AUDIO_REVISION = 'talksys-v58-noise-cancel-interrupt-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v59.2-realtime-stt-minimal-r1';
+export const SEARCH_PREFACE_CLIENT_REVISION = 'talksys-v63-search-preface-r1';
 
 const FORM_HANDLER_OLD = "form.addEventListener('submit',async e=>{e.preventDefault();const v=input.value.trim();if(!v||busy)return;input.value='';busy=true;resumePlan=null;add('user',v);try{await ask(v);}catch(err){lastError=String(err.message||err);log('会話エラー: '+lastError);setStatus('回答に失敗');}finally{busy=false;if(micOn&&!playing)setStatus('聞いています');diagUpdate(true);}});";
 
@@ -223,10 +224,29 @@ async function ask(text,spokenBackchannelOverride=''){
   const spokenBackchannel=spokenBackchannelOverride||backchannelFor(text);
   abortActiveTurn('new-turn');
   const seq=++turnSeq,previous=history.slice(-MAX_HISTORY),controller=new AbortController();activeTurnController=controller;
-  history.push({role:'user',content:text});setStatus('考えています…');
+  history.push({role:'user',content:text});setStatus('考えています…');lastPlanMs=0;lastSearchPlan='parallel-search-preface';
   try{
     const t=Date.now();
-    const r=await fetch('/api/turn',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text,history:previous,searchTrace,sessionId:talkSessionId,previousInteractionId:geminiInteractionId,spokenBackchannel})});
+    const turnPromise=fetch('/api/turn',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text,history:previous,searchTrace,sessionId:talkSessionId,previousInteractionId:geminiInteractionId,spokenBackchannel})});
+    const searchAnnouncementTask=(async()=>{
+      try{
+        const pr=await fetch('/api/search-preface',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text})});
+        const p=await pr.json().catch(()=>null);
+        if(seq!==turnSeq||!pr.ok||!p?.shouldSpeak||!p?.text)return;
+        if(spokenBackchannel&&fastReactionPlayingPromise){
+          await fastReactionPlayingPromise.catch(()=>{});
+          if(seq!==turnSeq)return;
+        }
+        lastSearchTopic=String(p.topic||'必要な情報');
+        const searching=String(p.text);
+        add('assistant',searching);log('検索案内: '+searching);
+        await speak(searching,{searchAnnouncement:true,resumeable:false});
+      }catch(e){
+        if(e?.name!=='AbortError'&&seq===turnSeq)log('検索案内を省略: '+String(e?.message||e));
+      }
+    })();
+
+    const r=await turnPromise;
     const j=await r.json();if(seq!==turnSeq)return;
     if(j.interactionId)geminiInteractionId=j.interactionId;
     if(voiceCandidateCount>0){log('追加入力候補を認識中。旧回答の表示を保留');if(!await waitForVoiceCandidate(seq))return;}
@@ -235,7 +255,9 @@ async function ask(text,spokenBackchannelOverride=''){
     if(!r.ok||!j.ok||!j.answer)throw new Error(j.error||'回答生成に失敗');
     if(j.search){lastSearchQueries=Array.isArray(j.queries)?j.queries.slice(0,6):[];searchTrace={resolvedQuestion:j.resolvedQuestion||text,queries:lastSearchQueries,sources:Array.isArray(j.sources)?j.sources.slice(0,8):[]};}
     log((j.search?'検索あり':'検索なし')+' / route='+(j.route||'?')+' / Gemini '+lastGlmMs+'ms'+(lastSearchMs?' / 検索 '+lastSearchMs+'ms':''));
-    if(spokenBackchannel&&fastReactionPlayingPromise){await Promise.race([fastReactionPlayingPromise,new Promise(resolve=>setTimeout(resolve,1400))]);if(seq!==turnSeq)return;}
+    if(j.search)await searchAnnouncementTask;
+    else searchAnnouncementTask.catch(()=>{});
+    if(seq!==turnSeq)return;
     add('assistant',j.answer);history.push({role:'assistant',content:j.answer});if(history.length>MAX_HISTORY*2)history=history.slice(-MAX_HISTORY*2);
     await speak(j.answer,{resumeable:true});
   }catch(e){
@@ -244,7 +266,6 @@ async function ask(text,spokenBackchannelOverride=''){
   }finally{if(activeTurnController===controller)activeTurnController=null;}
 }
 `;
-
 const START_MIC_V58 = String.raw`
 async function startMic(){
   if(micOn)return;lastError='';
@@ -355,6 +376,7 @@ if (client.includes('if(busy&&!speech){startHits=0;bargeHits=0')) throw new Erro
 if (!client.includes('/api/realtime-stt') || !client.includes('sendRealtimeSttFrame')) throw new Error('TalkSys realtime STT patch did not apply');
 if (!client.includes('/api/fast-reaction') || !client.includes('spokenBackchannel')) throw new Error('TalkSys fast-reaction handoff patch did not apply');
 if (!client.includes('高速相槌 batch:') || !client.includes('j?.fastReaction?.shouldSpeak')) throw new Error('TalkSys batch fast-reaction fallback patch did not apply');
+if (!client.includes('/api/search-preface') || !client.includes('searchAnnouncement:true') || !client.includes('検索案内:')) throw new Error('TalkSys parallel search preface patch did not apply');
 
 export const TALK_CLIENT_V45 = client;
 export const __test = {
@@ -373,6 +395,7 @@ export const __test = {
   realtimeJapaneseStt: client.includes('/api/realtime-stt') && client.includes('sendRealtimeSttFrame'),
   fastReactionHandoff: client.includes('/api/fast-reaction') && client.includes('spokenBackchannel') && client.includes('backchannelFor'),
   batchFastReactionFallback: client.includes('高速相槌 batch:') && client.includes('j?.fastReaction?.shouldSpeak'),
+  parallelSearchPreface: client.includes('/api/search-preface') && client.includes('searchAnnouncement:true') && client.includes('検索案内:'),
   typedInterrupt: client.includes('非常文字入力で現在の応答を割込み') && !client.includes('if(!v||busy)return'),
   fasterTts: client.includes('u.rate=1.12'),
   fasterTurnEnd: client.includes('SILENCE_MS=650'),
