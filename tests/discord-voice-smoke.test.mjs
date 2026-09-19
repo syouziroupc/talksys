@@ -62,6 +62,13 @@ test('Discord runtime omits search-preface work and prefers the verified turn st
   assert.match(source, /return \{ answer: await talk\(text, utteranceId\), streamed: false/);
 });
 
+test('Discord falls back to the normal turn endpoint when SSE fails before any audio', () => {
+  assert.match(source, /runtime failure before audio; falling back to \/api\/turn/);
+  assert.match(source, /const answer = await talk\(text, utteranceId\)/);
+  assert.match(source, /queuedSentences === 0/);
+  assert.match(source, /!error\?\.partial/);
+});
+
 test('Discord stores the complete final answer while speaking at most four streamed sentences', () => {
   assert.match(source, /function voiceSafeText\(text\)/);
   assert.match(source, /sentences\.slice\(0, 4\)/);
@@ -94,9 +101,11 @@ test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio read
   assert.match(source, /server-total=/);
 });
 
-test('Discord slash join does not spend TTS time before first user turn', () => {
-  assert.doesNotMatch(source, /フォーンズです。接続しました。/);
-  assert.doesNotMatch(source, /\[tts-preflight\]/);
+test('Discord slash join restores the audible connection greeting without making failure fatal', () => {
+  assert.match(source, /async function playConnectionGreeting\(\)/);
+  assert.match(source, /フォーンズです。接続しました。/);
+  assert.match(source, /await playConnectionGreeting\(\)/);
+  assert.match(source, /connection greeting failed; voice connection remains active/);
   assert.match(source, /TalkSysを「\$\{channel\.name\}」へ接続しました。/);
 });
 
