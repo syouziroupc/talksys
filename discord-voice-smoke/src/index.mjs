@@ -93,6 +93,17 @@ async function probeRealtimeStt() {
   });
 }
 
+async function searchPreface(text) {
+  const response = await fetch(TALKSYS_BASE_URL + '/api/search-preface', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body?.ok) return { shouldSpeak: false, topic: '', text: '' };
+  return body;
+}
+
 async function talk(text) {
   console.log('[turn] user:', text);
   const response = await fetch(TALKSYS_BASE_URL + '/api/turn', {
@@ -190,7 +201,22 @@ async function processTranscript(text, userId, rawPcm48, sessionEpoch) {
   answering = true;
   try {
     console.log(`[stt] final user=${userId}:`, text);
-    const answer = await talk(text);
+    const turnPromise = talk(text);
+    const prefaceTask = (async () => {
+      try {
+        const preface = await searchPreface(text);
+        if (sessionEpoch !== voiceEpoch || !preface?.shouldSpeak || !preface?.text) return;
+        console.log('[preface]', preface.text);
+        const prefaceAudio = await synthesize(preface.text);
+        if (sessionEpoch !== voiceEpoch) return;
+        await playMp3(prefaceAudio);
+      } catch (error) {
+        if (sessionEpoch === voiceEpoch) console.error('[preface]', error?.message || error);
+      }
+    })();
+
+    const answer = await turnPromise;
+    await prefaceTask;
     if (sessionEpoch !== voiceEpoch) return;
     const audio = await synthesize(answer);
     if (sessionEpoch !== voiceEpoch) return;
