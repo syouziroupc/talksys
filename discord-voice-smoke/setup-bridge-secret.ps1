@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 Set-Location $PSScriptRoot
 . "$PSScriptRoot\secret-store.ps1"
+$RepoRoot = Split-Path $PSScriptRoot -Parent
 
 function Require-Node {
   try {
@@ -17,7 +18,12 @@ function Require-Node {
 
 Require-Node
 Write-Host "[setup] checking Cloudflare login..."
-npx wrangler whoami
+Push-Location $RepoRoot
+try {
+  npx wrangler whoami
+} finally {
+  Pop-Location
+}
 
 $bytes = New-Object byte[] 32
 $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -29,7 +35,12 @@ try {
 $token = [Convert]::ToBase64String($bytes)
 
 Write-Host "[setup] registering DISCORD_BRIDGE_TOKEN in Cloudflare..."
-$token | npx wrangler secret put DISCORD_BRIDGE_TOKEN
+Push-Location $RepoRoot
+try {
+  $token | npx wrangler secret put DISCORD_BRIDGE_TOKEN
+} finally {
+  Pop-Location
+}
 Save-TalkSysPersistedSecret 'discord-bridge-token' $token
 
 Write-Host "[ok] Cloudflare Secret registered."
