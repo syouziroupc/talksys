@@ -733,9 +733,56 @@ function startReceiverSession(userId) {
   let reusedSocket = false;
   let inputEndedAt = 0;
   let usedBatchStt = false;
+  let batchSttMs = 0;
+  let hedgedBatchTimer = null;
+  let hedgedBatchController = null;
+  let hedgedBatchPromise = null;
 
-  const session = { opus, decoder, ws: null };
+  const session = { opus, decoder, ws: null, batchAbortController: null };
   sessions.set(userId, session);
+
+  const cancelHedgedBatch = () => {
+    if (hedgedBatchTimer) {
+      clearTimeout(hedgedBatchTimer);
+      hedgedBatchTimer = null;
+    }
+    try { hedgedBatchController?.abort(); } catch {}
+  };
+
+  const startHedgedBatch = (delayMs = 150, reason = 'realtime-finalize-hedge') => {
+    if (hedgedBatchPromise || finalParts.length || latest) return hedgedBatchPromise;
+    const pcmSnapshot = Buffer.concat(pcm16Chunks);
+    if (!pcmSnapshot.length) return null;
+    hedgedBatchController = new AbortController();
+    session.batchAbortController = hedgedBatchController;
+    const hedgeStarted = Date.now();
+    hedgedBatchPromise = (async () => {
+      if (delayMs > 0) {
+        await new Promise((resolve) => {
+          hedgedBatchTimer = setTimeout(() => {
+            hedgedBatchTimer = null;
+            resolve();
+          }, delayMs);
+          hedgedBatchController.signal.addEventListener('abort', () => {
+            if (hedgedBatchTimer) {
+              clearTimeout(hedgedBatchTimer);
+              hedgedBatchTimer = null;
+            }
+            resolve();
+          }, { once: true });
+        });
+      }
+      if (hedgedBatchController.signal.aborted) return { cancelled: true, elapsedMs: Date.now() - hedgeStarted };
+      try {
+        const text = await batchTranscribePcm16(pcmSnapshot, reason, hedgedBatchController.signal);
+        return { text, elapsedMs: Date.now() - hedgeStarted };
+      } catch (error) {
+        return { error, elapsedMs: Date.now() - hedgeStarted };
+      }
+    })();
+    console.log(`[stt-hedge] armed delay=${delayMs}ms reason=${reason}`);
+    return hedgedBatchPromise;
+  };
 
   const detachWsListeners = () => {
     if (!ws) return;
@@ -768,12 +815,26 @@ function startReceiverSession(userId) {
     let text = (finalParts.join(' ').trim() || latest).trim();
     const pcm16 = Buffer.concat(pcm16Chunks);
     console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B reason=${reason} sttReuse=${reusedSocket}`);
-    if (sessionEpoch !== voiceEpoch) return;
+    if (sessionEpoch !== voiceEpoch) {
+      cancelHedgedBatch();
+      return;
+    }
 
-    if (!text && pcm16.length) {
+    if (text) {
+      cancelHedgedBatch();
+    } else if (pcm16.length) {
       try {
         usedBatchStt = true;
-        text = await batchTranscribePcm16(pcm16, realtimeFailureReason || reason);
+        const fallbackStarted = Date.now();
+        const fallback = hedgedBatchPromise
+          ? await hedgedBatchPromise
+          : { text: await batchTranscribePcm16(pcm16, realtimeFailureReason || reason), elapsedMs: Date.now() - fallbackStarted };
+        if (fallback?.text) {
+          text = fallback.text;
+          batchSttMs = Number(fallback.elapsedMs) || (Date.now() - fallbackStarted);
+        } else if (fallback?.error) {
+          throw fallback.error;
+        }
       } catch (error) {
         console.error('[stt-fallback]', error?.message || error);
       }
@@ -784,6 +845,7 @@ function startReceiverSession(userId) {
     if (text) {
       processTranscript(text, userId, sessionEpoch, {
         sttMs,
+        batchSttMs,
         sttMode: usedBatchStt ? 'batch' : 'realtime',
         sttReused: reusedSocket,
         utteranceId: `utt-${randomUUID()}`,
@@ -819,10 +881,14 @@ function startReceiverSession(userId) {
     try { decoder.destroy(); } catch {}
 
     if (realtimeFailed || !ws) {
+      startHedgedBatch(0, realtimeFailureReason || 'batch-fallback');
       complete('batch-fallback');
       return;
     }
 
+    if (!latest && finalParts.length === 0) {
+      startHedgedBatch(150, 'realtime-finalize-hedge');
+    }
     sendFinalizeIfReady();
     if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
       markRealtimeFailed('websocket-closed-before-finalize');
@@ -842,6 +908,7 @@ function startReceiverSession(userId) {
     const text = transcriptFrom(payload);
     if (text) {
       latest = text;
+      cancelHedgedBatch();
       registerRealtimeSttHealthy();
       console.log('[stt]', payload?.is_final ? 'final-part:' : 'interim:', text);
       if (payload?.is_final) {
@@ -938,6 +1005,7 @@ function destroyVoiceConnection() {
   voiceEpoch += 1;
   resetConversationState();
   for (const session of sessions.values()) {
+    try { session.batchAbortController?.abort(); } catch {}
     try { session.opus?.destroy(); } catch {}
     try { session.decoder?.destroy(); } catch {}
   }
