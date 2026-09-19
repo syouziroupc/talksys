@@ -32,7 +32,7 @@ cd discord-voice-smoke
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-起動時に必要なのは次の4項目です。
+起動時に必要なのは次の3項目です。
 
 - `DISCORD_TOKEN`
 - `DISCORD_GUILD_ID`
