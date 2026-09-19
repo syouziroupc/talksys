@@ -938,9 +938,16 @@ function conversationLogAuthorized(request, env) {
 async function conversationLogsResponse(request, env) {
   if (!conversationLogAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
   try {
-    const limit = Number(new URL(request.url).searchParams.get('limit') || 100);
-    const logs = await listTalkLogs(env, limit);
-    return json({ ok: true, count: logs.length, logs });
+    const url = new URL(request.url);
+    const limit = Number(url.searchParams.get('limit') || 100);
+    const filters = {
+      sessionId: url.searchParams.get('sessionId') || '',
+      sessionPrefix: url.searchParams.get('sessionPrefix') || '',
+      event: url.searchParams.get('event') || '',
+      q: url.searchParams.get('q') || '',
+    };
+    const logs = await listTalkLogs(env, limit, filters);
+    return json({ ok: true, count: logs.length, filters, logs });
   } catch (error) {
     return json({ ok: false, error: 'conversation_log_read_failed', detail: compact(error?.message || error, 500) }, 503);
   }
