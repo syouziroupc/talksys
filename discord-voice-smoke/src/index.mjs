@@ -97,6 +97,7 @@ function pcm16MonoToWav16k(pcm) {
 
 async function batchTranscribePcm16(pcm, reason = 'fallback') {
   if (!pcm?.length) throw new Error('batch_stt_empty_pcm');
+  const started = Date.now();
   const wav = pcm16MonoToWav16k(pcm);
   console.log(`[stt-fallback] batch start reason=${reason} pcm=${pcm.length}B wav=${wav.length}B`);
   const response = await fetch(TALKSYS_BASE_URL + '/api/transcribe', {
@@ -109,6 +110,7 @@ async function batchTranscribePcm16(pcm, reason = 'fallback') {
     throw new Error(body?.error || body?.rejected || `batch_stt_http_${response.status}`);
   }
   console.log(`[stt-fallback] batch success model=${body.model || 'unknown'} elapsed=${body.elapsedMs ?? '?'}ms:`, body.text);
+  console.log(`[latency] batch-stt-http=${Date.now() - started}ms server=${body.elapsedMs ?? '?'}ms`);
   return String(body.text).trim();
 }
 
@@ -142,17 +144,20 @@ async function probeRealtimeStt() {
 }
 
 async function searchPreface(text) {
+  const started = Date.now();
   const response = await fetch(TALKSYS_BASE_URL + '/api/search-preface', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ text }),
   });
   const body = await response.json().catch(() => ({}));
+  console.log(`[latency] search-preface-http=${Date.now() - started}ms`);
   if (!response.ok || !body?.ok) return { shouldSpeak: false, topic: '', text: '' };
   return body;
 }
 
 async function talk(text) {
+  const started = Date.now();
   console.log('[turn] user:', text);
   const response = await fetch(TALKSYS_BASE_URL + '/api/turn', {
     method: 'POST',
@@ -171,11 +176,14 @@ async function talk(text) {
   if (body.interactionId) previousInteractionId = body.interactionId;
   history.push({ role: 'user', content: text }, { role: 'assistant', content: body.answer });
   if (history.length > 24) history.splice(0, history.length - 24);
+  const elapsed = Date.now() - started;
   console.log('[turn] assistant:', body.answer);
+  console.log(`[latency] turn-http=${elapsed}ms server-total=${body?.timings?.totalMs ?? '?'}ms primary=${body?.timings?.primaryMs ?? '?'}ms verifier=${body?.timings?.verifierMs ?? '?'}ms`);
   return body.answer;
 }
 
 async function synthesize(text) {
+  const started = Date.now();
   const response = await fetch(TALKSYS_BASE_URL + '/api/voice/synthesize', {
     method: 'POST',
     headers: {
@@ -192,6 +200,7 @@ async function synthesize(text) {
   const type = response.headers.get('content-type') || 'unknown';
   const source = response.headers.get('x-talksys-voice-source') || 'unknown';
   console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
+  console.log(`[latency] tts-http=${Date.now() - started}ms source=${source}`);
   return audio;
 }
 
@@ -239,29 +248,55 @@ async function processTranscript(text, userId, sessionEpoch) {
     }
     return;
   }
+
+  const pipelineStarted = Date.now();
   answering = true;
+  let answerReady = false;
+  let prefacePlaybackPromise = null;
+
   try {
     console.log(`[stt] final user=${userId}:`, text);
+    console.log('[latency] pipeline-start');
+
     const turnPromise = talk(text);
     const prefaceTask = (async () => {
       try {
         const preface = await searchPreface(text);
-        if (sessionEpoch !== voiceEpoch || !preface?.shouldSpeak || !preface?.text) return;
+        if (sessionEpoch !== voiceEpoch || answerReady || !preface?.shouldSpeak || !preface?.text) return;
         console.log('[preface]', preface.text);
         const prefaceAudio = await synthesize(preface.text);
-        if (sessionEpoch !== voiceEpoch) return;
-        await playMp3(prefaceAudio);
+        if (sessionEpoch !== voiceEpoch || answerReady) {
+          console.log('[preface] skipped because final answer is already ready');
+          return;
+        }
+        prefacePlaybackPromise = playMp3(prefaceAudio);
+        await prefacePlaybackPromise;
       } catch (error) {
         if (sessionEpoch === voiceEpoch) console.error('[preface]', error?.message || error);
       }
     })();
 
     const answer = await turnPromise;
-    await prefaceTask;
+    answerReady = true;
     if (sessionEpoch !== voiceEpoch) return;
-    const audio = await synthesize(answer);
+
+    // Final TTS starts immediately when Gemini returns. A slow search-preface
+    // synthesis must never block the final answer.
+    const finalTtsPromise = synthesize(answer);
+
+    // Only wait for a preface that has already started playing. If its TTS is
+    // merely slow, it is skipped by answerReady above.
+    if (prefacePlaybackPromise) {
+      await prefacePlaybackPromise.catch(() => {});
+    }
+
+    const audio = await finalTtsPromise;
     if (sessionEpoch !== voiceEpoch) return;
+    console.log(`[latency] final-audio-ready=${Date.now() - pipelineStarted}ms`);
     await playMp3(audio);
+    console.log(`[latency] pipeline-complete=${Date.now() - pipelineStarted}ms`);
+
+    prefaceTask.catch(() => {});
   } catch (error) {
     if (sessionEpoch !== voiceEpoch) return;
     console.error('[pipeline]', error?.stack || error);

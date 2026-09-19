@@ -25,7 +25,8 @@ test('Discord bridge uses permanent shared-token TTS auth and no expired demo by
   assert.match(source, /authorization: 'Bearer ' \+ BRIDGE_TOKEN/);
   assert.doesNotMatch(source, /x-talksys-demo/);
   assert.doesNotMatch(source, /discord-voice-smoke-20260918/);
-  assert.match(source, /const audio = await synthesize\(answer\)/);
+  assert.match(source, /const finalTtsPromise = synthesize\(answer\)/);
+  assert.match(source, /const audio = await finalTtsPromise/);
   assert.match(source, /await playMp3\(audio\)/);
 });
 
@@ -55,6 +56,22 @@ test('Discord keeps PCM16 audio for fallback transcription when realtime STT fai
   assert.match(source, /Buffer\.concat\(pcm16Chunks\)/);
   assert.match(source, /pcm16MonoToWav16k/);
   assert.match(source, /writeUInt32LE\(16000, 24\)/);
+});
+
+test('Discord final answer is never blocked by slow search-preface TTS', () => {
+  assert.match(source, /let answerReady = false/);
+  assert.match(source, /const finalTtsPromise = synthesize\(answer\)/);
+  assert.match(source, /skipped because final answer is already ready/);
+  assert.match(source, /if \(prefacePlaybackPromise\)/);
+  assert.doesNotMatch(source, /const answer = await turnPromise;\s*await prefaceTask;/);
+});
+
+test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio readiness', () => {
+  assert.match(source, /\[latency\] batch-stt-http=/);
+  assert.match(source, /\[latency\] turn-http=/);
+  assert.match(source, /\[latency\] tts-http=/);
+  assert.match(source, /\[latency\] final-audio-ready=/);
+  assert.match(source, /server-total=/);
 });
 
 test('Discord slash join performs a Fones TTS playback preflight', () => {
