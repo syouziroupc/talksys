@@ -41,12 +41,12 @@ test('Discord turn stream is private, SSE, logged, and exposes timing metadata',
 });
 
 test('Discord consumes sentence events immediately and only commits history on the final done event', () => {
-  assert.match(discord, /async function talkStream\(text, onSentence, utteranceId = '', signal\)/);
+  assert.match(discord, /async function talkStream\(text, onSentence, utteranceId = '', signal, onSpeculative = null\)/);
   assert.match(discord, /event\?\.type === 'sentence'/);
   assert.match(discord, /onSentence\(String\(event\.text\)\)/);
   assert.match(discord, /event\?\.type === 'done'/);
   assert.match(discord, /history\.push\(\{ role: 'user', content: text \}, \{ role: 'assistant', content: doneBody\.answer \}\)/);
-  assert.match(discord, /const audioPromise = synthesize\(sentence, controller\.signal\)/);
+  assert.match(discord, /const audioPromise = speculativeMatch[\s\S]*timedSynthesize\(safe\)/);
 });
 
 test('legacy batch turn remains as a no-stream fallback', () => {
