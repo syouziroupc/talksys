@@ -944,6 +944,7 @@ async function conversationLogsResponse(request, env) {
       sessionId: url.searchParams.get('sessionId') || '',
       sessionPrefix: url.searchParams.get('sessionPrefix') || '',
       event: url.searchParams.get('event') || '',
+      utteranceId: url.searchParams.get('utteranceId') || '',
       q: url.searchParams.get('q') || '',
     };
     const logs = await listTalkLogs(env, limit, filters);
