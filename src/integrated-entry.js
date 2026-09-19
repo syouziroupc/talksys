@@ -884,7 +884,7 @@ function discordTurnStreamResponse(request, env, body, ctx) {
       const text = resolvedUserQuestion(body);
       if (!text) throw new Error('empty_user_input');
 
-      if (isImmediateTransitQuestion(text)) {
+      if (arithmeticExpressionFromQuestion(text) || isImmediateTransitQuestion(text)) {
         const result = await runGeminiTurn(body, env, request.signal, { now });
         await emitWholeAnswer(result.answer);
         scheduleConversationLog(ctx, env, request, body, result, 'turn', 200);
