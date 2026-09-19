@@ -18,9 +18,9 @@ Botはサーバーに追加済みである必要があります。Message Conten
 
 ## TalkSys側
 
-面談用の一時デモでは `DISCORD_BRIDGE_TOKEN` は不要です。2026-09-18 17:00 JST まではTalkSys本番Workerが一時デモヘッダーを受け付け、TalkSys側で生成したTTS音声を返します。
+Discord返答音声は恒久運用の `DISCORD_BRIDGE_TOKEN` で認証します。期限付きデモヘッダーは廃止済みです。
 
-期限後はこの一時経路は自動で無効になり、恒久運用では `DISCORD_BRIDGE_TOKEN` を使います。
+`start.ps1` は環境変数にトークンが無い場合だけ安全入力を求めます。トークンをチャットやログへ貼り付ける必要はありません。
 
 ## 起動
 
@@ -31,15 +31,16 @@ cd discord-voice-smoke
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-必要なのはDiscord側で取得する次の3項目です。
+起動時に必要なのは次の4項目です。
 
 - `DISCORD_TOKEN`
 - `DISCORD_GUILD_ID`
 - `DISCORD_VOICE_CHANNEL_ID`
+- `DISCORD_BRIDGE_TOKEN`
 
 TalkSys側URL、STT WebSocket、`/api/turn`、TalkSys TTS、raw echo fallbackはコード側に設定済みです。
 
-起動後、自動で指定VCへ参加します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSでMP3化してVCへ返します。TTSが失敗した場合だけ、受信した実音声をそのまま返すraw echoへフォールバックします。
+起動後、自動で指定VCへ参加します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSでMP3化してVCへ返します。TTSなど後段が失敗した場合は、受信した実音声をそのまま返すraw echoへフォールバックします。STTが文字を返さない場合もraw echoを行い、Discord受信自体が成立しているか切り分けできます。
 
 ## 合格条件
 
