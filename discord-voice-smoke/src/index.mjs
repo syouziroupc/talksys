@@ -160,6 +160,92 @@ async function talk(text) {
   return body.answer;
 }
 
+async function talkStream(text, onSentence) {
+  const started = Date.now();
+  console.log('[turn-stream] user:', text);
+  const response = await fetch(TALKSYS_BASE_URL + '/api/turn-stream', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: 'Bearer ' + BRIDGE_TOKEN,
+    },
+    body: JSON.stringify({
+      text,
+      history: history.slice(-12),
+      sessionId: discordSessionId || `discord-${randomUUID()}`,
+      previousInteractionId,
+      channel: 'discord-voice-smoke',
+    }),
+  });
+  const type = response.headers.get('content-type') || '';
+  if (!response.ok || !/text\/event-stream/i.test(type) || !response.body) {
+    const detail = await response.text().catch(() => '');
+    console.warn(`[turn-stream] unavailable status=${response.status}; falling back to /api/turn ${detail.slice(0, 160)}`);
+    return { answer: await talk(text), streamed: false, sentenceCount: 0 };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let doneBody = null;
+  let sentenceCount = 0;
+
+  const consumeBlock = (block) => {
+    const data = block.split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n')
+      .trim();
+    if (!data) return;
+    let event = null;
+    try { event = JSON.parse(data); } catch { return; }
+    if (event?.type === 'sentence' && event?.text) {
+      sentenceCount += 1;
+      onSentence(String(event.text));
+      return;
+    }
+    if (event?.type === 'done' && event?.ok && event?.answer) {
+      doneBody = event;
+      return;
+    }
+    if (event?.type === 'error') {
+      const error = new Error(event?.error || 'turn_stream_failed');
+      error.partial = Boolean(event?.partial || sentenceCount > 0);
+      throw error;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) buffer += decoder.decode(value, { stream: !done }).replace(/\r/g, '');
+    let boundary;
+    while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      consumeBlock(block);
+    }
+    if (done) break;
+  }
+
+  if (!doneBody?.answer) {
+    if (sentenceCount === 0) {
+      console.warn('[turn-stream] ended without done event; falling back to /api/turn');
+      return { answer: await talk(text), streamed: false, sentenceCount: 0 };
+    }
+    const error = new Error('turn_stream_ended_after_partial_output');
+    error.partial = true;
+    throw error;
+  }
+
+  if (doneBody.interactionId) previousInteractionId = doneBody.interactionId;
+  history.push({ role: 'user', content: text }, { role: 'assistant', content: doneBody.answer });
+  if (history.length > 24) history.splice(0, history.length - 24);
+  const elapsed = Date.now() - started;
+  console.log('[turn-stream] assistant:', doneBody.answer);
+  console.log(`[latency] turn-stream=${elapsed}ms server-total=${doneBody?.timings?.totalMs ?? '?'}ms primary=${doneBody?.timings?.primaryMs ?? '?'}ms verifier=${doneBody?.timings?.verifierMs ?? '?'}ms sentences=${sentenceCount}`);
+  return { answer: doneBody.answer, streamed: sentenceCount > 0, sentenceCount };
+}
+
 async function synthesize(text) {
   const started = Date.now();
   const response = await fetch(TALKSYS_BASE_URL + '/api/voice/synthesize', {
@@ -233,31 +319,48 @@ async function processTranscript(text, userId, sessionEpoch) {
     console.log(`[stt] final user=${userId}:`, text);
     console.log('[latency] pipeline-start');
 
-    const answer = await talk(text);
-    if (sessionEpoch !== voiceEpoch) return;
+    let firstAudioReadyLogged = false;
+    let playbackChain = Promise.resolve();
+    let playbackError = null;
+    let queuedSentences = 0;
 
-    const spokenAnswer = voiceSafeText(answer);
-    if (spokenAnswer !== answer) {
-      console.log(`[tts] spoken answer compacted chars=${answer.length}->${spokenAnswer.length}`);
-    }
-    const chunks = voiceChunks(spokenAnswer);
-    let audio = await synthesize(chunks[0] || spokenAnswer);
-    if (sessionEpoch !== voiceEpoch) return;
-
-    console.log(`[latency] first-audio-ready=${Date.now() - pipelineStarted}ms chunks=${chunks.length || 1}`);
-    for (let index = 0; index < Math.max(1, chunks.length); index += 1) {
-      const nextAudio = index + 1 < chunks.length
-        ? synthesize(chunks[index + 1]).then((value) => ({ value }), (error) => ({ error }))
-        : null;
-      await playMp3(audio);
-      if (sessionEpoch !== voiceEpoch) return;
-      if (nextAudio) {
-        const prefetched = await nextAudio;
+    const queueSentence = (sentence) => {
+      if (!sentence || queuedSentences >= 4) return;
+      queuedSentences += 1;
+      const audioPromise = synthesize(sentence)
+        .then((value) => ({ value }), (error) => ({ error }));
+      playbackChain = playbackChain.then(async () => {
+        const prefetched = await audioPromise;
         if (prefetched.error) throw prefetched.error;
-        audio = prefetched.value;
-      }
+        if (sessionEpoch !== voiceEpoch) return;
+        if (!firstAudioReadyLogged) {
+          firstAudioReadyLogged = true;
+          console.log(`[latency] first-audio-ready=${Date.now() - pipelineStarted}ms source=verifier-stream`);
+        }
+        await playMp3(prefetched.value);
+      });
+      playbackChain.catch((error) => { playbackError ||= error; });
+    };
+
+    let streamedResult;
+    let streamError = null;
+    try {
+      streamedResult = await talkStream(text, queueSentence);
+    } catch (error) {
+      streamError = error;
     }
-    console.log(`[latency] pipeline-complete=${Date.now() - pipelineStarted}ms`);
+
+    if (!streamError && streamedResult && !streamedResult.streamed) {
+      const spokenAnswer = voiceSafeText(streamedResult.answer);
+      const chunks = voiceChunks(spokenAnswer);
+      for (const chunk of chunks) queueSentence(chunk);
+    }
+
+    await playbackChain.catch((error) => { playbackError ||= error; });
+    if (sessionEpoch !== voiceEpoch) return;
+    if (streamError) throw streamError;
+    if (playbackError) throw playbackError;
+    console.log(`[latency] pipeline-complete=${Date.now() - pipelineStarted}ms streamed=${Boolean(streamedResult?.streamed)} sentences=${queuedSentences}`);
   } catch (error) {
     if (sessionEpoch !== voiceEpoch) return;
     console.error('[pipeline]', error?.stack || error);
