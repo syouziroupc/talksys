@@ -15,14 +15,14 @@ test('Discord smoke uses real TalkSys voice paths and never browser-side TTS', (
   assert.doesNotMatch(source, /speechSynthesis|SpeechSynthesisUtterance/);
 });
 
-test('Discord bridge uses permanent shared-token TTS auth and no expired demo bypass', () => {
+test('Discord bridge uses permanent shared-token auth for verified streaming and TTS', () => {
   assert.match(source, /authorization: 'Bearer ' \+ BRIDGE_TOKEN/);
   assert.doesNotMatch(source, /x-talksys-demo/);
   assert.doesNotMatch(source, /discord-voice-smoke-20260918/);
-  assert.match(source, /const spokenAnswer = voiceSafeText\(answer\)/);
-  assert.match(source, /const chunks = voiceChunks\(spokenAnswer\)/);
-  assert.match(source, /let audio = await synthesize\(chunks\[0\] \|\| spokenAnswer\)/);
-  assert.match(source, /await playMp3\(audio\)/);
+  assert.match(source, /\/api\/turn-stream/);
+  assert.match(source, /async function talkStream\(text, onSentence\)/);
+  assert.match(source, /queueSentence/);
+  assert.match(source, /await playMp3\(prefetched\.value\)/);
 });
 
 test('Discord receive never echoes the callers raw voice and finalizes buffered short utterances', () => {
@@ -53,20 +53,20 @@ test('Discord keeps PCM16 audio for fallback transcription when realtime STT fai
   assert.match(source, /writeUInt32LE\(16000, 24\)/);
 });
 
-test('Discord runtime omits search-preface work and keeps the core voice path only', () => {
+test('Discord runtime omits search-preface work and prefers the verified turn stream', () => {
   assert.doesNotMatch(source, /\/api\/search-preface/);
   assert.doesNotMatch(source, /searchPreface/);
   assert.doesNotMatch(source, /prefaceTask|prefacePlaybackPromise|answerReady/);
-  assert.match(source, /const answer = await talk\(text\)/);
-  assert.match(source, /const spokenAnswer = voiceSafeText\(answer\)/);
-  assert.match(source, /const chunks = voiceChunks\(spokenAnswer\)/);
-  assert.match(source, /const nextAudio = index \+ 1 < chunks\.length/);
+  assert.match(source, /streamedResult = await talkStream\(text, queueSentence\)/);
+  assert.match(source, /falling back to \/api\/turn/);
+  assert.match(source, /return \{ answer: await talk\(text\), streamed: false/);
 });
 
-test('Discord spoken output is compacted before server TTS without changing stored answer history', () => {
+test('Discord stores the complete final answer while speaking at most four streamed sentences', () => {
   assert.match(source, /function voiceSafeText\(text\)/);
   assert.match(source, /sentences\.slice\(0, 4\)/);
-  assert.match(source, /spoken answer compacted chars=/);
+  assert.match(source, /queuedSentences >= 4/);
+  assert.match(source, /history\.push\(\{ role: 'user', content: text \}, \{ role: 'assistant', content: doneBody\.answer \}\)/);
   assert.match(source, /history\.push\(\{ role: 'user', content: text \}, \{ role: 'assistant', content: body\.answer \}\)/);
 });
 
@@ -77,17 +77,18 @@ test('Discord assigns one persistent conversation session id per VC connection',
   assert.match(source, /\[discord\] conversation session:/);
 });
 
-test('Discord pipelines later sentence TTS generation while the current sentence is playing', () => {
-  assert.match(source, /function voiceChunks\(text\)/);
-  assert.match(source, /const nextAudio = index \+ 1 < chunks\.length/);
-  assert.match(source, /await playMp3\(audio\)/);
-  assert.match(source, /const prefetched = await nextAudio/);
-  assert.match(source, /if \(prefetched\.error\) throw prefetched\.error/);
+test('Discord starts TTS as verified sentences arrive and serializes playback', () => {
+  assert.match(source, /const audioPromise = synthesize\(sentence\)/);
+  assert.match(source, /playbackChain = playbackChain\.then/);
+  assert.match(source, /const prefetched = await audioPromise/);
+  assert.match(source, /await playMp3\(prefetched\.value\)/);
+  assert.match(source, /source=verifier-stream/);
 });
 
 test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio readiness', () => {
   assert.match(source, /\[latency\] batch-stt-http=/);
   assert.match(source, /\[latency\] turn-http=/);
+  assert.match(source, /\[latency\] turn-stream=/);
   assert.match(source, /\[latency\] tts-http=/);
   assert.match(source, /\[latency\] first-audio-ready=/);
   assert.match(source, /server-total=/);
