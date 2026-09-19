@@ -38,7 +38,7 @@ test('Gemini final-answer input knows a backchannel was already spoken and avoid
 });
 
 test('realtime STT endpoint uses Japanese Nova-3 websocket with interim results and fast endpointing', async () => {
-  assert.equal(SERVER_REALTIME_REVISION, 'talksys-v59.2-realtime-stt-minimal-r1');
+  assert.equal(SERVER_REALTIME_REVISION, 'talksys-v64-discord-realtime-stt-r1');
   assert.equal(REALTIME_STT_MODEL, '@cf/deepgram/nova-3');
   let call;
   const response = new Response(null, { status: 200 });
@@ -59,9 +59,11 @@ test('realtime STT endpoint uses Japanese Nova-3 websocket with interim results 
   assert.equal(call.args.encoding, 'linear16');
   assert.equal(call.args.sample_rate, '16000');
   assert.equal(call.args.language, 'ja');
-  assert.equal(call.args.interim_results, 'true');
-  assert.equal(typeof call.args.interim_results, 'string');
-  assert.equal('endpointing' in call.args, false);
+  assert.equal(call.args.interim_results, true);
+  assert.equal(typeof call.args.interim_results, 'boolean');
+  assert.equal(call.args.punctuate, true);
+  assert.equal(call.args.smart_format, true);
+  assert.equal(call.args.endpointing, '350');
   assert.equal('vad_events' in call.args, false);
   assert.equal('utterance_end_ms' in call.args, false);
   assert.equal(call.options.websocket, true);

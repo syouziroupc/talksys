@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { Readable } from 'node:stream';
 import { Client, GatewayIntentBits } from 'discord.js';
 import {
   AudioPlayerStatus,
@@ -141,7 +140,9 @@ async function synthesize(text) {
     throw new Error(`tts_http_${response.status}: ${detail.slice(0, 300)}`);
   }
   const audio = Buffer.from(await response.arrayBuffer());
-  console.log('[tts]', audio.length, 'bytes');
+  const type = response.headers.get('content-type') || 'unknown';
+  const source = response.headers.get('x-talksys-voice-source') || 'unknown';
+  console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
   return audio;
 }
 
@@ -178,25 +179,7 @@ async function playMp3(mp3) {
   if (ffmpegError.trim()) console.log('[ffmpeg]', ffmpegError.trim());
 }
 
-async function playRawPcm48(pcm) {
-  if (!pcm?.length) return;
-  const resource = createAudioResource(Readable.from([pcm]), { inputType: StreamType.Raw });
-  player.play(resource);
-  console.log('[tx] raw echo playback started');
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('echo_playback_timeout')), 15000);
-    const done = () => { clearTimeout(timeout); cleanup(); resolve(); };
-    const fail = (error) => { clearTimeout(timeout); cleanup(); reject(error); };
-    const cleanup = () => {
-      player.off(AudioPlayerStatus.Idle, done);
-      player.off('error', fail);
-    };
-    player.once(AudioPlayerStatus.Idle, done);
-    player.once('error', fail);
-  });
-}
-
-async function processTranscript(text, userId, rawPcm48, sessionEpoch) {
+async function processTranscript(text, userId, sessionEpoch) {
   if (!text || answering || sessionEpoch !== voiceEpoch) return;
   answering = true;
   try {
@@ -224,10 +207,6 @@ async function processTranscript(text, userId, rawPcm48, sessionEpoch) {
   } catch (error) {
     if (sessionEpoch !== voiceEpoch) return;
     console.error('[pipeline]', error?.stack || error);
-    if (rawPcm48?.length) {
-      try { await playRawPcm48(rawPcm48); }
-      catch (echoError) { console.error('[echo]', echoError?.stack || echoError); }
-    }
   } finally {
     if (sessionEpoch === voiceEpoch) answering = false;
   }
@@ -239,52 +218,68 @@ function startReceiverSession(userId) {
   console.log('[rx] user=' + userId);
 
   const opus = connection.receiver.subscribe(userId, {
-    end: { behavior: EndBehaviorType.AfterSilence, duration: 700 },
+    end: { behavior: EndBehaviorType.AfterSilence, duration: 550 },
   });
   const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
   const ws = new WebSocket(STT_WS_URL);
   const pending = [];
+  const finalParts = [];
   let latest = '';
-  let finalText = '';
-  let ended = false;
-  const rawPcm48Chunks = [];
+  let inputEnded = false;
+  let completed = false;
+  let finalizeSent = false;
   let opusBytes = 0;
   let pcm48Bytes = 0;
   let pcm16Bytes = 0;
-  let finishTimer;
+  let completionTimer;
+  let settleTimer;
 
   const session = { opus, decoder, ws };
   sessions.set(userId, session);
 
-  const finish = () => {
-    if (ended) return;
-    ended = true;
-    clearTimeout(finishTimer);
+  const complete = (reason = 'complete') => {
+    if (completed) return;
+    completed = true;
+    clearTimeout(completionTimer);
+    clearTimeout(settleTimer);
+    try { ws.close(1000, 'utterance-complete'); } catch {}
+    sessions.delete(userId);
+
+    const text = (finalParts.join(' ').trim() || latest).trim();
+    console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B reason=${reason}`);
+    if (sessionEpoch !== voiceEpoch) return;
+    if (text) processTranscript(text, userId, sessionEpoch);
+    else console.warn('[stt] no transcript; utterance dropped (raw echo disabled)');
+  };
+
+  const sendFinalizeIfReady = () => {
+    if (!inputEnded || finalizeSent || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify({ type: 'Finalize' }));
+      finalizeSent = true;
+      console.log('[stt] finalize sent');
+      completionTimer = setTimeout(() => complete('finalize-timeout'), 3000);
+    } catch (error) {
+      console.error('[stt] finalize failed:', error.message);
+      complete('finalize-error');
+    }
+  };
+
+  const endInput = () => {
+    if (inputEnded) return;
+    inputEnded = true;
     try { opus.destroy(); } catch {}
     try { decoder.destroy(); } catch {}
-    try {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'Finalize' }));
-    } catch {}
-    setTimeout(() => {
-      const text = (finalText || latest).trim();
-      try { ws.close(1000, 'utterance-complete'); } catch {}
-      sessions.delete(userId);
-      const rawPcm48 = Buffer.concat(rawPcm48Chunks);
-      console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B`);
-      if (sessionEpoch !== voiceEpoch) return;
-      if (text) processTranscript(text, userId, rawPcm48, sessionEpoch);
-      else {
-        console.log('[stt] no transcript; echoing captured PCM to prove Discord receive path');
-        if (rawPcm48.length) {
-          playRawPcm48(rawPcm48).catch((error) => console.error('[echo]', error?.stack || error));
-        }
-      }
-    }, 900);
+    sendFinalizeIfReady();
+    if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      complete('websocket-closed-before-finalize');
+    }
   };
 
   ws.on('open', () => {
     console.log('[stt] websocket open');
     for (const frame of pending.splice(0)) ws.send(frame);
+    sendFinalizeIfReady();
   });
 
   ws.on('message', (data) => {
@@ -294,47 +289,55 @@ function startReceiverSession(userId) {
     if (text) {
       latest = text;
       console.log('[stt]', payload?.is_final ? 'final-part:' : 'interim:', text);
-      if (payload?.is_final) finalText = text;
+      if (payload?.is_final) {
+        const previous = finalParts.at(-1);
+        if (previous !== text) finalParts.push(text);
+      }
     }
+
     if (payload?.speech_final && text) {
-      finalText = text;
-      finishTimer = setTimeout(finish, 80);
+      if (!inputEnded) endInput();
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => complete('speech-final'), 100);
+    } else if (inputEnded && payload?.is_final && text) {
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => complete('final-result'), 180);
     }
   });
 
   ws.on('error', (error) => {
     console.error('[stt] websocket error:', error.message);
-    finish();
+    complete('websocket-error');
   });
 
   ws.on('close', (code, reason) => {
     console.log('[stt] websocket close', code, String(reason || ''));
+    if (!completed) complete('websocket-close');
   });
 
   decoder.on('data', (pcm48) => {
     pcm48Bytes += pcm48.length;
-    if (rawPcm48Chunks.length < 500) rawPcm48Chunks.push(Buffer.from(pcm48));
     const pcm16 = mono16kFromStereo48k(pcm48);
     pcm16Bytes += pcm16.length;
     if (!pcm16.length) return;
-    if (ws.readyState === WebSocket.OPEN) ws.send(pcm16);
-    else if (ws.readyState === WebSocket.CONNECTING) {
+    if (ws.readyState === WebSocket.OPEN && !inputEnded) ws.send(pcm16);
+    else if (ws.readyState === WebSocket.CONNECTING && !inputEnded) {
       pending.push(pcm16);
-      if (pending.length > 150) pending.shift();
+      if (pending.length > 250) pending.shift();
     }
   });
 
   decoder.on('error', (error) => {
     console.error('[decode]', error.message);
-    finish();
+    endInput();
   });
 
   opus.on('data', (chunk) => { opusBytes += chunk.length; });
   opus.on('error', (error) => {
     console.error('[opus]', error.message);
-    finish();
+    endInput();
   });
-  opus.on('end', finish);
+  opus.on('end', endInput);
   opus.pipe(decoder);
 }
 
@@ -435,7 +438,15 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.deferReply({ ephemeral: true });
       const channel = await interaction.guild.channels.fetch(channelId);
       await connectToVoiceChannel(channel);
-      await interaction.editReply(`TalkSysを「${channel.name}」へ接続しました。`);
+
+      try {
+        const readyAudio = await synthesize('フォーンズです。接続しました。');
+        await playMp3(readyAudio);
+        await interaction.editReply(`TalkSysを「${channel.name}」へ接続しました。フォーンズ音声も正常です。`);
+      } catch (error) {
+        console.error('[tts-preflight]', error?.stack || error);
+        await interaction.editReply(`TalkSysを「${channel.name}」へ接続しましたが、フォーンズ音声の初期テストに失敗しました。`);
+      }
       return;
     }
 

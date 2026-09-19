@@ -50,9 +50,9 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 `DISCORD_BRIDGE_TOKEN` は初回セットアップで自動保存されるため、実際にユーザーが入力するのはDiscord Bot Tokenだけです。サーバーIDやVC IDは不要です。
 
-TalkSys側URL、STT WebSocket、`/api/turn`、TalkSys TTS、raw echo fallbackはコード側に設定済みです。
+TalkSys側URL、STT WebSocket、`/api/turn`、TalkSys TTSはコード側に設定済みです。診断用raw echoは廃止し、ユーザー音声をVCへ返しません。
 
-起動後、Botが参加しているDiscordサーバーを自動検出し、既存の他コマンドを削除せず、`/talksys` と `/leave` だけを作成・更新します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加します。`/leave` で退出します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSでMP3化してVCへ返します。TTSなど後段が失敗した場合は、受信した実音声をそのまま返すraw echoへフォールバックします。STTが文字を返さない場合もraw echoを行い、Discord受信自体が成立しているか切り分けできます。
+起動後、Botが参加しているDiscordサーバーを自動検出し、既存の他コマンドを削除せず、`/talksys` と `/leave` だけを作成・更新します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加し、最初にフォーンズが「接続しました」と発声してTTS経路を確認します。`/leave` で退出します。人が話すと受信した実音声をTalkSysのリアルタイムSTT WebSocketへ送り、認識結果を `/api/turn` へ渡します。回答はTalkSys側TTSで音声化してVCへ返します。STTやTTSが失敗しても本人の音声をオウム返しせず、ログへ失敗箇所を出します。
 
 ## 合格条件
 

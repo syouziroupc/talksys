@@ -29,11 +29,20 @@ test('Discord bridge uses permanent shared-token TTS auth and no expired demo by
   assert.match(source, /await playMp3\(audio\)/);
 });
 
-test('raw echo and receive-byte diagnostics distinguish Discord receive from STT failure', () => {
-  assert.match(source, /Readable\.from\(\[pcm\]\)/);
-  assert.match(source, /\[stt\] no transcript/);
+test('Discord receive never echoes the callers raw voice and finalizes buffered short utterances', () => {
+  assert.doesNotMatch(source, /playRawPcm48|raw echo playback|Readable\.from/);
+  assert.match(source, /sendFinalizeIfReady/);
+  assert.match(source, /\[stt\] finalize sent/);
+  assert.match(source, /finalize-timeout/);
+  assert.match(source, /utterance dropped \(raw echo disabled\)/);
   assert.match(source, /opus=.*pcm48=.*pcm16=/);
-  assert.match(source, /playRawPcm48\(rawPcm48\)/);
+});
+
+test('Discord slash join performs a Fones TTS playback preflight', () => {
+  assert.match(source, /フォーンズです。接続しました。/);
+  assert.match(source, /\[tts-preflight\]/);
+  assert.match(source, /x-talksys-voice-source/);
+  assert.match(source, /フォーンズ音声も正常です/);
 });
 
 test('Discord smoke launcher requires only the bot token plus persisted bridge token', () => {
