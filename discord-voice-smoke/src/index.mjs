@@ -135,7 +135,7 @@ async function batchTranscribePcm16(pcm, reason = 'fallback') {
   return String(body.text).trim();
 }
 
-async function postVoiceMetrics(text, timings = {}) {
+async function postVoiceMetrics(text, timings = {}, utteranceId = '') {
   try {
     const response = await fetch(TALKSYS_BASE_URL + '/api/voice-metrics', {
       method: 'POST',
@@ -146,6 +146,7 @@ async function postVoiceMetrics(text, timings = {}) {
       body: JSON.stringify({
         text,
         sessionId: discordSessionId || `discord-${randomUUID()}`,
+        utteranceId,
         timings,
       }),
     });
@@ -162,7 +163,7 @@ async function postVoiceMetrics(text, timings = {}) {
   }
 }
 
-async function talk(text) {
+async function talk(text, utteranceId = '') {
   const started = Date.now();
   console.log('[turn] user:', text);
   const response = await fetch(TALKSYS_BASE_URL + '/api/turn', {
@@ -172,6 +173,7 @@ async function talk(text) {
       text,
       history: history.slice(-12),
       sessionId: discordSessionId || `discord-${randomUUID()}`,
+      utteranceId,
       previousInteractionId,
       channel: 'discord-voice-smoke',
     }),
@@ -189,7 +191,7 @@ async function talk(text) {
   return body.answer;
 }
 
-async function talkStream(text, onSentence) {
+async function talkStream(text, onSentence, utteranceId = '') {
   const started = Date.now();
   console.log('[turn-stream] user:', text);
   const response = await fetch(TALKSYS_BASE_URL + '/api/turn-stream', {
@@ -202,6 +204,7 @@ async function talkStream(text, onSentence) {
       text,
       history: history.slice(-12),
       sessionId: discordSessionId || `discord-${randomUUID()}`,
+      utteranceId,
       previousInteractionId,
       channel: 'discord-voice-smoke',
     }),
@@ -210,7 +213,7 @@ async function talkStream(text, onSentence) {
   if (!response.ok || !/text\/event-stream/i.test(type) || !response.body) {
     const detail = await response.text().catch(() => '');
     console.warn(`[turn-stream] unavailable status=${response.status}; falling back to /api/turn ${detail.slice(0, 160)}`);
-    return { answer: await talk(text), streamed: false, sentenceCount: 0, clientElapsedMs: Date.now() - started, timings: {} };
+    return { answer: await talk(text, utteranceId), streamed: false, sentenceCount: 0, clientElapsedMs: Date.now() - started, timings: {} };
   }
 
   const reader = response.body.getReader();
@@ -259,7 +262,7 @@ async function talkStream(text, onSentence) {
   if (!doneBody?.answer) {
     if (sentenceCount === 0) {
       console.warn('[turn-stream] ended without done event; falling back to /api/turn');
-      return { answer: await talk(text), streamed: false, sentenceCount: 0, clientElapsedMs: Date.now() - started, timings: {} };
+      return { answer: await talk(text, utteranceId), streamed: false, sentenceCount: 0, clientElapsedMs: Date.now() - started, timings: {} };
     }
     const error = new Error('turn_stream_ended_after_partial_output');
     error.partial = true;
@@ -343,6 +346,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
   }
 
   const pipelineStarted = Date.now();
+  const utteranceId = String(speechMetrics?.utteranceId || `utt-${randomUUID()}`);
   const clientTimings = {
     sttMs: Number(speechMetrics?.sttMs) || 0,
     sttMode: speechMetrics?.sttMode || 'unknown',
@@ -389,7 +393,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     let streamedResult;
     let streamError = null;
     try {
-      streamedResult = await talkStream(text, queueSentence);
+      streamedResult = await talkStream(text, queueSentence, utteranceId);
       clientTimings.turnStreamMs = Number(streamedResult?.clientElapsedMs) || 0;
       clientTimings.serverTotalMs = Number(streamedResult?.timings?.totalMs) || 0;
       clientTimings.primaryMs = Number(streamedResult?.timings?.primaryMs) || 0;
@@ -417,7 +421,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     console.error('[pipeline]', error?.stack || error);
   } finally {
     if (!clientTimings.pipelineCompleteMs) clientTimings.pipelineCompleteMs = Date.now() - pipelineStarted;
-    postVoiceMetrics(text, clientTimings).catch(() => {});
+    postVoiceMetrics(text, clientTimings, utteranceId).catch(() => {});
     if (sessionEpoch === voiceEpoch) {
       answering = false;
       const next = pendingTurns.shift();
@@ -581,6 +585,7 @@ function startReceiverSession(userId) {
       sttMs,
       sttMode: usedBatchStt ? 'batch' : 'realtime',
       sttReused: reusedSocket,
+      utteranceId: `utt-${randomUUID()}`,
     });
     else console.warn('[stt] no transcript; utterance dropped after realtime+batch STT');
   };
