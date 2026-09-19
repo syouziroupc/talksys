@@ -35,6 +35,7 @@ const client = new Client({
 
 const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
 const sessions = new Map();
+const realtimeSttSockets = new Map();
 const history = [];
 let previousInteractionId = '';
 let connection;
@@ -375,6 +376,77 @@ async function processTranscript(text, userId, sessionEpoch) {
   }
 }
 
+function destroyReusableSttSocket(userId, reason = 'reset') {
+  const transport = realtimeSttSockets.get(userId);
+  if (!transport) return;
+  realtimeSttSockets.delete(userId);
+  clearInterval(transport.keepAliveTimer);
+  try {
+    if (transport.ws?.readyState === WebSocket.OPEN) transport.ws.close(1000, reason);
+    else transport.ws?.terminate();
+  } catch {}
+}
+
+function acquireRealtimeSttSocket(userId, sessionEpoch) {
+  const existing = realtimeSttSockets.get(userId);
+  if (existing && existing.epoch === sessionEpoch
+    && (existing.ws?.readyState === WebSocket.OPEN || existing.ws?.readyState === WebSocket.CONNECTING)) {
+    console.log(`[stt] websocket reuse user=${userId} state=${existing.ws.readyState}`);
+    return { transport: existing, reused: true };
+  }
+  if (existing) destroyReusableSttSocket(userId, 'stale-session');
+
+  const ws = new WebSocket(STT_WS_URL);
+  const transport = {
+    ws,
+    epoch: sessionEpoch,
+    lastAudioAt: 0,
+    openedAt: 0,
+    keepAliveTimer: null,
+  };
+  realtimeSttSockets.set(userId, transport);
+
+  ws.on('open', () => {
+    transport.openedAt = Date.now();
+    console.log(`[stt] websocket open user=${userId} reusable=true`);
+    clearInterval(transport.keepAliveTimer);
+    transport.keepAliveTimer = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - transport.lastAudioAt < 3000) return;
+      try {
+        ws.send(JSON.stringify({ type: 'KeepAlive' }));
+        console.log(`[stt] keepalive user=${userId}`);
+      } catch {}
+    }, 4000);
+  });
+
+  ws.on('unexpected-response', (_request, response) => {
+    const status = Number(response?.statusCode || 0);
+    if (status === 429) {
+      realtimeSttBackoffUntil = Date.now() + 60_000;
+      console.warn('[stt] reusable websocket 429; batch STT forced for 60s');
+    }
+    if (realtimeSttSockets.get(userId) === transport) {
+      realtimeSttSockets.delete(userId);
+      clearInterval(transport.keepAliveTimer);
+    }
+  });
+
+  ws.on('error', (error) => {
+    if (/\b429\b/.test(String(error?.message || ''))) {
+      realtimeSttBackoffUntil = Date.now() + 60_000;
+    }
+  });
+
+  ws.on('close', (code, reason) => {
+    clearInterval(transport.keepAliveTimer);
+    if (realtimeSttSockets.get(userId) === transport) realtimeSttSockets.delete(userId);
+    console.log('[stt] reusable websocket close', code, String(reason || ''), 'user=' + userId);
+  });
+
+  return { transport, reused: false };
+}
+
 function startReceiverSession(userId) {
   if (!connection || sessions.has(userId)) return;
   const sessionEpoch = voiceEpoch;
@@ -399,9 +471,20 @@ function startReceiverSession(userId) {
   let completionTimer;
   let settleTimer;
   let ws = null;
+  let transport = null;
+  let reusedSocket = false;
 
   const session = { opus, decoder, ws: null };
   sessions.set(userId, session);
+
+  const detachWsListeners = () => {
+    if (!ws) return;
+    ws.off('open', onWsOpen);
+    ws.off('message', onWsMessage);
+    ws.off('unexpected-response', onWsUnexpectedResponse);
+    ws.off('error', onWsError);
+    ws.off('close', onWsClose);
+  };
 
   const markRealtimeFailed = (reason, statusCode = 0) => {
     if (realtimeFailed) return;
@@ -413,7 +496,7 @@ function startReceiverSession(userId) {
     } else {
       console.warn('[stt] realtime unavailable; using batch STT:', realtimeFailureReason);
     }
-    try { ws?.terminate(); } catch {}
+    destroyReusableSttSocket(userId, 'realtime-failed');
   };
 
   const complete = async (reason = 'complete') => {
@@ -421,12 +504,12 @@ function startReceiverSession(userId) {
     completed = true;
     clearTimeout(completionTimer);
     clearTimeout(settleTimer);
-    try { ws?.close(1000, 'utterance-complete'); } catch {}
+    detachWsListeners();
     sessions.delete(userId);
 
     let text = (finalParts.join(' ').trim() || latest).trim();
     const pcm16 = Buffer.concat(pcm16Chunks);
-    console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B reason=${reason}`);
+    console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B reason=${reason} sttReuse=${reusedSocket}`);
     if (sessionEpoch !== voiceEpoch) return;
 
     if (!text && pcm16.length && (realtimeFailed || reason === 'finalize-timeout' || reason === 'websocket-close')) {
@@ -448,7 +531,10 @@ function startReceiverSession(userId) {
       ws.send(JSON.stringify({ type: 'Finalize' }));
       finalizeSent = true;
       console.log('[stt] finalize sent');
-      completionTimer = setTimeout(() => complete('finalize-timeout'), 3000);
+      completionTimer = setTimeout(() => {
+        markRealtimeFailed('finalize-timeout');
+        complete('finalize-timeout');
+      }, 3000);
     } catch (error) {
       console.error('[stt] finalize failed:', error.message);
       markRealtimeFailed('finalize-error');
@@ -474,60 +560,75 @@ function startReceiverSession(userId) {
     }
   };
 
+  function onWsOpen() {
+    console.log(`[stt] utterance websocket ready user=${userId} reused=${reusedSocket}`);
+    for (const frame of pending.splice(0)) ws.send(frame);
+    sendFinalizeIfReady();
+  }
+
+  function onWsMessage(data) {
+    let payload;
+    try { payload = JSON.parse(String(data)); } catch { return; }
+    const text = transcriptFrom(payload);
+    if (text) {
+      latest = text;
+      console.log('[stt]', payload?.is_final ? 'final-part:' : 'interim:', text);
+      if (payload?.is_final) {
+        const previous = finalParts.at(-1);
+        if (previous !== text) finalParts.push(text);
+      }
+    }
+
+    if (payload?.speech_final && text) {
+      if (!inputEnded) endInput();
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => complete('speech-final'), 100);
+    } else if (inputEnded && payload?.from_finalize) {
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => complete('from-finalize'), 80);
+    } else if (inputEnded && payload?.is_final && text) {
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => complete('final-result'), 180);
+    }
+  }
+
+  function onWsUnexpectedResponse(_request, response) {
+    const status = Number(response?.statusCode || 0);
+    console.error('[stt] websocket unexpected response:', status);
+    markRealtimeFailed(`http_${status || 'unknown'}`, status);
+    if (inputEnded) complete('unexpected-response');
+  }
+
+  function onWsError(error) {
+    console.error('[stt] websocket error:', error.message);
+    const statusMatch = String(error?.message || '').match(/\b(429)\b/);
+    markRealtimeFailed(error?.message || 'websocket-error', statusMatch ? 429 : 0);
+    if (inputEnded) complete('websocket-error');
+  }
+
+  function onWsClose(code, reason) {
+    if (completed) return;
+    console.log('[stt] websocket close', code, String(reason || ''));
+    if (!realtimeFailed) markRealtimeFailed(`websocket-close-${code}`);
+    if (inputEnded) complete('websocket-close');
+  }
+
   if (!realtimeFailed) {
-    ws = new WebSocket(STT_WS_URL);
+    const acquired = acquireRealtimeSttSocket(userId, sessionEpoch);
+    transport = acquired.transport;
+    reusedSocket = acquired.reused;
+    ws = transport.ws;
     session.ws = ws;
 
-    ws.on('open', () => {
-      console.log('[stt] websocket open');
-      for (const frame of pending.splice(0)) ws.send(frame);
-      sendFinalizeIfReady();
-    });
+    ws.on('open', onWsOpen);
+    ws.on('message', onWsMessage);
+    ws.on('unexpected-response', onWsUnexpectedResponse);
+    ws.on('error', onWsError);
+    ws.on('close', onWsClose);
 
-    ws.on('message', (data) => {
-      let payload;
-      try { payload = JSON.parse(String(data)); } catch { return; }
-      const text = transcriptFrom(payload);
-      if (text) {
-        latest = text;
-        console.log('[stt]', payload?.is_final ? 'final-part:' : 'interim:', text);
-        if (payload?.is_final) {
-          const previous = finalParts.at(-1);
-          if (previous !== text) finalParts.push(text);
-        }
-      }
-
-      if (payload?.speech_final && text) {
-        if (!inputEnded) endInput();
-        clearTimeout(settleTimer);
-        settleTimer = setTimeout(() => complete('speech-final'), 100);
-      } else if (inputEnded && payload?.is_final && text) {
-        clearTimeout(settleTimer);
-        settleTimer = setTimeout(() => complete('final-result'), 180);
-      }
-    });
-
-    ws.on('unexpected-response', (_request, response) => {
-      const status = Number(response?.statusCode || 0);
-      console.error('[stt] websocket unexpected response:', status);
-      markRealtimeFailed(`http_${status || 'unknown'}`, status);
-      if (inputEnded) complete('unexpected-response');
-    });
-
-    ws.on('error', (error) => {
-      console.error('[stt] websocket error:', error.message);
-      const statusMatch = String(error?.message || '').match(/\b(429)\b/);
-      markRealtimeFailed(error?.message || 'websocket-error', statusMatch ? 429 : 0);
-      if (inputEnded) complete('websocket-error');
-    });
-
-    ws.on('close', (code, reason) => {
-      console.log('[stt] websocket close', code, String(reason || ''));
-      if (!completed && !realtimeFailed) {
-        markRealtimeFailed(`websocket-close-${code}`);
-        if (inputEnded) complete('websocket-close');
-      }
-    });
+    if (ws.readyState === WebSocket.OPEN) {
+      queueMicrotask(onWsOpen);
+    }
   } else {
     console.warn(`[stt] realtime backoff active ${Math.max(0, realtimeSttBackoffUntil - Date.now())}ms; batch STT only`);
   }
@@ -538,6 +639,7 @@ function startReceiverSession(userId) {
     pcm16Bytes += pcm16.length;
     if (!pcm16.length) return;
     if (pcm16Chunks.length < 600) pcm16Chunks.push(Buffer.from(pcm16));
+    if (transport) transport.lastAudioAt = Date.now();
 
     if (!realtimeFailed && ws?.readyState === WebSocket.OPEN && !inputEnded) {
       ws.send(pcm16);
@@ -567,9 +669,11 @@ function destroyVoiceConnection() {
   for (const session of sessions.values()) {
     try { session.opus?.destroy(); } catch {}
     try { session.decoder?.destroy(); } catch {}
-    try { session.ws?.close(1000, 'voice-disconnect'); } catch {}
   }
   sessions.clear();
+  for (const userId of [...realtimeSttSockets.keys()]) {
+    destroyReusableSttSocket(userId, 'voice-disconnect');
+  }
   player.stop(true);
   try { connection?.destroy(); } catch {}
   connection = undefined;
