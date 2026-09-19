@@ -26,24 +26,25 @@ test('Discord records first TTS, first audio, playback, and pipeline completion'
   assert.match(source, /clientTimings\.pipelineCompleteMs = Date\.now\(\) - pipelineStarted/);
 });
 
-test('STT completion reports realtime versus batch and records reuse as false after recovery', () => {
+test('STT completion reports realtime versus batch and records prewarmed socket claims', () => {
   assert.match(source, /let inputEndedAt = 0/);
   assert.match(source, /usedBatchStt = true/);
   assert.match(source, /sttMode: usedBatchStt \? 'batch' : 'realtime'/);
   assert.match(source, /sttReused: reusedSocket/);
-  assert.match(source, /return \{ transport, reused: false \}/);
+  assert.match(source, /return \{ transport: createRealtimeSttTransport\(userId, sessionEpoch, true\), reused: false \}/);
+  assert.match(source, /return \{ transport: existing, reused: true \}/);
   assert.match(source, /sttMs,/);
 });
 
 test('queued turns preserve their original speech metrics', () => {
   assert.match(source, /pendingTurns\.push\(\{ text, userId, sessionEpoch, speechMetrics \}\)/);
   assert.match(source, /processTranscript\(next\.text, next\.userId, next\.sessionEpoch, next\.speechMetrics\)/);
-  assert.match(source, /talksys-discord-bridge-v70-reply-recovery-r1/);
+  assert.match(source, /talksys-discord-bridge-v71-prewarm-bargein-r1/);
 });
 
 test('one utterance id links the turn request and its voice metrics event', () => {
   assert.match(source, /const utteranceId = String\(speechMetrics\?\.utteranceId \|\| `utt-\$\{randomUUID\(\)\}`\)/);
-  assert.match(source, /talkStream\(text, queueSentence, utteranceId\)/);
+  assert.match(source, /talkStream\(text, queueSentence, utteranceId, controller\.signal\)/);
   assert.match(source, /utteranceId,/);
   assert.match(source, /postVoiceMetrics\(text, clientTimings, utteranceId\)/);
 });
