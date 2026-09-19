@@ -20,7 +20,8 @@ test('Discord bridge uses permanent shared-token TTS auth and no expired demo by
   assert.doesNotMatch(source, /x-talksys-demo/);
   assert.doesNotMatch(source, /discord-voice-smoke-20260918/);
   assert.match(source, /const spokenAnswer = voiceSafeText\(answer\)/);
-  assert.match(source, /const audio = await synthesize\(spokenAnswer\)/);
+  assert.match(source, /const chunks = voiceChunks\(spokenAnswer\)/);
+  assert.match(source, /let audio = await synthesize\(chunks\[0\] \|\| spokenAnswer\)/);
   assert.match(source, /await playMp3\(audio\)/);
 });
 
@@ -58,7 +59,8 @@ test('Discord runtime omits search-preface work and keeps the core voice path on
   assert.doesNotMatch(source, /prefaceTask|prefacePlaybackPromise|answerReady/);
   assert.match(source, /const answer = await talk\(text\)/);
   assert.match(source, /const spokenAnswer = voiceSafeText\(answer\)/);
-  assert.match(source, /const audio = await synthesize\(spokenAnswer\)/);
+  assert.match(source, /const chunks = voiceChunks\(spokenAnswer\)/);
+  assert.match(source, /const nextAudio = index \+ 1 < chunks\.length \? synthesize\(chunks\[index \+ 1\]\) : null/);
 });
 
 test('Discord spoken output is compacted before server TTS without changing stored answer history', () => {
@@ -68,11 +70,25 @@ test('Discord spoken output is compacted before server TTS without changing stor
   assert.match(source, /history\.push\(\{ role: 'user', content: text \}, \{ role: 'assistant', content: body\.answer \}\)/);
 });
 
+test('Discord assigns one persistent conversation session id per VC connection', () => {
+  assert.match(source, /let discordSessionId = ''/);
+  assert.match(source, /discordSessionId = `discord-\$\{channel\.guild\.id\}-\$\{channel\.id\}-\$\{randomUUID\(\)\}`/);
+  assert.match(source, /sessionId: discordSessionId \|\| `discord-\$\{randomUUID\(\)\}`/);
+  assert.match(source, /\[discord\] conversation session:/);
+});
+
+test('Discord pipelines later sentence TTS generation while the current sentence is playing', () => {
+  assert.match(source, /function voiceChunks\(text\)/);
+  assert.match(source, /const nextAudio = index \+ 1 < chunks\.length \? synthesize\(chunks\[index \+ 1\]\) : null/);
+  assert.match(source, /await playMp3\(audio\)/);
+  assert.match(source, /if \(nextAudio\) audio = await nextAudio/);
+});
+
 test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio readiness', () => {
   assert.match(source, /\[latency\] batch-stt-http=/);
   assert.match(source, /\[latency\] turn-http=/);
   assert.match(source, /\[latency\] tts-http=/);
-  assert.match(source, /\[latency\] final-audio-ready=/);
+  assert.match(source, /\[latency\] first-audio-ready=/);
   assert.match(source, /server-total=/);
 });
 
