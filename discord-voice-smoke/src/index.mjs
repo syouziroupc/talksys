@@ -16,7 +16,7 @@ import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import WebSocket from 'ws';
 
-const required = ['DISCORD_TOKEN', 'DISCORD_GUILD_ID', 'DISCORD_BRIDGE_TOKEN'];
+const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
   if (!process.env[key]) {
     console.error(`[fatal] missing ${key}`);
@@ -25,8 +25,6 @@ for (const key of required) {
 }
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const GUILD_ID = process.env.DISCORD_GUILD_ID;
-const VOICE_CHANNEL_ID = process.env.DISCORD_VOICE_CHANNEL_ID || '';
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
@@ -373,9 +371,13 @@ async function ensureTalkSysCommands(guild) {
 
 client.once('ready', async () => {
   try {
-    const guild = await client.guilds.fetch(GUILD_ID);
-    await ensureTalkSysCommands(guild);
-    console.log('[discord] slash commands ready: /talksys /leave');
+    const guilds = [...client.guilds.cache.values()];
+    if (!guilds.length) throw new Error('Discord Botがサーバーに参加していません');
+
+    for (const guild of guilds) {
+      await ensureTalkSysCommands(guild);
+      console.log(`[discord] slash commands ready guild=${guild.name}: /talksys /leave`);
+    }
     console.log('[discord] TalkSys realtime STT:', STT_WS_URL);
     console.log('[discord] output mode: TalkSys TTS (permanent shared token)');
 
@@ -385,12 +387,7 @@ client.once('ready', async () => {
       console.error('[preflight] realtime STT websocket failed:', error?.message || error);
     }
 
-    if (VOICE_CHANNEL_ID) {
-      const channel = await guild.channels.fetch(VOICE_CHANNEL_ID);
-      await connectToVoiceChannel(channel);
-    } else {
-      console.log('[discord] waiting for /talksys from a user in a voice channel');
-    }
+    console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
     console.error('[fatal]', error?.stack || error);
     process.exitCode = 1;
@@ -398,7 +395,7 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand() || interaction.guildId !== GUILD_ID) return;
+  if (!interaction.isChatInputCommand() || !interaction.guild) return;
 
   try {
     if (interaction.commandName === 'talksys') {
