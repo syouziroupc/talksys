@@ -730,6 +730,7 @@ async function voiceHealth(request, env, ctx) {
       realtimeStt: true,
       realtimeSttModel: REALTIME_STT_MODEL,
       realtimeVoiceRevision: REALTIME_VOICE_REVISION,
+      discordBridgeConfigured: typeof env?.DISCORD_BRIDGE_TOKEN === 'string' && env.DISCORD_BRIDGE_TOKEN.trim().length > 0,
       fastReactionRevision: FAST_REACTION_REVISION,
       genericGeminiVerification: true,
       genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
