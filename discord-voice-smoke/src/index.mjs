@@ -16,7 +16,7 @@ import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import WebSocket from 'ws';
 
-const required = ['DISCORD_TOKEN', 'DISCORD_GUILD_ID', 'DISCORD_VOICE_CHANNEL_ID', 'DISCORD_BRIDGE_TOKEN'];
+const required = ['DISCORD_TOKEN', 'DISCORD_GUILD_ID', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
   if (!process.env[key]) {
     console.error(`[fatal] missing ${key}`);
@@ -26,7 +26,7 @@ for (const key of required) {
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
-const VOICE_CHANNEL_ID = process.env.DISCORD_VOICE_CHANNEL_ID;
+const VOICE_CHANNEL_ID = process.env.DISCORD_VOICE_CHANNEL_ID || '';
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
@@ -302,38 +302,106 @@ function startReceiverSession(userId) {
   opus.pipe(decoder);
 }
 
+function destroyVoiceConnection() {
+  for (const session of sessions.values()) {
+    try { session.opus?.destroy(); } catch {}
+    try { session.decoder?.destroy(); } catch {}
+    try { session.ws?.close(1000, 'voice-disconnect'); } catch {}
+  }
+  sessions.clear();
+  player.stop(true);
+  try { connection?.destroy(); } catch {}
+  connection = undefined;
+}
+
+async function connectToVoiceChannel(channel) {
+  if (!channel || !channel.isVoiceBased()) throw new Error('target channel is not voice based');
+  if (connection) destroyVoiceConnection();
+
+  connection = joinVoiceChannel({
+    channelId: channel.id,
+    guildId: channel.guild.id,
+    adapterCreator: channel.guild.voiceAdapterCreator,
+    selfDeaf: false,
+    selfMute: false,
+  });
+  connection.subscribe(player);
+
+  await entersState(connection, VoiceConnectionStatus.Ready, 15000);
+  connection.receiver.speaking.on('start', (userId) => {
+    if (userId === client.user.id) return;
+    startReceiverSession(userId);
+  });
+
+  console.log('[discord] voice ready:', channel.name);
+  return channel;
+}
+
 client.once('ready', async () => {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
-    const channel = await guild.channels.fetch(VOICE_CHANNEL_ID);
-    if (!channel || !channel.isVoiceBased()) throw new Error('VOICE_CHANNEL_ID is not a voice channel');
-
-    connection = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
-      selfDeaf: false,
-      selfMute: false,
-    });
-    connection.subscribe(player);
-
-    await entersState(connection, VoiceConnectionStatus.Ready, 15000);
-    console.log('[discord] voice ready:', channel.name);
+    await guild.commands.set([
+      {
+        name: 'talksys',
+        description: 'TalkSysを現在参加中のVCへ呼び出します',
+      },
+      {
+        name: 'leave',
+        description: 'TalkSysをVCから退出させます',
+      },
+    ]);
+    console.log('[discord] slash commands ready: /talksys /leave');
     console.log('[discord] TalkSys realtime STT:', STT_WS_URL);
     console.log('[discord] output mode: TalkSys TTS (permanent shared token)');
+
     try {
       await probeRealtimeStt();
     } catch (error) {
       console.error('[preflight] realtime STT websocket failed:', error?.message || error);
     }
 
-    connection.receiver.speaking.on('start', (userId) => {
-      if (userId === client.user.id) return;
-      startReceiverSession(userId);
-    });
+    if (VOICE_CHANNEL_ID) {
+      const channel = await guild.channels.fetch(VOICE_CHANNEL_ID);
+      await connectToVoiceChannel(channel);
+    } else {
+      console.log('[discord] waiting for /talksys from a user in a voice channel');
+    }
   } catch (error) {
     console.error('[fatal]', error?.stack || error);
     process.exitCode = 1;
+  }
+});
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand() || interaction.guildId !== GUILD_ID) return;
+
+  try {
+    if (interaction.commandName === 'talksys') {
+      const voiceState = interaction.guild?.voiceStates.cache.get(interaction.user.id);
+      const channelId = voiceState?.channelId;
+      if (!channelId) {
+        await interaction.reply({ content: '先にボイスチャンネルへ参加してから /talksys を実行してください。', ephemeral: true });
+        return;
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      const channel = await interaction.guild.channels.fetch(channelId);
+      await connectToVoiceChannel(channel);
+      await interaction.editReply(`TalkSysを「${channel.name}」へ接続しました。`);
+      return;
+    }
+
+    if (interaction.commandName === 'leave') {
+      destroyVoiceConnection();
+      await interaction.reply({ content: 'TalkSysをボイスチャンネルから退出させました。', ephemeral: true });
+    }
+  } catch (error) {
+    console.error('[command]', error?.stack || error);
+    const message = 'TalkSysのVC操作に失敗しました。コンソールログを確認してください。';
+    try {
+      if (interaction.deferred || interaction.replied) await interaction.editReply(message);
+      else await interaction.reply({ content: message, ephemeral: true });
+    } catch {}
   }
 });
 
@@ -341,7 +409,7 @@ client.on('error', (error) => console.error('[discord]', error));
 player.on('error', (error) => console.error('[player]', error.message));
 
 process.on('SIGINT', () => {
-  try { connection?.destroy(); } catch {}
+  destroyVoiceConnection();
   client.destroy();
   process.exit(0);
 });
