@@ -61,7 +61,7 @@ export async function persistTalkLog(env,input){
   const record=buildLogRecord(input),v=record.value;
   try{
     if(!(await ensureConversationLogSchema(env)))throw new Error('TALKSYS_LOG_DB binding missing');
-    const storedResult=v.result&&typeof v.result==='object'?{...v.result,channel:v.channel||''}:v.result;
+    const storedResult=v.result&&typeof v.result==='object'?{...v.result,channel:v.channel||'',utteranceId:clean(input?.body?.utteranceId,180)}:v.result;
     await env.TALKSYS_LOG_DB.prepare(`INSERT INTO conversation_logs (id,session_id,event,timestamp,jst,revision,path,status,user_text,history_json,search_plan_json,result_json,audio_bytes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(v.id,v.sessionId,v.event,v.timestamp,v.jst,v.revision,v.path,v.status,v.userText,JSON.stringify(v.history||[]),JSON.stringify(v.searchPlan??null),JSON.stringify(storedResult??null),Number(v.audioBytes)||0)
       .run();
@@ -77,10 +77,12 @@ export async function listTalkLogs(env,limit=100,filters={}){
   const exactSession=clean(filters?.sessionId,180).trim();
   const sessionPrefix=clean(filters?.sessionPrefix,120).replace(/[^A-Za-z0-9._-]/g,'').trim();
   const event=clean(filters?.event,120).trim();
+  const utteranceId=clean(filters?.utteranceId,180).trim();
   const q=clean(filters?.q,500).trim();
   if(exactSession){where.push('session_id = ?');binds.push(exactSession);}
   else if(sessionPrefix){where.push('session_id LIKE ?');binds.push(sessionPrefix+'%');}
   if(event){where.push('event = ?');binds.push(event);}
+  if(utteranceId){where.push("json_extract(result_json, '$.utteranceId') = ?");binds.push(utteranceId);}
   if(q){where.push('user_text LIKE ?');binds.push('%'+q+'%');}
   const sql='SELECT id,session_id,event,timestamp,jst,revision,path,status,user_text,result_json FROM conversation_logs'
     +(where.length?' WHERE '+where.join(' AND '):'')
@@ -90,7 +92,7 @@ export async function listTalkLogs(env,limit=100,filters={}){
     let result={};try{result=JSON.parse(row.result_json||'{}')||{};}catch{}
     return {
       id:row.id,sessionId:row.session_id,event:row.event,timestamp:row.timestamp,jst:row.jst,revision:row.revision,path:row.path,status:row.status,
-      channel:clean(result?.channel,80),userText:clean(row.user_text,5000),assistantText:clean(result?.answer||result?.text,9000),
+      channel:clean(result?.channel,80),utteranceId:clean(result?.utteranceId,180),userText:clean(row.user_text,5000),assistantText:clean(result?.answer||result?.text,9000),
       route:clean(result?.route,180),search:Boolean(result?.search),timings:result?.timings&&typeof result.timings==='object'?result.timings:null
     };
   });
