@@ -34,8 +34,27 @@ test('Discord receive never echoes the callers raw voice and finalizes buffered 
   assert.match(source, /sendFinalizeIfReady/);
   assert.match(source, /\[stt\] finalize sent/);
   assert.match(source, /finalize-timeout/);
-  assert.match(source, /utterance dropped \(raw echo disabled\)/);
+  assert.match(source, /utterance dropped after realtime\+batch STT/);
   assert.match(source, /opus=.*pcm48=.*pcm16=/);
+});
+
+test('Discord realtime STT rate limits fall back to batch Whisper instead of dropping speech', () => {
+  assert.match(source, /batchTranscribePcm16/);
+  assert.match(source, /\/api\/transcribe/);
+  assert.match(source, /content-type': 'audio\/wav'/);
+  assert.match(source, /unexpected-response/);
+  assert.match(source, /status === 429/);
+  assert.match(source, /realtimeSttBackoffUntil = Date\.now\(\) \+ 60_000/);
+  assert.match(source, /batch STT forced for 60s/);
+  assert.match(source, /\[stt-fallback\] batch success/);
+});
+
+test('Discord keeps PCM16 audio for fallback transcription when realtime STT fails', () => {
+  assert.match(source, /const pcm16Chunks = \[\]/);
+  assert.match(source, /pcm16Chunks\.push\(Buffer\.from\(pcm16\)\)/);
+  assert.match(source, /Buffer\.concat\(pcm16Chunks\)/);
+  assert.match(source, /pcm16MonoToWav16k/);
+  assert.match(source, /writeUInt32LE\(16000, 24\)/);
 });
 
 test('Discord slash join performs a Fones TTS playback preflight', () => {
