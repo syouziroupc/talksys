@@ -74,9 +74,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node <<'NODE'
-          const fs = require('fs');
-          const { performance } = require('perf_hooks');
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { performance } from 'node:perf_hooks';
           const base = process.env.PROD;
           const cases = [
             { name: 'greeting', text: 'こんにちは' },
