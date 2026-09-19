@@ -4,38 +4,32 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
-test('Discord bridge reuses one realtime STT websocket per user across utterances', () => {
-  assert.match(source, /const realtimeSttSockets = new Map\(\)/);
+test('Discord bridge opens a fresh realtime STT websocket for every utterance', () => {
   assert.match(source, /function acquireRealtimeSttSocket\(userId, sessionEpoch\)/);
-  assert.match(source, /websocket reuse user=/);
-  assert.match(source, /reusedSocket = acquired\.reused/);
-  assert.doesNotMatch(source, /try \{ ws\?\.close\(1000, 'utterance-complete'\); \} catch \{\}/);
+  assert.match(source, /destroyReusableSttSocket\(userId, 'fresh-utterance'\)/);
+  assert.match(source, /reusable=false/);
+  assert.match(source, /destroyReusableSttSocket\(userId, 'utterance-complete'\)/);
+  assert.doesNotMatch(source, /websocket reuse user=/);
+  assert.doesNotMatch(source, /JSON\.stringify\(\{ type: 'KeepAlive' \}\)/);
 });
 
-test('idle reusable STT sockets stay alive without sending synthetic audio', () => {
-  assert.match(source, /setInterval\(\(\) => \{/);
-  assert.match(source, /Date\.now\(\) - transport\.lastAudioAt < 3000/);
-  assert.match(source, /JSON\.stringify\(\{ type: 'KeepAlive' \}\)/);
-  assert.match(source, /\}, 4000\)/);
-});
-
-test('Finalize ends only the utterance while preserving a healthy websocket', () => {
+test('Finalize flushes the current utterance but the socket is not reused afterward', () => {
   assert.match(source, /JSON\.stringify\(\{ type: 'Finalize' \}\)/);
   assert.match(source, /payload\?\.from_finalize/);
   assert.match(source, /complete\('from-finalize'\)/);
   assert.match(source, /detachWsListeners\(\)/);
-  assert.match(source, /sessions\.delete\(userId\)/);
+  assert.match(source, /destroyReusableSttSocket\(userId, 'utterance-complete'\)/);
 });
 
-test('broken reusable sockets still fail over to batch STT and back off on 429', () => {
+test('broken realtime STT still fails over to batch STT and backs off on 429', () => {
   assert.match(source, /destroyReusableSttSocket\(userId, 'realtime-failed'\)/);
   assert.match(source, /realtimeSttBackoffUntil = Date\.now\(\) \+ 60_000/);
   assert.match(source, /batchTranscribePcm16\(pcm16, realtimeFailureReason \|\| reason\)/);
   assert.match(source, /markRealtimeFailed\('finalize-timeout'\)/);
 });
 
-test('voice disconnect closes idle reusable sockets and exposes a versioned bridge revision', () => {
+test('voice disconnect closes any current STT socket and exposes a versioned recovery revision', () => {
   assert.match(source, /for \(const userId of \[\.\.\.realtimeSttSockets\.keys\(\)\]\)/);
   assert.match(source, /destroyReusableSttSocket\(userId, 'voice-disconnect'\)/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v[0-9]+-[^']+'/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v70-reply-recovery-r1'/);
 });
