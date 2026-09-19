@@ -5,10 +5,10 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
 test('Discord client posts end-to-end latency metrics without blocking the response path', () => {
-  assert.match(source, /async function postVoiceMetrics\(text, timings = \{\}\)/);
+  assert.match(source, /async function postVoiceMetrics\(text, timings = \{\}, utteranceId = ''\)/);
   assert.match(source, /TALKSYS_BASE_URL \+ '\/api\/voice-metrics'/);
   assert.match(source, /authorization: 'Bearer ' \+ BRIDGE_TOKEN/);
-  assert.match(source, /postVoiceMetrics\(text, clientTimings\)\.catch\(\(\) => \{\}\)/);
+  assert.match(source, /postVoiceMetrics\(text, clientTimings, utteranceId\)\.catch\(\(\) => \{\}\)/);
 });
 
 test('Discord turn stream exposes server timing fields to client metrics', () => {
