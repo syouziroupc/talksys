@@ -1097,6 +1097,62 @@ async function synthesizeGeminiJapaneseTts(text, env, signal) {
   throw new Error(`gemini_tts_all_failed:${errors.join(' | ')}`);
 }
 
+
+function compactClientTimings(value = {}) {
+  const allowed = [
+    'sttMs',
+    'batchSttMs',
+    'turnStreamMs',
+    'serverTotalMs',
+    'primaryMs',
+    'verifierMs',
+    'firstAudioReadyMs',
+    'firstTtsMs',
+    'pipelineCompleteMs',
+    'playbackMs',
+  ];
+  const out = {};
+  for (const key of allowed) {
+    const n = Number(value?.[key]);
+    if (Number.isFinite(n) && n >= 0 && n <= 600000) out[key] = Math.round(n);
+  }
+  if (typeof value?.sttMode === 'string') out.sttMode = compact(value.sttMode, 40);
+  if (typeof value?.streamed === 'boolean') out.streamed = value.streamed;
+  if (typeof value?.sttReused === 'boolean') out.sttReused = value.sttReused;
+  if (typeof value?.ttsSource === 'string') out.ttsSource = compact(value.ttsSource, 80);
+  return out;
+}
+
+function discordVoiceMetricsResponse(request, env, ctx) {
+  if (!discordVoiceTtsAuthorized(request, env)) {
+    return json({ ok: false, error: 'unauthorized' }, 401);
+  }
+  return (async () => {
+    let body = {};
+    try { body = await request.json(); }
+    catch { return json({ ok: false, error: 'invalid_json' }, 400); }
+
+    const timings = compactClientTimings(body?.timings || {});
+    const result = {
+      ok: true,
+      route: 'discord-client-metrics',
+      search: false,
+      searchUseful: false,
+      timings,
+      model: GEMINI_MODEL,
+      languageMode: 'ja-spoken',
+    };
+    const logBody = {
+      text: compact(body?.text, 5000),
+      sessionId: compact(body?.sessionId, 180),
+      channel: 'discord-voice-smoke',
+      history: [],
+    };
+    scheduleConversationLog(ctx, env, request, logBody, result, 'voice-metrics', 202);
+    return json({ ok: true, stored: true }, 202);
+  })();
+}
+
 async function discordVoiceSynthesize(request, env) {
   if (!discordVoiceTtsAuthorized(request, env)) {
     return json({ ok: false, error: 'unauthorized' }, 401);
@@ -1177,6 +1233,7 @@ async function voiceHealth(request, env, ctx) {
       discordPipelineRevision: DISCORD_PIPELINE_REVISION,
       discordTurnStream: true,
       discordTurnStreamEndpoint: '/api/turn-stream',
+      discordVoiceMetricsEndpoint: '/api/voice-metrics',
       discordBridgeConfigured: typeof env?.DISCORD_BRIDGE_TOKEN === 'string' && env.DISCORD_BRIDGE_TOKEN.trim().length > 0,
       persistentConversationLogs: env?.TALKSYS_LOG_DB ? 'd1-private' : 'disabled',
       conversationLogEndpoint: '/api/conversation-logs',
@@ -1216,6 +1273,10 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/api/voice/synthesize') {
       return discordVoiceSynthesize(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/voice-metrics') {
+      return discordVoiceMetricsResponse(request, env, ctx);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/turn-stream') {
