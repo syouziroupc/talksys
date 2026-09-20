@@ -11,7 +11,7 @@ export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
-export const DISCORD_PIPELINE_REVISION = 'talksys-v68-fast-verified-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v69-verified-clause-stream-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -720,13 +720,23 @@ function sseData(value) {
   return `data: ${JSON.stringify(value)}\n\n`;
 }
 
+const VERIFIED_CLAUSE_MIN_CHARS = 28;
+
 function splitCompleteSpokenSentences(value = '') {
   let rest = String(value || '');
   const sentences = [];
   while (rest) {
-    const match = rest.match(/[。！？!?]/);
-    if (!match) break;
-    const end = Number(match.index) + 1;
+    const terminal = rest.match(/[。！？!?]/);
+    const terminalEnd = terminal ? Number(terminal.index) + 1 : -1;
+    const commaIndex = rest.indexOf('、');
+    const commaEnd = commaIndex >= 0 && commaIndex + 1 >= VERIFIED_CLAUSE_MIN_CHARS
+      ? commaIndex + 1
+      : -1;
+
+    let end = terminalEnd;
+    if (commaEnd > 0 && (terminalEnd < 0 || commaEnd < terminalEnd)) end = commaEnd;
+    if (end <= 0) break;
+
     const sentence = rest.slice(0, end).trim();
     rest = rest.slice(end);
     if (sentence) sentences.push(sentence);
@@ -737,6 +747,8 @@ function splitCompleteSpokenSentences(value = '') {
 function firstSpokenSentence(value = '') {
   const normalized = normalizeSpokenJapanese(value);
   if (!normalized) return '';
+  const split = splitCompleteSpokenSentences(normalized);
+  if (split.sentences.length) return compact(split.sentences[0], 1200);
   const parts = normalized.match(/[^。！？!?]+[。！？!?]?/g) || [normalized];
   return compact(parts[0] || '', 1200);
 }
@@ -1581,6 +1593,8 @@ export const __test = {
   searchAnnouncementTopic,
   searchPreface,
   normalizeSpokenJapanese,
+  splitCompleteSpokenSentences,
+  firstSpokenSentence,
   interactionOutputText,
   interactionQueries,
   interactionSources,
