@@ -240,3 +240,27 @@ test('Discord voice dependencies use a prism-media-compatible Opus line', () => 
   assert.match(packageJson.dependencies.ws, /^\^8\./);
   assert.match(launcher, /--legacy-peer-deps/);
 });
+
+test('Discord slash interactions are acknowledged before VC lookup or connection work', () => {
+  const handlerStart = source.indexOf("client.on('interactionCreate'");
+  const ack = source.indexOf("await interaction.deferReply({ ephemeral: true })", handlerStart);
+  const voiceLookup = source.indexOf("voiceStates.cache.get", handlerStart);
+  const connect = source.indexOf("connectToVoiceChannel(channel", handlerStart);
+  assert.ok(handlerStart >= 0);
+  assert.ok(ack > handlerStart);
+  assert.ok(voiceLookup > ack);
+  assert.ok(connect > ack);
+  assert.match(source, /\[interaction\] received command=/);
+  assert.match(source, /\[interaction\] acked command=/);
+});
+
+test('Discord gateway startup fails loudly instead of leaving a dead command surface', () => {
+  assert.match(source, /DISCORD_READY_TIMEOUT_MS = 20000/);
+  assert.match(source, /Discord Gateway did not reach Ready/);
+  assert.match(source, /Discord login failed/);
+  assert.match(source, /client\.login\(DISCORD_TOKEN\)\.catch/);
+  assert.match(source, /gateway health ready=/);
+  assert.match(source, /shard disconnected/);
+  assert.match(source, /shard reconnecting/);
+  assert.match(source, /shard resumed/);
+});
