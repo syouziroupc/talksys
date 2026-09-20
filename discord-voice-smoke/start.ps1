@@ -33,14 +33,27 @@ if (-not $env:TALKSYS_BASE_URL) {
   $env:TALKSYS_BASE_URL = "https://talksys.syouziroupc.workers.dev"
 }
 
-Write-Host "[setup] installing Discord smoke dependencies..."
-npm install --no-audit --no-fund
-if ($LASTEXITCODE -ne 0) {
-  Write-Warning "通常のnpm installが失敗したため、peer dependency競合を無視して再試行します。"
-  npm install --no-audit --no-fund --legacy-peer-deps
+$packageJson = Join-Path $PSScriptRoot 'package.json'
+$nodeModules = Join-Path $PSScriptRoot 'node_modules'
+$dependencyStamp = Join-Path $nodeModules '.talksys-package-sha256'
+$packageHash = (Get-FileHash -Algorithm SHA256 $packageJson).Hash
+$installedHash = if (Test-Path $dependencyStamp) { (Get-Content $dependencyStamp -Raw).Trim() } else { '' }
+$needsInstall = (-not (Test-Path $nodeModules)) -or ($installedHash -ne $packageHash)
+
+if ($needsInstall) {
+  Write-Host "[setup] installing Discord smoke dependencies..."
+  npm install --no-audit --no-fund
   if ($LASTEXITCODE -ne 0) {
-    throw "Discord依存関係のインストールに失敗しました。"
+    Write-Warning "通常のnpm installが失敗したため、peer dependency競合を無視して再試行します。"
+    npm install --no-audit --no-fund --legacy-peer-deps
+    if ($LASTEXITCODE -ne 0) {
+      throw "Discord依存関係のインストールに失敗しました。"
+    }
   }
+  Set-Content -Path $dependencyStamp -Value $packageHash -NoNewline
+  Write-Host "[ok] Discord dependencies installed for current package.json"
+} else {
+  Write-Host "[ok] Discord dependencies unchanged; skipping npm install"
 }
 
 Write-Host "[start] Discord voice smoke"
