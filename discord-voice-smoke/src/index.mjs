@@ -28,7 +28,10 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v73-speculative-latency-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v75-self-heal-r1';
+const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
+const RECEIVER_CAPTURE_TIMEOUT_MS = 30000;
+const VOICE_REJOIN_TIMEOUT_MS = 10000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const REQUEST_BUDGET_MS = Object.freeze({
   batchStt: 8000,
@@ -59,8 +62,15 @@ let recoveryAudio = null;
 let recoveryAudioPromise = null;
 let recoverySpeaking = false;
 let realtimeSttFailureCount = 0;
+let voiceRecoveryTimer = null;
+let voiceRecoveryAttempts = 0;
 
 function resetConversationState() {
+  if (voiceRecoveryTimer) {
+    clearTimeout(voiceRecoveryTimer);
+    voiceRecoveryTimer = null;
+  }
+  voiceRecoveryAttempts = 0;
   try { activeTurnAbortController?.abort(); } catch {}
   activeTurnAbortController = null;
   activeTurnSerial += 1;
@@ -705,8 +715,13 @@ function prewarmRealtimeSttSocket(userId, sessionEpoch) {
   return true;
 }
 
-function startReceiverSession(userId) {
-  if (!connection || sessions.has(userId)) return;
+function startReceiverSession(userId, speakingNow = false) {
+  if (!connection) return;
+  const existingSession = sessions.get(userId);
+  if (existingSession) {
+    if (speakingNow) existingSession.markSpeaking?.();
+    return;
+  }
   const sessionEpoch = voiceEpoch;
   console.log('[rx] user=' + userId);
 
@@ -737,9 +752,36 @@ function startReceiverSession(userId) {
   let hedgedBatchTimer = null;
   let hedgedBatchController = null;
   let hedgedBatchPromise = null;
+  let packetStartWatchdog = null;
+  let captureWatchdog = null;
+  let firstPacketSeen = false;
 
-  const session = { opus, decoder, ws: null, batchAbortController: null };
+  const clearReceiverWatchdogs = () => {
+    if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
+    if (captureWatchdog) clearTimeout(captureWatchdog);
+    packetStartWatchdog = null;
+    captureWatchdog = null;
+  };
+
+  const markSpeaking = () => {
+    if (inputEnded || completed || firstPacketSeen) return;
+    if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
+    packetStartWatchdog = setTimeout(() => {
+      if (completed || firstPacketSeen) return;
+      console.error(`[rx] speaking produced no audio packets; resetting receiver user=${userId}`);
+      clearReceiverWatchdogs();
+      completed = true;
+      detachWsListeners();
+      sessions.delete(userId);
+      try { opus.destroy(); } catch {}
+      try { decoder.destroy(); } catch {}
+      destroyReusableSttSocket(userId, 'receiver-no-packets');
+    }, RECEIVER_PACKET_START_TIMEOUT_MS);
+  };
+
+  const session = { opus, decoder, ws: null, batchAbortController: null, markSpeaking };
   sessions.set(userId, session);
+  if (speakingNow) markSpeaking();
 
   const cancelHedgedBatch = () => {
     if (hedgedBatchTimer) {
@@ -807,6 +849,7 @@ function startReceiverSession(userId) {
     completed = true;
     clearTimeout(completionTimer);
     clearTimeout(settleTimer);
+    clearReceiverWatchdogs();
     detachWsListeners();
     sessions.delete(userId);
     destroyReusableSttSocket(userId, 'utterance-complete');
@@ -877,6 +920,7 @@ function startReceiverSession(userId) {
     if (inputEnded) return;
     inputEnded = true;
     inputEndedAt = Date.now();
+    clearReceiverWatchdogs();
     try { opus.destroy(); } catch {}
     try { decoder.destroy(); } catch {}
 
@@ -972,6 +1016,16 @@ function startReceiverSession(userId) {
   }
 
   decoder.on('data', (pcm48) => {
+    if (!firstPacketSeen) {
+      firstPacketSeen = true;
+      if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
+      packetStartWatchdog = null;
+      captureWatchdog = setTimeout(() => {
+        if (completed || inputEnded) return;
+        console.error(`[rx] capture watchdog forcing finalize user=${userId}`);
+        endInput();
+      }, RECEIVER_CAPTURE_TIMEOUT_MS);
+    }
     pcm48Bytes += pcm48.length;
     const pcm16 = mono16kFromStereo48k(pcm48);
     pcm16Bytes += pcm16.length;
@@ -1046,13 +1100,55 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   connection.receiver.speaking.on('start', (userId) => {
     if (userId === client.user.id) return;
     interruptActiveAnswer('user-speech');
-    startReceiverSession(userId);
+    startReceiverSession(userId, true);
   });
 
   if (initialUserId && initialUserId !== client.user.id) {
-    startReceiverSession(initialUserId);
+    startReceiverSession(initialUserId, false);
     console.log('[rx] pre-armed user=' + initialUserId);
   }
+
+  const boundConnection = connection;
+  boundConnection.on('stateChange', (_oldState, newState) => {
+    if (boundConnection !== connection) return;
+    console.log(`[discord] voice state=${newState.status}`);
+    if (newState.status === VoiceConnectionStatus.Ready) {
+      voiceRecoveryAttempts = 0;
+      if (voiceRecoveryTimer) {
+        clearTimeout(voiceRecoveryTimer);
+        voiceRecoveryTimer = null;
+      }
+      boundConnection.subscribe(player);
+      return;
+    }
+    if (newState.status !== VoiceConnectionStatus.Disconnected) return;
+    if (voiceRecoveryTimer) return;
+    const scheduleRecovery = () => {
+      if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
+      const delayMs = Math.min(8000, 500 * (2 ** Math.min(voiceRecoveryAttempts, 4)));
+      voiceRecoveryTimer = setTimeout(async () => {
+        voiceRecoveryTimer = null;
+        if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
+        voiceRecoveryAttempts += 1;
+        try {
+          const accepted = boundConnection.rejoin();
+          if (!accepted) throw new Error('voice_rejoin_rejected');
+          await entersState(boundConnection, VoiceConnectionStatus.Ready, VOICE_REJOIN_TIMEOUT_MS);
+          if (boundConnection === connection) {
+            boundConnection.subscribe(player);
+            voiceRecoveryAttempts = 0;
+            console.log('[discord] voice rejoin recovered');
+          }
+        } catch (error) {
+          console.error(`[discord] voice rejoin failed attempt=${voiceRecoveryAttempts}:`, error?.message || error);
+          if (voiceRecoveryAttempts < 5) scheduleRecovery();
+        }
+      }, delayMs);
+    };
+    console.warn('[discord] voice disconnected; scheduling rejoin');
+    scheduleRecovery();
+  });
+  boundConnection.on('error', (error) => console.error('[discord] voice connection error:', error?.message || error));
 
   console.log('[discord] voice ready:', channel.name);
   console.log('[discord] conversation session:', discordSessionId);
@@ -1136,6 +1232,10 @@ client.on('interactionCreate', async (interaction) => {
 
 client.on('error', (error) => console.error('[discord]', error));
 player.on('error', (error) => console.error('[player]', error.message));
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] unhandled rejection:', reason?.stack || reason);
+});
 
 process.on('SIGINT', () => {
   destroyVoiceConnection();
