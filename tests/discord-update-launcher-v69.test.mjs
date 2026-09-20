@@ -24,3 +24,13 @@ test('Discord update launcher starts the existing secret-aware launcher after up
   assert.match(readme, /\[stt\] websocket open user=\.\.\. mode=active/);
   assert.match(readme, /\[metrics\] voice latency persisted/);
 });
+
+
+test('Discord launcher supervises the bridge process and restarts unexpected exits', () => {
+  const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
+  assert.match(launcher, /\[supervisor\] starting Discord bridge process/);
+  assert.match(launcher, /& node \$entry/);
+  assert.match(launcher, /Restarting in 2 seconds/);
+  assert.match(launcher, /\$rapidFailures -ge 5/);
+  assert.match(launcher, /短時間に5回連続で異常終了/);
+});

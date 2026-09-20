@@ -44,5 +44,5 @@ test('broken realtime STT always falls back and opens a bounded circuit breaker'
 test('voice disconnect closes any current STT socket and exposes the responsiveness revision', () => {
   assert.match(source, /for \(const userId of \[\.\.\.realtimeSttSockets\.keys\(\)\]\)/);
   assert.match(source, /destroyReusableSttSocket\(userId, 'voice-disconnect'\)/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v75-self-heal-r1'/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v76-interaction-supervisor-r1'/);
 });

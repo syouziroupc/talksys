@@ -28,10 +28,12 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v75-self-heal-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v76-interaction-supervisor-r1';
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const RECEIVER_CAPTURE_TIMEOUT_MS = 30000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
+const DISCORD_READY_TIMEOUT_MS = 20000;
+const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const REQUEST_BUDGET_MS = Object.freeze({
   batchStt: 8000,
@@ -64,6 +66,8 @@ let recoverySpeaking = false;
 let realtimeSttFailureCount = 0;
 let voiceRecoveryTimer = null;
 let voiceRecoveryAttempts = 0;
+let discordReadyWatchdog = null;
+let discordHealthTimer = null;
 
 function resetConversationState() {
   if (voiceRecoveryTimer) {
@@ -1178,6 +1182,15 @@ async function ensureTalkSysCommands(guild) {
 }
 
 client.once('ready', async () => {
+  if (discordReadyWatchdog) {
+    clearTimeout(discordReadyWatchdog);
+    discordReadyWatchdog = null;
+  }
+  if (discordHealthTimer) clearInterval(discordHealthTimer);
+  discordHealthTimer = setInterval(() => {
+    console.log(`[discord] gateway health ready=${client.isReady()} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
+  }, DISCORD_HEALTH_LOG_MS);
+  console.log(`[discord] gateway ready user=${client.user?.tag || client.user?.id || 'unknown'} ping=${client.ws.ping}ms`);
   try {
     const guilds = [...client.guilds.cache.values()];
     if (!guilds.length) throw new Error('Discord Botがサーバーに参加していません');
@@ -1199,38 +1212,50 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand() || !interaction.guild) return;
+  if (!['talksys', 'leave'].includes(interaction.commandName)) return;
+
+  console.log(`[interaction] received command=/${interaction.commandName} guild=${interaction.guild.id} user=${interaction.user.id}`);
+  try {
+    await interaction.deferReply({ ephemeral: true });
+    console.log(`[interaction] acked command=/${interaction.commandName}`);
+  } catch (error) {
+    console.error(`[interaction] ack failed command=/${interaction.commandName}:`, error?.stack || error);
+    return;
+  }
 
   try {
     if (interaction.commandName === 'talksys') {
-      const voiceState = interaction.guild?.voiceStates.cache.get(interaction.user.id);
+      const voiceState = interaction.guild.voiceStates.cache.get(interaction.user.id);
       const channelId = voiceState?.channelId;
       if (!channelId) {
-        await interaction.reply({ content: '先にボイスチャンネルへ参加してから /talksys を実行してください。', ephemeral: true });
+        await interaction.editReply('先にボイスチャンネルへ参加してから /talksys を実行してください。');
         return;
       }
 
-      await interaction.deferReply({ ephemeral: true });
       const channel = await interaction.guild.channels.fetch(channelId);
       await connectToVoiceChannel(channel, interaction.user.id);
       await interaction.editReply(`TalkSysを「${channel.name}」へ接続しました。`);
       return;
     }
 
-    if (interaction.commandName === 'leave') {
-      destroyVoiceConnection();
-      await interaction.reply({ content: 'TalkSysをボイスチャンネルから退出させました。', ephemeral: true });
-    }
+    destroyVoiceConnection();
+    await interaction.editReply('TalkSysをボイスチャンネルから退出させました。');
   } catch (error) {
     console.error('[command]', error?.stack || error);
-    const message = 'TalkSysのVC操作に失敗しました。コンソールログを確認してください。';
     try {
-      if (interaction.deferred || interaction.replied) await interaction.editReply(message);
-      else await interaction.reply({ content: message, ephemeral: true });
-    } catch {}
+      await interaction.editReply('TalkSysのVC操作に失敗しました。コンソールログを確認してください。');
+    } catch (replyError) {
+      console.error('[command] failure reply failed:', replyError?.message || replyError);
+    }
   }
 });
 
 client.on('error', (error) => console.error('[discord]', error));
+client.on('warn', (info) => console.warn('[discord] warning:', info));
+client.on('shardError', (error, shardId) => console.error(`[discord] shard error id=${shardId}:`, error?.stack || error));
+client.on('shardDisconnect', (event, shardId) => console.error(`[discord] shard disconnected id=${shardId} code=${event?.code ?? 'unknown'}`));
+client.on('shardReconnecting', (shardId) => console.warn(`[discord] shard reconnecting id=${shardId}`));
+client.on('shardResume', (shardId, replayedEvents) => console.log(`[discord] shard resumed id=${shardId} replayed=${replayedEvents}`));
 player.on('error', (error) => console.error('[player]', error.message));
 
 process.on('unhandledRejection', (reason) => {
@@ -1238,9 +1263,23 @@ process.on('unhandledRejection', (reason) => {
 });
 
 process.on('SIGINT', () => {
+  if (discordReadyWatchdog) clearTimeout(discordReadyWatchdog);
+  if (discordHealthTimer) clearInterval(discordHealthTimer);
   destroyVoiceConnection();
   client.destroy();
   process.exit(0);
 });
 
-client.login(DISCORD_TOKEN);
+discordReadyWatchdog = setTimeout(() => {
+  if (client.isReady()) return;
+  console.error(`[fatal] Discord Gateway did not reach Ready within ${DISCORD_READY_TIMEOUT_MS}ms`);
+  client.destroy();
+  process.exit(2);
+}, DISCORD_READY_TIMEOUT_MS);
+
+client.login(DISCORD_TOKEN).catch((error) => {
+  if (discordReadyWatchdog) clearTimeout(discordReadyWatchdog);
+  console.error('[fatal] Discord login failed:', error?.stack || error);
+  client.destroy();
+  process.exit(2);
+});

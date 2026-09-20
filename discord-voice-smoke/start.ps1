@@ -59,4 +59,31 @@ if ($needsInstall) {
 Write-Host "[start] Discord voice smoke"
 Write-Host "[start] TalkSys: $env:TALKSYS_BASE_URL"
 Write-Host "[start] mode: /talksys joins caller VC; /leave disconnects; TalkSys STT/turn/TTS permanent bridge auth"
-npm start
+
+$entry = Join-Path $PSScriptRoot 'src\index.mjs'
+$rapidFailures = 0
+
+while ($true) {
+  $startedAt = Get-Date
+  Write-Host "[supervisor] starting Discord bridge process..."
+  & node $entry
+  $exitCode = $LASTEXITCODE
+  $uptimeSeconds = ((Get-Date) - $startedAt).TotalSeconds
+
+  if ($exitCode -eq 0) {
+    Write-Host "[supervisor] Discord bridge stopped normally."
+    exit 0
+  }
+
+  if ($uptimeSeconds -ge 60) {
+    $rapidFailures = 0
+  }
+  $rapidFailures += 1
+
+  Write-Warning "[supervisor] Discord bridge exited code=$exitCode uptime=$([math]::Round($uptimeSeconds, 1))s. Restarting in 2 seconds..."
+  if ($rapidFailures -ge 5) {
+    throw "Discord bridgeが短時間に5回連続で異常終了しました。上の[fatal]ログを確認してください。"
+  }
+
+  Start-Sleep -Seconds 2
+}
