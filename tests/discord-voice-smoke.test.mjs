@@ -186,9 +186,40 @@ test('Discord allows caller barge-in instead of waiting for long playback to fin
 
 test('Discord slash join pre-arms the invoking user receive stream', () => {
   assert.match(source, /connectToVoiceChannel\(channel, initialUserId = ''\)/);
-  assert.match(source, /startReceiverSession\(initialUserId\)/);
+  assert.match(source, /startReceiverSession\(initialUserId, false\)/);
   assert.match(source, /\[rx\] pre-armed user=/);
   assert.match(source, /connectToVoiceChannel\(channel, interaction\.user\.id\)/);
+});
+
+test('Discord receiver sessions self-clear when speaking produces no packets or capture never finalizes', () => {
+  assert.match(source, /RECEIVER_PACKET_START_TIMEOUT_MS = 5000/);
+  assert.match(source, /RECEIVER_CAPTURE_TIMEOUT_MS = 30000/);
+  assert.match(source, /speaking produced no audio packets; resetting receiver/);
+  assert.match(source, /capture watchdog forcing finalize/);
+  assert.match(source, /existingSession\.markSpeaking\?\.\(\)/);
+  assert.match(source, /startReceiverSession\(userId, true\)/);
+  assert.match(source, /clearReceiverWatchdogs\(\)/);
+});
+
+test('Discord voice connection retries a transient disconnect instead of staying dead', () => {
+  assert.match(source, /VoiceConnectionStatus\.Disconnected/);
+  assert.match(source, /boundConnection\.rejoin\(\)/);
+  assert.match(source, /VOICE_REJOIN_TIMEOUT_MS = 10000/);
+  assert.match(source, /voice disconnected; scheduling rejoin/);
+  assert.match(source, /voice rejoin recovered/);
+  assert.match(source, /voiceRecoveryAttempts < 5/);
+});
+
+test('Discord bridge logs unhandled promise failures instead of terminating silently', () => {
+  assert.match(source, /process\.on\('unhandledRejection'/);
+  assert.match(source, /\[process\] unhandled rejection:/);
+});
+
+test('Discord launcher does not mutate npm dependencies on every normal restart', () => {
+  assert.match(launcher, /Get-FileHash -Algorithm SHA256/);
+  assert.match(launcher, /\.talksys-package-sha256/);
+  assert.match(launcher, /Discord dependencies unchanged; skipping npm install/);
+  assert.match(launcher, /if \(\$needsInstall\)/);
 });
 
 test('Discord bridge secret setup persists the same random token locally with Windows DPAPI', () => {
