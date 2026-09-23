@@ -33,7 +33,7 @@ test('Discord trusts its speaking transport gate and normalizes audio to the Web
   assert.match(source, /WEB_VOICE_CAPTURE_POLICY/);
   assert.match(source, /Discord already gates outgoing voice by speaking state/);
   assert.match(source, /EndBehaviorType\.AfterSilence, duration: 1600/);
-  assert.match(source, /const DISCORD_SEGMENT_SILENCE_MS = Math\.max\(WEB_VOICE_CAPTURE_POLICY\.silenceMs, 1000\)/);
+  assert.match(source, /const DISCORD_SEGMENT_SILENCE_MS = WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
   assert.match(source, /Date\.now\(\) - lastPcmAt >= DISCORD_SEGMENT_SILENCE_MS/);
   assert.match(source, /highpass=f=\$\{WEB_VOICE_CAPTURE_POLICY\.highpassHz\},aresample=\$\{WEB_VOICE_CAPTURE_POLICY\.targetRate\}/);
   assert.match(source, /pcm16Chunks\.push\(Buffer\.from\(pcm16\)\)/);
@@ -108,13 +108,15 @@ test('Discord slash commands are updated without bulk-overwriting unrelated comm
   assert.match(source, /name: 'leave'/);
 });
 
-test('Discord allows caller barge-in and cancels answer and wait audio', () => {
+test('Discord only interrupts on explicit transcript intent in v84', () => {
   assert.match(source, /function interruptActiveAnswer\(reason = 'user-speech'\)/);
   assert.match(source, /activeTurnAbortController/);
   assert.match(source, /activeWaitCue\?\.stop/);
   assert.match(source, /player\.stop\(true\)/);
-  assert.match(source, /if \(botAudiblySpeaking\) \{\s*interruptActiveAnswer\('user-barge-in'\)/);
-  assert.match(source, /stale answer suppressed/);
+  assert.match(source, /classifyVoiceTurn\(confirmedTranscript/);
+  assert.match(source, /interruptActiveAnswer\('explicit-user-stop'\)/);
+  assert.doesNotMatch(source, /interruptActiveAnswer\('user-barge-in'\)/);
+  assert.doesNotMatch(source, /stale answer suppressed/);
 });
 
 test('Discord voice connection retries transient disconnects', () => {
