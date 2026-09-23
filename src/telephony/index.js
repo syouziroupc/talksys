@@ -2,9 +2,10 @@ import { CloudflareJapaneseTTS } from '../cloudflare-japanese-tts.js';
 import { transcribeV45 } from '../stt-v45.js';
 import { bytesToBase64, pcmuBase64ToSamples, rmsOfSamples, samplesToWav } from './codec.js';
 import { buildTexml, clampInt, clean, flag, xmlEscape } from './protocol.js';
-import { fastReaction, FAST_REACTION_REVISION } from '../voice-fast-reaction.js';
+import { fastReaction, sameUtterance, FAST_REACTION_REVISION } from '../voice-fast-reaction.js';
+import { WEB_VOICE_CAPTURE_POLICY } from '../voice-capture-policy.js';
 
-export const TELEPHONY_REVISION = 'talksys-telephony-v59-fast-reaction';
+export const TELEPHONY_REVISION = 'talksys-telephony-v84-shared-turn-dedupe';
 const FRAME_MS = 20;
 let schemaPromise;
 
@@ -312,7 +313,7 @@ function mediaBridge(request, env, deps) {
   telnyx.accept();
 
   const speechThreshold = Number(env?.TELEPHONY_VAD_RMS || 0.008);
-  const silenceMs = clampInt(env?.TELEPHONY_END_SILENCE_MS, 700, 300, 2000);
+  const silenceMs = clampInt(env?.TELEPHONY_END_SILENCE_MS, WEB_VOICE_CAPTURE_POLICY.silenceMs, 300, 2000);
   const minSpeechMs = clampInt(env?.TELEPHONY_MIN_SPEECH_MS, 320, 200, 2000);
   const maxUtteranceMs = clampInt(env?.TELEPHONY_MAX_UTTERANCE_MS, 15000, 3000, 30000);
   const sessionMaxMs = clampInt(env?.TELEPHONY_SESSION_MAX_MINUTES, 30, 5, 180) * 60000;
@@ -335,6 +336,8 @@ function mediaBridge(request, env, deps) {
   let turnVersion = 0;
   let activeTurnAbort = null;
   let pendingSttCount = 0;
+  let lastAcceptedUserText = '';
+  let lastAcceptedUserAt = 0;
   const pendingTasks = new Set();
   const hpState = { prevX: 0, prevY: 0 };
 
@@ -417,7 +420,19 @@ function mediaBridge(request, env, deps) {
       }
       if (!stt?.ok || !stt.text || myCapture < latestAcceptedCapture) return;
 
+      const now = Date.now();
+      const duplicateRecent = lastAcceptedUserText
+        && sameUtterance(stt.text, lastAcceptedUserText)
+        && now - lastAcceptedUserAt < 12000
+        && (assistantPlaying || Boolean(activeTurnAbort));
+      if (duplicateRecent) {
+        console.log(JSON.stringify({ type: 'phone_duplicate_suppressed', text: clean(stt.text, 160) }));
+        return;
+      }
+
       latestAcceptedCapture = myCapture;
+      lastAcceptedUserText = stt.text;
+      lastAcceptedUserAt = now;
       const myVersion = ++turnVersion;
       abortActiveTurn();
       interruptPlayback();
