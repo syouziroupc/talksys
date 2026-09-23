@@ -76,3 +76,12 @@ test('v84 strict grounding specifically covers dynamic local facts', () => {
   assert.match(integrated, /交通/);
   assert.match(integrated, /groundingSourceCount/);
 });
+
+
+test('MeloTTS retries transient 3043 failures with JP and ja language variants', () => {
+  const helpers = readFileSync(new URL('../src/voice-helpers.js', import.meta.url), 'utf8');
+  assert.match(helpers, /\{ lang: 'JP', waitMs: 0 \}/);
+  assert.match(helpers, /\{ lang: 'ja', waitMs: 90 \}/);
+  assert.match(helpers, /MeloTTS exhausted JP\/ja retries/);
+  assert.match(helpers, /3043\|internal server error/);
+});
