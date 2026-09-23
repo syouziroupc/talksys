@@ -891,6 +891,7 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     timeline.pipelineCompleteAt = Date.now();
     timings.pipelineCompleteMs = Math.max(0, timeline.pipelineCompleteAt - pipelineStarted);
     console.log(`[latency-summary] utterance=${utteranceId} captureMs=${timings.captureMs} sttMs=${timings.sttMs} speechEndToSttFinalMs=${timings.speechEndToSttFinalMs} fastReactionMs=${timings.fastReactionMs} primaryMs=${timings.primaryMs} verifierMs=${timings.verifierMs} answerGenerationTotalMs=${timings.answerGenerationTotalMs} firstTtsMs=${timings.firstTtsMs} ffmpegSpawnMs=${timings.ffmpegSpawnMs} speechEndToPlaybackStartMs=${timings.speechEndToPlaybackStartMs} pipelineCompleteMs=${timings.pipelineCompleteMs}`);
+    mirrorRuntimeLog('LATENCY', `stt=${timings.sttMs}ms gemini=${timings.answerGenerationTotalMs}ms verify=${timings.verifierMs}ms tts=${timings.firstTtsMs}ms playStart=${timings.speechEndToPlaybackStartMs}ms total=${timings.pipelineCompleteMs}ms`);
     postVoiceMetrics({
       text: confirmedTranscript,
       utteranceId,
