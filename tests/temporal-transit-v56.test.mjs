@@ -38,7 +38,7 @@ test('temporal validator identifies already-departed departures but permits futu
   assert.equal(pastImmediateTransitDepartures('次は0時05分発です。', lateNight).length, 0);
 });
 
-test('past departure triggers a fresh Gemini search and only the corrected future train is returned', async () => {
+test('past departure triggers one targeted repair after the single grounded primary search', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (_url, options) => {
@@ -47,7 +47,6 @@ test('past departure triggers a fresh Gemini search and only the corrected futur
     assert.equal(req.model, 'gemini-3.5-flash-lite');
     assert.deepEqual(req.tools, [{ type: 'google_search' }]);
     assert.match(req.system_instruction, /発車済みの便を「次」として案内してはいけません/);
-    assert.match(req.input, /2026-09-18T08:48:00\+09:00/);
 
     if (calls === 1) {
       return new Response(JSON.stringify({
@@ -60,14 +59,7 @@ test('past departure triggers a fresh Gemini search and only the corrected futur
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
 
-    if (calls === 2) {
-      assert.match(req.input, /最終回答前の自己検証/);
-      return new Response(JSON.stringify({ error: { message: 'temporary verifier error' } }), {
-        status: 500,
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-
+    assert.equal(calls, 2);
     assert.match(req.input, /前回回答には基準時刻 2026-09-18T08:48:00\+09:00 より前/);
     assert.match(req.input, /Google検索をやり直し/);
     return new Response(JSON.stringify({
@@ -87,11 +79,11 @@ test('past departure triggers a fresh Gemini search and only the corrected futur
       undefined,
       { now: FIXED },
     );
-    assert.equal(calls, 3);
+    assert.equal(calls, 2);
     assert.equal(result.ok, true);
-    assert.equal(result.genericVerificationAttempted, true);
+    assert.equal(result.genericVerificationAttempted, false);
     assert.equal(result.genericVerificationSucceeded, false);
-    assert.equal(result.verificationFailOpen, true);
+    assert.equal(result.verificationFailOpen, false);
     assert.equal(result.temporalTransitGuard, true);
     assert.equal(result.temporalRepairRetried, true);
     assert.equal(result.temporalRepairAttempts, 1);

@@ -15,7 +15,7 @@ import {
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY } from '../../src/voice-capture-policy.js';
-import { fastReaction, sameUtterance } from '../../src/voice-fast-reaction.js';
+import { fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure } from '../../src/voice-fast-reaction.js';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v83-stable-turn-gating-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v84-unified-force-reply-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -36,7 +36,7 @@ const DISCORD_READY_TIMEOUT_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
-const DISCORD_SEGMENT_SILENCE_MS = Math.max(WEB_VOICE_CAPTURE_POLICY.silenceMs, 1000);
+const DISCORD_SEGMENT_SILENCE_MS = WEB_VOICE_CAPTURE_POLICY.silenceMs;
 const REQUEST_BUDGET_MS = Object.freeze({
   stt: 30000,
   turn: 35000,
@@ -786,6 +786,18 @@ async function playMp3(mp3, options = {}) {
 
 async function processConfirmedTranscript({ confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
   if (!confirmedTranscript || sessionEpoch !== voiceEpoch) return;
+  const policy = classifyVoiceTurn(confirmedTranscript, { answerInFlight: answering || player.state.status === AudioPlayerStatus.Playing });
+  if (policy.action === 'drop') {
+    console.log(`[turn-policy] dropped reason=${policy.reason}: ${confirmedTranscript}`);
+    mirrorRuntimeLog('DROP', `${policy.reason}: ${confirmedTranscript}`);
+    return;
+  }
+  if (policy.action === 'interrupt') {
+    interruptActiveAnswer('explicit-user-stop');
+    pendingTurns.splice(0, pendingTurns.length);
+    mirrorRuntimeLog('INTERRUPT', `explicit stop: ${confirmedTranscript}`);
+    return;
+  }
   if (answering) {
     if (pendingTurns.length < 3) {
       pendingTurns.push({ confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta });
@@ -834,13 +846,8 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     timings.verifierMs = Number(turn?.timings?.verifierMs) || 0;
     timings.answerGenerationTotalMs = Number(turn?.timings?.totalMs) || Math.max(0, timeline.finalAnswerAt - timeline.turnStartAt);
 
-    // If the user resumed speaking while this answer was being generated,
-    // do not let the now-stale answer start talking over the newer utterance.
-    if (lastUserSpeechAt > (timeline.utteranceEndAt || 0)) {
-      console.log(`[pipeline] stale answer suppressed utterance=${utteranceId} newerSpeechAt=${lastUserSpeechAt}`);
-      mirrorRuntimeLog('TURN', `stale answer suppressed ${utteranceId}`);
-      return;
-    }
+    // v84: ordinary user speech no longer invalidates an answer that is already being generated.
+    // Only classifyVoiceTurn(...)=interrupt can abort it.
 
     // Waiting audio is never part of the answer dependency chain.
     activeWaitCue?.stop('final-answer-ready');
@@ -976,6 +983,10 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
     }).catch(() => {});
     activeFastReaction?.stop?.('stt-failed');
     activeFastReaction = null;
+    if (isIgnorableSttFailure(message)) {
+      mirrorRuntimeLog('DROP', `ignorable STT failure: ${message}`);
+      return;
+    }
     await speakRecoveryPrompt('stt-failed', sessionEpoch, timeline.utteranceEndAt || 0);
   }
 }
@@ -1231,13 +1242,9 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
     const botAudiblySpeaking = Boolean(activeBotPlaybackRecord) || player.state.status === AudioPlayerStatus.Playing;
     const startedDuringBotPlayback = botAudiblySpeaking || (Date.now() - lastBotPlaybackEndedAt < 1200);
 
-    // A Discord speaking-start can be a continuation after a short pause.
-    // Only barge into an answer when TalkSys is actually audible; otherwise
-    // keep the in-flight answer alive and let stale-answer suppression decide
-    // whether it is still valid once generation completes.
-    if (botAudiblySpeaking) {
-      interruptActiveAnswer('user-barge-in');
-    } else if (activeFastReaction) {
+    // v84: Discord speaking-start is capture-only. It must not cancel an answer.
+    // The confirmed transcript is classified later by the shared turn policy.
+    if (!botAudiblySpeaking && activeFastReaction) {
       try { activeFastReaction.stop?.('user-continued-speaking'); } catch {}
       activeFastReaction = null;
     }

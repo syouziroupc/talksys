@@ -6,7 +6,7 @@ const bridge = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', i
 const integrated = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
 
 test('Discord uses the same Web fast-reaction decision path', () => {
-  assert.match(bridge, /import \{ fastReaction, sameUtterance \} from '\.\.\/\.\.\/src\/voice-fast-reaction\.js'/);
+  assert.match(bridge, /import \{ fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure \} from '\.\.\/\.\.\/src\/voice-fast-reaction\.js'/);
   assert.match(bridge, /\/api\/realtime-stt/);
   assert.match(bridge, /\/api\/fast-reaction/);
   assert.match(bridge, /setTimeout\(async \(\) => \{[\s\S]*fetchFastReaction\(value\)[\s\S]*\}, 90\)/);
@@ -61,19 +61,18 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
   assert.match(integrated, /discordRuntimeLogCommand: '\/logs'/);
 });
 
-test('v83 preserves authoritative Whisper and common turn architecture', () => {
-  assert.match(bridge, /talksys-discord-bridge-v83-stable-turn-gating-r1/);
-  assert.match(integrated, /talksys-v82-web-fast-reaction-live-log-r1/);
+test('v84 preserves authoritative Whisper while sharing the turn policy', () => {
+  assert.match(bridge, /talksys-discord-bridge-v84-unified-force-reply-r1/);
+  assert.match(integrated, /talksys-v84-unified-force-reply-r1/);
+  assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/turn'/);
-  assert.doesNotMatch(bridge, /\/api\/turn-stream|batchTranscribePcm16|type:\s*['"]Finalize['"]/);
 });
 
-
-test('v83 does not abort answer generation on every Discord speaking-start', () => {
-  assert.match(bridge, /const botAudiblySpeaking = Boolean\(activeBotPlaybackRecord\) \|\| player\.state\.status === AudioPlayerStatus\.Playing/);
-  assert.match(bridge, /if \(botAudiblySpeaking\) \{\s*interruptActiveAnswer\('user-barge-in'\)/);
-  assert.doesNotMatch(bridge, /receiver\.speaking\.on\('start',[\s\S]{0,500}interruptActiveAnswer\('user-speech'\)/);
-  assert.match(bridge, /lastUserSpeechAt > \(timeline\.utteranceEndAt \|\| 0\)/);
-  assert.match(bridge, /stale answer suppressed/);
+test('v84 speaking-start never aborts an answer and explicit stop is transcript-gated', () => {
+  assert.doesNotMatch(bridge, /receiver\.speaking\.on\('start',[\s\S]{0,700}interruptActiveAnswer\('user-barge-in'\)/);
+  assert.match(bridge, /classifyVoiceTurn\(confirmedTranscript/);
+  assert.match(bridge, /policy\.action === 'interrupt'/);
+  assert.match(bridge, /interruptActiveAnswer\('explicit-user-stop'\)/);
+  assert.doesNotMatch(bridge, /stale answer suppressed/);
 });

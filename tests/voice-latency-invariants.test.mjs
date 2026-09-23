@@ -5,12 +5,13 @@ import { readFileSync } from 'node:fs';
 const integrated = readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
 const bridge = readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
-test('generic verification remains enabled in the common web/Discord turn path', () => {
+test('v84 common Gemini path is single-pass grounded without serial verification', () => {
   assert.match(integrated, /export async function commonTalkSysTurn/);
   assert.match(integrated, /return runGeminiTurn\(body, env, signal, options\)/);
-  assert.match(integrated, /shouldRunGenericVerification\(text, interaction\.payload\)/);
-  assert.match(integrated, /runGenericGeminiVerification\(env, body, interaction, signal, now\)/);
-  assert.match(integrated, /const result = await commonTalkSysTurn\(commonBody, env, signal\)/);
+  assert.match(integrated, /shouldRunGenericVerification\(_text = '', _payload = \{\}\)/);
+  assert.match(integrated, /return false/);
+  assert.match(integrated, /reason: 'v84-single-pass-grounded'/);
+  assert.doesNotMatch(integrated, /if \(shouldRunGenericVerification\(text, interaction\.payload\)\)/);
 });
 
 test('Discord confirmed Whisper is the only text allowed into common TalkSys', () => {
@@ -45,4 +46,33 @@ test('latency metrics preserve the full quality-first pipeline', () => {
     'answerGenerationTotalMs','firstTtsMs','firstAudioReadyMs',
     'ffmpegSpawnMs','speechEndToPlaybackStartMs','pipelineCompleteMs',
   ]) assert.match(bridge + integrated, new RegExp(key));
+});
+
+
+test('v84 factual grounding fails closed when Gemini returns no URL citations', () => {
+  assert.match(integrated, /export function interactionCitationCount/);
+  assert.match(integrated, /export function requiresGroundedEvidence/);
+  assert.match(integrated, /const groundingFailClosed = groundingRequired && !groundingSearchPerformed/);
+  assert.match(integrated, /推測では答えず/);
+});
+
+
+test('v84 uses Cloudflare MeloTTS only on the Discord voice endpoint', () => {
+  assert.match(integrated, /ttsProvider: 'cloudflare-melotts'/);
+  assert.match(integrated, /x-talksys-tts-model': '@cf\/myshell-ai\/melotts'/);
+  const synthStart = integrated.indexOf('async function discordVoiceSynthesize');
+  const healthStart = integrated.indexOf('async function voiceHealth', synthStart);
+  const endpoint = integrated.slice(synthStart, healthStart);
+  assert.doesNotMatch(endpoint, /synthesizeGeminiJapaneseTts|gemini-tts-fallback/);
+});
+
+test('v84 strict grounding specifically covers dynamic local facts', () => {
+  assert.match(integrated, /STRICT_DYNAMIC_GROUNDING_RE/);
+  assert.match(integrated, /住所\|所在地\|場所/);
+  assert.match(integrated, /営業時間/);
+  assert.match(integrated, /価格/);
+  assert.match(integrated, /在庫/);
+  assert.match(integrated, /何時/);
+  assert.match(integrated, /交通/);
+  assert.match(integrated, /groundingSourceCount/);
 });

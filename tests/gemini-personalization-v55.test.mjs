@@ -22,7 +22,7 @@ test('v55 keeps Gemini 3.5 Flash-Lite and defines a phone-first personalized sys
   assert.equal(PERSONALIZATION_REVISION, 'talksys-v55-gemini-personalization-r1');
   const prompt = buildTalkSysSystemInstruction(FIXED);
   assert.match(prompt, /電話で読み上げる会話/);
-  assert.match(prompt, /Google検索は積極的に使って/);
+  assert.match(prompt, /Google検索は必要な事実確認に使って/);
   assert.match(prompt, /回答全体を「確認できません」で終わらせない/);
   assert.match(prompt, /正しく答えられる他の部分まで捨てない/);
   assert.match(prompt, /穴埋めで作ってはいけません/);
@@ -64,7 +64,7 @@ test('native Gemini turn keeps search, source metadata and conversational answer
     const req = JSON.parse(options.body);
     assert.equal(req.model, 'gemini-3.5-flash-lite');
     assert.deepEqual(req.tools, [{ type: 'google_search' }]);
-    assert.match(req.system_instruction, /Google検索は積極的に使って/);
+    assert.match(req.system_instruction, /Google検索は必要な事実確認に使って/);
     return new Response(JSON.stringify({
       id: 'interaction-1',
       status: 'completed',
@@ -95,46 +95,32 @@ test('native Gemini turn keeps search, source metadata and conversational answer
   }
 });
 
-test('factual question searches on the primary call and verifies on the second call', async () => {
+test('factual question searches on a single grounded primary call', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (_url, options) => {
     calls += 1;
     const req = JSON.parse(options.body);
-    assert.match(req.system_instruction, /Google検索を必ず実行/);
+    assert.match(req.system_instruction, /Google検索を実行し、取得できた根拠だけで回答/);
     assert.match(req.input, /Google検索を実行して事実確認/);
-
-    if (calls === 1) {
-      return new Response(JSON.stringify({
-        id: 'interaction-search',
-        status: 'completed',
-        steps: [
-          { type: 'google_search_call', arguments: { queries: ['別府 今日 天気'] } },
-          { type: 'model_output', content: [{ type: 'text', text: '検索して確認した情報を案内します。' }] },
-        ],
-      }), { status: 200 });
-    }
-
-    assert.equal(calls, 2);
-    assert.match(req.input, /最終回答前の自己検証/);
-    assert.match(req.input, /候補回答: 検索して確認した情報を案内します/);
     return new Response(JSON.stringify({
-      id: 'interaction-verified',
+      id: 'interaction-search',
       status: 'completed',
       steps: [
-        { type: 'google_search_call', arguments: { queries: ['別府 今日 天気 現在'] } },
-        { type: 'model_output', content: [{ type: 'text', text: '検索して再確認した情報を案内します。' }] },
+        { type: 'google_search_call', arguments: { queries: ['別府 今日 天気'] } },
+        { type: 'google_search_result', result: [{ title: '天気情報', url: 'https://example.com/weather' }] },
+        { type: 'model_output', content: [{ type: 'text', text: '検索して確認した情報を案内します。' }] },
       ],
     }), { status: 200 });
   };
   try {
     const result = await runGeminiTurn({ text: '別府の今日の天気は？' }, { GEMINI_API_KEY: 'test-key' });
-    assert.equal(calls, 2);
+    assert.equal(calls, 1);
     assert.equal(result.search, true);
     assert.equal(result.searchRetried, false);
-    assert.equal(result.genericVerificationAttempted, true);
-    assert.equal(result.genericVerificationSucceeded, true);
-    assert.equal(result.interactionId, 'interaction-verified');
+    assert.equal(result.genericVerificationAttempted, false);
+    assert.equal(result.genericVerificationSucceeded, false);
+    assert.equal(result.interactionId, 'interaction-search');
   } finally {
     globalThis.fetch = originalFetch;
   }
