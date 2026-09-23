@@ -42,7 +42,7 @@ test('phone audio high-pass suppresses steady low-frequency/DC energy', () => {
 });
 
 test('phone path uses adaptive VAD, debounce, and confirmed-speech cancellation', () => {
-  assert.match(TELEPHONY_REVISION, /^talksys-telephony-v5[89]-/);
+  assert.match(TELEPHONY_REVISION, /^talksys-telephony-v(?:5[89]|84)-/);
   const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
   assert.match(source, /noiseFloor/);
   assert.match(source, /startThreshold/);
