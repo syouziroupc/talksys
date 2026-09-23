@@ -27,7 +27,7 @@ test('search preface names the topic for non-greeting search turns', () => {
     topic: '別府市の今日の天気',
     text: '別府市の今日の天気について検索しています。',
   });
-  assert.equal(searchPreface('12345÷15').shouldSpeak, true);
+  assert.equal(searchPreface('12345÷15').shouldSpeak, false);
 });
 
 test('browser client starts the real turn and parallel search preface path', () => {
