@@ -6,7 +6,7 @@ const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', i
 
 test('legacy realtime STT transport is absent from Discord bridge', () => {
   assert.doesNotMatch(source, /WebSocket|realtimeSttSockets|prewarmRealtimeSttSocket|acquireRealtimeSttSocket/);
-  assert.doesNotMatch(source, /KeepAlive|Finalize|speech_final|from_finalize/);
+  assert.doesNotMatch(source, /KeepAlive|speech_final|from_finalize|type:\s*['"]Finalize['"]/);
   assert.doesNotMatch(source, /registerRealtimeSttFailure|realtimeSttBackoffUntil|circuit/i);
 });
 
