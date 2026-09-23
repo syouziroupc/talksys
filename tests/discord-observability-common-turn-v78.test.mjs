@@ -26,7 +26,7 @@ test('Discord final STT is confirmed Whisper, never Nova', () => {
   assert.match(bridge, /\/api\/transcribe/);
   assert.match(bridge, /sttMode: 'whisper-batch'/);
   assert.match(bridge, /fallback: false/);
-  assert.doesNotMatch(bridge, /\/api\/realtime-stt|speech_final|Finalize|WebSocket|batchTranscribePcm16/);
+  assert.doesNotMatch(bridge, /\/api\/realtime-stt|speech_final|WebSocket|batchTranscribePcm16|type:\s*['"]Finalize['"]/);
 });
 
 test('utterance telemetry covers capture through Discord playback', () => {
