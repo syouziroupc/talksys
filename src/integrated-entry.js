@@ -3,6 +3,7 @@ import { handleTelephonyRequest } from './telephony/index.js';
 import { fastReaction, FAST_REACTION_REVISION } from './voice-fast-reaction.js';
 import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 import { persistTalkLog, listTalkLogs } from './log-v42.js';
+import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
 export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v4-observability-common-turn';
 export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
@@ -1304,6 +1305,16 @@ async function voiceHealth(request, env, ctx) {
       realtimeSttModel: REALTIME_STT_MODEL,
       realtimeVoiceRevision: REALTIME_VOICE_REVISION,
       discordPipelineRevision: DISCORD_PIPELINE_REVISION,
+      webVoiceCapturePolicy: {
+        targetRate: WEB_VOICE_CAPTURE_POLICY.targetRate,
+        silenceMs: WEB_VOICE_CAPTURE_POLICY.silenceMs,
+        minSpeechMs: WEB_VOICE_CAPTURE_POLICY.minSpeechMs,
+        maxUtteranceMs: WEB_VOICE_CAPTURE_POLICY.maxUtteranceMs,
+        preRollFrames: WEB_VOICE_CAPTURE_POLICY.preRollFrames,
+        minVoicedMs: WEB_VOICE_CAPTURE_POLICY.minVoicedMs,
+        minSnr: WEB_VOICE_CAPTURE_POLICY.minSnr,
+        highpassHz: WEB_VOICE_CAPTURE_POLICY.highpassHz,
+      },
       discordArchitecture: 'web-audio-adapter',
       discordFinalStt: 'whisper-large-v3-turbo-via-api-transcribe',
       discordRealtimeSttAuthoritative: false,
