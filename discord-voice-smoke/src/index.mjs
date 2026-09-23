@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v84-local-tts-fallback-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v84-dedupe-telephony-ready-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -57,6 +57,8 @@ let searchTrace = null;
 let previousInteractionId = '';
 let connection;
 let answering = false;
+let activeUserText = '';
+let activeUserUtteranceId = '';
 let voiceEpoch = 0;
 let discordSessionId = '';
 const pendingTurns = [];
@@ -105,6 +107,8 @@ function resetConversationState() {
   searchTrace = null;
   previousInteractionId = '';
   answering = false;
+  activeUserText = '';
+  activeUserUtteranceId = '';
   pendingTurns.splice(0, pendingTurns.length);
   discordSessionId = '';
 }
@@ -140,7 +144,7 @@ function looksLikeRecentBotEcho(text, timeline = {}) {
     const playbackStart = Number(record.startedAt || 0);
     const playbackEnd = Number(record.endedAt || now);
     const overlaps = captureStart > 0
-      ? captureStart <= playbackEnd + 1200 && captureEnd >= playbackStart - 250
+      ? captureStart <= playbackEnd + 3500 && captureEnd >= playbackStart - 250
       : now - playbackStart <= BOT_ECHO_WINDOW_MS;
     if (overlaps && sameUtterance(value, record.text)) return record;
   }
@@ -883,6 +887,18 @@ async function playMp3(mp3, options = {}) {
 
 async function processConfirmedTranscript({ confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
   if (!confirmedTranscript || sessionEpoch !== voiceEpoch) return;
+
+  if (answering && activeUserText && sameUtterance(confirmedTranscript, activeUserText)) {
+    console.warn(`[dedupe] suppressed duplicate in-flight utterance=${utteranceId} active=${activeUserUtteranceId}: ${confirmedTranscript}`);
+    mirrorRuntimeLog('DEDUPE', `in-flight duplicate: ${confirmedTranscript}`);
+    return;
+  }
+  if (pendingTurns.some((item) => sameUtterance(item?.confirmedTranscript || '', confirmedTranscript))) {
+    console.warn(`[dedupe] suppressed duplicate queued utterance=${utteranceId}: ${confirmedTranscript}`);
+    mirrorRuntimeLog('DEDUPE', `queued duplicate: ${confirmedTranscript}`);
+    return;
+  }
+
   const policy = classifyVoiceTurn(confirmedTranscript, { answerInFlight: answering || player.state.status === AudioPlayerStatus.Playing });
   if (policy.action === 'drop') {
     console.log(`[turn-policy] dropped reason=${policy.reason}: ${confirmedTranscript}`);
@@ -896,14 +912,17 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     return;
   }
   if (answering) {
-    if (pendingTurns.length < 3) {
-      pendingTurns.push({ confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta });
-      console.log(`[queue] buffered user=${userId}: ${confirmedTranscript}`);
-    }
+    const nextTurn = { confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta };
+    if (pendingTurns.length === 0) pendingTurns.push(nextTurn);
+    else pendingTurns[0] = nextTurn;
+    console.log(`[queue] buffered latest user=${userId}: ${confirmedTranscript}`);
+    mirrorRuntimeLog('QUEUE', `latest only: ${confirmedTranscript}`);
     return;
   }
 
   answering = true;
+  activeUserText = confirmedTranscript;
+  activeUserUtteranceId = utteranceId;
   const pipelineStarted = Date.now();
   const turnSerial = ++activeTurnSerial;
   const controller = new AbortController();
@@ -1002,6 +1021,8 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     if (activeTurnAbortController === controller) activeTurnAbortController = null;
     if (turnSerial === activeTurnSerial && sessionEpoch === voiceEpoch) {
       answering = false;
+      activeUserText = '';
+      activeUserUtteranceId = '';
       const next = pendingTurns.shift();
       if (next && next.sessionEpoch === voiceEpoch) {
         setTimeout(() => processConfirmedTranscript(next), 0);
@@ -1101,6 +1122,8 @@ function interruptActiveAnswer(reason = 'user-speech') {
   activeFastReaction = null;
   player.stop(true);
   answering = false;
+  activeUserText = '';
+  activeUserUtteranceId = '';
   pendingTurns.splice(0, pendingTurns.length);
   console.log(`[barge-in] interrupted active answer reason=${reason}`);
   return true;
