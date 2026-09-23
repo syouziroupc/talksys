@@ -129,9 +129,6 @@ export class MeloJapaneseTTS {
 
     const attempts = [
       { lang: 'JP', waitMs: 0 },
-      { lang: 'JP', waitMs: 120 },
-      { lang: 'JP', waitMs: 320 },
-      { lang: 'JP', waitMs: 700 },
     ];
 
     let lastError;
@@ -148,7 +145,7 @@ export class MeloJapaneseTTS {
       }
     }
 
-    throw new Error(`MeloTTS exhausted JP retries model=${JAPANESE_TTS_MODEL}: ${String(lastError?.message || lastError || 'unknown_error')}`);
+    throw new Error(`MeloTTS failed JP model=${JAPANESE_TTS_MODEL}: ${String(lastError?.message || lastError || 'unknown_error')}`);
   }
 }
 
