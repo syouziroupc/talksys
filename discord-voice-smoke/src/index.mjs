@@ -15,6 +15,7 @@ import {
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY } from '../../src/voice-capture-policy.js';
+import { sameUtterance } from '../../src/voice-fast-reaction.js';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -27,13 +28,15 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v80-discord-transport-gate-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v81-fast-ack-echo-guard-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
 const DISCORD_READY_TIMEOUT_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
+const IMMEDIATE_ACK_PROMPT = 'はい、少し確認しますね。';
+const BOT_ECHO_WINDOW_MS = 20000;
 const REQUEST_BUDGET_MS = Object.freeze({
   stt: 30000,
   turn: 35000,
@@ -59,6 +62,12 @@ const pendingTurns = [];
 let activeTurnAbortController = null;
 let activeTurnSerial = 0;
 let activeWaitCue = null;
+let activeImmediateAck = null;
+let immediateAckAudio = null;
+let immediateAckAudioPromise = null;
+const recentBotSpeech = [];
+let lastUserSpeechAt = 0;
+let lastUserPcmAt = 0;
 let recoveryAudio = null;
 let recoveryAudioPromise = null;
 let recoverySpeaking = false;
@@ -75,8 +84,13 @@ function resetConversationState() {
   voiceRecoveryAttempts = 0;
   try { activeTurnAbortController?.abort(); } catch {}
   try { activeWaitCue?.stop?.('reset'); } catch {}
+  try { activeImmediateAck?.stop?.('reset'); } catch {}
   activeTurnAbortController = null;
   activeWaitCue = null;
+  activeImmediateAck = null;
+  recentBotSpeech.splice(0, recentBotSpeech.length);
+  lastUserSpeechAt = 0;
+  lastUserPcmAt = 0;
   activeTurnSerial += 1;
   history.splice(0, history.length);
   searchTrace = null;
@@ -84,6 +98,100 @@ function resetConversationState() {
   answering = false;
   pendingTurns.splice(0, pendingTurns.length);
   discordSessionId = '';
+}
+
+function pruneRecentBotSpeech(now = Date.now()) {
+  while (recentBotSpeech.length && now - (recentBotSpeech[0]?.startedAt || 0) > BOT_ECHO_WINDOW_MS) {
+    recentBotSpeech.shift();
+  }
+}
+
+function rememberBotSpeech(text, purpose = '', startedAt = Date.now()) {
+  const value = String(text || '').trim();
+  if (!value) return null;
+  pruneRecentBotSpeech(startedAt);
+  const record = { text: value, purpose, startedAt, endedAt: 0 };
+  recentBotSpeech.push(record);
+  return record;
+}
+
+function finishBotSpeech(record, endedAt = Date.now()) {
+  if (record) record.endedAt = endedAt;
+}
+
+function looksLikeRecentBotEcho(text, timeline = {}) {
+  const value = String(text || '').trim();
+  if (!value) return null;
+  const now = Date.now();
+  pruneRecentBotSpeech(now);
+  const captureStart = Number(timeline.discordReceiveStartAt || timeline.firstPcmAt || 0);
+  const captureEnd = Number(timeline.utteranceEndAt || now);
+  for (let i = recentBotSpeech.length - 1; i >= 0; i -= 1) {
+    const record = recentBotSpeech[i];
+    const playbackStart = Number(record.startedAt || 0);
+    const playbackEnd = Number(record.endedAt || now);
+    const overlaps = captureStart > 0
+      ? captureStart <= playbackEnd + 1200 && captureEnd >= playbackStart - 250
+      : now - playbackStart <= BOT_ECHO_WINDOW_MS;
+    if (overlaps && sameUtterance(value, record.text)) return record;
+  }
+  return null;
+}
+
+async function warmImmediateAckAudio() {
+  if (immediateAckAudio?.length) return immediateAckAudio;
+  if (immediateAckAudioPromise) return immediateAckAudioPromise;
+  immediateAckAudioPromise = synthesize(IMMEDIATE_ACK_PROMPT, undefined, { purpose: 'immediate-ack-warmup' })
+    .then((result) => {
+      immediateAckAudio = result.audio;
+      console.log(`[ack] cached ${immediateAckAudio.length} bytes`);
+      return immediateAckAudio;
+    })
+    .finally(() => { immediateAckAudioPromise = null; });
+  return immediateAckAudioPromise;
+}
+
+function startImmediateAck(utteranceId, sessionEpoch, timeline) {
+  try { activeImmediateAck?.stop?.('replaced'); } catch {}
+  let stopped = false;
+  let playing = false;
+  let handle = null;
+  timeline.immediateAckRequestedAt = Date.now();
+
+  const done = (async () => {
+    try {
+      const audio = immediateAckAudio?.length ? immediateAckAudio : await warmImmediateAckAudio();
+      if (!audio?.length || stopped || sessionEpoch !== voiceEpoch) return false;
+      playing = true;
+      await playMp3(audio, {
+        spokenText: IMMEDIATE_ACK_PROMPT,
+        purpose: 'immediate-ack',
+        onPlaybackStart: ({ playbackStartedAt }) => {
+          timeline.immediateAckPlaybackAt = playbackStartedAt;
+          console.log(`[latency] immediate-ack=${Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt))}ms utterance=${utteranceId}`);
+        },
+      });
+      return true;
+    } catch (error) {
+      if (!stopped) console.warn('[ack] immediate acknowledgement failed:', error?.message || error);
+      return false;
+    } finally {
+      playing = false;
+      if (activeImmediateAck === handle) activeImmediateAck = null;
+    }
+  })();
+
+  handle = {
+    done,
+    stop(reason = 'answer-ready') {
+      if (stopped) return;
+      stopped = true;
+      if (playing) player.stop(true);
+      console.log(`[ack] stopped reason=${reason} utterance=${utteranceId}`);
+    },
+  };
+  activeImmediateAck = handle;
+  return handle;
 }
 
 function boundedSignal(parentSignal, timeoutMs) {
@@ -258,7 +366,7 @@ function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
       const synthesized = await synthesize(cue, signal, { utteranceId, purpose: 'wait-cue' });
       if (signal.aborted || stopped) return false;
       playing = true;
-      await playMp3(synthesized.audio);
+      await playMp3(synthesized.audio, { spokenText: cue, purpose: 'wait-cue' });
       return true;
     } catch (error) {
       if (!signal.aborted && !stopped) console.warn('[wait-cue] failed:', error?.message || error);
@@ -363,15 +471,19 @@ async function warmRecoveryAudio() {
   return recoveryAudioPromise;
 }
 
-async function speakRecoveryPrompt(reason = 'pipeline-failure', sessionEpoch = voiceEpoch) {
+async function speakRecoveryPrompt(reason = 'pipeline-failure', sessionEpoch = voiceEpoch, failedUtteranceEndAt = 0) {
   if (recoverySpeaking || sessionEpoch !== voiceEpoch) return false;
+  if (failedUtteranceEndAt > 0 && (lastUserSpeechAt > failedUtteranceEndAt || lastUserPcmAt > failedUtteranceEndAt)) {
+    console.warn(`[recovery] suppressed because a new user utterance started reason=${reason}`);
+    return false;
+  }
   recoverySpeaking = true;
   try {
     let audio = recoveryAudio;
     if (!audio?.length) audio = await warmRecoveryAudio();
     if (!audio?.length || sessionEpoch !== voiceEpoch) return false;
     player.stop(true);
-    await playMp3(audio);
+    await playMp3(audio, { spokenText: RECOVERY_PROMPT, purpose: 'recovery' });
     console.warn(`[recovery] spoken reason=${reason}`);
     return true;
   } catch (error) {
@@ -396,6 +508,7 @@ async function playMp3(mp3, options = {}) {
 
   let ffmpegError = '';
   let ffmpegSpawnMs = 0;
+  let botSpeechRecord = null;
   ffmpeg.stderr.on('data', (d) => { ffmpegError += String(d); });
   ffmpeg.stdout.once('data', () => {
     ffmpegSpawnMs = Date.now() - ffmpegStarted;
@@ -414,6 +527,7 @@ async function playMp3(mp3, options = {}) {
     const onPlaying = () => {
       clearTimeout(timeout);
       const playbackStartedAt = Date.now();
+      if (options?.spokenText) botSpeechRecord = rememberBotSpeech(options.spokenText, options?.purpose || '', playbackStartedAt);
       const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
       console.log('[tx] playback started');
       try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
@@ -430,8 +544,8 @@ async function playMp3(mp3, options = {}) {
       player.stop(true);
       reject(new Error('playback_timeout'));
     }, 30000);
-    const done = () => { clearTimeout(timeout); cleanup(); resolve(); };
-    const fail = (error) => { clearTimeout(timeout); cleanup(); reject(error); };
+    const done = () => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); cleanup(); resolve(); };
+    const fail = (error) => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); cleanup(); reject(error); };
     const cleanup = () => {
       player.off(AudioPlayerStatus.Idle, done);
       player.off('error', fail);
@@ -486,7 +600,9 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     timeline.turnStartAt = Date.now();
     timings.answerStartMs = Math.max(0, timeline.turnStartAt - (timeline.utteranceEndAt || timeline.turnStartAt));
 
-    activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, fastReaction);
+    if (!timeline.immediateAckRequestedAt) {
+      activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, fastReaction);
+    }
     const turn = await talk(confirmedTranscript, utteranceId, controller.signal);
     timeline.finalAnswerAt = Date.now();
     timings.primaryMs = Number(turn?.timings?.primaryMs) || 0;
@@ -496,6 +612,8 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     // Waiting audio is never part of the answer dependency chain.
     activeWaitCue?.stop('final-answer-ready');
     activeWaitCue = null;
+    activeImmediateAck?.stop?.('final-answer-ready');
+    activeImmediateAck = null;
     player.stop(true);
 
     timeline.ttsStartAt = Date.now();
@@ -507,6 +625,8 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
 
     const playbackWallStarted = Date.now();
     await playMp3(tts.audio, {
+      spokenText: turn.answer,
+      purpose: 'answer',
       onPlaybackStart: ({ playbackStartedAt, ffmpegSpawnMs }) => {
         timeline.playbackStartAt = playbackStartedAt;
         timings.ffmpegSpawnMs = ffmpegSpawnMs;
@@ -520,11 +640,13 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
       console.log(`[pipeline] interrupted utterance=${utteranceId}`);
     } else {
       console.error('[pipeline]', error?.stack || error);
-      await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch);
+      await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch, timeline.utteranceEndAt || 0);
     }
   } finally {
     activeWaitCue?.stop?.('pipeline-complete');
     activeWaitCue = null;
+    activeImmediateAck?.stop?.('pipeline-complete');
+    activeImmediateAck = null;
     timeline.pipelineCompleteAt = Date.now();
     timings.pipelineCompleteMs = Math.max(0, timeline.pipelineCompleteAt - pipelineStarted);
     console.log(`[latency-summary] utterance=${utteranceId} captureMs=${timings.captureMs} sttMs=${timings.sttMs} speechEndToSttFinalMs=${timings.speechEndToSttFinalMs} primaryMs=${timings.primaryMs} verifierMs=${timings.verifierMs} answerGenerationTotalMs=${timings.answerGenerationTotalMs} firstTtsMs=${timings.firstTtsMs} ffmpegSpawnMs=${timings.ffmpegSpawnMs} speechEndToPlaybackStartMs=${timings.speechEndToPlaybackStartMs} pipelineCompleteMs=${timings.pipelineCompleteMs}`);
@@ -559,6 +681,32 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
   const controller = new AbortController();
   try {
     const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal);
+    const echoRecord = looksLikeRecentBotEcho(stt.confirmedTranscript, timeline);
+    if (echoRecord) {
+      console.warn(`[echo-guard] suppressed bot echo utterance=${utteranceId} purpose=${echoRecord.purpose}: ${stt.confirmedTranscript}`);
+      activeImmediateAck?.stop?.('echo-suppressed');
+      activeImmediateAck = null;
+      timeline.pipelineCompleteAt = Date.now();
+      postVoiceMetrics({
+        text: stt.confirmedTranscript,
+        utteranceId,
+        timings: {
+          sttMode: 'web-whisper',
+          captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
+          sttMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.transcribeStartAt || 0)),
+          speechEndToSttFinalMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.utteranceEndAt || 0)),
+          immediateAckMs: Math.max(0, (timeline.immediateAckPlaybackAt || 0) - (timeline.utteranceEndAt || 0)),
+          pipelineCompleteMs: Math.max(0, timeline.pipelineCompleteAt - (timeline.discordReceiveStartAt || timeline.pipelineCompleteAt)),
+          echoSuppressed: true,
+        },
+        timeline,
+        realtimeTranscript: '',
+        confirmedTranscript: stt.confirmedTranscript,
+        geminiInputText: '',
+        error: '',
+      }).catch(() => {});
+      return;
+    }
     await processConfirmedTranscript({
       confirmedTranscript: stt.confirmedTranscript,
       fastReaction: stt.fastReaction,
@@ -590,7 +738,9 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
       geminiInputText: '',
       error: message,
     }).catch(() => {});
-    await speakRecoveryPrompt('stt-failed', sessionEpoch);
+    activeImmediateAck?.stop?.('stt-failed');
+    activeImmediateAck = null;
+    await speakRecoveryPrompt('stt-failed', sessionEpoch, timeline.utteranceEndAt || 0);
   }
 }
 
@@ -601,7 +751,9 @@ function interruptActiveAnswer(reason = 'user-speech') {
   activeTurnAbortController = null;
   try { controller?.abort(); } catch {}
   try { activeWaitCue?.stop?.(reason); } catch {}
+  try { activeImmediateAck?.stop?.(reason); } catch {}
   activeWaitCue = null;
+  activeImmediateAck = null;
   player.stop(true);
   answering = false;
   pendingTurns.splice(0, pendingTurns.length);
@@ -624,6 +776,8 @@ function startReceiverSession(userId, speakingNow = false) {
     discordReceiveStartAt: 0,
     firstPcmAt: 0,
     utteranceEndAt: 0,
+    immediateAckRequestedAt: 0,
+    immediateAckPlaybackAt: 0,
     wavReadyAt: 0,
     transcribeStartAt: 0,
     whisperCompleteAt: 0,
@@ -662,7 +816,8 @@ function startReceiverSession(userId, speakingNow = false) {
   const markSpeaking = () => {
     if (completed) return;
     speakingMarked = true;
-    if (!timeline.discordReceiveStartAt) timeline.discordReceiveStartAt = Date.now();
+    lastUserSpeechAt = Date.now();
+    if (!timeline.discordReceiveStartAt) timeline.discordReceiveStartAt = lastUserSpeechAt;
     if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
     packetStartWatchdog = setTimeout(() => {
       if (completed || pcm16Bytes > 0) return;
@@ -704,6 +859,7 @@ function startReceiverSession(userId, speakingNow = false) {
       browserVadBypassed: true,
     };
     console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captureMetrics.durationMs}ms pcm=${pcm.length}B transport-gated=true`);
+    startImmediateAck(utteranceId, sessionEpoch, timeline);
     await handleCapturedUtterance({
       pcm,
       userId,
@@ -732,6 +888,7 @@ function startReceiverSession(userId, speakingNow = false) {
   resampler.stdout.on('data', (pcm16) => {
     if (!pcm16?.length || completed) return;
     const at = Date.now();
+    lastUserPcmAt = at;
     if (!timeline.firstPcmAt) timeline.firstPcmAt = at;
     if (!timeline.discordReceiveStartAt) timeline.discordReceiveStartAt = at;
     lastPcmAt = at;
@@ -779,7 +936,7 @@ function destroyVoiceConnection() {
 async function playConnectionGreeting() {
   try {
     const result = await synthesize('フォーンズです。接続しました。');
-    await playMp3(result.audio);
+    await playMp3(result.audio, { spokenText: 'フォーンズです。接続しました。', purpose: 'greeting' });
     console.log('[greeting] connection greeting played');
     return true;
   } catch (error) {
@@ -862,6 +1019,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   console.log('[discord] final STT: Whisper Large v3 Turbo via /api/transcribe');
   console.log('[discord] bridge revision:', DISCORD_BRIDGE_REVISION);
   await playConnectionGreeting();
+  warmImmediateAckAudio().catch((error) => console.warn('[ack] warmup failed:', error?.message || error));
   warmRecoveryAudio().catch((error) => console.warn('[recovery] warmup failed:', error?.message || error));
   return channel;
 }
