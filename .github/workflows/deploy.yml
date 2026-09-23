@@ -284,10 +284,10 @@ jobs:
           out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
           OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='gemini-native-interactions'||d.search!==false||d.genericVerificationAttempted!==false||!String(d.answer||'').trim())throw new Error(process.env.OUT);"
 
-          # Even deterministic-looking tasks use the quality-first grounded + verified path.
+          # Pure arithmetic stays on the deterministic local path; no search or verifier is needed.
           payload='{"text":"12345÷15","history":[]}'
-          out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='gemini-native-interactions'||d.nativeGoogleSearch!==true||d.search!==true||d.genericVerificationAttempted!==true||d.genericVerificationSucceeded!==true||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'||!Number.isFinite(d.timings?.primaryMs)||!Number.isFinite(d.timings?.verifierMs)||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
+          out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='deterministic-arithmetic'||d.search!==false||d.genericVerificationAttempted!==false||d.genericVerificationSucceeded!==false||d.generationProvider!=='local'||d.generationModel!=='deterministic-arithmetic-v1'||!Number.isFinite(d.timings?.primaryMs)||!Number.isFinite(d.timings?.verifierMs)||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
 
           payload='{"text":"別府市の今日の天気は？","history":[]}'
           out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
