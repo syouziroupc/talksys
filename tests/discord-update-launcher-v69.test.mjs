@@ -36,3 +36,12 @@ test('Discord launcher supervises the bridge process and restarts unexpected exi
   assert.match(launcher, /\$rapidFailures -ge 5/);
   assert.match(launcher, /短時間に5回連続で異常終了/);
 });
+
+
+test('Discord updater stops only the old bridge process from the same checkout before restart', () => {
+  assert.match(updater, /Get-CimInstance Win32_Process/);
+  assert.match(updater, /Name = 'node\.exe'/);
+  assert.match(updater, /\[regex\]::Escape\(\$entry\)/);
+  assert.match(updater, /Stop-Process -Id \$proc\.ProcessId -Force/);
+  assert.match(updater, /src\\index\.mjs/);
+});
