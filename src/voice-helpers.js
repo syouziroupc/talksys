@@ -143,12 +143,12 @@ export class MeloJapaneseTTS {
       } catch (error) {
         lastError = error;
         const transient = isTransientTtsError(error);
-        const languageVariantRejected = /(?:invalid|unsupported|lang|language|400|5004)/i.test(String(error?.message || error || ''));
-        if (!transient && !languageVariantRejected) throw error;
+        if (!transient) throw error;
+        console.warn(`[tts-melotts] attempt=${attempt + 1}/${attempts.length} model=${JAPANESE_TTS_MODEL} lang=${config.lang} error=${String(error?.message || error || 'unknown_error')}`);
       }
     }
 
-    throw new Error(`MeloTTS exhausted JP retries: ${String(lastError?.message || lastError || 'unknown_error')}`);
+    throw new Error(`MeloTTS exhausted JP retries model=${JAPANESE_TTS_MODEL}: ${String(lastError?.message || lastError || 'unknown_error')}`);
   }
 }
 
