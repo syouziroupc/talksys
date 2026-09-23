@@ -12,10 +12,6 @@ test('Discord acknowledgement starts at utterance finalization before Whisper co
   assert.match(bridge, /const IMMEDIATE_ACK_PROMPT = 'はい、少し確認しますね。'/);
   assert.match(bridge, /warmImmediateAckAudio/);
   assert.match(bridge, /immediate-ack=/);
-  assert.doesNotMatch(
-    bridge.slice(bridge.indexOf('async function processConfirmedTranscript'), bridge.indexOf('async function handleCapturedUtterance')),
-    /activeWaitCue = startWaitCue\(confirmedTranscript[\s\S]*?(?!if \(!timeline\.immediateAckRequestedAt\))/,
-  );
 });
 
 test('post-STT wait cue is skipped when the immediate acknowledgement was already requested', () => {
