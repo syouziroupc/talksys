@@ -17,8 +17,8 @@ test('metrics carry capture, Whisper, common turn, TTS and playback timings', ()
     'verifierMs','answerGenerationTotalMs','firstTtsMs','firstAudioReadyMs',
     'speechEndToPlaybackStartMs','pipelineCompleteMs','ffmpegSpawnMs','playbackMs',
   ]) assert.match(source, new RegExp(key));
-  assert.match(source, /sttMode: 'whisper-batch'/);
-  assert.match(source, /fallback: false/);
+  assert.match(source, /sttMode: 'web-whisper'/);
+  assert.doesNotMatch(source, /batchSttMs|batchTranscribePcm16|fallbackController|realtimeSttBackoff|realtimeSttSockets/);
 });
 
 test('one utterance id links /api/transcribe, /api/turn, TTS and metrics', () => {
