@@ -103,6 +103,37 @@ jobs:
           set -euo pipefail
           if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 
+      - name: Diagnose MeloTTS language/runtime behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          endpoint="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/ai/run/@cf/myshell-ai/melotts"
+          run_case() {
+            label="$1"
+            payload="$2"
+            body="$(mktemp)"
+            headers="$(mktemp)"
+            status="$(curl --silent --show-error --max-time 20 \
+              --output "$body" --dump-header "$headers" \
+              --write-out '%{http_code}' \
+              --request POST \
+              --url "$endpoint" \
+              --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              --header 'Content-Type: application/json' \
+              --data "$payload" || true)"
+            ctype="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{gsub("\\r",""); print $2; exit}' "$headers")"
+            size="$(wc -c < "$body" | tr -d ' ')"
+            echo "melotts-diagnostic label=$label http=$status contentType=${ctype:-unknown} bytes=$size"
+            if [[ "$status" != "200" ]]; then
+              head -c 600 "$body" || true
+              echo
+            fi
+            rm -f "$body" "$headers"
+          }
+          run_case jp_upper '{"prompt":"こんばんは。","lang":"JP"}'
+          run_case ja_lower '{"prompt":"こんばんは。","lang":"ja"}'
+          run_case en_lower '{"prompt":"Hello.","lang":"en"}'
+          run_case en_upper '{"prompt":"Hello.","lang":"EN"}'
       - name: Verify permanent Discord bridge secret exists in Cloudflare
         shell: bash
         run: |
