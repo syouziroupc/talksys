@@ -149,3 +149,18 @@ test('Discord uses Node native WebSocket and carries no extra websocket dependen
   assert.equal(packageJson.dependencies.opusscript, '^0.0.8');
   assert.equal(packageJson.dependencies.ws, undefined);
 });
+
+
+test('v84 Discord falls back to Windows Japanese TTS when Cloudflare MeloTTS returns 3043', () => {
+  assert.match(source, /synthesizeWindowsJapaneseTts/);
+  assert.match(source, /System\.Speech\.Synthesis\.SpeechSynthesizer/);
+  assert.match(source, /MeloTTS exhausted JP retries/);
+  assert.match(source, /Cloudflare MeloTTS failed; falling back to Windows System\.Speech/);
+  assert.match(source, /source: 'windows-system-speech'/);
+});
+
+test('VC connection survives greeting TTS failure', () => {
+  assert.match(source, /connection greeting unavailable/);
+  assert.doesNotMatch(source, /throw new Error\(`connection_greeting_failed/);
+  assert.match(source, /return false/);
+});
