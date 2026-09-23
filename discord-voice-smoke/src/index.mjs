@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v84-dedupe-telephony-ready-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v84-dedupe-tts-observable-r2';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -186,6 +186,7 @@ async function attachRuntimeLogChannel(channel) {
   mirrorRuntimeLog('LOG', 'Discord live log attached');
   mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
   mirrorRuntimeLog('BOOT', `TalkSys=${TALKSYS_BASE_URL}`);
+  mirrorRuntimeLog('BOOT', `ttsPrimary=${process.platform === 'win32' ? 'windows-system-speech' : 'cloudflare-melotts'}`);
   scheduleRuntimeLogFlush();
   return true;
 }
@@ -773,6 +774,7 @@ async function synthesize(text, signal, meta = {}) {
     } catch (localError) {
       const detail = String(localError?.message || localError || '');
       console.warn('[tts] Windows System.Speech failed; trying Cloudflare MeloTTS:', detail);
+      mirrorRuntimeLog('TTS-ERROR', `Windows local failed: ${detail.slice(0, 180)}`);
       mirrorRuntimeLog('TTS', 'Windows local failed -> Cloudflare recovery');
     }
   }
