@@ -1,7 +1,7 @@
 export const WEB_VOICE_CAPTURE_POLICY = Object.freeze({
   targetRate: 16000,
   frameMs: 40,
-  silenceMs: 650,
+  silenceMs: 900,
   maxUtteranceMs: 12000,
   minSpeechMs: 260,
   preRollFrames: 8,
