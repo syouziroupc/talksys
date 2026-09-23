@@ -10,9 +10,9 @@ const logSource = fs.readFileSync(new URL('../src/log-v42.js', import.meta.url),
 
 test('Web capture policy remains canonical for browser capture and Discord audio normalization', () => {
   assert.equal(WEB_VOICE_CAPTURE_POLICY.targetRate, 16000);
-  assert.equal(WEB_VOICE_CAPTURE_POLICY.silenceMs, 650);
+  assert.equal(WEB_VOICE_CAPTURE_POLICY.silenceMs, 900);
   assert.equal(WEB_VOICE_CAPTURE_POLICY.highpassHz, 90);
-  assert.match(TALK_CLIENT_V45, /SILENCE_MS=650/);
+  assert.match(TALK_CLIENT_V45, /SILENCE_MS=900/);
   assert.match(TALK_CLIENT_V45, /inputFilter\.frequency\.value=90/);
   assert.match(bridge, /highpass=f=\$\{WEB_VOICE_CAPTURE_POLICY\.highpassHz\},aresample=\$\{WEB_VOICE_CAPTURE_POLICY\.targetRate\}/);
 });
