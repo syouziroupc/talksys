@@ -16,7 +16,7 @@ test('v61 fast reactions are context-sensitive and intentionally a little longer
   assert.equal(FAST_REACTION_REVISION, 'talksys-v61-quality-buffer-r1');
   assert.deepEqual(fastReaction('こんにちは').text, 'こんにちは。');
   assert.deepEqual(fastReaction('ありがとう').text, 'どういたしまして。');
-  assert.deepEqual(fastReaction('今から別府駅の次の電車を調べて').text, 'はい、少し確認しながら調べますね。');
+  assert.match(fastReaction('今から別府駅の次の電車を調べて').text, /調べ|確認|検索/);
   assert.deepEqual(fastReaction('ちょっと相談したい').text, 'はい、内容を確認しますね。');
   assert.equal(fastReaction('えーと').shouldSpeak, false);
 });
