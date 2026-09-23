@@ -47,3 +47,11 @@ test('latency metrics preserve the full quality-first pipeline', () => {
     'ffmpegSpawnMs','speechEndToPlaybackStartMs','pipelineCompleteMs',
   ]) assert.match(bridge + integrated, new RegExp(key));
 });
+
+
+test('v84 factual grounding fails closed when Gemini returns no URL citations', () => {
+  assert.match(integrated, /export function interactionCitationCount/);
+  assert.match(integrated, /export function requiresGroundedEvidence/);
+  assert.match(integrated, /const groundingFailClosed = groundingRequired && citationCount === 0/);
+  assert.match(integrated, /未確認の固有事実や数値は断定しません/);
+});
