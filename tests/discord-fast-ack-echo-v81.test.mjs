@@ -6,7 +6,7 @@ const bridge = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', i
 const integrated = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
 
 test('Discord uses the same Web fast-reaction decision path', () => {
-  assert.match(bridge, /import \{ fastReaction, sameUtterance \} from '\.\.\/\.\.\/src\/voice-fast-reaction\.js'/);
+  assert.match(bridge, /import \{ fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure \} from '\.\.\/\.\.\/src\/voice-fast-reaction\.js'/);
   assert.match(bridge, /\/api\/realtime-stt/);
   assert.match(bridge, /\/api\/fast-reaction/);
   assert.match(bridge, /setTimeout\(async \(\) => \{[\s\S]*fetchFastReaction\(value\)[\s\S]*\}, 90\)/);
@@ -64,7 +64,7 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
 test('v84 preserves authoritative Whisper while sharing the turn policy', () => {
   assert.match(bridge, /talksys-discord-bridge-v84-unified-force-reply-r1/);
   assert.match(integrated, /talksys-v84-unified-force-reply-r1/);
-  assert.match(bridge, /voice-fast-reaction\\.js/);
+  assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/turn'/);
 });
