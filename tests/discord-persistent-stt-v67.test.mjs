@@ -23,7 +23,7 @@ test('Discord transport gate owns segmentation and finalizes after the shared 65
   assert.match(source, /Date\.now\(\) - lastPcmAt >= WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
   assert.match(source, /finalize\('discord-pcm-silence'\)/);
   assert.match(source, /browserVadBypassed: true/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v80-discord-transport-gate-r1'/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v81-fast-ack-echo-guard-r1'/);
   assert.doesNotMatch(source, /capture\.shouldFinalize|web-compatible-silence|WebCompatibleCapture/);
 });
 
