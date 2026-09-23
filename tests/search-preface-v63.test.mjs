@@ -39,9 +39,13 @@ test('browser client starts the real turn and parallel search preface path', () 
   assert.match(TALK_CLIENT_V45, /await searchAnnouncementTask/);
 });
 
-test('Discord voice bridge intentionally omits the web search preface for lower latency', () => {
-  assert.doesNotMatch(discord, /\/api\/search-preface/);
-  assert.doesNotMatch(discord, /searchPreface|prefaceTask|prefacePlaybackPromise/);
-  assert.match(discord, /streamedResult = await talkStream\(text, queueSentence, utteranceId, controller\.signal, prefetchSpeculative\)/);
+test('Discord uses the same search preface as a non-answer wait cue without changing final answer generation', () => {
+  assert.match(discord, /\/api\/search-preface/);
+  assert.match(discord, /\/api\/fast-reaction/);
+  assert.match(discord, /async function playWaitCue/);
+  assert.match(discord, /const waitCuePromise = playWaitCue/);
+  assert.match(discord, /waitCueController\.abort\('final-answer-ready'\)/);
+  assert.match(discord, /streamedResult = await talkStream\(text, queueSentence, utteranceId, controller\.signal\)/);
+  assert.doesNotMatch(discord, /onSpeculative|speculativeText|speculativeAudioPromise/);
   assert.match(discord, /falling back to \/api\/turn/);
 });
