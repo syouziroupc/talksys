@@ -171,6 +171,13 @@ jobs:
           NODE
           npx wrangler deploy --secrets-file "$secrets_file"
 
+      - name: Probe in-worker MeloTTS language matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update(process.env.GEMINI_API_KEY+':talksys-tts-diagnostic-v1').digest('hex'))")"
+          body="$(curl -fsS --max-time 45 -H "x-talksys-diagnostic: $token" "$PRODUCTION_URL/api/internal/tts-diagnostic")"
+          echo "$body"
       - name: Verify current production contract
         shell: bash
         run: |
