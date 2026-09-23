@@ -39,14 +39,16 @@ test('authoritative clock is JST and is injected independently from model memory
   assert.match(clock, /現在、今日、明日、次の便/);
 });
 
-test('search preference skips only greeting-like trivial conversation', () => {
+test('search preference targets external facts and skips local or conversational work', () => {
   assert.equal(shouldStronglyPreferSearch('別府で中古パソコンのおすすめ店ある？'), true);
   assert.equal(shouldStronglyPreferSearch('QCM1250とこのACアダプタは互換性ある？'), true);
   assert.equal(shouldStronglyPreferSearch('今のソニックの時刻を教えて'), true);
-  assert.equal(shouldStronglyPreferSearch('12345÷15'), true);
-  assert.equal(shouldStronglyPreferSearch('この文章を短くして'), true);
+  assert.equal(shouldStronglyPreferSearch('12345÷15'), false);
+  assert.equal(shouldStronglyPreferSearch('この文章を短くして'), false);
   assert.equal(shouldStronglyPreferSearch('ありがとう'), false);
   assert.equal(shouldStronglyPreferSearch('こんにちは'), false);
+  assert.equal(shouldStronglyPreferSearch('これ変わったな'), false);
+  assert.equal(shouldStronglyPreferSearch('会話が成立し始めた'), false);
 });
 
 test('spoken-answer normalizer removes screen-only notation and makes common numbers and units Japanese-friendly', () => {
