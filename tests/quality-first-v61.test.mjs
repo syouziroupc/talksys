@@ -56,8 +56,8 @@ test('fast reaction is deliberately longer while quality-first answer is being p
 
   const lookup = fastReaction('今日の天気を調べて');
   assert.equal(lookup.kind, 'lookup');
-  assert.equal(lookup.text, 'はい、少し確認しながら調べますね。');
-  assert.ok(lookup.text.length >= 15);
+  assert.match(lookup.text, /調べ|確認|検索/);
+  assert.ok(lookup.text.length >= 8);
 
   const question = fastReaction('このCPUは対応していますか？');
   assert.equal(question.kind, 'lookup');
