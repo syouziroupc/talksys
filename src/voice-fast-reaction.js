@@ -10,6 +10,24 @@ const FILLER_ONLY_RE = /^(?:えー+と?|えっと|あの+|その+|うー+ん|ん
 const SEARCHISH_RE = /(?:検索|調べ|探して|見つけ|確認して|最新|現在|今日|明日|価格|値段|在庫|営業時間|時刻|電車|列車|運行|ニュース|天気|どこ|誰|いつ|何時|いくら|おすすめ|店|店舗|会社|製品|商品|型番|仕様|互換|対応)/i;
 const REQUEST_RE = /(?:して|してほしい|教えて|お願い|頼む|考えて|見て|聞きたい|知りたい|相談|どうしたら|どうすれば)/i;
 const QUESTION_RE = /[？?]|(?:ですか|ますか|なの|なのか|何|どれ|どっち|どう|なぜ|なんで|誰|どこ|いつ)$/i;
+const LOOKUP_REACTIONS = Object.freeze([
+  'はい、少し調べますね。',
+  '関連情報を確認します。',
+  '最新の情報を確認してみます。',
+  '少し検索して確かめます。',
+  '確認できる情報を調べています。',
+]);
+
+function stableVariantIndex(value = '', count = 1) {
+  const text = clean(value, 800);
+  let hash = 2166136261;
+  for (const ch of text) {
+    hash ^= ch.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0) % Math.max(1, count);
+}
+
 
 export function fastReaction(text = '') {
   const value = clean(text);
@@ -27,7 +45,8 @@ export function fastReaction(text = '') {
     return { kind: 'thanks', text: 'どういたしまして。', shouldSpeak: true, terminal: false };
   }
   if (SEARCHISH_RE.test(value)) {
-    return { kind: 'lookup', text: 'はい、少し確認しながら調べますね。', shouldSpeak: true, terminal: false };
+    const text = LOOKUP_REACTIONS[stableVariantIndex(value, LOOKUP_REACTIONS.length)];
+    return { kind: 'lookup', text, shouldSpeak: true, terminal: false };
   }
   if (REQUEST_RE.test(value)) {
     return { kind: 'request', text: 'はい、内容を確認しますね。', shouldSpeak: true, terminal: false };
