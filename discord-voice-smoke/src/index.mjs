@@ -731,53 +731,52 @@ async function synthesizeWindowsJapaneseTts(text, signal) {
   };
 }
 
-async function synthesize(text, signal, meta = {}) {
+async function synthesizeCloudflareTts(text, signal, meta = {}) {
   const started = Date.now();
-  try {
-    const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice/synthesize', {
-      method: 'POST',
-      signal,
-      headers: {
-        'content-type': 'application/json',
-        authorization: 'Bearer ' + BRIDGE_TOKEN,
-      },
-      body: JSON.stringify({
-        text,
-        sessionId: discordSessionId || `discord-${randomUUID()}`,
-        utteranceId: String(meta?.utteranceId || ''),
-        channel: 'discord',
-        purpose: String(meta?.purpose || 'answer'),
-      }),
-    }, {
-      timeoutMs: REQUEST_BUDGET_MS.tts,
-      label: 'tts',
-    });
-    const audio = Buffer.from(await response.arrayBuffer());
-    const type = response.headers.get('content-type') || 'unknown';
-    const source = response.headers.get('x-talksys-voice-source') || 'unknown';
-    const workerMs = Number(response.headers.get('x-talksys-tts-ms') || 0);
-    const elapsedMs = Date.now() - started;
-    console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
-    console.log(`[latency] tts-http=${elapsedMs}ms worker=${workerMs || '?'}ms source=${source}`);
-    mirrorRuntimeLog('TTS', `${elapsedMs}ms source=${source}`);
-    return { audio, source, elapsedMs, workerMs };
-  } catch (error) {
-    const detail = String(error?.message || error || '');
-    const cloudflareTtsFailure = /tts_http_502|tts_failed|MeloTTS exhausted JP retries|3043: Internal server error/i.test(detail);
-    if (!cloudflareTtsFailure || process.platform !== 'win32') throw error;
+  const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice/synthesize', {
+    method: 'POST',
+    signal,
+    headers: {
+      'content-type': 'application/json',
+      authorization: 'Bearer ' + BRIDGE_TOKEN,
+    },
+    body: JSON.stringify({
+      text,
+      sessionId: discordSessionId || `discord-${randomUUID()}`,
+      utteranceId: String(meta?.utteranceId || ''),
+      channel: 'discord',
+      purpose: String(meta?.purpose || 'answer'),
+    }),
+  }, {
+    timeoutMs: REQUEST_BUDGET_MS.tts,
+    label: 'tts',
+  });
+  const audio = Buffer.from(await response.arrayBuffer());
+  const type = response.headers.get('content-type') || 'unknown';
+  const source = response.headers.get('x-talksys-voice-source') || 'unknown';
+  const workerMs = Number(response.headers.get('x-talksys-tts-ms') || 0);
+  const elapsedMs = Date.now() - started;
+  console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
+  console.log(`[latency] tts-http=${elapsedMs}ms worker=${workerMs || '?'}ms source=${source}`);
+  mirrorRuntimeLog('TTS', `${elapsedMs}ms source=${source}`);
+  return { audio, source, elapsedMs, workerMs };
+}
 
-    console.warn('[tts] Cloudflare MeloTTS failed; falling back to Windows System.Speech:', detail);
-    mirrorRuntimeLog('TTS', 'Cloudflare failed -> Windows local fallback');
+async function synthesize(text, signal, meta = {}) {
+  if (process.platform === 'win32') {
     try {
       const local = await synthesizeWindowsJapaneseTts(text, signal);
       console.log(`[tts] ${local.audio.length} bytes source=${local.source}`);
       console.log(`[latency] tts-local=${local.elapsedMs}ms source=${local.source}`);
       mirrorRuntimeLog('TTS', `${local.elapsedMs}ms source=${local.source}`);
       return local;
-    } catch (fallbackError) {
-      throw new Error(`tts_cloudflare_and_windows_failed: cloudflare=${detail.slice(0, 220)} windows=${String(fallbackError?.message || fallbackError).slice(0, 220)}`);
+    } catch (localError) {
+      const detail = String(localError?.message || localError || '');
+      console.warn('[tts] Windows System.Speech failed; trying Cloudflare MeloTTS:', detail);
+      mirrorRuntimeLog('TTS', 'Windows local failed -> Cloudflare recovery');
     }
   }
+  return synthesizeCloudflareTts(text, signal, meta);
 }
 
 async function warmRecoveryAudio() {
