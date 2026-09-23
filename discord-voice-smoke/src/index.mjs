@@ -49,6 +49,7 @@ const client = new Client({
 
 const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
 const sessions = new Map();
+const voiceProfiles = new Map();
 const history = [];
 let searchTrace = null;
 let previousInteractionId = '';
@@ -85,6 +86,37 @@ function resetConversationState() {
   answering = false;
   pendingTurns.splice(0, pendingTurns.length);
   discordSessionId = '';
+}
+
+function voiceProfileFor(userId) {
+  let profile = voiceProfiles.get(userId);
+  if (!profile) {
+    profile = { noise: WEB_VOICE_CAPTURE_POLICY.initialNoise, noiseBoost: 1 };
+    voiceProfiles.set(userId, profile);
+  }
+  return profile;
+}
+
+function learnRejectedCapture(profile, metrics = {}) {
+  if (!profile || !metrics?.speechDetected) return;
+  profile.noiseBoost = Math.min(2.8, profile.noiseBoost * 1.12 + 0.04);
+  const maxRms = Number(metrics.maxRms) || 0;
+  if (maxRms > 0) {
+    profile.noise = Math.max(
+      profile.noise,
+      Math.min(WEB_VOICE_CAPTURE_POLICY.noiseMax, maxRms * 0.38),
+    );
+  }
+}
+
+function learnSuccessfulSpeech(profile) {
+  if (!profile) return;
+  profile.noiseBoost = Math.max(1, profile.noiseBoost * 0.93);
+}
+
+function learnSttFailure(profile) {
+  if (!profile) return;
+  profile.noiseBoost = Math.min(2.8, profile.noiseBoost * 1.10 + 0.03);
 }
 
 function boundedSignal(parentSignal, timeoutMs) {
@@ -543,16 +575,21 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
   }
 }
 
-async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId, timeline, captureMetrics }) {
+async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId, timeline, captureMetrics, voiceProfile }) {
   if (sessionEpoch !== voiceEpoch) return;
-  if (!pcm?.length || captureMetrics.durationMs < WEB_VOICE_CAPTURE_POLICY.minSpeechMs) {
-    console.log(`[capture] rejected short utterance=${utteranceId} duration=${captureMetrics.durationMs || 0}ms`);
+  const durationOk = Boolean(pcm?.length) && captureMetrics.durationMs >= WEB_VOICE_CAPTURE_POLICY.minSpeechMs;
+  const voicedOk = captureMetrics.voicedMs >= WEB_VOICE_CAPTURE_POLICY.minVoicedMs;
+  const snrOk = captureMetrics.snr >= WEB_VOICE_CAPTURE_POLICY.minSnr;
+  if (!durationOk || !voicedOk || !snrOk) {
+    learnRejectedCapture(voiceProfile, captureMetrics);
+    console.log(`[capture] rejected utterance=${utteranceId} duration=${captureMetrics.durationMs || 0}ms voiced=${captureMetrics.voicedMs || 0}ms snr=${captureMetrics.snr || 0} boost=${voiceProfile?.noiseBoost?.toFixed?.(2) || '1.00'}`);
     return;
   }
 
   const controller = new AbortController();
   try {
     const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal);
+    learnSuccessfulSpeech(voiceProfile);
     await processConfirmedTranscript({
       confirmedTranscript: stt.confirmedTranscript,
       fastReaction: stt.fastReaction,
@@ -564,6 +601,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
       sttMeta: stt,
     });
   } catch (error) {
+    learnSttFailure(voiceProfile);
     const message = String(error?.message || error || '').slice(0, 500);
     console.error('[stt]', message);
     timeline.pipelineCompleteAt = Date.now();
@@ -628,7 +666,11 @@ function startReceiverSession(userId, speakingNow = false) {
     playbackStartAt: 0,
     pipelineCompleteAt: 0,
   };
-  const capture = new WebCompatibleCapture();
+  const voiceProfile = voiceProfileFor(userId);
+  const capture = new WebCompatibleCapture({
+    noise: voiceProfile.noise,
+    noiseBoost: voiceProfile.noiseBoost,
+  });
   const opus = connection.receiver.subscribe(userId, {
     // Transport safety only. Web-compatible 650 ms PCM VAD finalizes first.
     end: { behavior: EndBehaviorType.AfterSilence, duration: 1600 },
@@ -676,6 +718,8 @@ function startReceiverSession(userId, speakingNow = false) {
     completed = true;
     const endedAt = Date.now();
     const captured = capture.finalize(endedAt);
+    voiceProfile.noise = capture.noise;
+    voiceProfile.noiseBoost = capture.noiseBoost;
     timeline.firstPcmAt = captured.metrics.firstPcmAt || timeline.firstPcmAt;
     timeline.utteranceEndAt = endedAt;
     cleanup();
@@ -692,6 +736,7 @@ function startReceiverSession(userId, speakingNow = false) {
       utteranceId,
       timeline,
       captureMetrics: captured.metrics,
+      voiceProfile,
     });
   };
 
@@ -747,6 +792,7 @@ function destroyVoiceConnection() {
     try { session.resampler?.kill?.('SIGKILL'); } catch {}
   }
   sessions.clear();
+  voiceProfiles.clear();
   player.stop(true);
   try { connection?.destroy(); } catch {}
   connection = undefined;
