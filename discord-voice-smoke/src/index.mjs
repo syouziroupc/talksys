@@ -28,7 +28,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v76-interaction-supervisor-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v77-stt-critical-six-r1';
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const RECEIVER_CAPTURE_TIMEOUT_MS = 30000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -36,7 +36,7 @@ const DISCORD_READY_TIMEOUT_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const REQUEST_BUDGET_MS = Object.freeze({
-  batchStt: 8000,
+  batchStt: 1800,
   turnStream: 35000,
   turn: 35000,
   tts: 12000,
@@ -133,25 +133,27 @@ function registerRealtimeSttHealthy() {
   realtimeSttBackoffUntil = 0;
 }
 
-function mono16kFromStereo48k(chunk) {
-  const input = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-  const frames = Math.floor(input.length / 4);
-  const outFrames = Math.floor(frames / 3);
-  const out = Buffer.allocUnsafe(outFrames * 2);
-  let oi = 0;
-  for (let frame = 0; frame + 2 < frames; frame += 3) {
-    let sum = 0;
-    for (let k = 0; k < 3; k += 1) {
-      const base = (frame + k) * 4;
-      const l = input.readInt16LE(base);
-      const r = input.readInt16LE(base + 2);
-      sum += (l + r) / 2;
-    }
-    const sample = Math.max(-32768, Math.min(32767, Math.round(sum / 3)));
-    out.writeInt16LE(sample, oi);
-    oi += 2;
-  }
-  return out.subarray(0, oi);
+function createMono16kResampler() {
+  if (!ffmpegPath) throw new Error('ffmpeg_static_missing');
+  const ffmpeg = spawn(ffmpegPath, [
+    '-hide_banner', '-loglevel', 'error',
+    '-f', 's16le',
+    '-ar', '48000',
+    '-ac', '2',
+    '-i', 'pipe:0',
+    '-af', 'aresample=16000',
+    '-f', 's16le',
+    '-ar', '16000',
+    '-ac', '1',
+    'pipe:1',
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stderr = '';
+  ffmpeg.stderr.on('data', (d) => { stderr += String(d); });
+  ffmpeg.on('error', (error) => console.error('[resample]', error.message));
+  ffmpeg.on('close', (code) => {
+    if (code && stderr.trim()) console.error('[resample]', stderr.trim());
+  });
+  return ffmpeg;
 }
 
 function transcriptFrom(payload) {
@@ -207,7 +209,7 @@ async function batchTranscribePcm16(pcm, reason = 'fallback', signal) {
     body: wav,
   }, {
     timeoutMs: REQUEST_BUDGET_MS.batchStt,
-    retries: 1,
+    retries: 0,
     label: 'stt-fallback',
   });
   const body = await response.json().catch(() => ({}));
@@ -493,9 +495,15 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
   const clientTimings = {
     sttMs: Number(speechMetrics?.sttMs) || 0,
     batchSttMs: Number(speechMetrics?.batchSttMs) || 0,
+    primaryMs: 0,
+    verifierMs: 0,
+    firstTtsMs: 0,
+    firstAudioReadyMs: 0,
+    speechEndToPlaybackStartMs: 0,
     sttMode: speechMetrics?.sttMode || 'unknown',
     sttReused: Boolean(speechMetrics?.sttReused),
   };
+  const speechEndedAt = Number(speechMetrics?.speechEndedAt) || 0;
   answering = true;
   let firstAudioReadyLogged = false;
   let playedSentenceCount = 0;
@@ -549,6 +557,10 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
           console.log(`[latency] first-audio-ready=${clientTimings.firstAudioReadyMs}ms source=${speculativeMatch ? 'speculative-prefetch' : 'verifier-stream'}`);
         }
         const playbackStarted = Date.now();
+        if (!clientTimings.speechEndToPlaybackStartMs && speechEndedAt > 0) {
+          clientTimings.speechEndToPlaybackStartMs = Math.max(0, playbackStarted - speechEndedAt);
+          console.log(`[latency] speech-end-to-playback-start=${clientTimings.speechEndToPlaybackStartMs}ms`);
+        }
         await playMp3(prefetched.value);
         playedSentenceCount += 1;
         totalPlaybackMs += Date.now() - playbackStarted;
@@ -610,6 +622,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     }
   } finally {
     if (!clientTimings.pipelineCompleteMs) clientTimings.pipelineCompleteMs = Date.now() - pipelineStarted;
+    console.log(`[latency-summary] utterance=${utteranceId} sttMs=${clientTimings.sttMs} batchSttMs=${clientTimings.batchSttMs} primaryMs=${clientTimings.primaryMs} verifierMs=${clientTimings.verifierMs} firstTtsMs=${clientTimings.firstTtsMs} firstAudioReadyMs=${clientTimings.firstAudioReadyMs} speechEndToPlaybackStartMs=${clientTimings.speechEndToPlaybackStartMs}`);
     postVoiceMetrics(text, clientTimings, utteranceId).catch(() => {});
     if (activeTurnAbortController === controller) activeTurnAbortController = null;
     if (turnSerial === activeTurnSerial && sessionEpoch === voiceEpoch) {
@@ -730,9 +743,12 @@ function startReceiverSession(userId, speakingNow = false) {
   console.log('[rx] user=' + userId);
 
   const opus = connection.receiver.subscribe(userId, {
-    end: { behavior: EndBehaviorType.AfterSilence, duration: 550 },
+    // Nova-3 endpointing (350ms) is the primary end-of-utterance signal.
+    // This longer Discord silence threshold is only a safety guard.
+    end: { behavior: EndBehaviorType.AfterSilence, duration: 1600 },
   });
   const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
+  const resampler = createMono16kResampler();
   const pending = [];
   const finalParts = [];
   const pcm16Chunks = [];
@@ -753,9 +769,6 @@ function startReceiverSession(userId, speakingNow = false) {
   let inputEndedAt = 0;
   let usedBatchStt = false;
   let batchSttMs = 0;
-  let hedgedBatchTimer = null;
-  let hedgedBatchController = null;
-  let hedgedBatchPromise = null;
   let packetStartWatchdog = null;
   let captureWatchdog = null;
   let firstPacketSeen = false;
@@ -783,52 +796,9 @@ function startReceiverSession(userId, speakingNow = false) {
     }, RECEIVER_PACKET_START_TIMEOUT_MS);
   };
 
-  const session = { opus, decoder, ws: null, batchAbortController: null, markSpeaking };
+  const session = { opus, decoder, resampler, ws: null, batchAbortController: null, markSpeaking };
   sessions.set(userId, session);
   if (speakingNow) markSpeaking();
-
-  const cancelHedgedBatch = () => {
-    if (hedgedBatchTimer) {
-      clearTimeout(hedgedBatchTimer);
-      hedgedBatchTimer = null;
-    }
-    try { hedgedBatchController?.abort(); } catch {}
-  };
-
-  const startHedgedBatch = (delayMs = 150, reason = 'realtime-finalize-hedge') => {
-    if (hedgedBatchPromise || finalParts.length || latest) return hedgedBatchPromise;
-    const pcmSnapshot = Buffer.concat(pcm16Chunks);
-    if (!pcmSnapshot.length) return null;
-    hedgedBatchController = new AbortController();
-    session.batchAbortController = hedgedBatchController;
-    const hedgeStarted = Date.now();
-    hedgedBatchPromise = (async () => {
-      if (delayMs > 0) {
-        await new Promise((resolve) => {
-          hedgedBatchTimer = setTimeout(() => {
-            hedgedBatchTimer = null;
-            resolve();
-          }, delayMs);
-          hedgedBatchController.signal.addEventListener('abort', () => {
-            if (hedgedBatchTimer) {
-              clearTimeout(hedgedBatchTimer);
-              hedgedBatchTimer = null;
-            }
-            resolve();
-          }, { once: true });
-        });
-      }
-      if (hedgedBatchController.signal.aborted) return { cancelled: true, elapsedMs: Date.now() - hedgeStarted };
-      try {
-        const text = await batchTranscribePcm16(pcmSnapshot, reason, hedgedBatchController.signal);
-        return { text, elapsedMs: Date.now() - hedgeStarted };
-      } catch (error) {
-        return { error, elapsedMs: Date.now() - hedgeStarted };
-      }
-    })();
-    console.log(`[stt-hedge] armed delay=${delayMs}ms reason=${reason}`);
-    return hedgedBatchPromise;
-  };
 
   const detachWsListeners = () => {
     if (!ws) return;
@@ -862,26 +832,16 @@ function startReceiverSession(userId, speakingNow = false) {
     let text = (finalParts.join(' ').trim() || latest).trim();
     const pcm16 = Buffer.concat(pcm16Chunks);
     console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B reason=${reason} sttReuse=${reusedSocket}`);
-    if (sessionEpoch !== voiceEpoch) {
-      cancelHedgedBatch();
-      return;
-    }
+    if (sessionEpoch !== voiceEpoch) return;
 
-    if (text) {
-      cancelHedgedBatch();
-    } else if (pcm16.length) {
+    if (!text && pcm16.length) {
       try {
         usedBatchStt = true;
         const fallbackStarted = Date.now();
-        const fallback = hedgedBatchPromise
-          ? await hedgedBatchPromise
-          : { text: await batchTranscribePcm16(pcm16, realtimeFailureReason || reason), elapsedMs: Date.now() - fallbackStarted };
-        if (fallback?.text) {
-          text = fallback.text;
-          batchSttMs = Number(fallback.elapsedMs) || (Date.now() - fallbackStarted);
-        } else if (fallback?.error) {
-          throw fallback.error;
-        }
+        const fallbackController = new AbortController();
+        session.batchAbortController = fallbackController;
+        text = await batchTranscribePcm16(pcm16, realtimeFailureReason || reason, fallbackController.signal);
+        batchSttMs = Date.now() - fallbackStarted;
       } catch (error) {
         console.error('[stt-fallback]', error?.message || error);
       }
@@ -895,6 +855,7 @@ function startReceiverSession(userId, speakingNow = false) {
         batchSttMs,
         sttMode: usedBatchStt ? 'batch' : 'realtime',
         sttReused: reusedSocket,
+        speechEndedAt: inputEndedAt || Date.now(),
         utteranceId: `utt-${randomUUID()}`,
       });
     } else {
@@ -927,16 +888,13 @@ function startReceiverSession(userId, speakingNow = false) {
     clearReceiverWatchdogs();
     try { opus.destroy(); } catch {}
     try { decoder.destroy(); } catch {}
+    try { resampler.stdin.end(); } catch {}
 
     if (realtimeFailed || !ws) {
-      startHedgedBatch(0, realtimeFailureReason || 'batch-fallback');
       complete('batch-fallback');
       return;
     }
 
-    if (!latest && finalParts.length === 0) {
-      startHedgedBatch(150, 'realtime-finalize-hedge');
-    }
     sendFinalizeIfReady();
     if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
       markRealtimeFailed('websocket-closed-before-finalize');
@@ -956,7 +914,6 @@ function startReceiverSession(userId, speakingNow = false) {
     const text = transcriptFrom(payload);
     if (text) {
       latest = text;
-      cancelHedgedBatch();
       registerRealtimeSttHealthy();
       console.log('[stt]', payload?.is_final ? 'final-part:' : 'interim:', text);
       if (payload?.is_final) {
@@ -1031,7 +988,12 @@ function startReceiverSession(userId, speakingNow = false) {
       }, RECEIVER_CAPTURE_TIMEOUT_MS);
     }
     pcm48Bytes += pcm48.length;
-    const pcm16 = mono16kFromStereo48k(pcm48);
+    if (!resampler.stdin.destroyed && !resampler.stdin.writableEnded) {
+      resampler.stdin.write(pcm48);
+    }
+  });
+
+  resampler.stdout.on('data', (pcm16) => {
     pcm16Bytes += pcm16.length;
     if (!pcm16.length) return;
     if (pcm16Chunks.length < 600) pcm16Chunks.push(Buffer.from(pcm16));
@@ -1040,13 +1002,24 @@ function startReceiverSession(userId, speakingNow = false) {
     if (!realtimeFailed && ws?.readyState === WebSocket.OPEN && !inputEnded) {
       ws.send(pcm16);
     } else if (!realtimeFailed && ws?.readyState === WebSocket.CONNECTING && !inputEnded) {
-      pending.push(pcm16);
+      pending.push(Buffer.from(pcm16));
       if (pending.length > 250) pending.shift();
     }
   });
 
+  resampler.stdout.on('error', (error) => {
+    console.error('[resample]', error.message);
+    markRealtimeFailed('resampler-output-error');
+    endInput();
+  });
+
   decoder.on('error', (error) => {
     console.error('[decode]', error.message);
+    endInput();
+  });
+  resampler.on('error', (error) => {
+    console.error('[resample]', error.message);
+    markRealtimeFailed('resampler-process-error');
     endInput();
   });
 
@@ -1066,6 +1039,8 @@ function destroyVoiceConnection() {
     try { session.batchAbortController?.abort(); } catch {}
     try { session.opus?.destroy(); } catch {}
     try { session.decoder?.destroy(); } catch {}
+    try { session.resampler?.stdin?.end(); } catch {}
+    try { session.resampler?.kill?.('SIGKILL'); } catch {}
   }
   sessions.clear();
   for (const userId of [...realtimeSttSockets.keys()]) {

@@ -106,7 +106,7 @@ test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio read
 
 test('Discord voice stages have finite budgets and bounded retries', () => {
   assert.match(source, /const REQUEST_BUDGET_MS = Object\.freeze/);
-  assert.match(source, /batchStt: 8000/);
+  assert.match(source, /batchStt: 1800/);
   assert.match(source, /turnStream: 35000/);
   assert.match(source, /turn: 35000/);
   assert.match(source, /tts: 12000/);

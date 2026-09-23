@@ -26,11 +26,12 @@ test('verification preserves a correct candidate verbatim instead of gratuitous 
   assert.match(integrated, /修正が必要な箇所だけ直してください/);
 });
 
-test('batch STT is hedged during realtime finalization and cancelled on any realtime transcript', () => {
-  assert.match(bridge, /startHedgedBatch\(150, 'realtime-finalize-hedge'\)/);
-  assert.match(bridge, /if \(!latest && finalParts\.length === 0\)/);
-  assert.match(bridge, /latest = text;\s*cancelHedgedBatch\(\);/s);
-  assert.match(bridge, /batchTranscribePcm16\(pcmSnapshot, reason, hedgedBatchController\.signal\)/);
+test('batch STT stays off the normal realtime path and is used only as fallback', () => {
+  assert.doesNotMatch(bridge, /startHedgedBatch|realtime-finalize-hedge|stt-hedge/);
+  assert.match(bridge, /if \(!text && pcm16\.length\)/);
+  assert.match(bridge, /batchTranscribePcm16\(pcm16, realtimeFailureReason \|\| reason, fallbackController\.signal\)/);
+  assert.match(bridge, /batchSttMs: Number\(speechMetrics\?\.batchSttMs\) \|\| 0/);
+  assert.match(bridge, /batchSttMs,\s*sttMode:/s);
 });
 
 test('batch STT latency is propagated to voice metrics', () => {
