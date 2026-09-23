@@ -19,12 +19,13 @@ test('Whisper /api/transcribe is called for every accepted captured utterance', 
   assert.doesNotMatch(source, /if \(!text && pcm16\.length\)|batchTranscribePcm16/);
 });
 
-test('Discord transport gate owns segmentation and finalizes after the shared 650 ms PCM gap', () => {
+test('Discord transport gate owns segmentation and finalizes after the stabilized Discord PCM gap', () => {
   assert.match(source, /EndBehaviorType\.AfterSilence, duration: 1600/);
-  assert.match(source, /Date\.now\(\) - lastPcmAt >= WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
+  assert.match(source, /const DISCORD_SEGMENT_SILENCE_MS = Math\.max\(WEB_VOICE_CAPTURE_POLICY\.silenceMs, 1000\)/);
+  assert.match(source, /Date\.now\(\) - lastPcmAt >= DISCORD_SEGMENT_SILENCE_MS/);
   assert.match(source, /finalize\('discord-pcm-silence'\)/);
   assert.match(source, /browserVadBypassed: true/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v82-web-fast-reaction-live-log-r1'/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v83-stable-turn-gating-r1'/);
   assert.doesNotMatch(source, /capture\.shouldFinalize|web-compatible-silence|WebCompatibleCapture/);
 });
 
