@@ -5,67 +5,66 @@ import fs from 'node:fs';
 const bridge = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 const integrated = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
 
-test('Discord acknowledgement starts at utterance finalization before Whisper completes', () => {
-  const finalize = bridge.indexOf('startImmediateAck(utteranceId, sessionEpoch, timeline);');
-  const stt = bridge.indexOf('await handleCapturedUtterance({', finalize);
-  assert.ok(finalize >= 0 && stt > finalize);
-  assert.match(bridge, /const IMMEDIATE_ACK_PROMPT = 'はい、少し確認しますね。'/);
-  assert.match(bridge, /warmImmediateAckAudio/);
-  assert.match(bridge, /immediate-ack=/);
+test('Discord uses the same Web fast-reaction decision path', () => {
+  assert.match(bridge, /import \{ fastReaction, sameUtterance \} from '\.\.\/\.\.\/src\/voice-fast-reaction\.js'/);
+  assert.match(bridge, /\/api\/realtime-stt/);
+  assert.match(bridge, /\/api\/fast-reaction/);
+  assert.match(bridge, /setTimeout\(async \(\) => \{[\s\S]*fetchFastReaction\(value\)[\s\S]*\}, 90\)/);
+  assert.match(bridge, /handleRealtimeMessage/);
+  assert.match(bridge, /payload\?\.speech_final/);
+  assert.doesNotMatch(bridge, /const IMMEDIATE_ACK_PROMPT|startImmediateAck|warmImmediateAckAudio/);
 });
 
-test('post-STT wait cue is skipped when the immediate acknowledgement was already requested', () => {
-  assert.match(bridge, /if \(!timeline\.immediateAckRequestedAt\) \{[\s\S]*activeWaitCue = startWaitCue/);
-  assert.match(bridge, /activeImmediateAck\?\.stop\?\.\('final-answer-ready'\)/);
-  assert.match(bridge, /activeImmediateAck\?\.stop\?\.\(reason\)/);
+test('Nova realtime text is reaction-only and Whisper remains authoritative', () => {
+  assert.match(bridge, /triggerWebFastReaction/);
+  assert.match(bridge, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
+  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal\)/);
+  assert.match(bridge, /geminiInputText: confirmedTranscript/);
+  assert.doesNotMatch(bridge, /talk\((?:value|transcript|realtimeTranscript|helper\.interim)/);
+  assert.doesNotMatch(bridge, /processConfirmedTranscript\(\{[\s\S]{0,300}(?:realtimeTranscript|helper\.interim|latestRealtimeTranscript)/);
 });
 
-test('speech that starts during bot playback cannot create an acknowledgement echo loop', () => {
-  assert.match(bridge, /let activeBotPlaybackRecord = null/);
-  assert.match(bridge, /const startedDuringBotPlayback = Boolean\(activeBotPlaybackRecord\) \|\| player\.state\.status === AudioPlayerStatus\.Playing \|\| \(Date\.now\(\) - lastBotPlaybackEndedAt < 1200\)/);
-  assert.match(bridge, /startReceiverSession\(userId, true, \{ startedDuringBotPlayback \}\)/);
-  assert.match(bridge, /if \(!overlappedBotPlayback\) startImmediateAck/);
-  assert.match(bridge, /defer acknowledgement for bot-overlap/);
-  assert.match(bridge, /let lastBotPlaybackEndedAt = 0/);
+test('Discord fast reaction audio is prewarmed from the shared fastReaction function', () => {
+  assert.match(bridge, /async function warmFastReactionAudio/);
+  assert.match(bridge, /samples\.map\(\(sample\) => fastReaction\(sample\)\)/);
+  assert.match(bridge, /fastReactionAudioCache/);
+  assert.match(bridge, /warmFastReactionAudio\(\)\.catch/);
 });
 
-test('acknowledgement audio is prewarmed when the Discord gateway becomes ready', () => {
-  assert.match(bridge, /warmImmediateAckAudio\(\)\.catch\(\(error\) => console\.warn\('\[ack\] gateway warmup failed:'/);
-});
-
-test('renewed user speech cancels an acknowledgement even while TTS is still pending', () => {
-  assert.match(bridge, /if \(!answering && !activeImmediateAck && player\.state\.status !== AudioPlayerStatus\.Playing\) return false/);
-  assert.match(bridge, /activeImmediateAck\?\.stop\?\.\(reason\)/);
-});
-
-test('confirmed Whisper transcript is filtered only when it matches overlapping recent bot speech', () => {
-  assert.match(bridge, /import \{ sameUtterance \} from '\.\.\/\.\.\/src\/voice-fast-reaction\.js'/);
-  assert.match(bridge, /function looksLikeRecentBotEcho/);
+test('speech overlapping bot playback cannot create reaction echo loops', () => {
+  assert.match(bridge, /startedDuringBotPlayback/);
+  assert.match(bridge, /if \(active\.startedDuringBotPlayback\)[\s\S]*deferred bot-overlap/);
+  assert.match(bridge, /looksLikeRecentBotEcho/);
   assert.match(bridge, /overlaps && sameUtterance\(value, record\.text\)/);
-  assert.match(bridge, /\[echo-guard\] suppressed bot echo/);
-  const guard = bridge.indexOf('const echoRecord = looksLikeRecentBotEcho(stt.confirmedTranscript, timeline);');
-  const turn = bridge.indexOf('await processConfirmedTranscript({', guard);
-  assert.ok(guard >= 0 && turn > guard);
 });
 
 test('recovery prompt cannot start over a newer user utterance', () => {
   assert.match(bridge, /lastUserSpeechAt > failedUtteranceEndAt \|\| lastUserPcmAt > failedUtteranceEndAt/);
   assert.match(bridge, /\[recovery\] suppressed because a new user utterance started/);
-  assert.match(bridge, /speakRecoveryPrompt\('stt-failed', sessionEpoch, timeline\.utteranceEndAt \|\| 0\)/);
 });
 
-test('Cloudflare telemetry accepts immediate acknowledgement and echo suppression fields', () => {
-  assert.match(integrated, /'immediateAckMs'/);
-  assert.match(integrated, /typeof value\?\.echoSuppressed === 'boolean'/);
-  assert.match(integrated, /'immediateAckRequestedAt'/);
-  assert.match(integrated, /'immediateAckPlaybackAt'/);
-  assert.match(integrated, /echoSuppressed: Boolean\(timings\.echoSuppressed\)/);
+test('Discord exposes a live runtime log in the text channel', () => {
+  assert.match(bridge, /function attachRuntimeLogChannel/);
+  assert.match(bridge, /function mirrorRuntimeLog/);
+  assert.match(bridge, /runtimeLogMessage\.edit/);
+  assert.match(bridge, /name: 'logs'/);
+  assert.match(bridge, /await attachRuntimeLogChannel\(interaction\.channel\)/);
+  assert.match(bridge, /TalkSys Discord runtime/);
 });
 
-test('v81 preserves authoritative Whisper and common turn architecture', () => {
-  assert.match(bridge, /talksys-discord-bridge-v81-fast-ack-echo-guard-r1/);
-  assert.match(integrated, /talksys-v81-fast-ack-echo-guard-r1/);
+test('Cloudflare telemetry accepts fast-reaction timing and transcript provenance', () => {
+  assert.match(integrated, /'fastReactionMs'/);
+  assert.match(integrated, /'fastReactionRequestedAt'/);
+  assert.match(integrated, /'fastReactionPlaybackAt'/);
+  assert.match(integrated, /discordRealtimeSttRole: 'fast-reaction-only'/);
+  assert.match(integrated, /discordFastReactionEndpoint: '\/api\/fast-reaction'/);
+  assert.match(integrated, /discordRuntimeLogCommand: '\/logs'/);
+});
+
+test('v82 preserves authoritative Whisper and common turn architecture', () => {
+  assert.match(bridge, /talksys-discord-bridge-v82-web-fast-reaction-live-log-r1/);
+  assert.match(integrated, /talksys-v82-web-fast-reaction-live-log-r1/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/turn'/);
-  assert.doesNotMatch(bridge, /\/api\/realtime-stt|WebSocket|speech_final|batchTranscribePcm16/);
+  assert.doesNotMatch(bridge, /\/api\/turn-stream|batchTranscribePcm16|type:\s*['"]Finalize['"]/);
 });
