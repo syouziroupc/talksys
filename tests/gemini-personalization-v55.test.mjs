@@ -143,8 +143,9 @@ test('factual question searches on the primary call and verifies on the second c
 test('integrated browser and Telnyx turns share the same personalized Gemini runner', () => {
   const source = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
   assert.match(source, /turn: \(body, signal\) => runTalkSysTurn\(request, env, body, signal \|\| request\.signal, ctx\)/);
-  assert.match(source, /const result = await runGeminiTurn\(body \|\| \{\}, env, signal\)/);
-  assert.match(source, /scheduleConversationLog\(ctx, env, request, body, result, 'turn', 200\)/);
+  assert.match(source, /const result = await commonTalkSysTurn\(commonBody, env, signal\)/);
+  assert.match(source, /return runGeminiTurn\(body, env, signal, options\)/);
+  assert.match(source, /scheduleConversationLog\(ctx, env, request, commonBody, result, 'turn', 200\)/);
   assert.match(source, /url\.pathname === '\/api\/turn'/);
   assert.doesNotMatch(source, /LEGACY_GLM|@cf\/zai-org\/glm/);
 });
