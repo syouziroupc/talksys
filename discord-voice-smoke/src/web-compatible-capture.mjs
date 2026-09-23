@@ -6,12 +6,12 @@ import {
 } from '../../src/voice-capture-policy.js';
 
 export class WebCompatibleCapture {
-  constructor({ policy = WEB_VOICE_CAPTURE_POLICY, now = () => Date.now() } = {}) {
+  constructor({ policy = WEB_VOICE_CAPTURE_POLICY, now = () => Date.now(), noise = policy.initialNoise, noiseBoost = 1 } = {}) {
     this.policy = policy;
     this.now = now;
     this.frameBytes = Math.round(policy.targetRate * policy.frameMs / 1000) * 2;
-    this.noise = policy.initialNoise;
-    this.noiseBoost = 1;
+    this.noise = Math.max(policy.noiseMin, Math.min(policy.noiseMax, Number(noise) || policy.initialNoise));
+    this.noiseBoost = Math.max(1, Math.min(2.8, Number(noiseBoost) || 1));
     this.carry = Buffer.alloc(0);
     this.pre = [];
     this.frames = [];
