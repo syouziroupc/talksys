@@ -62,7 +62,7 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
 });
 
 test('v84 preserves authoritative Whisper while sharing the turn policy', () => {
-  assert.match(bridge, /talksys-discord-bridge-v84-local-tts-fallback-r1/);
+  assert.match(bridge, /talksys-discord-bridge-v84-dedupe-telephony-ready-r1/);
   assert.match(integrated, /talksys-v84-unified-force-reply-r1/);
   assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
@@ -81,4 +81,17 @@ test('v84 speaking-start never aborts an answer and explicit stop is transcript-
 test('v84 Discord startup exposes the active bridge revision', () => {
   assert.match(bridge, /bridge revision=\$\{DISCORD_BRIDGE_REVISION\}/);
   assert.match(bridge, /mirrorRuntimeLog\('VERSION', DISCORD_BRIDGE_REVISION\)/);
+});
+
+
+test('v84 suppresses duplicate in-flight and queued user turns', () => {
+  assert.match(bridge, /sameUtterance\(confirmedTranscript, activeUserText\)/);
+  assert.match(bridge, /suppressed duplicate in-flight/);
+  assert.match(bridge, /pendingTurns\.some\(\(item\) => sameUtterance/);
+  assert.match(bridge, /pendingTurns\[0\] = nextTurn/);
+});
+
+test('v84 echo guard includes post-playback tail for partial STT echoes', () => {
+  assert.match(bridge, /playbackEnd \+ 3500/);
+  assert.match(bridge, /sameUtterance\(value, record\.text\)/);
 });
