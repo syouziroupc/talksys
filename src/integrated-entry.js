@@ -766,7 +766,7 @@ function writeLatencyAnalytics(env, body = {}, timings = {}, extra = {}) {
         id.utteranceId || 'none',
         id.sessionId || 'none',
         compact(timings?.sttMode || extra?.sttMode || '', 40),
-        compact(timings?.ttsProvider || timings?.ttsSource || extra?.ttsProvider || '', 80),
+        compact(timings?.ttsProvider || extra?.ttsProvider || '', 80),
         extra?.fallback ? 'fallback' : 'normal',
         compact(extra?.stage || 'utterance', 80),
         compact(extra?.route || '', 80),
@@ -775,11 +775,11 @@ function writeLatencyAnalytics(env, body = {}, timings = {}, extra = {}) {
       ],
       doubles: [
         finiteMetric(timings?.speechEndToSttFinalMs ?? timings?.sttMs),
-        finiteMetric(timings?.batchSttMs),
+        finiteMetric(timings?.captureMs),
         finiteMetric(timings?.answerStartMs),
         finiteMetric(timings?.primaryMs),
         finiteMetric(timings?.verifierMs),
-        finiteMetric(timings?.answerGenerationTotalMs ?? timings?.serverTotalMs ?? timings?.totalMs),
+        finiteMetric(timings?.answerGenerationTotalMs ?? timings?.totalMs),
         finiteMetric(timings?.firstTtsMs),
         finiteMetric(timings?.firstAudioReadyMs),
         finiteMetric(timings?.speechEndToPlaybackStartMs),
@@ -1097,10 +1097,7 @@ function compactClientTimings(value = {}) {
     'captureMs',
     'sttMs',
     'speechEndToSttFinalMs',
-    'batchSttMs',
     'answerStartMs',
-    'turnStreamMs',
-    'serverTotalMs',
     'primaryMs',
     'verifierMs',
     'answerGenerationTotalMs',
@@ -1117,9 +1114,6 @@ function compactClientTimings(value = {}) {
     if (Number.isFinite(n) && n >= 0 && n <= 600000) out[key] = Math.round(n);
   }
   if (typeof value?.sttMode === 'string') out.sttMode = compact(value.sttMode, 40);
-  if (typeof value?.streamed === 'boolean') out.streamed = value.streamed;
-  if (typeof value?.sttReused === 'boolean') out.sttReused = value.sttReused;
-  if (typeof value?.ttsSource === 'string') out.ttsSource = compact(value.ttsSource, 80);
   if (typeof value?.ttsProvider === 'string') out.ttsProvider = compact(value.ttsProvider, 80);
   if (typeof value?.error === 'string') out.error = compact(value.error, 500);
   if (typeof value?.fallback === 'boolean') out.fallback = value.fallback;
@@ -1198,13 +1192,13 @@ function discordVoiceMetricsResponse(request, env, ctx) {
       answerStartMs: timings.answerStartMs ?? 0,
       primaryMs: timings.primaryMs ?? 0,
       verifierMs: timings.verifierMs ?? 0,
-      answerGenerationTotalMs: timings.answerGenerationTotalMs ?? timings.serverTotalMs ?? 0,
+      answerGenerationTotalMs: timings.answerGenerationTotalMs ?? 0,
       firstTtsMs: timings.firstTtsMs ?? 0,
       firstAudioReadyMs: timings.firstAudioReadyMs ?? 0,
       speechEndToPlaybackStartMs: timings.speechEndToPlaybackStartMs ?? 0,
       pipelineCompleteMs: timings.pipelineCompleteMs ?? 0,
       ffmpegSpawnMs: timings.ffmpegSpawnMs ?? 0,
-      ttsProvider: timings.ttsProvider || timings.ttsSource || '',
+      ttsProvider: timings.ttsProvider || '',
       fallback: false,
       realtimeTranscript,
       confirmedTranscript,
