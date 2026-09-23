@@ -1305,6 +1305,20 @@ async function ttsDiagnosticResponse(request, env) {
   return json({ ok: true, model: '@cf/myshell-ai/melotts', results }, 200);
 }
 
+async function recentDiscordDiagnosticResponse(request, env) {
+  if (!env?.TALKSYS_LOG_DB || !env?.GEMINI_API_KEY) return json({ ok: false, error: 'diagnostic_unavailable' }, 503);
+  const expected = await ttsDiagnosticToken(env);
+  const supplied = String(request.headers.get('x-talksys-diagnostic') || '');
+  if (!supplied || supplied !== expected) return json({ ok: false, error: 'unauthorized' }, 401);
+  try {
+    const logs = await listTalkLogs(env, 60, { sessionPrefix: 'discord-' });
+    return json({ ok: true, count: logs.length, logs }, 200);
+  } catch (error) {
+    return json({ ok: false, error: 'recent_discord_log_failed', detail: compact(error?.message || error, 500) }, 500);
+  }
+}
+
+
 async function discordVoiceSynthesize(request, env) {
   const routeStarted = Date.now();
   if (!discordVoiceTtsAuthorized(request, env)) {
@@ -1442,6 +1456,10 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/internal/tts-diagnostic') {
       return ttsDiagnosticResponse(request, env);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/internal/recent-discord-logs') {
+      return recentDiscordDiagnosticResponse(request, env);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/voice/synthesize') {
