@@ -936,11 +936,11 @@ async function transcribeWithFastReaction(request, env, ctx) {
     writeLatencyAnalytics(env, meta, {
       sttMs: durationMs,
       speechEndToSttFinalMs: durationMs,
-      sttMode: 'whisper-batch',
+      sttMode: 'web-whisper',
     }, {
       stage: body?.ok ? 'transcribe-complete' : 'transcribe-rejected',
       route: '/api/transcribe',
-      sttMode: 'whisper-batch',
+      sttMode: 'web-whisper',
       error: compact(body?.error || '', 300),
     });
     return json({
@@ -1117,7 +1117,6 @@ function compactClientTimings(value = {}) {
   if (typeof value?.sttMode === 'string') out.sttMode = compact(value.sttMode, 40);
   if (typeof value?.ttsProvider === 'string') out.ttsProvider = compact(value.ttsProvider, 80);
   if (typeof value?.error === 'string') out.error = compact(value.error, 500);
-  if (typeof value?.fallback === 'boolean') out.fallback = value.fallback;
   return out;
 }
 
@@ -1186,7 +1185,7 @@ function discordVoiceMetricsResponse(request, env, ctx) {
     scheduleConversationLog(ctx, env, request, logBody, result, 'voice-metrics', 202);
     emitLatencyLog('discord-utterance-complete', logBody, {
       route: '/api/voice-metrics',
-      sttMode: timings.sttMode || 'whisper-batch',
+      sttMode: timings.sttMode || 'web-whisper',
       captureMs: timings.captureMs ?? 0,
       speechEndToSttFinalMs: timings.speechEndToSttFinalMs ?? timings.sttMs ?? 0,
       sttMs: timings.sttMs ?? 0,
@@ -1200,7 +1199,6 @@ function discordVoiceMetricsResponse(request, env, ctx) {
       pipelineCompleteMs: timings.pipelineCompleteMs ?? 0,
       ffmpegSpawnMs: timings.ffmpegSpawnMs ?? 0,
       ttsProvider: timings.ttsProvider || '',
-      fallback: false,
       realtimeTranscript,
       confirmedTranscript,
       geminiInputText,
@@ -1211,7 +1209,6 @@ function discordVoiceMetricsResponse(request, env, ctx) {
     writeLatencyAnalytics(env, logBody, timings, {
       stage: 'discord-utterance-complete',
       route: '/api/voice-metrics',
-      fallback: false,
       transcriptMatch: transcriptMatch === null ? 'not-collected' : String(transcriptMatch),
       error,
     });
