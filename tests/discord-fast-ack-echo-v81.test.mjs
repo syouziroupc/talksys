@@ -61,10 +61,19 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
   assert.match(integrated, /discordRuntimeLogCommand: '\/logs'/);
 });
 
-test('v82 preserves authoritative Whisper and common turn architecture', () => {
-  assert.match(bridge, /talksys-discord-bridge-v82-web-fast-reaction-live-log-r1/);
+test('v83 preserves authoritative Whisper and common turn architecture', () => {
+  assert.match(bridge, /talksys-discord-bridge-v83-stable-turn-gating-r1/);
   assert.match(integrated, /talksys-v82-web-fast-reaction-live-log-r1/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/turn'/);
   assert.doesNotMatch(bridge, /\/api\/turn-stream|batchTranscribePcm16|type:\s*['"]Finalize['"]/);
+});
+
+
+test('v83 does not abort answer generation on every Discord speaking-start', () => {
+  assert.match(bridge, /const botAudiblySpeaking = Boolean\(activeBotPlaybackRecord\) \|\| player\.state\.status === AudioPlayerStatus\.Playing/);
+  assert.match(bridge, /if \(botAudiblySpeaking\) \{\s*interruptActiveAnswer\('user-barge-in'\)/);
+  assert.doesNotMatch(bridge, /receiver\.speaking\.on\('start',[\s\S]{0,500}interruptActiveAnswer\('user-speech'\)/);
+  assert.match(bridge, /lastUserSpeechAt > \(timeline\.utteranceEndAt \|\| 0\)/);
+  assert.match(bridge, /stale answer suppressed/);
 });
