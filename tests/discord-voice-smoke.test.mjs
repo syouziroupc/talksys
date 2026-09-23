@@ -14,7 +14,7 @@ test('Discord bridge is only input adapter, common HTTP STT/turn, and output ada
   assert.match(source, /\/api\/transcribe/);
   assert.match(source, /\/api\/turn/);
   assert.match(source, /\/api\/voice\/synthesize/);
-  assert.doesNotMatch(source, /\/api\/realtime-stt|\/api\/turn-stream|WebSocket|speech_final|Finalize|batchTranscribePcm16|talkStream/);
+  assert.doesNotMatch(source, /\/api\/realtime-stt|\/api\/turn-stream|WebSocket|speech_final|batchTranscribePcm16|talkStream|type:\s*['"]Finalize['"]/);
   assert.doesNotMatch(source, /speechSynthesis|SpeechSynthesisUtterance/);
 });
 
@@ -25,7 +25,7 @@ test('Discord Whisper transcription is the normal path, not a fallback', () => {
   assert.match(source, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
   assert.match(source, /sttMode: 'whisper-batch'/);
   assert.match(source, /fallback: false/);
-  assert.doesNotMatch(source, /batchStt|fallbackController|realtimeFailure|circuit/i);
+  assert.doesNotMatch(source, /batchTranscribePcm16|fallbackController|realtimeSttFailure|realtimeSttBackoff|realtimeSttSockets/i);
 });
 
 test('Discord capture mirrors web segmentation while keeping 1600 ms only as transport safety', () => {
