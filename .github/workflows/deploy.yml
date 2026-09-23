@@ -178,6 +178,12 @@ jobs:
           token="$(node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update(process.env.GEMINI_API_KEY+':talksys-tts-diagnostic-v1').digest('hex'))")"
           body="$(curl -fsS --max-time 45 -H "x-talksys-diagnostic: $token" "$PRODUCTION_URL/api/internal/tts-diagnostic")"
           echo "$body"
+      - name: Dump signed recent Discord logs for diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update(process.env.GEMINI_API_KEY+':talksys-tts-diagnostic-v1').digest('hex'))")"
+          curl -fsS --max-time 30 -H "x-talksys-diagnostic: $token" "$PRODUCTION_URL/api/internal/recent-discord-logs"
       - name: Verify current production contract
         shell: bash
         run: |
