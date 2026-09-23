@@ -1262,6 +1262,49 @@ function discordVoiceMetricsResponse(request, env, ctx) {
   })();
 }
 
+async function ttsDiagnosticToken(env) {
+  const source = String(env?.GEMINI_API_KEY || '') + ':talksys-tts-diagnostic-v1';
+  const bytes = new TextEncoder().encode(source);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function ttsDiagnosticResponse(request, env) {
+  if (!env?.AI || !env?.GEMINI_API_KEY) return json({ ok: false, error: 'diagnostic_unavailable' }, 503);
+  const expected = await ttsDiagnosticToken(env);
+  const supplied = String(request.headers.get('x-talksys-diagnostic') || '');
+  if (!supplied || supplied !== expected) return json({ ok: false, error: 'unauthorized' }, 401);
+
+  const cases = [
+    { label: 'jp_upper', prompt: 'こんばんは。', lang: 'JP' },
+    { label: 'ja_lower', prompt: 'こんばんは。', lang: 'ja' },
+    { label: 'en_lower', prompt: 'Hello.', lang: 'en' },
+    { label: 'en_upper', prompt: 'Hello.', lang: 'EN' },
+  ];
+  const results = [];
+  for (const item of cases) {
+    const started = Date.now();
+    try {
+      const result = await env.AI.run('@cf/myshell-ai/melotts', { prompt: item.prompt, lang: item.lang });
+      const audio = await normalizeAudioResult(result);
+      results.push({
+        ...item,
+        ok: Boolean(audio?.byteLength),
+        bytes: audio?.byteLength || 0,
+        elapsedMs: Date.now() - started,
+      });
+    } catch (error) {
+      results.push({
+        ...item,
+        ok: false,
+        error: compact(error?.message || error, 500),
+        elapsedMs: Date.now() - started,
+      });
+    }
+  }
+  return json({ ok: true, model: '@cf/myshell-ai/melotts', results }, 200);
+}
+
 async function discordVoiceSynthesize(request, env) {
   const routeStarted = Date.now();
   if (!discordVoiceTtsAuthorized(request, env)) {
@@ -1395,6 +1438,10 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/api/transcribe') {
       return transcribeWithFastReaction(request, env, ctx);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/internal/tts-diagnostic') {
+      return ttsDiagnosticResponse(request, env);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/voice/synthesize') {
