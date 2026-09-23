@@ -166,11 +166,11 @@ function processFrame(a){
   }
   if(!speech){
     pre.push(a.slice());if(pre.length>PRE_ROLL)pre.shift();
-    const peakGate=Math.max(.027,startTh*1.50);
-    if(lv.r<startTh||lv.p<peakGate||snr<1.60){adaptAmbient(lv.r,false);startHits=0;diagUpdate();return;}
+    const peakGate=Math.max(${WEB_VOICE_CAPTURE_POLICY.peakGateMin},startTh*${WEB_VOICE_CAPTURE_POLICY.peakGateStartMultiplier});
+    if(lv.r<startTh||lv.p<peakGate||snr<${WEB_VOICE_CAPTURE_POLICY.startSnr}){adaptAmbient(lv.r,false);startHits=0;diagUpdate();return;}
     startHits++;
-    if(startHits<3){diagUpdate();return;}
-    speech=true;beginVoiceCandidate();frames=pre.splice(0);duration=frames.length*frameMs;silence=0;speechVoicedMs=frameMs*3;speechMaxRms=lv.r;
+    if(startHits<${WEB_VOICE_CAPTURE_POLICY.startHits}){diagUpdate();return;}
+    speech=true;beginVoiceCandidate();frames=pre.splice(0);duration=frames.length*frameMs;silence=0;speechVoicedMs=frameMs*${WEB_VOICE_CAPTURE_POLICY.startHits};speechMaxRms=lv.r;
     log((busy?'処理中の追加入力開始':'発話開始')+' RMS='+lv.r.toFixed(4)+' / noise='+noise.toFixed(4)+' / SNR='+snr.toFixed(2)+' / boost='+noiseBoost.toFixed(2));setStatus('聞いています…');diagUpdate(true);return;
   }
   frames.push(a.slice());duration+=frameMs;speechMaxRms=Math.max(speechMaxRms,lv.r);
@@ -184,7 +184,7 @@ async function commitVoice(reason){
   if(!speech)return;
   const candidateId=currentVoiceCandidateId,data=frames,ms=duration,voicedMs=speechVoicedMs,maxRms=speechMaxRms,snr=maxRms/Math.max(.001,noise),captureId=++voiceCaptureSeq;
   currentVoiceCandidateId=0;resetTurn();
-  if(ms<MIN_SPEECH_MS||voicedMs<240||snr<1.55){
+  if(ms<MIN_SPEECH_MS||voicedMs<${WEB_VOICE_CAPTURE_POLICY.minVoicedMs}||snr<${WEB_VOICE_CAPTURE_POLICY.minSnr}){
     finishVoiceCandidate(candidateId);falseNoiseRejects++;noiseBoost=Math.min(2.8,noiseBoost*1.12+.04);if(maxRms>0)noise=Math.max(noise,Math.min(.04,maxRms*.38));
     log('雑音候補を自動破棄 '+Math.round(ms)+'ms / voiced='+Math.round(voicedMs)+'ms / SNR='+snr.toFixed(2)+' / 感度補正='+noiseBoost.toFixed(2));
     if(resumePlan)await resumeInterruptedSpeech();diagUpdate(true);return;
