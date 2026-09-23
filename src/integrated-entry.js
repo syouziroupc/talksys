@@ -648,7 +648,8 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   const citationCount = interactionCitationCount(interaction.payload);
   const groundingRequired = requiresGroundedEvidence(text);
   const groundingSourceCount = interactionSources(interaction.payload).length;
-  const groundingFailClosed = groundingRequired && citationCount === 0 && groundingSourceCount === 0;
+  const groundingSearchPerformed = searchedInInteraction(interaction.payload);
+  const groundingFailClosed = groundingRequired && !groundingSearchPerformed;
   if (groundingFailClosed) {
     interaction = {
       ...interaction,
@@ -729,6 +730,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     groundingRequired,
     groundingCitationCount: citationCount,
     groundingSourceCount,
+    groundingSearchPerformed,
     groundingFailClosed,
     temporalTransitGuard: immediateTransit,
     temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
