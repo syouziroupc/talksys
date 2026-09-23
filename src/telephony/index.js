@@ -215,10 +215,20 @@ export function highPassPcmFrame(samples, state = {}, sampleRate = 8000, cutoffH
   return out;
 }
 
-async function synthesizeMp3(env, text) {
+async function synthesizeMp3(env, text, deps = {}) {
+  const spoken = clean(text, clampInt(env?.TELEPHONY_MAX_SPOKEN_CHARS, 1200, 200, 3000));
+  if (!spoken) return null;
+
+  if (typeof deps?.synthesize === 'function') {
+    const provided = await deps.synthesize(spoken);
+    if (provided instanceof ArrayBuffer) return bytesToBase64(new Uint8Array(provided));
+    if (ArrayBuffer.isView(provided)) return bytesToBase64(new Uint8Array(provided.buffer, provided.byteOffset, provided.byteLength));
+    if (typeof provided === 'string' && provided.trim()) return provided.trim();
+  }
+
   if (!env?.AI) return null;
   const tts = new CloudflareJapaneseTTS(env.AI);
-  const audio = await tts.synthesize(clean(text, clampInt(env?.TELEPHONY_MAX_SPOKEN_CHARS, 1200, 200, 3000)));
+  const audio = await tts.synthesize(spoken);
   if (!audio || audio.byteLength <= 0) return null;
   return bytesToBase64(new Uint8Array(audio));
 }
@@ -252,6 +262,8 @@ function health(request, env, deps) {
     webhookTokenConfigured: Boolean(sharedToken(env)),
     adminTokenConfigured: Boolean(adminToken(env)),
     talksysTurnConnected: typeof deps?.turn === 'function',
+    pluggableTts: true,
+    externalTtsConnected: typeof deps?.synthesize === 'function',
     storageMode: env?.TALKSYS_LOG_DB ? '既存TalkSys D1' : 'disabled',
     recording: false,
     concurrency: '通話ごとに独立WebSocket。確定した追加入力は進行中AIターンを中断。',
@@ -377,7 +389,7 @@ function mediaBridge(request, env, deps) {
   };
 
   const speak = async (text) => {
-    const payload = await synthesizeMp3(env, text);
+    const payload = await synthesizeMp3(env, text, deps);
     if (!payload || closed) return false;
     currentMark = `talksys-${crypto.randomUUID()}`;
     safeSend(telnyx, { event: 'media', media: { payload } });
