@@ -1270,54 +1270,45 @@ async function discordVoiceSynthesize(request, env) {
   catch { return json({ ok: false, error: 'invalid_json' }, 400); }
   const text = compact(body?.text, 1800);
   if (!text) return json({ ok: false, error: 'empty_text' }, 400);
-  let primaryError = '';
-  if (env?.AI) {
-    try {
-      const tts = new CloudflareJapaneseTTS(env.AI);
-      const audio = await tts.synthesize(text, request.signal);
-      if (audio && audio.byteLength > 0) {
-        const elapsedMs = Date.now() - routeStarted;
-        emitLatencyLog('tts-complete', body, { route: '/api/voice/synthesize', durationMs: elapsedMs, ttsProvider: 'cloudflare-workers-ai' });
-        return new Response(audio, {
-          status: 200,
-          headers: {
-            'content-type': 'audio/mpeg',
-            'cache-control': 'no-store',
-            'x-talksys-voice-source': 'talksys-cloudflare-tts',
-            'x-talksys-tts-ms': String(elapsedMs),
-          },
-        });
-      }
-      primaryError = 'empty_cloudflare_tts_audio';
-    } catch (error) {
-      primaryError = compact(error?.message || error, 350);
-    }
-  } else {
-    primaryError = 'workers_ai_unavailable';
+  if (!env?.AI) {
+    emitLatencyLog('tts-error', body, {
+      route: '/api/voice/synthesize',
+      durationMs: Date.now() - routeStarted,
+      error: 'workers_ai_unavailable',
+      ttsProvider: 'cloudflare-melotts-only',
+    }, 'error');
+    return json({ ok: false, error: 'tts_unavailable', detail: 'workers_ai_unavailable' }, 503);
   }
 
   try {
-    const wav = await synthesizeGeminiJapaneseTts(text, env, request.signal);
+    const tts = new CloudflareJapaneseTTS(env.AI);
+    const audio = await tts.synthesize(text, request.signal);
+    if (!audio || audio.byteLength <= 0) throw new Error('empty_cloudflare_tts_audio');
     const elapsedMs = Date.now() - routeStarted;
-    emitLatencyLog('tts-complete', body, { route: '/api/voice/synthesize', durationMs: elapsedMs, ttsProvider: 'gemini-tts-fallback', fallback: true });
-    return new Response(wav, {
+    emitLatencyLog('tts-complete', body, {
+      route: '/api/voice/synthesize',
+      durationMs: elapsedMs,
+      ttsProvider: 'cloudflare-melotts',
+    });
+    return new Response(audio, {
       status: 200,
       headers: {
-        'content-type': 'audio/wav',
+        'content-type': 'audio/mpeg',
         'cache-control': 'no-store',
-        'x-talksys-voice-source': 'talksys-gemini-tts-fallback',
+        'x-talksys-voice-source': 'cloudflare-melotts',
+        'x-talksys-tts-model': '@cf/myshell-ai/melotts',
         'x-talksys-tts-ms': String(elapsedMs),
-        'x-talksys-tts-primary-error': primaryError.slice(0, 160),
       },
     });
   } catch (error) {
-    const fallbackError = compact(error?.message || error, 500);
-    emitLatencyLog('tts-error', body, { route: '/api/voice/synthesize', durationMs: Date.now() - routeStarted, error: compact(`cloudflare=${primaryError}; gemini=${fallbackError}`, 500) }, 'error');
-    return json({
-      ok: false,
-      error: 'tts_failed',
-      detail: compact(`cloudflare=${primaryError}; gemini=${fallbackError}`, 800),
-    }, 502);
+    const detail = compact(error?.message || error, 500);
+    emitLatencyLog('tts-error', body, {
+      route: '/api/voice/synthesize',
+      durationMs: Date.now() - routeStarted,
+      error: detail,
+      ttsProvider: 'cloudflare-melotts',
+    }, 'error');
+    return json({ ok: false, error: 'tts_failed', detail }, 502);
   }
 }
 
@@ -1342,6 +1333,9 @@ async function voiceHealth(request, env, ctx) {
       customTruthGateApplied: false,
       blanketFailClosed: false,
       speechOptimized: true,
+      ttsProvider: 'cloudflare-melotts-only',
+      ttsModel: '@cf/myshell-ai/melotts',
+      geminiTtsFallback: false,
       realtimeStt: true,
       realtimeSttModel: REALTIME_STT_MODEL,
       realtimeVoiceRevision: REALTIME_VOICE_REVISION,
@@ -1467,6 +1461,9 @@ export default {
         searchPrefaceParallel: true,
         personalizationRevision: PERSONALIZATION_REVISION,
         speechOptimized: true,
+        ttsProvider: 'cloudflare-melotts-only',
+        ttsModel: '@cf/myshell-ai/melotts',
+        geminiTtsFallback: false,
         realtimeStt: true,
         realtimeSttModel: REALTIME_STT_MODEL,
         realtimeVoiceRevision: REALTIME_VOICE_REVISION,
