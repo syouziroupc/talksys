@@ -13,9 +13,12 @@ export class WebCompatibleCapture {
     this.noise = policy.initialNoise;
     this.noiseBoost = 1;
     this.carry = Buffer.alloc(0);
-    this.chunks = [];
-    this.totalBytes = 0;
+    this.pre = [];
+    this.frames = [];
+    this.speech = false;
+    this.startHits = 0;
     this.firstPcmAt = 0;
+    this.speechStartAt = 0;
     this.lastPcmAt = 0;
     this.lastVoicedAt = 0;
     this.durationMs = 0;
@@ -26,6 +29,7 @@ export class WebCompatibleCapture {
     this.lastPeak = 0;
     this.silenceMs = 0;
     this.frameCount = 0;
+    this.rawPcmBytes = 0;
   }
 
   push(chunk, at = this.now()) {
@@ -33,13 +37,12 @@ export class WebCompatibleCapture {
     if (!input.length) return;
     if (!this.firstPcmAt) this.firstPcmAt = at;
     this.lastPcmAt = at;
-    this.chunks.push(Buffer.from(input));
-    this.totalBytes += input.length;
+    this.rawPcmBytes += input.length;
 
     let data = this.carry.length ? Buffer.concat([this.carry, input]) : input;
     let offset = 0;
     while (offset + this.frameBytes <= data.length) {
-      this.#processFrame(data.subarray(offset, offset + this.frameBytes), at);
+      this.#processFrame(Buffer.from(data.subarray(offset, offset + this.frameBytes)), at);
       offset += this.frameBytes;
     }
     this.carry = offset < data.length ? Buffer.from(data.subarray(offset)) : Buffer.alloc(0);
@@ -48,43 +51,76 @@ export class WebCompatibleCapture {
   #processFrame(frame, at) {
     const level = pcm16Level(frame);
     this.frameCount += 1;
-    this.durationMs += this.policy.frameMs;
     this.lastRms = level.rms;
     this.lastPeak = level.peak;
+
+    const { startTh, endTh } = voiceVadThresholds(this.noise, this.noiseBoost, this.policy);
+    const snr = level.rms / Math.max(0.001, this.noise);
+
+    if (!this.speech) {
+      this.pre.push(frame);
+      if (this.pre.length > this.policy.preRollFrames) this.pre.shift();
+
+      const peakGate = Math.max(
+        this.policy.peakGateMin,
+        startTh * this.policy.peakGateStartMultiplier,
+      );
+      if (level.rms < startTh || level.peak < peakGate || snr < this.policy.startSnr) {
+        this.noise = adaptVoiceNoise(this.noise, level.rms, false, this.policy);
+        this.startHits = 0;
+        return;
+      }
+
+      this.startHits += 1;
+      if (this.startHits < this.policy.startHits) return;
+
+      this.speech = true;
+      this.speechStartAt = at;
+      this.frames = this.pre.splice(0);
+      this.durationMs = this.frames.length * this.policy.frameMs;
+      this.voicedMs = this.policy.startHits * this.policy.frameMs;
+      this.maxRms = level.rms;
+      this.maxPeak = level.peak;
+      this.silenceMs = 0;
+      this.lastVoicedAt = at;
+      return;
+    }
+
+    this.frames.push(frame);
+    this.durationMs += this.policy.frameMs;
     this.maxRms = Math.max(this.maxRms, level.rms);
     this.maxPeak = Math.max(this.maxPeak, level.peak);
 
-    const { endTh } = voiceVadThresholds(this.noise, this.noiseBoost, this.policy);
     if (level.rms > endTh) {
       this.silenceMs = 0;
       this.voicedMs += this.policy.frameMs;
       this.lastVoicedAt = at;
     } else {
       this.silenceMs += this.policy.frameMs;
-      // Discord already supplies a speaking candidate. Only low-energy frames
-      // are allowed to teach the ambient floor so quiet speech is not normalized away.
-      this.noise = adaptVoiceNoise(this.noise, level.rms, false, this.policy);
     }
   }
 
   shouldFinalize(at = this.now()) {
-    if (!this.firstPcmAt) return false;
+    if (!this.speech) return false;
     if (this.durationMs >= this.policy.maxUtteranceMs) return true;
     if (this.durationMs < this.policy.minSpeechMs) return false;
     if (this.silenceMs >= this.policy.silenceMs) return true;
-    // Discord may stop sending Opus packets during silence. Mirror the web
-    // 650 ms end window with wall-clock silence instead of waiting 1600 ms.
+    // Discord may stop emitting packets during silence. Use the same 650 ms
+    // end window against wall time instead of relying on the 1600 ms transport guard.
     return this.lastPcmAt > 0 && at - this.lastPcmAt >= this.policy.silenceMs;
   }
 
   finalize(at = this.now()) {
-    const pcm = Buffer.concat(this.chunks);
+    // Do not discard any PCM that belongs to the accepted utterance. The
+    // pre-roll copied at speech start is included in frames.
+    const pcm = this.speech ? Buffer.concat(this.frames) : Buffer.alloc(0);
     const exactDurationMs = pcm.length / 2 / this.policy.targetRate * 1000;
     const snr = this.maxRms / Math.max(0.001, this.noise);
     return {
       pcm,
       metrics: {
         firstPcmAt: this.firstPcmAt,
+        speechStartAt: this.speechStartAt,
         lastPcmAt: this.lastPcmAt,
         utteranceEndAt: at,
         durationMs: Math.round(exactDurationMs),
@@ -95,6 +131,10 @@ export class WebCompatibleCapture {
         snr: Number(snr.toFixed(2)),
         silenceMs: Math.round(this.silenceMs),
         frameCount: this.frameCount,
+        preRollFrames: this.policy.preRollFrames,
+        rawPcmBytes: this.rawPcmBytes,
+        acceptedPcmBytes: pcm.length,
+        speechDetected: this.speech,
       },
     };
   }
