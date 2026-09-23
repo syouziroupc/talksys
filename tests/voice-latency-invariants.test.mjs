@@ -5,12 +5,13 @@ import { readFileSync } from 'node:fs';
 const integrated = readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
 const bridge = readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
-test('generic verification remains enabled in the common web/Discord turn path', () => {
+test('v84 common Gemini path is single-pass grounded without serial verification', () => {
   assert.match(integrated, /export async function commonTalkSysTurn/);
   assert.match(integrated, /return runGeminiTurn\(body, env, signal, options\)/);
-  assert.match(integrated, /shouldRunGenericVerification\(text, interaction\.payload\)/);
-  assert.match(integrated, /runGenericGeminiVerification\(env, body, interaction, signal, now\)/);
-  assert.match(integrated, /const result = await commonTalkSysTurn\(commonBody, env, signal\)/);
+  assert.match(integrated, /shouldRunGenericVerification\(_text = '', _payload = \{\}\)/);
+  assert.match(integrated, /return false/);
+  assert.match(integrated, /reason: 'v84-single-pass-grounded'/);
+  assert.doesNotMatch(integrated, /if \(shouldRunGenericVerification\(text, interaction\.payload\)\)/);
 });
 
 test('Discord confirmed Whisper is the only text allowed into common TalkSys', () => {
