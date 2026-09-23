@@ -5,48 +5,49 @@ import fs from 'node:fs';
 const server = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
 const discord = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
-test('Discord final-answer endpoint streams the verifier rather than the unverified primary answer', () => {
-  const primary = server.indexOf('primary = await createGeminiInteraction');
-  const verifier = server.indexOf('createGeminiInteractionStream(env, verifyBody');
-  const emitVerifier = server.indexOf("event?.event_type === 'step.delta'");
-  assert.ok(primary >= 0);
-  assert.ok(verifier > primary);
-  assert.ok(emitVerifier > verifier);
-  assert.match(server, /text: buildGenericVerificationInput\(body, primary, now\)/);
-  assert.match(server, /stream: true/);
-  assert.match(server, /delta\?\.type === 'text'/);
+test('Discord final-answer endpoint uses the same common final-answer runner as web', () => {
+  assert.match(server, /export async function commonTalkSysTurn/);
+  assert.match(server, /return runGeminiTurn\(body, env, signal, options\)/);
+  assert.match(server, /const result = await commonTalkSysTurn\(commonBody, env, signal\)/);
+  assert.match(server, /discordTurnStreamResponse[\s\S]*runTalkSysTurn\(request, env, commonBody, request\.signal, ctx\)/);
+  assert.doesNotMatch(server, /type: 'speculative'/);
 });
 
-test('streamed final sentences stay behind generic verification and preserve the batch fallback', () => {
-  assert.match(server, /if \(!shouldRunGenericVerification\(text, primary\.payload\)\)/);
-  assert.match(server, /runGenericGeminiVerification\(env, body, primary, request\.signal, now\)/);
-  assert.match(server, /verificationFailOpen = true/);
-  assert.match(server, /if \(emittedSentences === 0 && primary\)/);
-  assert.match(server, /emittedSentences >= 4/);
+test('generic verification stays entirely inside the common runner before Discord emits sentences', () => {
+  const common = server.indexOf('export async function commonTalkSysTurn');
+  const discordStream = server.indexOf('function discordTurnStreamResponse');
+  assert.ok(common >= 0);
+  assert.ok(discordStream > common);
+  assert.match(server, /shouldRunGenericVerification\(text, interaction\.payload\)/);
+  assert.match(server, /runGenericGeminiVerification\(env, body, interaction, signal, now\)/);
+  assert.match(server, /await emitFinalAnswer\(result\.answer\)/);
+  assert.doesNotMatch(server.slice(discordStream), /createGeminiInteractionStream\(/);
 });
 
-test('immediate transit keeps the complete temporal guard before any streamed speech', () => {
-  assert.match(server, /if \(arithmeticExpressionFromQuestion\(text\) \|\| isImmediateTransitQuestion\(text\)\) \{/);
-  assert.match(server, /const result = await runGeminiTurn\(body, env, request\.signal, \{ now \}\)/);
-  assert.match(server, /await emitWholeAnswer\(result\.answer\)/);
+test('immediate transit inherits the exact web temporal guard through commonTalkSysTurn', () => {
+  assert.match(server, /const immediateTransit = isImmediateTransitQuestion\(text\)/);
+  assert.match(server, /while \(pastImmediateTransitDepartures\(interaction\.answer, now\)\.length > 0/);
+  assert.match(server, /commonTalkSysTurn\(commonBody, env, signal\)/);
+  assert.doesNotMatch(server.slice(server.indexOf('function discordTurnStreamResponse')), /isImmediateTransitQuestion\(text\)/);
 });
 
-test('Discord turn stream is private, SSE, logged, and exposes timing metadata', () => {
+test('Discord turn stream is private, SSE, logged, and exposes common timing metadata', () => {
   assert.match(server, /url\.pathname === '\/api\/turn-stream'/);
   assert.match(server, /discordVoiceTtsAuthorized\(request, env\)/);
   assert.match(server, /text\/event-stream; charset=utf-8/);
-  assert.match(server, /scheduleConversationLog\(ctx, env, request, body, result, 'turn', 200\)/);
-  assert.match(server, /primaryMs/);
-  assert.match(server, /verifierMs/);
+  assert.match(server, /runTalkSysTurn\(request, env, commonBody, request\.signal, ctx\)/);
+  assert.match(server, /primaryMs: result\?\.timings\?\.primaryMs/);
+  assert.match(server, /verifierMs: result\?\.timings\?\.verifierMs/);
+  assert.match(server, /answerGenerationTotalMs: result\?\.timings\?\.totalMs/);
 });
 
-test('Discord consumes sentence events immediately and only commits history on the final done event', () => {
-  assert.match(discord, /async function talkStream\(text, onSentence, utteranceId = '', signal, onSpeculative = null\)/);
+test('Discord consumes final sentence events and commits history only from the final done event', () => {
+  assert.match(discord, /async function talkStream\(text, onSentence, utteranceId = '', signal\)/);
   assert.match(discord, /event\?\.type === 'sentence'/);
   assert.match(discord, /onSentence\(String\(event\.text\)\)/);
   assert.match(discord, /event\?\.type === 'done'/);
   assert.match(discord, /history\.push\(\{ role: 'user', content: text \}, \{ role: 'assistant', content: doneBody\.answer \}\)/);
-  assert.match(discord, /const audioPromise = speculativeMatch[\s\S]*timedSynthesize\(safe\)/);
+  assert.doesNotMatch(discord, /onSpeculative|speculativeText|speculativeAudioPromise/);
 });
 
 test('legacy batch turn remains as a no-stream fallback', () => {
