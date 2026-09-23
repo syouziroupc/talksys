@@ -76,3 +76,9 @@ test('v84 speaking-start never aborts an answer and explicit stop is transcript-
   assert.match(bridge, /interruptActiveAnswer\('explicit-user-stop'\)/);
   assert.doesNotMatch(bridge, /stale answer suppressed/);
 });
+
+
+test('v84 Discord startup exposes the active bridge revision', () => {
+  assert.match(bridge, /bridge revision=\$\{DISCORD_BRIDGE_REVISION\}/);
+  assert.match(bridge, /mirrorRuntimeLog\('VERSION', DISCORD_BRIDGE_REVISION\)/);
+});
