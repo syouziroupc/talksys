@@ -480,6 +480,26 @@ export function interactionSources(payload = {}) {
   return out.slice(0, 12);
 }
 
+export function interactionCitationCount(payload = {}) {
+  let count = 0;
+  for (const step of Array.isArray(payload?.steps) ? payload.steps : []) {
+    if (step?.type !== 'model_output') continue;
+    for (const part of Array.isArray(step?.content) ? step.content : []) {
+      if (part?.type !== 'text') continue;
+      for (const annotation of Array.isArray(part?.annotations) ? part.annotations : []) {
+        if (annotation?.type === 'url_citation' && /^https?:\/\//i.test(compact(annotation?.url, 1000))) count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+export function requiresGroundedEvidence(text = '') {
+  const value = compact(text, 4000);
+  if (!value || TRIVIAL_CONVERSATION_RE.test(value) || SIMPLE_ARITHMETIC_RE.test(value) || LOCAL_TRANSFORM_RE.test(value)) return false;
+  return FACTUAL_OR_LOOKUP_RE.test(value) || VERIFIER_FRESHNESS_RE.test(value) || isImmediateTransitQuestion(value);
+}
+
 function sourceSummary(payload = {}) {
   const queries = interactionQueries(payload);
   const sources = interactionSources(payload);
@@ -618,10 +638,22 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     immediateTransit,
   });
   const primaryMs = Date.now() - primaryStarted;
+  const citationCount = interactionCitationCount(interaction.payload);
+  const groundingRequired = requiresGroundedEvidence(text);
+  const groundingFailClosed = groundingRequired && citationCount === 0;
+  if (groundingFailClosed) {
+    interaction = {
+      ...interaction,
+      answer: '検索結果から、この質問に必要な根拠を十分に確認できませんでした。未確認の固有事実や数値は断定しません。',
+    };
+  }
   emitLatencyLog('gemini-primary-complete', body, {
     durationMs: primaryMs,
     model: GEMINI_MODEL,
     searched: searchedInInteraction(interaction.payload),
+    citationCount,
+    groundingRequired,
+    groundingFailClosed,
   });
 
   // Kept in the response contract for telemetry compatibility. The normal
@@ -686,6 +718,9 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
     verifierSearched,
     verificationFailOpen,
+    groundingRequired,
+    groundingCitationCount: citationCount,
+    groundingFailClosed,
     temporalTransitGuard: immediateTransit,
     temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
     temporalRepairRetried,
@@ -1482,6 +1517,8 @@ export const __test = {
   interactionOutputText,
   interactionQueries,
   interactionSources,
+  interactionCitationCount,
+  requiresGroundedEvidence,
   interactionInput,
   runGeminiTurn,
   commonTalkSysTurn,
