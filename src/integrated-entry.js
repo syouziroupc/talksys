@@ -12,7 +12,7 @@ export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
-export const DISCORD_PIPELINE_REVISION = 'talksys-v81-fast-ack-echo-guard-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v82-web-fast-reaction-live-log-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -1120,7 +1120,7 @@ function compactClientTimings(value = {}) {
     'captureMs',
     'sttMs',
     'speechEndToSttFinalMs',
-    'immediateAckMs',
+    'fastReactionMs',
     'answerStartMs',
     'primaryMs',
     'verifierMs',
@@ -1149,8 +1149,8 @@ function compactVoiceTimeline(value = {}) {
     'discordReceiveStartAt',
     'firstPcmAt',
     'utteranceEndAt',
-    'immediateAckRequestedAt',
-    'immediateAckPlaybackAt',
+    'fastReactionRequestedAt',
+    'fastReactionPlaybackAt',
     'wavReadyAt',
     'transcribeStartAt',
     'whisperCompleteAt',
@@ -1215,7 +1215,7 @@ function discordVoiceMetricsResponse(request, env, ctx) {
       captureMs: timings.captureMs ?? 0,
       speechEndToSttFinalMs: timings.speechEndToSttFinalMs ?? timings.sttMs ?? 0,
       sttMs: timings.sttMs ?? 0,
-      immediateAckMs: timings.immediateAckMs ?? 0,
+      fastReactionMs: timings.fastReactionMs ?? 0,
       echoSuppressed: Boolean(timings.echoSuppressed),
       answerStartMs: timings.answerStartMs ?? 0,
       primaryMs: timings.primaryMs ?? 0,
@@ -1344,6 +1344,9 @@ async function voiceHealth(request, env, ctx) {
       discordArchitecture: 'web-audio-adapter',
       discordFinalStt: 'whisper-large-v3-turbo-via-api-transcribe',
       discordRealtimeSttAuthoritative: false,
+      discordRealtimeSttRole: 'fast-reaction-only',
+      discordFastReactionEndpoint: '/api/fast-reaction',
+      discordRuntimeLogCommand: '/logs',
       discordTurnEndpoint: '/api/turn',
       discordVoiceMetricsEndpoint: '/api/voice-metrics',
       discordBridgeConfigured: typeof env?.DISCORD_BRIDGE_TOKEN === 'string' && env.DISCORD_BRIDGE_TOKEN.trim().length > 0,
