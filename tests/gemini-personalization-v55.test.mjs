@@ -183,3 +183,33 @@ test('casual contextual speech does not force Google Search', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+
+test('empty Gemini interaction output is retried once without failing the voice turn', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls += 1;
+    const req = JSON.parse(options.body);
+    if (calls === 1) {
+      return new Response(JSON.stringify({
+        id: 'empty-first',
+        status: 'completed',
+        steps: [{ type: 'google_search_call', arguments: { queries: ['ビバンテ'] } }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    assert.equal(req.previous_interaction_id, undefined);
+    return new Response(JSON.stringify({
+      id: 'retry-good',
+      status: 'completed',
+      steps: [{ type: 'model_output', content: [{ type: 'text', text: '確認できる範囲で説明します。' }] }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const result = await runGeminiTurn({ text: 'ビバンテ知ってますか', history: [] }, { GEMINI_API_KEY: 'test-key' });
+    assert.equal(calls, 2);
+    assert.match(result.answer, /確認できる範囲/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
