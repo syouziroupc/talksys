@@ -20,9 +20,9 @@ test('Discord bridge uses permanent shared-token auth for verified streaming and
   assert.doesNotMatch(source, /x-talksys-demo/);
   assert.doesNotMatch(source, /discord-voice-smoke-20260918/);
   assert.match(source, /\/api\/turn-stream/);
-  assert.match(source, /async function talkStream\(text, onSentence, utteranceId = '', signal, onSpeculative = null\)/);
+  assert.match(source, /async function talkStream\(text, onSentence, utteranceId = '', signal\)/);
   assert.match(source, /queueSentence/);
-  assert.match(source, /await playMp3\(prefetched\.value\)/);
+  assert.match(source, /await playMp3\(prefetched\.value,/);
 });
 
 test('Discord receive never echoes the callers raw voice and finalizes buffered short utterances', () => {
@@ -56,11 +56,13 @@ test('Discord keeps PCM16 audio for fallback transcription when realtime STT fai
   assert.match(source, /writeUInt32LE\(16000, 24\)/);
 });
 
-test('Discord runtime omits search-preface work and prefers the verified turn stream', () => {
-  assert.doesNotMatch(source, /\/api\/search-preface/);
-  assert.doesNotMatch(source, /searchPreface/);
-  assert.doesNotMatch(source, /prefaceTask|prefacePlaybackPromise|answerReady/);
-  assert.match(source, /streamedResult = await talkStream\(text, queueSentence, utteranceId, controller\.signal, prefetchSpeculative\)/);
+test('Discord plays only non-answer wait cues while common final answer generation runs', () => {
+  assert.match(source, /\/api\/search-preface/);
+  assert.match(source, /\/api\/fast-reaction/);
+  assert.match(source, /async function playWaitCue/);
+  assert.match(source, /const waitCuePromise = playWaitCue/);
+  assert.match(source, /streamedResult = await talkStream\(text, queueSentence, utteranceId, controller\.signal\)/);
+  assert.doesNotMatch(source, /onSpeculative|speculativeText|speculativeAudioPromise/);
   assert.match(source, /falling back to \/api\/turn/);
   assert.match(source, /return \{ answer: await talk\(text, utteranceId, signal\), streamed: false/);
 });
@@ -87,12 +89,13 @@ test('Discord assigns one persistent conversation session id per VC connection',
   assert.match(source, /\[discord\] conversation session:/);
 });
 
-test('Discord starts TTS as verified sentences arrive and serializes playback', () => {
-  assert.match(source, /const audioPromise = speculativeMatch/);
+test('Discord prioritizes final first-sentence TTS and generates later sentences during playback', () => {
+  assert.match(source, /queuedSentences === 1/);
+  assert.match(source, /firstSentenceReadyPromise = timedSynthesize\(safe\)/);
+  assert.match(source, /Promise\.resolve\(firstSentenceReadyPromise\)[\s\S]*timedSynthesize\(safe\)/);
   assert.match(source, /playbackChain = playbackChain\.then/);
   assert.match(source, /const prefetched = await audioPromise/);
-  assert.match(source, /await playMp3\(prefetched\.value\)/);
-  assert.match(source, /speculative-prefetch|verifier-stream/);
+  assert.match(source, /source=final-answer-first-sentence/);
 });
 
 test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio readiness', () => {
@@ -102,6 +105,8 @@ test('Discord logs stage latency for STT, Gemini turn, TTS, and final audio read
   assert.match(source, /\[latency\] tts-http=/);
   assert.match(source, /\[latency\] first-audio-ready=/);
   assert.match(source, /server-total=/);
+  assert.match(source, /ffmpeg-first-output=/);
+  assert.match(source, /speech-end-to-playback-start=/);
 });
 
 test('Discord voice stages have finite budgets and bounded retries', () => {
