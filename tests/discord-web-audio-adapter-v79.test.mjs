@@ -45,7 +45,22 @@ test('web-compatible capture keeps pre-roll and waits for the web 650 ms silence
   assert.equal(result.metrics.speechDetected, true);
   assert.equal(result.metrics.preRollFrames, 8);
   assert.ok(result.pcm.length > 0);
-  assert.ok(result.metrics.acceptedPcmBytes <= result.metrics.rawPcmBytes);
+  assert.ok(result.metrics.acceptedPcmBytes >= result.metrics.rawPcmBytes);
+  assert.ok(result.metrics.durationMs >= WEB_VOICE_CAPTURE_POLICY.minSpeechMs);
+});
+
+
+test('very short Discord speech receives only silent pre-roll padding, not fabricated speech', () => {
+  let now = 2000;
+  const capture = new WebCompatibleCapture({ now: () => now });
+  const voice = pcmFrame(7000);
+  for (let i = 0; i < 3; i += 1) { capture.push(voice, now); now += 40; }
+  assert.equal(capture.speech, true);
+  const result = capture.finalize(now);
+  assert.equal(result.metrics.voicedMs, 120);
+  assert.equal(result.metrics.preRollFrames, 8);
+  assert.equal(result.metrics.durationMs, 320);
+  assert.equal(result.pcm.length, 8 * voice.length);
 });
 
 test('Discord final STT always uses the same /api/transcribe Whisper path as web', () => {
