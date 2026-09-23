@@ -15,7 +15,7 @@ import {
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY } from '../../src/voice-capture-policy.js';
-import { sameUtterance } from '../../src/voice-fast-reaction.js';
+import { fastReaction, sameUtterance } from '../../src/voice-fast-reaction.js';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -28,20 +28,20 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v81-fast-ack-echo-guard-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v82-web-fast-reaction-live-log-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
 const DISCORD_READY_TIMEOUT_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
-const IMMEDIATE_ACK_PROMPT = 'はい、少し確認しますね。';
 const BOT_ECHO_WINDOW_MS = 20000;
 const REQUEST_BUDGET_MS = Object.freeze({
   stt: 30000,
   turn: 35000,
   tts: 12000,
   waitCue: 1800,
+  fastReaction: 1800,
   metrics: 5000,
 });
 
@@ -62,10 +62,14 @@ const pendingTurns = [];
 let activeTurnAbortController = null;
 let activeTurnSerial = 0;
 let activeWaitCue = null;
-let activeImmediateAck = null;
-let immediateAckAudio = null;
-let immediateAckAudioPromise = null;
+let activeFastReaction = null;
+const fastReactionAudioCache = new Map();
+const realtimeHelpers = new Map();
 const recentBotSpeech = [];
+let runtimeLogChannel = null;
+let runtimeLogMessage = null;
+let runtimeLogFlushTimer = null;
+const runtimeLogLines = [];
 let activeBotPlaybackRecord = null;
 let lastBotPlaybackEndedAt = 0;
 let lastUserSpeechAt = 0;
@@ -86,10 +90,10 @@ function resetConversationState() {
   voiceRecoveryAttempts = 0;
   try { activeTurnAbortController?.abort(); } catch {}
   try { activeWaitCue?.stop?.('reset'); } catch {}
-  try { activeImmediateAck?.stop?.('reset'); } catch {}
+  try { activeFastReaction?.stop?.('reset'); } catch {}
   activeTurnAbortController = null;
   activeWaitCue = null;
-  activeImmediateAck = null;
+  activeFastReaction = null;
   recentBotSpeech.splice(0, recentBotSpeech.length);
   activeBotPlaybackRecord = null;
   lastBotPlaybackEndedAt = 0;
@@ -142,46 +146,115 @@ function looksLikeRecentBotEcho(text, timeline = {}) {
   return null;
 }
 
-async function warmImmediateAckAudio() {
-  if (immediateAckAudio?.length) return immediateAckAudio;
-  if (immediateAckAudioPromise) return immediateAckAudioPromise;
-  immediateAckAudioPromise = synthesize(IMMEDIATE_ACK_PROMPT, undefined, { purpose: 'immediate-ack-warmup' })
-    .then((result) => {
-      immediateAckAudio = result.audio;
-      console.log(`[ack] cached ${immediateAckAudio.length} bytes`);
-      return immediateAckAudio;
-    })
-    .finally(() => { immediateAckAudioPromise = null; });
-  return immediateAckAudioPromise;
+function runtimeLogText() {
+  const body = runtimeLogLines.slice(-18).join('\n');
+  return `**TalkSys Discord runtime** · ${DISCORD_BRIDGE_REVISION}\n\`\`\`text\n${body.slice(-1750)}\n\`\`\``;
 }
 
-function startImmediateAck(utteranceId, sessionEpoch, timeline) {
-  try { activeImmediateAck?.stop?.('replaced'); } catch {}
+function scheduleRuntimeLogFlush() {
+  if (!runtimeLogChannel || runtimeLogFlushTimer) return;
+  runtimeLogFlushTimer = setTimeout(async () => {
+    runtimeLogFlushTimer = null;
+    if (!runtimeLogChannel) return;
+    try {
+      if (runtimeLogMessage) await runtimeLogMessage.edit(runtimeLogText());
+      else runtimeLogMessage = await runtimeLogChannel.send(runtimeLogText());
+    } catch (error) {
+      console.warn('[discord-log] mirror failed:', error?.message || error);
+    }
+  }, 700);
+}
+
+function mirrorRuntimeLog(kind, message) {
+  const value = String(message || '').replace(/\s+/g, ' ').trim().slice(0, 260);
+  if (!value) return;
+  const stamp = new Date().toISOString().slice(11, 19);
+  runtimeLogLines.push(`${stamp} [${kind}] ${value}`);
+  if (runtimeLogLines.length > 60) runtimeLogLines.splice(0, runtimeLogLines.length - 60);
+  scheduleRuntimeLogFlush();
+}
+
+async function attachRuntimeLogChannel(channel) {
+  if (!channel?.isTextBased?.() || typeof channel.send !== 'function') return false;
+  runtimeLogChannel = channel;
+  runtimeLogMessage = null;
+  runtimeLogLines.splice(0, runtimeLogLines.length);
+  mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
+  mirrorRuntimeLog('BOOT', `TalkSys=${TALKSYS_BASE_URL}`);
+  scheduleRuntimeLogFlush();
+  return true;
+}
+
+function realtimeSttUrl() {
+  const url = new URL(TALKSYS_BASE_URL);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = '/api/realtime-stt';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+async function fetchFastReaction(text, signal) {
+  const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/fast-reaction', {
+    method: 'POST',
+    signal,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text }),
+  }, {
+    timeoutMs: REQUEST_BUDGET_MS.fastReaction,
+    label: 'fast-reaction',
+  });
+  return response.json().catch(() => ({}));
+}
+
+async function cachedReactionAudio(text, signal) {
+  const key = String(text || '').trim();
+  if (!key) return null;
+  if (fastReactionAudioCache.has(key)) return fastReactionAudioCache.get(key);
+  const synthesized = await synthesize(key, signal, { purpose: 'fast-reaction' });
+  fastReactionAudioCache.set(key, synthesized.audio);
+  return synthesized.audio;
+}
+
+async function warmFastReactionAudio() {
+  const samples = ['こんにちは', 'ありがとう', '今日の天気を教えて', 'これを調べて', '何時？', 'この内容について詳しく相談したいです'];
+  const texts = [...new Set(samples.map((sample) => fastReaction(sample)).filter((r) => r?.shouldSpeak && r?.text).map((r) => r.text))];
+  await Promise.allSettled(texts.map((text) => cachedReactionAudio(text)));
+  mirrorRuntimeLog('READY', `fast-reaction cache=${fastReactionAudioCache.size}`);
+}
+
+function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, realtimeTranscript = '') {
+  if (!reaction?.shouldSpeak || !String(reaction?.text || '').trim()) return null;
+  try { activeFastReaction?.stop?.('replaced'); } catch {}
   let stopped = false;
   let playing = false;
+  const controller = new AbortController();
   let handle = null;
-  timeline.immediateAckRequestedAt = Date.now();
+  timeline.fastReactionRequestedAt = Date.now();
+  timeline.realtimeTranscript = String(realtimeTranscript || '');
 
   const done = (async () => {
     try {
-      const audio = immediateAckAudio?.length ? immediateAckAudio : await warmImmediateAckAudio();
+      const text = String(reaction.text).trim();
+      const audio = await cachedReactionAudio(text, controller.signal);
       if (!audio?.length || stopped || sessionEpoch !== voiceEpoch) return false;
       playing = true;
+      mirrorRuntimeLog('REACTION', `${reaction.kind || 'unknown'}: ${text}`);
       await playMp3(audio, {
-        spokenText: IMMEDIATE_ACK_PROMPT,
-        purpose: 'immediate-ack',
+        spokenText: text,
+        purpose: 'fast-reaction',
         onPlaybackStart: ({ playbackStartedAt }) => {
-          timeline.immediateAckPlaybackAt = playbackStartedAt;
-          console.log(`[latency] immediate-ack=${Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt))}ms utterance=${utteranceId}`);
+          timeline.fastReactionPlaybackAt = playbackStartedAt;
+          console.log(`[latency] fast-reaction=${Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt))}ms utterance=${utteranceId}`);
         },
       });
       return true;
     } catch (error) {
-      if (!stopped) console.warn('[ack] immediate acknowledgement failed:', error?.message || error);
+      if (!stopped && error?.name !== 'AbortError') console.warn('[fast-reaction]', error?.message || error);
       return false;
     } finally {
       playing = false;
-      if (activeImmediateAck === handle) activeImmediateAck = null;
+      if (activeFastReaction === handle) activeFastReaction = null;
     }
   })();
 
@@ -190,12 +263,148 @@ function startImmediateAck(utteranceId, sessionEpoch, timeline) {
     stop(reason = 'answer-ready') {
       if (stopped) return;
       stopped = true;
+      try { controller.abort(reason); } catch {}
       if (playing) player.stop(true);
-      console.log(`[ack] stopped reason=${reason} utterance=${utteranceId}`);
     },
   };
-  activeImmediateAck = handle;
+  activeFastReaction = handle;
   return handle;
+}
+
+function triggerWebFastReaction(helper, text) {
+  const active = helper?.active;
+  const value = String(text || '').trim();
+  if (!active || active.reactionIssued || !value || active.sessionEpoch !== voiceEpoch) return;
+  active.latestRealtimeTranscript = value;
+  if (active.startedDuringBotPlayback) {
+    console.log(`[fast-reaction] deferred bot-overlap utterance=${active.utteranceId}`);
+    return;
+  }
+  active.reactionIssued = true;
+  const seq = ++helper.reactionSeq;
+  setTimeout(async () => {
+    if (helper.reactionSeq !== seq || helper.active !== active || active.sessionEpoch !== voiceEpoch) return;
+    try {
+      const reaction = await fetchFastReaction(value);
+      if (helper.reactionSeq !== seq || helper.active !== active || active.sessionEpoch !== voiceEpoch) return;
+      active.reaction = reaction;
+      if (reaction?.shouldSpeak) playWebFastReaction(reaction, active.utteranceId, active.sessionEpoch, active.timeline, value);
+    } catch (error) {
+      console.warn('[fast-reaction] endpoint failed:', error?.message || error);
+    }
+  }, 90);
+}
+
+function handleRealtimeMessage(helper, data) {
+  let payload;
+  try { payload = JSON.parse(String(data)); } catch { return; }
+  const type = String(payload?.type || payload?.event || '');
+  const transcript = String(payload?.channel?.alternatives?.[0]?.transcript || payload?.transcript || '').trim();
+  if (/SpeechStarted/i.test(type)) {
+    helper.finalParts = [];
+    helper.interim = '';
+    return;
+  }
+  if (transcript) {
+    helper.interim = transcript;
+    if (helper.active) helper.active.latestRealtimeTranscript = transcript;
+  }
+  if (/Results/i.test(type)) {
+    if (payload?.is_final && transcript && !helper.finalParts.includes(transcript)) helper.finalParts.push(transcript);
+    if (payload?.speech_final) {
+      const text = [...helper.finalParts, (!payload?.is_final && transcript ? transcript : '')].filter(Boolean).join(' ').trim() || transcript;
+      if (text) triggerWebFastReaction(helper, text);
+      helper.finalParts = [];
+      helper.interim = '';
+    }
+    return;
+  }
+  if (/UtteranceEnd/i.test(type)) {
+    const text = helper.finalParts.join(' ').trim() || helper.interim;
+    if (text) triggerWebFastReaction(helper, text);
+    helper.finalParts = [];
+    helper.interim = '';
+  }
+}
+
+function ensureRealtimeHelper(userId) {
+  let helper = realtimeHelpers.get(userId);
+  if (helper && helper.ws && (helper.ws.readyState === WebSocket.OPEN || helper.ws.readyState === WebSocket.CONNECTING)) return helper;
+  helper = {
+    userId,
+    ws: null,
+    ready: false,
+    buffered: [],
+    bufferedBytes: 0,
+    finalParts: [],
+    interim: '',
+    reactionSeq: 0,
+    active: null,
+  };
+  realtimeHelpers.set(userId, helper);
+  try {
+    const ws = new WebSocket(realtimeSttUrl());
+    helper.ws = ws;
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => {
+      helper.ready = true;
+      mirrorRuntimeLog('RT-STT', `ready user=${userId}`);
+      for (const chunk of helper.buffered) {
+        try { ws.send(chunk); } catch {}
+      }
+      helper.buffered = [];
+      helper.bufferedBytes = 0;
+    };
+    ws.onmessage = (event) => handleRealtimeMessage(helper, event.data);
+    ws.onerror = () => {
+      helper.ready = false;
+      mirrorRuntimeLog('RT-STT', `error user=${userId}; Whisper continues`);
+    };
+    ws.onclose = () => {
+      helper.ready = false;
+      helper.ws = null;
+      if (realtimeHelpers.get(userId) === helper) realtimeHelpers.delete(userId);
+    };
+  } catch (error) {
+    mirrorRuntimeLog('RT-STT', `open failed: ${error?.message || error}`);
+  }
+  return helper;
+}
+
+function beginRealtimeUtterance(userId, meta) {
+  const helper = ensureRealtimeHelper(userId);
+  helper.finalParts = [];
+  helper.interim = '';
+  helper.reactionSeq += 1;
+  helper.active = {
+    ...meta,
+    reactionIssued: false,
+    reaction: null,
+    latestRealtimeTranscript: '',
+  };
+  return helper;
+}
+
+function sendRealtimePcm(helper, pcm16) {
+  if (!helper || !pcm16?.length) return;
+  const chunk = Buffer.from(pcm16);
+  if (helper.ws?.readyState === WebSocket.OPEN) {
+    try { helper.ws.send(chunk); } catch {}
+    return;
+  }
+  if (helper.bufferedBytes < 96000) {
+    helper.buffered.push(chunk);
+    helper.bufferedBytes += chunk.length;
+  }
+}
+
+function closeRealtimeHelpers() {
+  for (const helper of realtimeHelpers.values()) {
+    helper.reactionSeq += 1;
+    helper.active = null;
+    try { helper.ws?.close(1000, 'voice-disconnect'); } catch {}
+  }
+  realtimeHelpers.clear();
 }
 
 function boundedSignal(parentSignal, timeoutMs) {
