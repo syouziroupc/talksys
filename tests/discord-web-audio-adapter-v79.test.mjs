@@ -48,11 +48,11 @@ test('Discord uses only /api/turn for final answer generation', () => {
   assert.match(integrated, /export async function commonTalkSysTurn/);
 });
 
-test('connection greeting and playback fail loudly instead of hanging silently', () => {
+test('playback still fails loudly, while greeting TTS failure no longer tears down VC connection', () => {
   assert.match(bridge, /playback_start_timeout/);
-  assert.match(bridge, /connection_greeting_failed/);
-  assert.match(bridge, /throw new Error\(\`connection_greeting_failed:/);
-  assert.match(bridge, /TalkSysのVC操作に失敗しました: \$\{String\(error\?\.message \|\| error\)\.slice\(0, 180\)\}/);
+  assert.match(bridge, /connection greeting unavailable/);
+  assert.doesNotMatch(bridge, /throw new Error\(\`connection_greeting_failed:/);
+  assert.match(bridge, /synthesizeWindowsJapaneseTts/);
 });
 
 test('one utterance id correlates capture, Whisper, common turn, TTS and playback milestones', () => {
