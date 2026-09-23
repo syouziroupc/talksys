@@ -14,7 +14,7 @@ test('Discord client metrics endpoint remains bridge-authenticated and persisted
 test('Discord v79 latency metrics accept only current adapter fields', () => {
   assert.match(source, /function compactClientTimings\(value = \{\}\)/);
   for (const key of [
-    'captureMs','sttMs','speechEndToSttFinalMs','answerStartMs','primaryMs',
+    'captureMs','sttMs','speechEndToSttFinalMs','fastReactionMs','answerStartMs','primaryMs',
     'verifierMs','answerGenerationTotalMs','firstAudioReadyMs','firstTtsMs',
     'pipelineCompleteMs','speechEndToPlaybackStartMs','ffmpegSpawnMs','playbackMs',
   ]) assert.match(source, new RegExp("'" + key + "'"));
@@ -27,7 +27,7 @@ test('Discord v79 latency metrics accept only current adapter fields', () => {
 test('voice timeline and transcript provenance are persisted', () => {
   assert.match(source, /function compactVoiceTimeline/);
   for (const key of [
-    'discordReceiveStartAt','firstPcmAt','utteranceEndAt','wavReadyAt',
+    'discordReceiveStartAt','firstPcmAt','utteranceEndAt','fastReactionRequestedAt','fastReactionPlaybackAt','wavReadyAt',
     'transcribeStartAt','whisperCompleteAt','turnStartAt','finalAnswerAt',
     'ttsStartAt','ttsEndAt','playbackStartAt','pipelineCompleteAt',
   ]) assert.match(source, new RegExp("'" + key + "'"));
@@ -41,5 +41,8 @@ test('voice health advertises Discord as a web audio adapter using /api/turn', (
   assert.match(source, /discordArchitecture: 'web-audio-adapter'/);
   assert.match(source, /discordFinalStt: 'whisper-large-v3-turbo-via-api-transcribe'/);
   assert.match(source, /discordRealtimeSttAuthoritative: false/);
+  assert.match(source, /discordRealtimeSttRole: 'fast-reaction-only'/);
+  assert.match(source, /discordFastReactionEndpoint: '\/api\/fast-reaction'/);
+  assert.match(source, /discordRuntimeLogCommand: '\/logs'/);
   assert.match(source, /discordTurnEndpoint: '\/api\/turn'/);
 });

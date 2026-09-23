@@ -13,7 +13,7 @@ test('Discord posts end-to-end metrics asynchronously after an utterance', () =>
 
 test('metrics carry capture, Whisper, common turn, TTS and playback timings', () => {
   for (const key of [
-    'captureMs','sttMs','speechEndToSttFinalMs','answerStartMs','primaryMs',
+    'captureMs','sttMs','speechEndToSttFinalMs','fastReactionMs','answerStartMs','primaryMs',
     'verifierMs','answerGenerationTotalMs','firstTtsMs','firstAudioReadyMs',
     'speechEndToPlaybackStartMs','pipelineCompleteMs','ffmpegSpawnMs','playbackMs',
   ]) assert.match(source, new RegExp(key));
@@ -32,5 +32,5 @@ test('one utterance id links /api/transcribe, /api/turn, TTS and metrics', () =>
 test('metrics prove the exact confirmed transcript passed to Gemini', () => {
   assert.match(source, /confirmedTranscript,/);
   assert.match(source, /geminiInputText: confirmedTranscript/);
-  assert.match(source, /realtimeTranscript: ''/);
+  assert.match(source, /realtimeTranscript: String\(captureMetrics\?\.realtimeTranscript \|\| ''\)/);
 });

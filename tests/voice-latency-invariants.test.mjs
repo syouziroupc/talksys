@@ -17,7 +17,9 @@ test('Discord confirmed Whisper is the only text allowed into common TalkSys', (
   assert.match(bridge, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
   assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
-  assert.doesNotMatch(bridge, /\/api\/realtime-stt|speech_final|WebSocket|type:\s*['"]Finalize['"]/);
+  assert.match(bridge, /\/api\/realtime-stt/);
+  assert.match(bridge, /\/api\/fast-reaction/);
+  assert.doesNotMatch(bridge, /type:\s*['"]Finalize['"]/);
 });
 
 test('Whisper is the normal path with a quality-first timeout', () => {
@@ -39,7 +41,7 @@ test('wait audio cannot block final answer TTS', () => {
 
 test('latency metrics preserve the full quality-first pipeline', () => {
   for (const key of [
-    'captureMs','sttMs','speechEndToSttFinalMs','primaryMs','verifierMs',
+    'captureMs','sttMs','speechEndToSttFinalMs','fastReactionMs','primaryMs','verifierMs',
     'answerGenerationTotalMs','firstTtsMs','firstAudioReadyMs',
     'ffmpegSpawnMs','speechEndToPlaybackStartMs','pipelineCompleteMs',
   ]) assert.match(bridge + integrated, new RegExp(key));

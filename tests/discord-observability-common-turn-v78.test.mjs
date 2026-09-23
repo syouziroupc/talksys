@@ -26,12 +26,14 @@ test('Discord final STT is confirmed Whisper, never Nova', () => {
   assert.match(bridge, /\/api\/transcribe/);
   assert.match(bridge, /sttMode: 'web-whisper'/);
   assert.doesNotMatch(bridge, /batchSttMs|batchTranscribePcm16|fallbackController|realtimeSttBackoff|realtimeSttSockets/);
-  assert.doesNotMatch(bridge, /\/api\/realtime-stt|speech_final|WebSocket|batchTranscribePcm16|type:\s*['"]Finalize['"]/);
+  assert.match(bridge, /\/api\/realtime-stt/);
+  assert.match(bridge, /\/api\/fast-reaction/);
+  assert.doesNotMatch(bridge, /batchTranscribePcm16|type:\s*['"]Finalize['"]/);
 });
 
 test('utterance telemetry covers capture through Discord playback', () => {
   for (const field of [
-    'utteranceId','sessionId','channel','captureMs','speechEndToSttFinalMs',
+    'utteranceId','sessionId','channel','captureMs','speechEndToSttFinalMs','fastReactionMs',
     'answerStartMs','primaryMs','verifierMs','answerGenerationTotalMs',
     'firstTtsMs','firstAudioReadyMs','speechEndToPlaybackStartMs',
     'pipelineCompleteMs','ffmpegSpawnMs','ttsProvider',
@@ -52,7 +54,7 @@ test('transcript provenance can show realtime versus confirmed text without maki
   assert.match(integrated, /confirmedTranscript/);
   assert.match(integrated, /geminiInputText/);
   assert.match(integrated, /transcriptMatch/);
-  assert.match(bridge, /realtimeTranscript: ''/);
+  assert.match(bridge, /realtimeTranscript: String\(captureMetrics\?\.realtimeTranscript \|\| ''\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
 });
 

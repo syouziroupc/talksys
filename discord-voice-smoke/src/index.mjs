@@ -15,7 +15,7 @@ import {
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY } from '../../src/voice-capture-policy.js';
-import { sameUtterance } from '../../src/voice-fast-reaction.js';
+import { fastReaction, sameUtterance } from '../../src/voice-fast-reaction.js';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -28,20 +28,20 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v81-fast-ack-echo-guard-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v82-web-fast-reaction-live-log-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
 const DISCORD_READY_TIMEOUT_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
-const IMMEDIATE_ACK_PROMPT = 'はい、少し確認しますね。';
 const BOT_ECHO_WINDOW_MS = 20000;
 const REQUEST_BUDGET_MS = Object.freeze({
   stt: 30000,
   turn: 35000,
   tts: 12000,
   waitCue: 1800,
+  fastReaction: 1800,
   metrics: 5000,
 });
 
@@ -62,10 +62,14 @@ const pendingTurns = [];
 let activeTurnAbortController = null;
 let activeTurnSerial = 0;
 let activeWaitCue = null;
-let activeImmediateAck = null;
-let immediateAckAudio = null;
-let immediateAckAudioPromise = null;
+let activeFastReaction = null;
+const fastReactionAudioCache = new Map();
+const realtimeHelpers = new Map();
 const recentBotSpeech = [];
+let runtimeLogChannel = null;
+let runtimeLogMessage = null;
+let runtimeLogFlushTimer = null;
+const runtimeLogLines = [];
 let activeBotPlaybackRecord = null;
 let lastBotPlaybackEndedAt = 0;
 let lastUserSpeechAt = 0;
@@ -86,10 +90,10 @@ function resetConversationState() {
   voiceRecoveryAttempts = 0;
   try { activeTurnAbortController?.abort(); } catch {}
   try { activeWaitCue?.stop?.('reset'); } catch {}
-  try { activeImmediateAck?.stop?.('reset'); } catch {}
+  try { activeFastReaction?.stop?.('reset'); } catch {}
   activeTurnAbortController = null;
   activeWaitCue = null;
-  activeImmediateAck = null;
+  activeFastReaction = null;
   recentBotSpeech.splice(0, recentBotSpeech.length);
   activeBotPlaybackRecord = null;
   lastBotPlaybackEndedAt = 0;
@@ -142,46 +146,117 @@ function looksLikeRecentBotEcho(text, timeline = {}) {
   return null;
 }
 
-async function warmImmediateAckAudio() {
-  if (immediateAckAudio?.length) return immediateAckAudio;
-  if (immediateAckAudioPromise) return immediateAckAudioPromise;
-  immediateAckAudioPromise = synthesize(IMMEDIATE_ACK_PROMPT, undefined, { purpose: 'immediate-ack-warmup' })
-    .then((result) => {
-      immediateAckAudio = result.audio;
-      console.log(`[ack] cached ${immediateAckAudio.length} bytes`);
-      return immediateAckAudio;
-    })
-    .finally(() => { immediateAckAudioPromise = null; });
-  return immediateAckAudioPromise;
+function runtimeLogText() {
+  const body = runtimeLogLines.slice(-18).join('\n');
+  return `**TalkSys Discord runtime** · ${DISCORD_BRIDGE_REVISION}\n\`\`\`text\n${body.slice(-1750)}\n\`\`\``;
 }
 
-function startImmediateAck(utteranceId, sessionEpoch, timeline) {
-  try { activeImmediateAck?.stop?.('replaced'); } catch {}
+function scheduleRuntimeLogFlush() {
+  if (!runtimeLogChannel || runtimeLogFlushTimer) return;
+  runtimeLogFlushTimer = setTimeout(async () => {
+    runtimeLogFlushTimer = null;
+    if (!runtimeLogChannel) return;
+    try {
+      if (runtimeLogMessage) await runtimeLogMessage.edit(runtimeLogText());
+      else runtimeLogMessage = await runtimeLogChannel.send(runtimeLogText());
+    } catch (error) {
+      console.warn('[discord-log] mirror failed:', error?.message || error);
+    }
+  }, 700);
+}
+
+function mirrorRuntimeLog(kind, message) {
+  const value = String(message || '').replace(/`/g, 'ˋ').replace(/\s+/g, ' ').trim().slice(0, 260);
+  if (!value) return;
+  const stamp = new Date().toISOString().slice(11, 19);
+  runtimeLogLines.push(`${stamp} [${kind}] ${value}`);
+  if (runtimeLogLines.length > 60) runtimeLogLines.splice(0, runtimeLogLines.length - 60);
+  scheduleRuntimeLogFlush();
+}
+
+async function attachRuntimeLogChannel(channel) {
+  if (!channel?.isTextBased?.() || typeof channel.send !== 'function') return false;
+  runtimeLogChannel = channel;
+  runtimeLogMessage = null;
+  mirrorRuntimeLog('LOG', 'Discord live log attached');
+  mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
+  mirrorRuntimeLog('BOOT', `TalkSys=${TALKSYS_BASE_URL}`);
+  scheduleRuntimeLogFlush();
+  return true;
+}
+
+function realtimeSttUrl() {
+  const url = new URL(TALKSYS_BASE_URL);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = '/api/realtime-stt';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+async function fetchFastReaction(text, signal) {
+  const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/fast-reaction', {
+    method: 'POST',
+    signal,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text }),
+  }, {
+    timeoutMs: REQUEST_BUDGET_MS.fastReaction,
+    label: 'fast-reaction',
+  });
+  return response.json().catch(() => ({}));
+}
+
+async function cachedReactionAudio(text, signal) {
+  const key = String(text || '').trim();
+  if (!key) return null;
+  if (fastReactionAudioCache.has(key)) return fastReactionAudioCache.get(key);
+  const synthesized = await synthesize(key, signal, { purpose: 'fast-reaction' });
+  fastReactionAudioCache.set(key, synthesized.audio);
+  return synthesized.audio;
+}
+
+async function warmFastReactionAudio() {
+  const samples = ['こんにちは', 'ありがとう', '今日の天気を教えて', 'これを調べて', '何時？', 'この内容について詳しく相談したいです'];
+  const texts = [...new Set(samples.map((sample) => fastReaction(sample)).filter((r) => r?.shouldSpeak && r?.text).map((r) => r.text))];
+  await Promise.allSettled(texts.map((text) => cachedReactionAudio(text)));
+  mirrorRuntimeLog('READY', `fast-reaction cache=${fastReactionAudioCache.size}`);
+}
+
+function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, realtimeTranscript = '') {
+  if (!reaction?.shouldSpeak || !String(reaction?.text || '').trim()) return null;
+  try { activeFastReaction?.stop?.('replaced'); } catch {}
   let stopped = false;
   let playing = false;
+  const controller = new AbortController();
   let handle = null;
-  timeline.immediateAckRequestedAt = Date.now();
+  timeline.fastReactionRequestedAt = Date.now();
+  timeline.realtimeTranscript = String(realtimeTranscript || '');
 
   const done = (async () => {
     try {
-      const audio = immediateAckAudio?.length ? immediateAckAudio : await warmImmediateAckAudio();
+      const text = String(reaction.text).trim();
+      const audio = await cachedReactionAudio(text, controller.signal);
       if (!audio?.length || stopped || sessionEpoch !== voiceEpoch) return false;
       playing = true;
+      mirrorRuntimeLog('REACTION', `${reaction.kind || 'unknown'}: ${text}`);
       await playMp3(audio, {
-        spokenText: IMMEDIATE_ACK_PROMPT,
-        purpose: 'immediate-ack',
+        spokenText: text,
+        purpose: 'fast-reaction',
         onPlaybackStart: ({ playbackStartedAt }) => {
-          timeline.immediateAckPlaybackAt = playbackStartedAt;
-          console.log(`[latency] immediate-ack=${Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt))}ms utterance=${utteranceId}`);
+          timeline.fastReactionPlaybackAt = playbackStartedAt;
+          const reactionMs = Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt));
+          console.log(`[latency] fast-reaction=${reactionMs}ms utterance=${utteranceId}`);
+          mirrorRuntimeLog('LATENCY', `fast-reaction=${reactionMs}ms ${utteranceId}`);
         },
       });
       return true;
     } catch (error) {
-      if (!stopped) console.warn('[ack] immediate acknowledgement failed:', error?.message || error);
+      if (!stopped && error?.name !== 'AbortError') console.warn('[fast-reaction]', error?.message || error);
       return false;
     } finally {
       playing = false;
-      if (activeImmediateAck === handle) activeImmediateAck = null;
+      if (activeFastReaction === handle) activeFastReaction = null;
     }
   })();
 
@@ -190,12 +265,148 @@ function startImmediateAck(utteranceId, sessionEpoch, timeline) {
     stop(reason = 'answer-ready') {
       if (stopped) return;
       stopped = true;
+      try { controller.abort(reason); } catch {}
       if (playing) player.stop(true);
-      console.log(`[ack] stopped reason=${reason} utterance=${utteranceId}`);
     },
   };
-  activeImmediateAck = handle;
+  activeFastReaction = handle;
   return handle;
+}
+
+function triggerWebFastReaction(helper, text) {
+  const active = helper?.active;
+  const value = String(text || '').trim();
+  if (!active || active.reactionIssued || !value || active.sessionEpoch !== voiceEpoch) return;
+  active.latestRealtimeTranscript = value;
+  if (active.startedDuringBotPlayback) {
+    console.log(`[fast-reaction] deferred bot-overlap utterance=${active.utteranceId}`);
+    return;
+  }
+  active.reactionIssued = true;
+  const seq = ++helper.reactionSeq;
+  setTimeout(async () => {
+    if (helper.reactionSeq !== seq || helper.active !== active || active.sessionEpoch !== voiceEpoch) return;
+    try {
+      const reaction = await fetchFastReaction(value);
+      if (helper.reactionSeq !== seq || helper.active !== active || active.sessionEpoch !== voiceEpoch) return;
+      active.reaction = reaction;
+      if (reaction?.shouldSpeak) playWebFastReaction(reaction, active.utteranceId, active.sessionEpoch, active.timeline, value);
+    } catch (error) {
+      console.warn('[fast-reaction] endpoint failed:', error?.message || error);
+    }
+  }, 90);
+}
+
+function handleRealtimeMessage(helper, data) {
+  let payload;
+  try { payload = JSON.parse(String(data)); } catch { return; }
+  const type = String(payload?.type || payload?.event || '');
+  const transcript = String(payload?.channel?.alternatives?.[0]?.transcript || payload?.transcript || '').trim();
+  if (/SpeechStarted/i.test(type)) {
+    helper.finalParts = [];
+    helper.interim = '';
+    return;
+  }
+  if (transcript) {
+    helper.interim = transcript;
+    if (helper.active) helper.active.latestRealtimeTranscript = transcript;
+  }
+  if (/Results/i.test(type)) {
+    if (payload?.is_final && transcript && !helper.finalParts.includes(transcript)) helper.finalParts.push(transcript);
+    if (payload?.speech_final) {
+      const text = [...helper.finalParts, (!payload?.is_final && transcript ? transcript : '')].filter(Boolean).join(' ').trim() || transcript;
+      if (text) triggerWebFastReaction(helper, text);
+      helper.finalParts = [];
+      helper.interim = '';
+    }
+    return;
+  }
+  if (/UtteranceEnd/i.test(type)) {
+    const text = helper.finalParts.join(' ').trim() || helper.interim;
+    if (text) triggerWebFastReaction(helper, text);
+    helper.finalParts = [];
+    helper.interim = '';
+  }
+}
+
+function ensureRealtimeHelper(userId) {
+  let helper = realtimeHelpers.get(userId);
+  if (helper && helper.ws && (helper.ws.readyState === WebSocket.OPEN || helper.ws.readyState === WebSocket.CONNECTING)) return helper;
+  helper = {
+    userId,
+    ws: null,
+    ready: false,
+    buffered: [],
+    bufferedBytes: 0,
+    finalParts: [],
+    interim: '',
+    reactionSeq: 0,
+    active: null,
+  };
+  realtimeHelpers.set(userId, helper);
+  try {
+    const ws = new WebSocket(realtimeSttUrl());
+    helper.ws = ws;
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => {
+      helper.ready = true;
+      mirrorRuntimeLog('RT-STT', `ready user=${userId}`);
+      for (const chunk of helper.buffered) {
+        try { ws.send(chunk); } catch {}
+      }
+      helper.buffered = [];
+      helper.bufferedBytes = 0;
+    };
+    ws.onmessage = (event) => handleRealtimeMessage(helper, event.data);
+    ws.onerror = () => {
+      helper.ready = false;
+      mirrorRuntimeLog('RT-STT', `error user=${userId}; Whisper continues`);
+    };
+    ws.onclose = () => {
+      helper.ready = false;
+      helper.ws = null;
+      if (realtimeHelpers.get(userId) === helper) realtimeHelpers.delete(userId);
+    };
+  } catch (error) {
+    mirrorRuntimeLog('RT-STT', `open failed: ${error?.message || error}`);
+  }
+  return helper;
+}
+
+function beginRealtimeUtterance(userId, meta) {
+  const helper = ensureRealtimeHelper(userId);
+  helper.finalParts = [];
+  helper.interim = '';
+  helper.reactionSeq += 1;
+  helper.active = {
+    ...meta,
+    reactionIssued: false,
+    reaction: null,
+    latestRealtimeTranscript: '',
+  };
+  return helper;
+}
+
+function sendRealtimePcm(helper, pcm16) {
+  if (!helper || !pcm16?.length) return;
+  const chunk = Buffer.from(pcm16);
+  if (helper.ws?.readyState === WebSocket.OPEN) {
+    try { helper.ws.send(chunk); } catch {}
+    return;
+  }
+  if (helper.bufferedBytes < 96000) {
+    helper.buffered.push(chunk);
+    helper.bufferedBytes += chunk.length;
+  }
+}
+
+function closeRealtimeHelpers() {
+  for (const helper of realtimeHelpers.values()) {
+    helper.reactionSeq += 1;
+    helper.active = null;
+    try { helper.ws?.close(1000, 'voice-disconnect'); } catch {}
+  }
+  realtimeHelpers.clear();
 }
 
 function boundedSignal(parentSignal, timeoutMs) {
@@ -267,6 +478,7 @@ async function transcribeCapturedUtterance(pcm, utteranceId, timeline, signal) {
   timeline.wavReadyAt = Date.now();
   timeline.transcribeStartAt = Date.now();
   console.log(`[stt] confirmed Whisper start utterance=${utteranceId} pcm=${pcm.length}B wav=${wav.length}B`);
+  mirrorRuntimeLog('STT', `Whisper start ${utteranceId} pcm=${pcm.length}B`);
 
   const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/transcribe', {
     method: 'POST',
@@ -290,6 +502,7 @@ async function transcribeCapturedUtterance(pcm, utteranceId, timeline, signal) {
   }
   const confirmedTranscript = String(body.text).trim();
   console.log(`[stt] confirmed model=${body.model || 'unknown'} elapsed=${timeline.whisperCompleteAt - timeline.transcribeStartAt}ms: ${confirmedTranscript}`);
+  mirrorRuntimeLog('STT', `Whisper ${timeline.whisperCompleteAt - timeline.transcribeStartAt}ms: ${confirmedTranscript}`);
   return {
     confirmedTranscript,
     fastReaction: body?.fastReaction || null,
@@ -394,6 +607,7 @@ function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
 async function talk(text, utteranceId = '', signal) {
   const started = Date.now();
   console.log('[turn] user:', text);
+  mirrorRuntimeLog('TURN', `user: ${text}`);
   const previous = history.slice(-MAX_HISTORY);
   const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/turn', {
     method: 'POST',
@@ -429,6 +643,7 @@ async function talk(text, utteranceId = '', signal) {
   const elapsed = Date.now() - started;
   console.log('[turn] assistant:', body.answer);
   console.log(`[latency] turn-http=${elapsed}ms server-total=${body?.timings?.totalMs ?? '?'}ms primary=${body?.timings?.primaryMs ?? '?'}ms verifier=${body?.timings?.verifierMs ?? '?'}ms`);
+  mirrorRuntimeLog('TURN', `total=${elapsed}ms primary=${body?.timings?.primaryMs ?? '?'} verifier=${body?.timings?.verifierMs ?? '?'}`);
   return body;
 }
 
@@ -459,6 +674,7 @@ async function synthesize(text, signal, meta = {}) {
   const elapsedMs = Date.now() - started;
   console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
   console.log(`[latency] tts-http=${elapsedMs}ms worker=${workerMs || '?'}ms source=${source}`);
+  mirrorRuntimeLog('TTS', `${elapsedMs}ms source=${source}`);
   return { audio, source, elapsedMs, workerMs };
 }
 
@@ -589,7 +805,7 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
     sttMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.transcribeStartAt || 0)),
     speechEndToSttFinalMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.utteranceEndAt || 0)),
-    immediateAckMs: Math.max(0, (timeline.immediateAckPlaybackAt || 0) - (timeline.utteranceEndAt || 0)),
+    fastReactionMs: Math.max(0, (timeline.fastReactionPlaybackAt || 0) - (timeline.utteranceEndAt || 0)),
     answerStartMs: 0,
     primaryMs: 0,
     verifierMs: 0,
@@ -608,7 +824,7 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     timeline.turnStartAt = Date.now();
     timings.answerStartMs = Math.max(0, timeline.turnStartAt - (timeline.utteranceEndAt || timeline.turnStartAt));
 
-    if (!timeline.immediateAckRequestedAt) {
+    if (!timeline.fastReactionRequestedAt) {
       activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, fastReaction);
     }
     const turn = await talk(confirmedTranscript, utteranceId, controller.signal);
@@ -620,8 +836,8 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     // Waiting audio is never part of the answer dependency chain.
     activeWaitCue?.stop('final-answer-ready');
     activeWaitCue = null;
-    activeImmediateAck?.stop?.('final-answer-ready');
-    activeImmediateAck = null;
+    activeFastReaction?.stop?.('final-answer-ready');
+    activeFastReaction = null;
     player.stop(true);
 
     timeline.ttsStartAt = Date.now();
@@ -648,22 +864,23 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
       console.log(`[pipeline] interrupted utterance=${utteranceId}`);
     } else {
       console.error('[pipeline]', error?.stack || error);
+      mirrorRuntimeLog('ERROR', `pipeline: ${pipelineError}`);
       await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch, timeline.utteranceEndAt || 0);
     }
   } finally {
     activeWaitCue?.stop?.('pipeline-complete');
     activeWaitCue = null;
-    activeImmediateAck?.stop?.('pipeline-complete');
-    activeImmediateAck = null;
+    activeFastReaction?.stop?.('pipeline-complete');
+    activeFastReaction = null;
     timeline.pipelineCompleteAt = Date.now();
     timings.pipelineCompleteMs = Math.max(0, timeline.pipelineCompleteAt - pipelineStarted);
-    console.log(`[latency-summary] utterance=${utteranceId} captureMs=${timings.captureMs} sttMs=${timings.sttMs} speechEndToSttFinalMs=${timings.speechEndToSttFinalMs} immediateAckMs=${timings.immediateAckMs} primaryMs=${timings.primaryMs} verifierMs=${timings.verifierMs} answerGenerationTotalMs=${timings.answerGenerationTotalMs} firstTtsMs=${timings.firstTtsMs} ffmpegSpawnMs=${timings.ffmpegSpawnMs} speechEndToPlaybackStartMs=${timings.speechEndToPlaybackStartMs} pipelineCompleteMs=${timings.pipelineCompleteMs}`);
+    console.log(`[latency-summary] utterance=${utteranceId} captureMs=${timings.captureMs} sttMs=${timings.sttMs} speechEndToSttFinalMs=${timings.speechEndToSttFinalMs} fastReactionMs=${timings.fastReactionMs} primaryMs=${timings.primaryMs} verifierMs=${timings.verifierMs} answerGenerationTotalMs=${timings.answerGenerationTotalMs} firstTtsMs=${timings.firstTtsMs} ffmpegSpawnMs=${timings.ffmpegSpawnMs} speechEndToPlaybackStartMs=${timings.speechEndToPlaybackStartMs} pipelineCompleteMs=${timings.pipelineCompleteMs}`);
     postVoiceMetrics({
       text: confirmedTranscript,
       utteranceId,
       timings,
       timeline,
-      realtimeTranscript: '',
+      realtimeTranscript: String(captureMetrics?.realtimeTranscript || ''),
       confirmedTranscript,
       geminiInputText: confirmedTranscript,
       error: pipelineError,
@@ -692,8 +909,9 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
     const echoRecord = looksLikeRecentBotEcho(stt.confirmedTranscript, timeline);
     if (echoRecord) {
       console.warn(`[echo-guard] suppressed bot echo utterance=${utteranceId} purpose=${echoRecord.purpose}: ${stt.confirmedTranscript}`);
-      activeImmediateAck?.stop?.('echo-suppressed');
-      activeImmediateAck = null;
+      mirrorRuntimeLog('ECHO', `suppressed ${echoRecord.purpose}: ${stt.confirmedTranscript}`);
+      activeFastReaction?.stop?.('echo-suppressed');
+      activeFastReaction = null;
       timeline.pipelineCompleteAt = Date.now();
       postVoiceMetrics({
         text: stt.confirmedTranscript,
@@ -703,12 +921,12 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
           captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
           sttMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.transcribeStartAt || 0)),
           speechEndToSttFinalMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.utteranceEndAt || 0)),
-          immediateAckMs: Math.max(0, (timeline.immediateAckPlaybackAt || 0) - (timeline.utteranceEndAt || 0)),
+          fastReactionMs: Math.max(0, (timeline.fastReactionPlaybackAt || 0) - (timeline.utteranceEndAt || 0)),
           pipelineCompleteMs: Math.max(0, timeline.pipelineCompleteAt - (timeline.discordReceiveStartAt || timeline.pipelineCompleteAt)),
           echoSuppressed: true,
         },
         timeline,
-        realtimeTranscript: '',
+        realtimeTranscript: String(captureMetrics?.realtimeTranscript || ''),
         confirmedTranscript: stt.confirmedTranscript,
         geminiInputText: '',
         error: '',
@@ -728,6 +946,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
   } catch (error) {
     const message = String(error?.message || error || '').slice(0, 500);
     console.error('[stt]', message);
+    mirrorRuntimeLog('ERROR', `STT: ${message}`);
     timeline.pipelineCompleteAt = Date.now();
     postVoiceMetrics({
       text: '',
@@ -741,27 +960,27 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
         error: message,
       },
       timeline,
-      realtimeTranscript: '',
+      realtimeTranscript: String(captureMetrics?.realtimeTranscript || ''),
       confirmedTranscript: '',
       geminiInputText: '',
       error: message,
     }).catch(() => {});
-    activeImmediateAck?.stop?.('stt-failed');
-    activeImmediateAck = null;
+    activeFastReaction?.stop?.('stt-failed');
+    activeFastReaction = null;
     await speakRecoveryPrompt('stt-failed', sessionEpoch, timeline.utteranceEndAt || 0);
   }
 }
 
 function interruptActiveAnswer(reason = 'user-speech') {
-  if (!answering && !activeImmediateAck && player.state.status !== AudioPlayerStatus.Playing) return false;
+  if (!answering && !activeFastReaction && player.state.status !== AudioPlayerStatus.Playing) return false;
   activeTurnSerial += 1;
   const controller = activeTurnAbortController;
   activeTurnAbortController = null;
   try { controller?.abort(); } catch {}
   try { activeWaitCue?.stop?.(reason); } catch {}
-  try { activeImmediateAck?.stop?.(reason); } catch {}
+  try { activeFastReaction?.stop?.(reason); } catch {}
   activeWaitCue = null;
-  activeImmediateAck = null;
+  activeFastReaction = null;
   player.stop(true);
   answering = false;
   pendingTurns.splice(0, pendingTurns.length);
@@ -784,8 +1003,9 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     discordReceiveStartAt: 0,
     firstPcmAt: 0,
     utteranceEndAt: 0,
-    immediateAckRequestedAt: 0,
-    immediateAckPlaybackAt: 0,
+    fastReactionRequestedAt: 0,
+    fastReactionPlaybackAt: 0,
+    realtimeTranscript: '',
     wavReadyAt: 0,
     transcribeStartAt: 0,
     whisperCompleteAt: 0,
@@ -813,6 +1033,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
   let finalizeTimer = null;
   let pcm16Bytes = 0;
   let lastPcmAt = 0;
+  let realtimeHelper = null;
   let overlappedBotPlayback = Boolean(options?.startedDuringBotPlayback);
 
   const clearTimers = () => {
@@ -826,6 +1047,14 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     if (completed) return;
     speakingMarked = true;
     if (startedDuringBotPlayback) overlappedBotPlayback = true;
+    if (!realtimeHelper || realtimeHelper.active?.utteranceId !== utteranceId) {
+      realtimeHelper = beginRealtimeUtterance(userId, {
+        utteranceId,
+        sessionEpoch,
+        timeline,
+        startedDuringBotPlayback: overlappedBotPlayback,
+      });
+    }
     lastUserSpeechAt = Date.now();
     if (!timeline.discordReceiveStartAt) timeline.discordReceiveStartAt = lastUserSpeechAt;
     if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
@@ -860,6 +1089,11 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
       if (sessionEpoch === voiceEpoch && connection) startReceiverSession(userId, false);
     });
 
+    const realtimeTranscript = realtimeHelper?.active?.utteranceId === utteranceId
+      ? String(realtimeHelper.active.latestRealtimeTranscript || '')
+      : '';
+    if (realtimeHelper?.active?.utteranceId === utteranceId) realtimeHelper.active = null;
+    timeline.realtimeTranscript = realtimeTranscript;
     const captureMetrics = {
       durationMs: Math.round(durationMs),
       rawPcmBytes: pcm16Bytes,
@@ -868,10 +1102,10 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
       transportGated: true,
       browserVadBypassed: true,
       overlappedBotPlayback,
+      realtimeTranscript,
     };
     console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captureMetrics.durationMs}ms pcm=${pcm.length}B transport-gated=true botOverlap=${overlappedBotPlayback}`);
-    if (!overlappedBotPlayback) startImmediateAck(utteranceId, sessionEpoch, timeline);
-    else console.log(`[echo-guard] defer acknowledgement for bot-overlap utterance=${utteranceId}`);
+    mirrorRuntimeLog('CAPTURE', `${captureMetrics.durationMs}ms ${reason} realtime="${realtimeTranscript || '-'}"`);
     await handleCapturedUtterance({
       pcm,
       userId,
@@ -906,6 +1140,15 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     lastPcmAt = at;
     pcm16Bytes += pcm16.length;
     pcm16Chunks.push(Buffer.from(pcm16));
+    if (!realtimeHelper || !realtimeHelper.ws || realtimeHelper.ws.readyState >= WebSocket.CLOSING) {
+      realtimeHelper = beginRealtimeUtterance(userId, {
+        utteranceId,
+        sessionEpoch,
+        timeline,
+        startedDuringBotPlayback: overlappedBotPlayback,
+      });
+    }
+    sendRealtimePcm(realtimeHelper, pcm16);
   });
 
   resampler.stdout.on('error', (error) => {
@@ -940,6 +1183,7 @@ function destroyVoiceConnection() {
     try { session.resampler?.kill?.('SIGKILL'); } catch {}
   }
   sessions.clear();
+  closeRealtimeHelpers();
   player.stop(true);
   try { connection?.destroy(); } catch {}
   connection = undefined;
@@ -981,6 +1225,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   });
 
   if (initialUserId && initialUserId !== client.user.id) {
+    ensureRealtimeHelper(initialUserId);
     startReceiverSession(initialUserId, false);
   }
 
@@ -1028,17 +1273,22 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
   console.log('[discord] voice ready:', channel.name);
   console.log('[discord] conversation session:', discordSessionId);
+  mirrorRuntimeLog('SESSION', discordSessionId);
   console.log('[discord] input architecture: Discord speaking gate -> Opus -> PCM16 Web STT format -> /api/transcribe');
   console.log('[discord] final STT: Whisper Large v3 Turbo via /api/transcribe');
+  console.log('[discord] fast reaction: Web-compatible Nova helper -> /api/fast-reaction (non-authoritative)');
+  mirrorRuntimeLog('VOICE', `ready channel=${channel.name}`);
+  mirrorRuntimeLog('ARCH', 'Nova helper is reaction-only; Whisper remains authoritative');
   console.log('[discord] bridge revision:', DISCORD_BRIDGE_REVISION);
   await playConnectionGreeting();
-  warmImmediateAckAudio().catch((error) => console.warn('[ack] warmup failed:', error?.message || error));
+  warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] warmup failed:', error?.message || error));
   warmRecoveryAudio().catch((error) => console.warn('[recovery] warmup failed:', error?.message || error));
   return channel;
 }
 
 const TALKSYS_COMMANDS = [
   { name: 'talksys', description: 'TalkSysを現在参加中のVCへ呼び出します' },
+  { name: 'logs', description: 'TalkSysの起動・通話ライブログをこのチャンネルに表示します' },
   { name: 'leave', description: 'TalkSysをVCから退出させます' },
 ];
 
@@ -1059,17 +1309,19 @@ client.once('ready', async () => {
   if (discordHealthTimer) clearInterval(discordHealthTimer);
   discordHealthTimer = setInterval(() => {
     console.log(`[discord] gateway health ready=${client.isReady()} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
+    if (runtimeLogChannel) mirrorRuntimeLog('HEALTH', `gateway=${client.isReady()} ping=${client.ws.ping}ms sessions=${sessions.size}`);
   }, DISCORD_HEALTH_LOG_MS);
 
   console.log(`[discord] gateway ready user=${client.user?.tag || client.user?.id || 'unknown'} ping=${client.ws.ping}ms`);
+  mirrorRuntimeLog('GATEWAY', `ready ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
   try {
     const guilds = [...client.guilds.cache.values()];
     if (!guilds.length) throw new Error('Discord Botがサーバーに参加していません');
     for (const guild of guilds) {
       await ensureTalkSysCommands(guild);
-      console.log(`[discord] slash commands ready guild=${guild.name}: /talksys /leave`);
+      console.log(`[discord] slash commands ready guild=${guild.name}: /talksys /logs /leave`);
     }
-    warmImmediateAckAudio().catch((error) => console.warn('[ack] gateway warmup failed:', error?.message || error));
+    warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] gateway warmup failed:', error?.message || error));
     warmRecoveryAudio().catch((error) => console.warn('[recovery] gateway warmup failed:', error?.message || error));
     console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
@@ -1080,7 +1332,7 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand() || !interaction.guild) return;
-  if (!['talksys', 'leave'].includes(interaction.commandName)) return;
+  if (!['talksys', 'logs', 'leave'].includes(interaction.commandName)) return;
 
   console.log(`[interaction] received command=/${interaction.commandName} guild=${interaction.guild.id} user=${interaction.user.id}`);
   try {
@@ -1092,7 +1344,17 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   try {
+    if (interaction.commandName === 'logs') {
+      const attached = await attachRuntimeLogChannel(interaction.channel);
+      await interaction.editReply(attached
+        ? 'TalkSysのライブログをこのチャンネルに表示します。'
+        : 'このチャンネルにはライブログを表示できません。');
+      return;
+    }
+
     if (interaction.commandName === 'talksys') {
+      await attachRuntimeLogChannel(interaction.channel);
+      mirrorRuntimeLog('CMD', `/talksys by ${interaction.user.tag || interaction.user.id}`);
       const voiceState = interaction.guild.voiceStates.cache.get(interaction.user.id);
       const channelId = voiceState?.channelId;
       if (!channelId) {
@@ -1105,6 +1367,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    mirrorRuntimeLog('CMD', '/leave');
     destroyVoiceConnection();
     await interaction.editReply('TalkSysをボイスチャンネルから退出させました。');
   } catch (error) {
@@ -1123,10 +1386,11 @@ client.on('shardError', (error, shardId) => console.error(`[discord] shard error
 client.on('shardDisconnect', (event, shardId) => console.error(`[discord] shard disconnected id=${shardId} code=${event?.code ?? 'unknown'}`));
 client.on('shardReconnecting', (shardId) => console.warn(`[discord] shard reconnecting id=${shardId}`));
 client.on('shardResume', (shardId, replayedEvents) => console.log(`[discord] shard resumed id=${shardId} replayed=${replayedEvents}`));
-player.on('error', (error) => console.error('[player]', error.message));
+player.on('error', (error) => { console.error('[player]', error.message); mirrorRuntimeLog('ERROR', `player: ${error.message}`); });
 
 process.on('unhandledRejection', (reason) => {
   console.error('[process] unhandled rejection:', reason?.stack || reason);
+  mirrorRuntimeLog('ERROR', `unhandled: ${reason?.message || reason}`);
 });
 
 process.on('SIGINT', () => {
@@ -1144,6 +1408,8 @@ discordReadyWatchdog = setTimeout(() => {
   process.exit(2);
 }, DISCORD_READY_TIMEOUT_MS);
 
+mirrorRuntimeLog('BOOT', `process start node=${process.version}`);
+mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
 client.login(DISCORD_TOKEN).catch((error) => {
   if (discordReadyWatchdog) clearTimeout(discordReadyWatchdog);
   console.error('[fatal] Discord login failed:', error?.stack || error);

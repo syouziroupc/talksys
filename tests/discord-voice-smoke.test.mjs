@@ -13,7 +13,9 @@ test('Discord bridge is only input adapter, common HTTP STT/turn, and output ada
   assert.match(source, /\/api\/transcribe/);
   assert.match(source, /\/api\/turn/);
   assert.match(source, /\/api\/voice\/synthesize/);
-  assert.doesNotMatch(source, /\/api\/realtime-stt|\/api\/turn-stream|WebSocket|speech_final|batchTranscribePcm16|talkStream|type:\s*['"]Finalize['"]/);
+  assert.match(source, /\/api\/realtime-stt/);
+  assert.match(source, /\/api\/fast-reaction/);
+  assert.doesNotMatch(source, /\/api\/turn-stream|batchTranscribePcm16|talkStream|type:\s*['"]Finalize['"]/);
   assert.doesNotMatch(source, /speechSynthesis|SpeechSynthesisUtterance/);
 });
 
@@ -101,6 +103,7 @@ test('Discord slash commands are updated without bulk-overwriting unrelated comm
   assert.match(source, /guild\.commands\.create/);
   assert.doesNotMatch(source, /guild\.commands\.set\(/);
   assert.match(source, /name: 'talksys'/);
+  assert.match(source, /name: 'logs'/);
   assert.match(source, /name: 'leave'/);
 });
 
@@ -136,7 +139,7 @@ test('Discord launcher persists bridge secret and avoids reinstalling unchanged 
   assert.match(secretStore, /ConvertFrom-SecureString/);
 });
 
-test('Discord dependency set no longer carries realtime STT websocket client', () => {
+test('Discord uses Node native WebSocket and carries no extra websocket dependency', () => {
   assert.match(packageJson.dependencies['@discordjs/voice'], /^\^0\.19\./);
   assert.match(packageJson.dependencies['discord.js'], /^\^14\./);
   assert.equal(packageJson.dependencies.opusscript, '^0.0.8');
