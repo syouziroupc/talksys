@@ -444,16 +444,33 @@ export function searchAnnouncementTopic(text = '') {
   return topic;
 }
 
+function stableSearchPrefaceIndex(value = '', count = 1) {
+  const text = compact(value, 800);
+  let hash = 2166136261;
+  for (const ch of text) {
+    hash ^= ch.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0) % Math.max(1, count);
+}
+
 export function searchPreface(text = '') {
   const value = compact(text, 4000);
   if (!shouldStronglyPreferSearch(value)) {
     return { shouldSpeak: false, topic: '', text: '' };
   }
   const topic = searchAnnouncementTopic(value);
+  const variants = [
+    `${topic}について調べています。`,
+    `${topic}の情報を確認しています。`,
+    `${topic}を検索して確かめています。`,
+    `${topic}について最新情報を確認しています。`,
+    `${topic}を少し調べます。`,
+  ];
   return {
     shouldSpeak: true,
     topic,
-    text: `${topic}について検索しています。`,
+    text: variants[stableSearchPrefaceIndex(value, variants.length)],
   };
 }
 
@@ -665,8 +682,46 @@ async function createGeminiInteraction(env, body = {}, signal, { allowPrevious =
     }
     throw new Error(`gemini_interactions_http_${response.status}${detail ? `:${detail}` : ''}`);
   }
-  const answer = interactionOutputText(payload);
-  if (!answer) throw new Error('empty_gemini_interaction_answer');
+  let answer = interactionOutputText(payload);
+  if (!answer) {
+    const status = compact(payload?.status || '', 80);
+    emitLatencyLog('gemini-empty-output', inputBody, {
+      model: GEMINI_MODEL,
+      status,
+      previousInteractionId: compact(previousInteractionId || '', 120),
+      searched: searchedInInteraction(payload),
+    }, 'warn');
+
+    if (allowPrevious && previousInteractionId) {
+      return createGeminiInteraction(env, inputBody, signal, {
+        allowPrevious: false,
+        forceSearch,
+        verificationContinuation,
+        now,
+        immediateTransit,
+      });
+    }
+
+    const retryPayload = { ...requestBody };
+    delete retryPayload.previous_interaction_id;
+    const retryResponse = await fetch(GEMINI_INTERACTIONS_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-goog-api-key': key,
+      },
+      body: JSON.stringify(retryPayload),
+      signal,
+    });
+    const retryRaw = await retryResponse.text();
+    let retryJson = {};
+    try { retryJson = retryRaw ? JSON.parse(retryRaw) : {}; } catch {}
+    if (retryResponse.ok) {
+      answer = interactionOutputText(retryJson);
+      if (answer) return { payload: retryJson, answer };
+    }
+    throw new Error('empty_gemini_interaction_answer_after_retry');
+  }
   return { payload, answer };
 }
 
