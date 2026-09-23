@@ -619,6 +619,11 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     immediateTransit,
   });
   const primaryMs = Date.now() - primaryStarted;
+  emitLatencyLog('gemini-primary-complete', body, {
+    durationMs: primaryMs,
+    model: GEMINI_MODEL,
+    searched: searchedInInteraction(interaction.payload),
+  });
 
   // Kept in the response contract for telemetry compatibility. The normal
   // answer path no longer performs a separate primary search retry.
@@ -633,8 +638,8 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   let verifierMs = 0;
   if (shouldRunGenericVerification(text, interaction.payload)) {
     genericVerificationAttempted = true;
+    const verifierStarted = Date.now();
     try {
-      const verifierStarted = Date.now();
       const verified = await runGenericGeminiVerification(env, body, interaction, signal, now);
       verifierMs = Date.now() - verifierStarted;
       if (verified?.answer) {
@@ -642,10 +647,27 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
         genericVerificationSucceeded = true;
         verifierSearched = searchedInInteraction(verified.payload);
       }
-    } catch {
+      emitLatencyLog('gemini-verifier-complete', body, {
+        durationMs: verifierMs,
+        model: GEMINI_MODEL,
+        searched: verifierSearched,
+        succeeded: genericVerificationSucceeded,
+      });
+    } catch (error) {
+      verifierMs = Date.now() - verifierStarted;
       verificationFailOpen = true;
       interaction = primaryInteraction;
+      emitLatencyLog('gemini-verifier-error', body, {
+        durationMs: verifierMs,
+        model: GEMINI_MODEL,
+        error: compact(error?.message || error, 500),
+      }, 'warn');
     }
+  } else {
+    emitLatencyLog('gemini-verifier-skipped', body, {
+      durationMs: 0,
+      model: GEMINI_MODEL,
+    });
   }
 
   let temporalRepairRetried = false;
