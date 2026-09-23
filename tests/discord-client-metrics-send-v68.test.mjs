@@ -41,7 +41,7 @@ test('STT completion reports realtime versus batch and records prewarmed socket 
 test('queued turns preserve their original speech metrics', () => {
   assert.match(source, /pendingTurns\.push\(\{ text, userId, sessionEpoch, speechMetrics \}\)/);
   assert.match(source, /processTranscript\(next\.text, next\.userId, next\.sessionEpoch, next\.speechMetrics\)/);
-  assert.match(source, /talksys-discord-bridge-v76-interaction-supervisor-r1/);
+  assert.match(source, /talksys-discord-bridge-v77-stt-critical-six-r1/);
 });
 
 test('one utterance id links the turn request and its voice metrics event', () => {
