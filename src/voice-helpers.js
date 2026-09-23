@@ -112,28 +112,43 @@ export class MeloJapaneseTTS {
     this.ai = ai;
   }
 
+  async synthesizeOnce(spoken, lang, signal) {
+    const result = await this.ai.run(
+      JAPANESE_TTS_MODEL,
+      { prompt: spoken, lang },
+      signal ? { signal } : undefined,
+    );
+    const audio = await normalizeAudioResult(result);
+    if (audio && audio.byteLength > 0) return audio;
+    throw new Error(`MeloTTS returned empty audio lang=${lang}`);
+  }
+
   async synthesize(text, signal) {
     const spoken = cleanSpeechText(text);
     if (!spoken) return null;
 
+    const attempts = [
+      { lang: 'JP', waitMs: 0 },
+      { lang: 'ja', waitMs: 90 },
+      { lang: 'JP', waitMs: 180 },
+      { lang: 'ja', waitMs: 360 },
+    ];
+
     let lastError;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < attempts.length; attempt += 1) {
+      const config = attempts[attempt];
+      if (config.waitMs > 0) await delay(config.waitMs, signal);
       try {
-        const result = await this.ai.run(
-          JAPANESE_TTS_MODEL,
-          { prompt: spoken, lang: 'JP' },
-          signal ? { signal } : undefined,
-        );
-        const audio = await normalizeAudioResult(result);
-        if (audio && audio.byteLength > 0) return audio;
-        lastError = new Error('MeloTTS returned empty audio');
+        return await this.synthesizeOnce(spoken, config.lang, signal);
       } catch (error) {
         lastError = error;
-        if (!isTransientTtsError(error) || attempt >= 2) throw error;
+        const transient = isTransientTtsError(error);
+        const languageVariantRejected = /(?:invalid|unsupported|lang|language|400|5004)/i.test(String(error?.message || error || ''));
+        if (!transient && !languageVariantRejected) throw error;
       }
-      await delay(attempt === 0 ? 120 : 320, signal);
     }
-    throw lastError || new Error('MeloTTS failed');
+
+    throw new Error(`MeloTTS exhausted JP/ja retries: ${String(lastError?.message || lastError || 'unknown_error')}`);
   }
 }
 
