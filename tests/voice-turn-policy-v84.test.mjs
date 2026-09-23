@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyVoiceTurn, isIgnorableSttFailure } from '../src/voice-turn-policy.js';
+import { classifyVoiceTurn, isIgnorableSttFailure } from '../src/voice-fast-reaction.js';
 
 test('noise and common STT hallucinations are dropped', () => {
   for (const text of ['', 'えー', 'あー', 'ハッハッハッハッハ', 'ご視聴ありがとうございました']) {
