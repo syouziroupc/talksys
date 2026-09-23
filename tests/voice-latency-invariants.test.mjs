@@ -78,10 +78,10 @@ test('v84 strict grounding specifically covers dynamic local facts', () => {
 });
 
 
-test('MeloTTS retries transient 3043 failures using canonical JP', () => {
+test('MeloTTS fails fast on the current 3043 outage instead of blocking voice with retries', () => {
   const helpers = readFileSync(new URL('../src/voice-helpers.js', import.meta.url), 'utf8');
   assert.match(helpers, /\{ lang: 'JP', waitMs: 0 \}/);
-  assert.match(helpers, /{ lang: 'JP', waitMs: 120 }/);
-  assert.match(helpers, /MeloTTS exhausted JP retries/);
+  assert.doesNotMatch(helpers, /waitMs: 120|waitMs: 320|waitMs: 700/);
+  assert.match(helpers, /MeloTTS failed JP model=/);
   assert.match(helpers, /3043\|internal server error/);
 });
