@@ -15,8 +15,7 @@ import {
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY } from '../../src/voice-capture-policy.js';
-import { fastReaction, sameUtterance } from '../../src/voice-fast-reaction.js';
-import { classifyVoiceTurn, isIgnorableSttFailure } from '../../src/voice-turn-policy.js';
+import { fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure } from '../../src/voice-fast-reaction.js';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
