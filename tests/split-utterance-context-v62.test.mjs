@@ -114,6 +114,6 @@ test('split follow-up preserves the first fragment through the single grounded p
 
 test('browser waits longer before splitting Japanese speech at silence', () => {
   assert.equal(clientFlags.fasterTurnEnd, true);
-  assert.match(TALK_CLIENT_V45, /SILENCE_MS=650/);
+  assert.match(TALK_CLIENT_V45, /SILENCE_MS=900/);
   assert.doesNotMatch(TALK_CLIENT_V45, /SILENCE_MS=480/);
 });
