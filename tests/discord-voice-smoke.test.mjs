@@ -90,12 +90,12 @@ test('Discord playback watchdog kills stuck ffmpeg and detects silent start fail
   assert.match(source, /playback_start_timeout/);
 });
 
-test('Discord slash join requires an audible connection greeting and surfaces failure', () => {
+test('Discord slash join attempts an audible greeting but does not fail VC connection when TTS is unavailable', () => {
   assert.match(source, /async function playConnectionGreeting/);
   assert.match(source, /フォーンズです。接続しました。/);
   assert.match(source, /await playConnectionGreeting\(\)/);
-  assert.match(source, /connection_greeting_failed/);
-  assert.match(source, /TalkSysのVC操作に失敗しました:/);
+  assert.match(source, /connection greeting unavailable/);
+  assert.doesNotMatch(source, /throw new Error\(\`connection_greeting_failed/);
 });
 
 test('Discord slash commands are updated without bulk-overwriting unrelated commands', () => {
