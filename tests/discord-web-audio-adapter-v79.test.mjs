@@ -63,6 +63,17 @@ test('very short Discord speech receives only silent pre-roll padding, not fabri
   assert.equal(result.pcm.length, 8 * voice.length);
 });
 
+test('Discord applies the same final voiced-time and SNR gates and keeps VAD adaptation across utterances', () => {
+  assert.match(bridge, /captureMetrics\.voicedMs >= WEB_VOICE_CAPTURE_POLICY\.minVoicedMs/);
+  assert.match(bridge, /captureMetrics\.snr >= WEB_VOICE_CAPTURE_POLICY\.minSnr/);
+  assert.match(bridge, /const voiceProfiles = new Map\(\)/);
+  assert.match(bridge, /voiceProfileFor\(userId\)/);
+  assert.match(bridge, /new WebCompatibleCapture\(\{[\s\S]*noise: voiceProfile\.noise,[\s\S]*noiseBoost: voiceProfile\.noiseBoost/);
+  assert.match(bridge, /learnRejectedCapture\(voiceProfile, captureMetrics\)/);
+  assert.match(bridge, /learnSuccessfulSpeech\(voiceProfile\)/);
+  assert.match(bridge, /learnSttFailure\(voiceProfile\)/);
+});
+
 test('Discord final STT always uses the same /api/transcribe Whisper path as web', () => {
   assert.match(bridge, /async function transcribeCapturedUtterance/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
