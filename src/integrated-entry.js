@@ -628,7 +628,7 @@ async function createGeminiInteraction(env, body = {}, signal, { allowPrevious =
   if (!key) throw new Error('gemini_api_key_missing');
   const previousInteractionId = allowPrevious ? compact(body?.previousInteractionId, 400) : '';
   const inputBody = allowPrevious ? body : { ...body, previousInteractionId: '' };
-  const searchAllowed = forceSearch || !TRIVIAL_CONVERSATION_RE.test(resolvedUserQuestion(inputBody));
+  const searchAllowed = Boolean(forceSearch);
   const requestBody = {
     model: GEMINI_MODEL,
     input: interactionInput(inputBody, { forceSearch, immediateTransit, now }),
