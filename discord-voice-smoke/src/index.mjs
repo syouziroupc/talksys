@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v84-unified-force-reply-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v84-local-tts-fallback-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -648,35 +648,132 @@ async function talk(text, utteranceId = '', signal) {
   return body;
 }
 
+async function synthesizeWindowsJapaneseTts(text, signal) {
+  if (process.platform !== 'win32') throw new Error('windows_tts_unavailable_non_windows');
+  const spoken = String(text || '').trim();
+  if (!spoken) throw new Error('windows_tts_empty_text');
+
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "Add-Type -AssemblyName System.Speech",
+    "$text=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:TALKSYS_TTS_TEXT_B64))",
+    "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer",
+    "$ja=@($s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -eq 'ja-JP' })",
+    "if($ja.Count -gt 0){$s.SelectVoice($ja[0].VoiceInfo.Name)}",
+    "$m=New-Object IO.MemoryStream",
+    "$s.SetOutputToWaveStream($m)",
+    "$s.Speak($text)",
+    "$s.Dispose()",
+    "$bytes=$m.ToArray()",
+    "$m.Dispose()",
+    "if($bytes.Length -lt 44){throw 'windows_tts_empty_audio'}",
+    "$o=[Console]::OpenStandardOutput()",
+    "$o.Write($bytes,0,$bytes.Length)",
+    "$o.Flush()"
+  ].join('; ');
+
+  const started = Date.now();
+  const child = spawn('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass',
+    '-Command', script,
+  ], {
+    env: {
+      ...process.env,
+      TALKSYS_TTS_TEXT_B64: Buffer.from(spoken, 'utf8').toString('base64'),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+
+  const stdout = [];
+  let stderr = '';
+  child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
+  child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+
+  const timeout = setTimeout(() => {
+    try { child.kill(); } catch {}
+  }, 8000);
+
+  let abortHandler = null;
+  if (signal) {
+    abortHandler = () => {
+      try { child.kill(); } catch {}
+    };
+    if (signal.aborted) abortHandler();
+    else signal.addEventListener('abort', abortHandler, { once: true });
+  }
+
+  const code = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  }).finally(() => {
+    clearTimeout(timeout);
+    if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+  });
+
+  if (signal?.aborted) throw signal.reason || new Error('aborted');
+  const audio = Buffer.concat(stdout);
+  if (code !== 0 || audio.length < 44) {
+    throw new Error(`windows_tts_failed code=${code} detail=${stderr.trim().slice(0, 240)}`);
+  }
+
+  return {
+    audio,
+    source: 'windows-system-speech',
+    elapsedMs: Date.now() - started,
+    workerMs: 0,
+  };
+}
+
 async function synthesize(text, signal, meta = {}) {
   const started = Date.now();
-  const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice/synthesize', {
-    method: 'POST',
-    signal,
-    headers: {
-      'content-type': 'application/json',
-      authorization: 'Bearer ' + BRIDGE_TOKEN,
-    },
-    body: JSON.stringify({
-      text,
-      sessionId: discordSessionId || `discord-${randomUUID()}`,
-      utteranceId: String(meta?.utteranceId || ''),
-      channel: 'discord',
-      purpose: String(meta?.purpose || 'answer'),
-    }),
-  }, {
-    timeoutMs: REQUEST_BUDGET_MS.tts,
-    label: 'tts',
-  });
-  const audio = Buffer.from(await response.arrayBuffer());
-  const type = response.headers.get('content-type') || 'unknown';
-  const source = response.headers.get('x-talksys-voice-source') || 'unknown';
-  const workerMs = Number(response.headers.get('x-talksys-tts-ms') || 0);
-  const elapsedMs = Date.now() - started;
-  console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
-  console.log(`[latency] tts-http=${elapsedMs}ms worker=${workerMs || '?'}ms source=${source}`);
-  mirrorRuntimeLog('TTS', `${elapsedMs}ms source=${source}`);
-  return { audio, source, elapsedMs, workerMs };
+  try {
+    const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice/synthesize', {
+      method: 'POST',
+      signal,
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer ' + BRIDGE_TOKEN,
+      },
+      body: JSON.stringify({
+        text,
+        sessionId: discordSessionId || `discord-${randomUUID()}`,
+        utteranceId: String(meta?.utteranceId || ''),
+        channel: 'discord',
+        purpose: String(meta?.purpose || 'answer'),
+      }),
+    }, {
+      timeoutMs: REQUEST_BUDGET_MS.tts,
+      label: 'tts',
+    });
+    const audio = Buffer.from(await response.arrayBuffer());
+    const type = response.headers.get('content-type') || 'unknown';
+    const source = response.headers.get('x-talksys-voice-source') || 'unknown';
+    const workerMs = Number(response.headers.get('x-talksys-tts-ms') || 0);
+    const elapsedMs = Date.now() - started;
+    console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
+    console.log(`[latency] tts-http=${elapsedMs}ms worker=${workerMs || '?'}ms source=${source}`);
+    mirrorRuntimeLog('TTS', `${elapsedMs}ms source=${source}`);
+    return { audio, source, elapsedMs, workerMs };
+  } catch (error) {
+    const detail = String(error?.message || error || '');
+    const cloudflareTtsFailure = /tts_http_502|tts_failed|MeloTTS exhausted JP retries|3043: Internal server error/i.test(detail);
+    if (!cloudflareTtsFailure || process.platform !== 'win32') throw error;
+
+    console.warn('[tts] Cloudflare MeloTTS failed; falling back to Windows System.Speech:', detail);
+    mirrorRuntimeLog('TTS', 'Cloudflare failed -> Windows local fallback');
+    try {
+      const local = await synthesizeWindowsJapaneseTts(text, signal);
+      console.log(`[tts] ${local.audio.length} bytes source=${local.source}`);
+      console.log(`[latency] tts-local=${local.elapsedMs}ms source=${local.source}`);
+      mirrorRuntimeLog('TTS', `${local.elapsedMs}ms source=${local.source}`);
+      return local;
+    } catch (fallbackError) {
+      throw new Error(`tts_cloudflare_and_windows_failed: cloudflare=${detail.slice(0, 220)} windows=${String(fallbackError?.message || fallbackError).slice(0, 220)}`);
+    }
+  }
 }
 
 async function warmRecoveryAudio() {
@@ -1217,8 +1314,9 @@ async function playConnectionGreeting() {
     console.log('[greeting] connection greeting played');
     return true;
   } catch (error) {
-    console.error('[greeting] connection greeting failed:', error?.message || error);
-    throw new Error(`connection_greeting_failed: ${String(error?.message || error).slice(0, 240)}`);
+    console.error('[greeting] connection greeting unavailable:', error?.message || error);
+    mirrorRuntimeLog('TTS', `greeting unavailable: ${String(error?.message || error).slice(0, 180)}`);
+    return false;
   }
 }
 
