@@ -42,6 +42,9 @@ test('utterance telemetry covers capture through Discord playback', () => {
   assert.match(integrated, /writeDataPoint/);
   assert.match(integrated, /transcribe-start/);
   assert.match(integrated, /transcribe-complete/);
+  assert.match(integrated, /gemini-primary-complete/);
+  assert.match(integrated, /gemini-verifier-complete/);
+  assert.match(integrated, /gemini-verifier-(?:error|skipped)/);
 });
 
 test('transcript provenance can show realtime versus confirmed text without making realtime authoritative', () => {
