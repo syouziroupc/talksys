@@ -22,6 +22,8 @@ test('Discord turn stream exposes server timing fields to client metrics', () =>
 test('Discord records first TTS, first audio, playback, and pipeline completion', () => {
   assert.match(source, /clientTimings\.firstTtsMs = prefetched\.elapsedMs/);
   assert.match(source, /clientTimings\.firstAudioReadyMs = Date\.now\(\) - pipelineStarted/);
+  assert.match(source, /speechEndToPlaybackStartMs/);
+  assert.match(source, /\[latency-summary\].*sttMs=.*batchSttMs=.*primaryMs=.*verifierMs=.*firstTtsMs=.*firstAudioReadyMs=/);
   assert.match(source, /clientTimings\.playbackMs = totalPlaybackMs/);
   assert.match(source, /clientTimings\.pipelineCompleteMs = Date\.now\(\) - pipelineStarted/);
 });
