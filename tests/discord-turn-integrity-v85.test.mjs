@@ -31,3 +31,11 @@ test('Whisper remains authoritative for the final TalkSys turn', () => {
   assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
 });
+
+
+test('v85 pre-answer cue arbiter prevents wait cue and fast reaction from speaking independently', () => {
+  assert.match(bridge, /let preAnswerCueSerial = 0/);
+  assert.match(bridge, /activeWaitCue\?\.stop\?\.\('fast-reaction-won'\)/);
+  assert.match(bridge, /cueSerial !== preAnswerCueSerial/);
+  assert.match(bridge, /preAnswerCueSerial \+= 1;[\s\S]*final-answer-ready/);
+});
