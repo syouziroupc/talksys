@@ -71,37 +71,22 @@ test('verification question also contains every unanswered split fragment', () =
   assert.match(input, /元の利用者の質問: QCM1250のアダプターで この型番は使えますか/);
 });
 
-test('split follow-up preserves the first fragment through primary search and continuation verification', async () => {
+test('split follow-up preserves the first fragment through the single grounded primary search', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (_url, options) => {
     calls += 1;
     const req = JSON.parse(options.body);
-
-    if (calls === 1) {
-      assert.equal(req.previous_interaction_id, 'older-turn');
-      assert.match(req.input, /直前の未回答断片: QCM1250のアダプターで/);
-      assert.match(req.input, /今回の利用者発言: この型番は使えますか/);
-      assert.match(req.input, /ひと続きの発話/);
-      return new Response(JSON.stringify({
-        id: 'primary',
-        status: 'completed',
-        steps: [
-          { type: 'google_search_call', arguments: { queries: ['QCM1250 アダプター この型番 互換'] } },
-          { type: 'model_output', content: [{ type: 'text', text: '一次回答です。' }] },
-        ],
-      }), { status: 200, headers: { 'content-type': 'application/json' } });
-    }
-
-    assert.equal(calls, 2);
-    assert.equal(req.previous_interaction_id, 'primary');
-    assert.match(req.input, /QCM1250のアダプターで この型番は使えますか/);
-    assert.match(req.input, /最終回答前の自己検証/);
+    assert.equal(req.previous_interaction_id, 'older-turn');
+    assert.match(req.input, /直前の未回答断片: QCM1250のアダプターで/);
+    assert.match(req.input, /今回の利用者発言: この型番は使えますか/);
+    assert.match(req.input, /ひと続きの発話/);
     return new Response(JSON.stringify({
-      id: 'verified',
+      id: 'primary',
       status: 'completed',
       steps: [
-        { type: 'google_search_call', arguments: { queries: ['QCM1250 互換 公式'] } },
+        { type: 'google_search_call', arguments: { queries: ['QCM1250 アダプター この型番 互換'] } },
+        { type: 'google_search_result', result: [{ title: '公式互換情報', url: 'https://example.com/qcm1250' }] },
         { type: 'model_output', content: [{ type: 'text', text: '確認後の回答です。' }] },
       ],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -118,8 +103,8 @@ test('split follow-up preserves the first fragment through primary search and co
       text: 'この型番は使えますか',
     }, { GEMINI_API_KEY: 'test-key' }, undefined, { now: FIXED });
 
-    assert.equal(calls, 2);
-    assert.equal(result.genericVerificationSucceeded, true);
+    assert.equal(calls, 1);
+    assert.equal(result.genericVerificationSucceeded, false);
     assert.equal(result.search, true);
     assert.match(result.answer, /確認後の回答/);
   } finally {
