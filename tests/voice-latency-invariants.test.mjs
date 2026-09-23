@@ -55,3 +55,24 @@ test('v84 factual grounding fails closed when Gemini returns no URL citations', 
   assert.match(integrated, /const groundingFailClosed = groundingRequired && citationCount === 0/);
   assert.match(integrated, /未確認の固有事実や数値は断定しません/);
 });
+
+
+test('v84 uses Cloudflare MeloTTS only on the Discord voice endpoint', () => {
+  assert.match(integrated, /ttsProvider: 'cloudflare-melotts'/);
+  assert.match(integrated, /x-talksys-tts-model': '@cf\/myshell-ai\/melotts'/);
+  const synthStart = integrated.indexOf('async function discordVoiceSynthesize');
+  const healthStart = integrated.indexOf('async function voiceHealth', synthStart);
+  const endpoint = integrated.slice(synthStart, healthStart);
+  assert.doesNotMatch(endpoint, /synthesizeGeminiJapaneseTts|gemini-tts-fallback/);
+});
+
+test('v84 strict grounding specifically covers dynamic local facts', () => {
+  assert.match(integrated, /STRICT_DYNAMIC_GROUNDING_RE/);
+  assert.match(integrated, /住所\|所在地\|場所/);
+  assert.match(integrated, /営業時間/);
+  assert.match(integrated, /価格/);
+  assert.match(integrated, /在庫/);
+  assert.match(integrated, /何時/);
+  assert.match(integrated, /交通/);
+  assert.match(integrated, /groundingSourceCount/);
+});
