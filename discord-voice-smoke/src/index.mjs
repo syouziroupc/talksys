@@ -245,7 +245,9 @@ function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, real
         purpose: 'fast-reaction',
         onPlaybackStart: ({ playbackStartedAt }) => {
           timeline.fastReactionPlaybackAt = playbackStartedAt;
-          console.log(`[latency] fast-reaction=${Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt))}ms utterance=${utteranceId}`);
+          const reactionMs = Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt));
+          console.log(`[latency] fast-reaction=${reactionMs}ms utterance=${utteranceId}`);
+          mirrorRuntimeLog('LATENCY', `fast-reaction=${reactionMs}ms ${utteranceId}`);
         },
       });
       return true;
@@ -862,6 +864,7 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
       console.log(`[pipeline] interrupted utterance=${utteranceId}`);
     } else {
       console.error('[pipeline]', error?.stack || error);
+      mirrorRuntimeLog('ERROR', `pipeline: ${pipelineError}`);
       await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch, timeline.utteranceEndAt || 0);
     }
   } finally {
@@ -906,6 +909,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
     const echoRecord = looksLikeRecentBotEcho(stt.confirmedTranscript, timeline);
     if (echoRecord) {
       console.warn(`[echo-guard] suppressed bot echo utterance=${utteranceId} purpose=${echoRecord.purpose}: ${stt.confirmedTranscript}`);
+      mirrorRuntimeLog('ECHO', `suppressed ${echoRecord.purpose}: ${stt.confirmedTranscript}`);
       activeFastReaction?.stop?.('echo-suppressed');
       activeFastReaction = null;
       timeline.pipelineCompleteAt = Date.now();
@@ -942,6 +946,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
   } catch (error) {
     const message = String(error?.message || error || '').slice(0, 500);
     console.error('[stt]', message);
+    mirrorRuntimeLog('ERROR', `STT: ${message}`);
     timeline.pipelineCompleteAt = Date.now();
     postVoiceMetrics({
       text: '',
@@ -955,7 +960,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
         error: message,
       },
       timeline,
-      realtimeTranscript: '',
+      realtimeTranscript: String(captureMetrics?.realtimeTranscript || ''),
       confirmedTranscript: '',
       geminiInputText: '',
       error: message,
@@ -1135,7 +1140,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     lastPcmAt = at;
     pcm16Bytes += pcm16.length;
     pcm16Chunks.push(Buffer.from(pcm16));
-    if (!realtimeHelper) {
+    if (!realtimeHelper || !realtimeHelper.ws || realtimeHelper.ws.readyState >= WebSocket.CLOSING) {
       realtimeHelper = beginRealtimeUtterance(userId, {
         utteranceId,
         sessionEpoch,
@@ -1220,6 +1225,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   });
 
   if (initialUserId && initialUserId !== client.user.id) {
+    ensureRealtimeHelper(initialUserId);
     startReceiverSession(initialUserId, false);
   }
 
@@ -1267,6 +1273,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
   console.log('[discord] voice ready:', channel.name);
   console.log('[discord] conversation session:', discordSessionId);
+  mirrorRuntimeLog('SESSION', discordSessionId);
   console.log('[discord] input architecture: Discord speaking gate -> Opus -> PCM16 Web STT format -> /api/transcribe');
   console.log('[discord] final STT: Whisper Large v3 Turbo via /api/transcribe');
   console.log('[discord] fast reaction: Web-compatible Nova helper -> /api/fast-reaction (non-authoritative)');
@@ -1302,6 +1309,7 @@ client.once('ready', async () => {
   if (discordHealthTimer) clearInterval(discordHealthTimer);
   discordHealthTimer = setInterval(() => {
     console.log(`[discord] gateway health ready=${client.isReady()} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
+    if (runtimeLogChannel) mirrorRuntimeLog('HEALTH', `gateway=${client.isReady()} ping=${client.ws.ping}ms sessions=${sessions.size}`);
   }, DISCORD_HEALTH_LOG_MS);
 
   console.log(`[discord] gateway ready user=${client.user?.tag || client.user?.id || 'unknown'} ping=${client.ws.ping}ms`);
@@ -1378,10 +1386,11 @@ client.on('shardError', (error, shardId) => console.error(`[discord] shard error
 client.on('shardDisconnect', (event, shardId) => console.error(`[discord] shard disconnected id=${shardId} code=${event?.code ?? 'unknown'}`));
 client.on('shardReconnecting', (shardId) => console.warn(`[discord] shard reconnecting id=${shardId}`));
 client.on('shardResume', (shardId, replayedEvents) => console.log(`[discord] shard resumed id=${shardId} replayed=${replayedEvents}`));
-player.on('error', (error) => console.error('[player]', error.message));
+player.on('error', (error) => { console.error('[player]', error.message); mirrorRuntimeLog('ERROR', `player: ${error.message}`); });
 
 process.on('unhandledRejection', (reason) => {
   console.error('[process] unhandled rejection:', reason?.stack || reason);
+  mirrorRuntimeLog('ERROR', `unhandled: ${reason?.message || reason}`);
 });
 
 process.on('SIGINT', () => {
