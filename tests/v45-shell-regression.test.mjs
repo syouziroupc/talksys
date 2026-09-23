@@ -46,7 +46,7 @@ test('emergency text input can preempt an in-flight or spoken turn', () => {
 
 test('voice interaction keeps Whisper fallback while using a quality-oriented end-silence window', () => {
   assert.match(TALK_CLIENT_V45, /u\.rate=1\.12/);
-  assert.match(TALK_CLIENT_V45, /SILENCE_MS=650/);
+  assert.match(TALK_CLIENT_V45, /SILENCE_MS=900/);
   assert.doesNotMatch(TALK_CLIENT_V45, /SILENCE_MS=480/);
 });
 
