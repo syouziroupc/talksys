@@ -166,7 +166,7 @@ function scheduleRuntimeLogFlush() {
 }
 
 function mirrorRuntimeLog(kind, message) {
-  const value = String(message || '').replace(/\s+/g, ' ').trim().slice(0, 260);
+  const value = String(message || '').replace(/`/g, 'ˋ').replace(/\s+/g, ' ').trim().slice(0, 260);
   if (!value) return;
   const stamp = new Date().toISOString().slice(11, 19);
   runtimeLogLines.push(`${stamp} [${kind}] ${value}`);
