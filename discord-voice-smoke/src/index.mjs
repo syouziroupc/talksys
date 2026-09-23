@@ -14,7 +14,8 @@ import {
 } from '@discordjs/voice';
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
-import WebSocket from 'ws';
+import { WEB_VOICE_CAPTURE_POLICY } from '../../src/voice-capture-policy.js';
+import { WebCompatibleCapture } from './web-compatible-capture.mjs';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -27,21 +28,19 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v78-observability-common-turn-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v79-web-audio-adapter-r1';
+const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
-const RECEIVER_CAPTURE_TIMEOUT_MS = 30000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
 const DISCORD_READY_TIMEOUT_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const REQUEST_BUDGET_MS = Object.freeze({
-  batchStt: 1800,
-  turnStream: 35000,
+  stt: 30000,
   turn: 35000,
   tts: 12000,
-  metrics: 5000,
   waitCue: 1800,
+  metrics: 5000,
 });
 
 const client = new Client({
@@ -50,21 +49,21 @@ const client = new Client({
 
 const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
 const sessions = new Map();
-const realtimeSttSockets = new Map();
+const voiceProfiles = new Map();
 const history = [];
+let searchTrace = null;
 let previousInteractionId = '';
 let connection;
 let answering = false;
 let voiceEpoch = 0;
-let realtimeSttBackoffUntil = 0;
 let discordSessionId = '';
 const pendingTurns = [];
 let activeTurnAbortController = null;
 let activeTurnSerial = 0;
+let activeWaitCue = null;
 let recoveryAudio = null;
 let recoveryAudioPromise = null;
 let recoverySpeaking = false;
-let realtimeSttFailureCount = 0;
 let voiceRecoveryTimer = null;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
@@ -77,13 +76,47 @@ function resetConversationState() {
   }
   voiceRecoveryAttempts = 0;
   try { activeTurnAbortController?.abort(); } catch {}
+  try { activeWaitCue?.stop?.('reset'); } catch {}
   activeTurnAbortController = null;
+  activeWaitCue = null;
   activeTurnSerial += 1;
   history.splice(0, history.length);
+  searchTrace = null;
   previousInteractionId = '';
   answering = false;
   pendingTurns.splice(0, pendingTurns.length);
   discordSessionId = '';
+}
+
+function voiceProfileFor(userId) {
+  let profile = voiceProfiles.get(userId);
+  if (!profile) {
+    profile = { noise: WEB_VOICE_CAPTURE_POLICY.initialNoise, noiseBoost: 1 };
+    voiceProfiles.set(userId, profile);
+  }
+  return profile;
+}
+
+function learnRejectedCapture(profile, metrics = {}) {
+  if (!profile || !metrics?.speechDetected) return;
+  profile.noiseBoost = Math.min(2.8, profile.noiseBoost * 1.12 + 0.04);
+  const maxRms = Number(metrics.maxRms) || 0;
+  if (maxRms > 0) {
+    profile.noise = Math.max(
+      profile.noise,
+      Math.min(WEB_VOICE_CAPTURE_POLICY.noiseMax, maxRms * 0.38),
+    );
+  }
+}
+
+function learnSuccessfulSpeech(profile) {
+  if (!profile) return;
+  profile.noiseBoost = Math.max(1, profile.noiseBoost * 0.93);
+}
+
+function learnSttFailure(profile) {
+  if (!profile) return;
+  profile.noiseBoost = Math.min(2.8, profile.noiseBoost * 1.10 + 0.03);
 }
 
 function boundedSignal(parentSignal, timeoutMs) {
@@ -91,90 +124,18 @@ function boundedSignal(parentSignal, timeoutMs) {
   return parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
 }
 
-function isTransientHttpStatus(status) {
-  return [408, 425, 500, 502, 503, 504].includes(Number(status));
-}
-
-async function fetchWithRetry(url, init = {}, { timeoutMs = 15000, retries = 1, label = 'request' } = {}) {
-  let lastError = null;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    try {
-      const response = await fetch(url, {
-        ...init,
-        signal: boundedSignal(init.signal, timeoutMs),
-      });
-      if (!isTransientHttpStatus(response.status) || attempt >= retries) return response;
-      console.warn(`[${label}] transient http ${response.status}; retry ${attempt + 1}/${retries}`);
-      try { await response.arrayBuffer(); } catch {}
-    } catch (error) {
-      lastError = error;
-      if (init.signal?.aborted || attempt >= retries) throw error;
-      console.warn(`[${label}] transient failure; retry ${attempt + 1}/${retries}:`, error?.message || error);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
-  }
-  throw lastError || new Error(`${label}_failed`);
-}
-
-function registerRealtimeSttFailure(reason = 'realtime-failed', statusCode = 0) {
-  realtimeSttFailureCount = Math.min(6, realtimeSttFailureCount + 1);
-  const rateLimited = statusCode === 429 || /429|rate/i.test(String(reason || ''));
-  const baseMs = rateLimited ? 60000 : 10000;
-  const delayMs = Math.min(300000, baseMs * (2 ** Math.max(0, realtimeSttFailureCount - 1)));
-  realtimeSttBackoffUntil = Math.max(realtimeSttBackoffUntil, Date.now() + delayMs);
-  console.warn(`[stt] circuit open reason=${reason} failures=${realtimeSttFailureCount} backoff=${delayMs}ms`);
-  return delayMs;
-}
-
-function registerRealtimeSttHealthy() {
-  if (realtimeSttFailureCount > 0 || realtimeSttBackoffUntil > 0) {
-    console.log('[stt] circuit closed after successful transcript');
-  }
-  realtimeSttFailureCount = 0;
-  realtimeSttBackoffUntil = 0;
-}
-
-function createMono16kResampler() {
-  if (!ffmpegPath) throw new Error('ffmpeg_static_missing');
-  const ffmpeg = spawn(ffmpegPath, [
-    '-hide_banner', '-loglevel', 'error',
-    '-f', 's16le',
-    '-ar', '48000',
-    '-ac', '2',
-    '-i', 'pipe:0',
-    '-af', 'aresample=16000',
-    '-f', 's16le',
-    '-ar', '16000',
-    '-ac', '1',
-    'pipe:1',
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
-  let stderr = '';
-  ffmpeg.stderr.on('data', (d) => { stderr += String(d); });
-  ffmpeg.on('error', (error) => console.error('[resample]', error.message));
-  ffmpeg.on('close', (code) => {
-    if (code && stderr.trim()) console.error('[resample]', stderr.trim());
+async function fetchWithBudget(url, init = {}, { timeoutMs = 15000, label = 'request' } = {}) {
+  const response = await fetch(url, {
+    ...init,
+    signal: boundedSignal(init.signal, timeoutMs),
   });
-  return ffmpeg;
-}
-
-function transcriptFrom(payload) {
-  return String(payload?.channel?.alternatives?.[0]?.transcript || payload?.transcript || '').trim();
-}
-
-function voiceSafeText(text) {
-  let value = String(text || '')
-    .replace(/https?:\/\/\S+/g, '')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/(^|\n)\s*(?:#{1,6}|[-+*•]|\d+[.)、])\s*/g, '$1')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const sentences = value.match(/[^。！？!?]+[。！？!?]?/g) || [value];
-  return sentences.slice(0, 4).join('').trim() || value;
-}
-function voiceChunks(text) {
-  const value = voiceSafeText(text);
-  const sentences = value.match(/[^。！？!?]+[。！？!?]?/g) || [value];
-  return sentences.map((sentence) => sentence.trim()).filter(Boolean).slice(0, 4);
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    const error = new Error(`${label}_http_${response.status}: ${detail.slice(0, 300)}`);
+    error.status = response.status;
+    throw error;
+  }
+  return response;
 }
 
 function pcm16MonoToWav16k(pcm) {
@@ -188,8 +149,8 @@ function pcm16MonoToWav16k(pcm) {
   out.writeUInt32LE(16, 16);
   out.writeUInt16LE(1, 20);
   out.writeUInt16LE(1, 22);
-  out.writeUInt32LE(16000, 24);
-  out.writeUInt32LE(32000, 28);
+  out.writeUInt32LE(WEB_VOICE_CAPTURE_POLICY.targetRate, 24);
+  out.writeUInt32LE(WEB_VOICE_CAPTURE_POLICY.targetRate * 2, 28);
   out.writeUInt16LE(2, 32);
   out.writeUInt16LE(16, 34);
   out.write('data', 36, 'ascii');
@@ -198,33 +159,70 @@ function pcm16MonoToWav16k(pcm) {
   return out;
 }
 
-async function batchTranscribePcm16(pcm, reason = 'fallback', signal) {
-  if (!pcm?.length) throw new Error('batch_stt_empty_pcm');
-  const started = Date.now();
-  const wav = pcm16MonoToWav16k(pcm);
-  console.log(`[stt-fallback] batch start reason=${reason} pcm=${pcm.length}B wav=${wav.length}B`);
-  const response = await fetchWithRetry(TALKSYS_BASE_URL + '/api/transcribe', {
-    method: 'POST',
-    signal,
-    headers: { 'content-type': 'audio/wav' },
-    body: wav,
-  }, {
-    timeoutMs: REQUEST_BUDGET_MS.batchStt,
-    retries: 0,
-    label: 'stt-fallback',
+function createWebCompatibleResampler() {
+  if (!ffmpegPath) throw new Error('ffmpeg_static_missing');
+  const ffmpeg = spawn(ffmpegPath, [
+    '-hide_banner', '-loglevel', 'error',
+    '-f', 's16le',
+    '-ar', '48000',
+    '-ac', '2',
+    '-i', 'pipe:0',
+    '-af', `highpass=f=${WEB_VOICE_CAPTURE_POLICY.highpassHz},aresample=${WEB_VOICE_CAPTURE_POLICY.targetRate}`,
+    '-f', 's16le',
+    '-ar', String(WEB_VOICE_CAPTURE_POLICY.targetRate),
+    '-ac', '1',
+    'pipe:1',
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stderr = '';
+  ffmpeg.stderr.on('data', (d) => { stderr += String(d); });
+  ffmpeg.on('error', (error) => console.error('[resample]', error.message));
+  ffmpeg.on('close', (code) => {
+    if (code && stderr.trim()) console.error('[resample]', stderr.trim());
   });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok || !body?.ok || !body?.text) {
-    throw new Error(body?.error || body?.rejected || `batch_stt_http_${response.status}`);
-  }
-  console.log(`[stt-fallback] batch success model=${body.model || 'unknown'} elapsed=${body.elapsedMs ?? '?'}ms:`, body.text);
-  console.log(`[latency] batch-stt-http=${Date.now() - started}ms server=${body.elapsedMs ?? '?'}ms`);
-  return String(body.text).trim();
+  return ffmpeg;
 }
 
-async function postVoiceMetrics(text, timings = {}, utteranceId = '') {
+async function transcribeCapturedUtterance(pcm, utteranceId, timeline, signal) {
+  if (!pcm?.length) throw new Error('captured_pcm_empty');
+  const wav = pcm16MonoToWav16k(pcm);
+  timeline.wavReadyAt = Date.now();
+  timeline.transcribeStartAt = Date.now();
+  console.log(`[stt] confirmed Whisper start utterance=${utteranceId} pcm=${pcm.length}B wav=${wav.length}B`);
+
+  const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/transcribe', {
+    method: 'POST',
+    signal,
+    headers: {
+      'content-type': 'audio/wav',
+      'x-talksys-session': discordSessionId || 'discord-unknown',
+      'x-talksys-utterance': utteranceId,
+      'x-talksys-channel': 'discord',
+    },
+    body: wav,
+  }, {
+    timeoutMs: REQUEST_BUDGET_MS.stt,
+    label: 'stt',
+  });
+
+  const body = await response.json().catch(() => ({}));
+  timeline.whisperCompleteAt = Date.now();
+  if (!body?.ok || !body?.text) {
+    throw new Error(body?.error || body?.rejected || 'stt_empty_transcript');
+  }
+  const confirmedTranscript = String(body.text).trim();
+  console.log(`[stt] confirmed model=${body.model || 'unknown'} elapsed=${timeline.whisperCompleteAt - timeline.transcribeStartAt}ms: ${confirmedTranscript}`);
+  return {
+    confirmedTranscript,
+    fastReaction: body?.fastReaction || null,
+    model: body?.model || '',
+    serverElapsedMs: Number(body?.elapsedMs) || 0,
+    signal: body?.signal || null,
+  };
+}
+
+async function postVoiceMetrics({ text, utteranceId, timings, timeline, realtimeTranscript = '', confirmedTranscript = '', geminiInputText = '', error = '' }) {
   try {
-    const response = await fetchWithRetry(TALKSYS_BASE_URL + '/api/voice-metrics', {
+    const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice-metrics', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -234,74 +232,98 @@ async function postVoiceMetrics(text, timings = {}, utteranceId = '') {
         text,
         sessionId: discordSessionId || `discord-${randomUUID()}`,
         utteranceId,
+        channel: 'discord',
         timings,
+        timeline,
+        realtimeTranscript,
+        confirmedTranscript,
+        geminiInputText,
+        transcriptMatch: realtimeTranscript ? realtimeTranscript === confirmedTranscript : null,
+        error,
       }),
     }, {
       timeoutMs: REQUEST_BUDGET_MS.metrics,
-      retries: 0,
       label: 'metrics',
     });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      console.warn(`[metrics] voice metrics rejected status=${response.status} ${detail.slice(0, 160)}`);
-      return false;
-    }
+    await response.arrayBuffer().catch(() => {});
     console.log('[metrics] voice latency persisted');
     return true;
-  } catch (error) {
-    console.warn('[metrics] voice metrics failed:', error?.message || error);
+  } catch (errorValue) {
+    console.warn('[metrics] voice metrics failed:', errorValue?.message || errorValue);
     return false;
   }
 }
 
-async function fetchWaitCue(text, signal) {
-  const endpoints = ['/api/search-preface', '/api/fast-reaction'];
-  for (const endpoint of endpoints) {
-    try {
-      const response = await fetchWithRetry(TALKSYS_BASE_URL + endpoint, {
-        method: 'POST',
-        signal,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text }),
-      }, {
-        timeoutMs: REQUEST_BUDGET_MS.waitCue,
-        retries: 0,
-        label: 'wait-cue',
-      });
-      const body = await response.json().catch(() => ({}));
-      if (response.ok && body?.shouldSpeak && String(body?.text || '').trim()) {
-        return String(body.text).trim();
-      }
-    } catch (error) {
-      if (signal?.aborted) return '';
-      console.warn('[wait-cue] unavailable:', error?.message || error);
-    }
+async function fetchSearchPreface(text, signal) {
+  try {
+    const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/search-preface', {
+      method: 'POST',
+      signal,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }, {
+      timeoutMs: REQUEST_BUDGET_MS.waitCue,
+      label: 'wait-cue',
+    });
+    const body = await response.json().catch(() => ({}));
+    if (body?.shouldSpeak && String(body?.text || '').trim()) return String(body.text).trim();
+  } catch (error) {
+    if (!signal?.aborted) console.warn('[wait-cue] preface unavailable:', error?.message || error);
   }
   return '';
 }
 
-async function playWaitCue(text, utteranceId, signal, shouldSkip = () => false) {
-  const cueStarted = Date.now();
-  const cue = await fetchWaitCue(text, signal);
-  if (!cue || shouldSkip() || signal?.aborted) return { played: false, elapsedMs: Date.now() - cueStarted };
-  const audio = await synthesize(cue, signal, { utteranceId, purpose: 'wait-cue' });
-  if (shouldSkip() || signal?.aborted) return { played: false, elapsedMs: Date.now() - cueStarted };
-  await playMp3(audio);
-  const elapsedMs = Date.now() - cueStarted;
-  console.log(`[wait-cue] played elapsed=${elapsedMs}ms text=${cue}`);
-  return { played: true, elapsedMs };
+function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
+  const controller = new AbortController();
+  const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
+  let playing = false;
+  let stopped = false;
+
+  const done = (async () => {
+    try {
+      let cue = '';
+      if (fastReaction?.shouldSpeak && String(fastReaction?.text || '').trim()) {
+        cue = String(fastReaction.text).trim();
+      } else {
+        cue = await fetchSearchPreface(text, signal);
+      }
+      if (!cue || signal.aborted || stopped) return false;
+      const synthesized = await synthesize(cue, signal, { utteranceId, purpose: 'wait-cue' });
+      if (signal.aborted || stopped) return false;
+      playing = true;
+      await playMp3(synthesized.audio);
+      return true;
+    } catch (error) {
+      if (!signal.aborted && !stopped) console.warn('[wait-cue] failed:', error?.message || error);
+      return false;
+    } finally {
+      playing = false;
+    }
+  })();
+
+  return {
+    done,
+    stop(reason = 'answer-ready') {
+      if (stopped) return;
+      stopped = true;
+      try { controller.abort(reason); } catch {}
+      if (playing) player.stop(true);
+    },
+  };
 }
 
 async function talk(text, utteranceId = '', signal) {
   const started = Date.now();
   console.log('[turn] user:', text);
-  const response = await fetchWithRetry(TALKSYS_BASE_URL + '/api/turn', {
+  const previous = history.slice(-MAX_HISTORY);
+  const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/turn', {
     method: 'POST',
     signal,
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       text,
-      history: history.slice(-12),
+      history: previous,
+      searchTrace,
       sessionId: discordSessionId || `discord-${randomUUID()}`,
       utteranceId,
       previousInteractionId,
@@ -309,113 +331,31 @@ async function talk(text, utteranceId = '', signal) {
     }),
   }, {
     timeoutMs: REQUEST_BUDGET_MS.turn,
-    retries: 0,
     label: 'turn',
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok || !body?.ok || !body?.answer) {
-    throw new Error(body?.detail || body?.error || `turn_http_${response.status}`);
+  if (!body?.ok || !body?.answer) {
+    throw new Error(body?.detail || body?.error || 'turn_empty_answer');
   }
   if (body.interactionId) previousInteractionId = body.interactionId;
+  if (body.search) {
+    searchTrace = {
+      resolvedQuestion: body.resolvedQuestion || text,
+      queries: Array.isArray(body.queries) ? body.queries.slice(0, 6) : [],
+      sources: Array.isArray(body.sources) ? body.sources.slice(0, 8) : [],
+    };
+  }
   history.push({ role: 'user', content: text }, { role: 'assistant', content: body.answer });
-  if (history.length > 24) history.splice(0, history.length - 24);
+  if (history.length > MAX_HISTORY * 2) history.splice(0, history.length - MAX_HISTORY * 2);
   const elapsed = Date.now() - started;
   console.log('[turn] assistant:', body.answer);
   console.log(`[latency] turn-http=${elapsed}ms server-total=${body?.timings?.totalMs ?? '?'}ms primary=${body?.timings?.primaryMs ?? '?'}ms verifier=${body?.timings?.verifierMs ?? '?'}ms`);
-  return body.answer;
-}
-
-async function talkStream(text, onSentence, utteranceId = '', signal) {
-  const started = Date.now();
-  console.log('[turn-stream] user:', text);
-  const response = await fetch(TALKSYS_BASE_URL + '/api/turn-stream', {
-    method: 'POST',
-    signal: boundedSignal(signal, REQUEST_BUDGET_MS.turnStream),
-    headers: {
-      'content-type': 'application/json',
-      authorization: 'Bearer ' + BRIDGE_TOKEN,
-    },
-    body: JSON.stringify({
-      text,
-      history: history.slice(-12),
-      sessionId: discordSessionId || `discord-${randomUUID()}`,
-      utteranceId,
-      previousInteractionId,
-      channel: 'discord',
-    }),
-  });
-  const type = response.headers.get('content-type') || '';
-  if (!response.ok || !/text\/event-stream/i.test(type) || !response.body) {
-    const detail = await response.text().catch(() => '');
-    console.warn(`[turn-stream] unavailable status=${response.status}; falling back to /api/turn ${detail.slice(0, 160)}`);
-    return { answer: await talk(text, utteranceId, signal), streamed: false, sentenceCount: 0, clientElapsedMs: Date.now() - started, timings: {} };
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let doneBody = null;
-  let sentenceCount = 0;
-
-  const consumeBlock = (block) => {
-    const data = block.split('\n')
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5).trimStart())
-      .join('\n')
-      .trim();
-    if (!data) return;
-    let event = null;
-    try { event = JSON.parse(data); } catch { return; }
-    if (event?.type === 'sentence' && event?.text) {
-      sentenceCount += 1;
-      onSentence(String(event.text));
-      return;
-    }
-    if (event?.type === 'done' && event?.ok && event?.answer) {
-      doneBody = event;
-      return;
-    }
-    if (event?.type === 'error') {
-      const error = new Error(event?.error || 'turn_stream_failed');
-      error.partial = Boolean(event?.partial || sentenceCount > 0);
-      throw error;
-    }
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (value) buffer += decoder.decode(value, { stream: !done }).replace(/\r/g, '');
-    let boundary;
-    while ((boundary = buffer.indexOf('\n\n')) >= 0) {
-      const block = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      consumeBlock(block);
-    }
-    if (done) break;
-  }
-
-  if (!doneBody?.answer) {
-    if (sentenceCount === 0) {
-      console.warn('[turn-stream] ended without done event; falling back to /api/turn');
-      return { answer: await talk(text, utteranceId, signal), streamed: false, sentenceCount: 0, clientElapsedMs: Date.now() - started, timings: {} };
-    }
-    const error = new Error('turn_stream_ended_after_partial_output');
-    error.partial = true;
-    throw error;
-  }
-
-  if (doneBody.interactionId) previousInteractionId = doneBody.interactionId;
-  history.push({ role: 'user', content: text }, { role: 'assistant', content: doneBody.answer });
-  if (history.length > 24) history.splice(0, history.length - 24);
-  const elapsed = Date.now() - started;
-  console.log('[turn-stream] assistant:', doneBody.answer);
-  console.log(`[latency] turn-stream=${elapsed}ms server-total=${doneBody?.timings?.totalMs ?? '?'}ms primary=${doneBody?.timings?.primaryMs ?? '?'}ms verifier=${doneBody?.timings?.verifierMs ?? '?'}ms sentences=${sentenceCount}`);
-  return { answer: doneBody.answer, streamed: sentenceCount > 0, sentenceCount, clientElapsedMs: elapsed, timings: doneBody?.timings || {} };
+  return body;
 }
 
 async function synthesize(text, signal, meta = {}) {
   const started = Date.now();
-  const response = await fetchWithRetry(TALKSYS_BASE_URL + '/api/voice/synthesize', {
+  const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice/synthesize', {
     method: 'POST',
     signal,
     headers: {
@@ -431,36 +371,26 @@ async function synthesize(text, signal, meta = {}) {
     }),
   }, {
     timeoutMs: REQUEST_BUDGET_MS.tts,
-    retries: 0,
     label: 'tts',
   });
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(`tts_http_${response.status}: ${detail.slice(0, 300)}`);
-  }
-  // The Worker-side TTS APIs currently complete synthesis before returning the body.
-  // Use sentence-level pipelining instead of pretending this body is true incremental audio.
   const audio = Buffer.from(await response.arrayBuffer());
   const type = response.headers.get('content-type') || 'unknown';
   const source = response.headers.get('x-talksys-voice-source') || 'unknown';
   const workerMs = Number(response.headers.get('x-talksys-tts-ms') || 0);
   const elapsedMs = Date.now() - started;
-  audio.ttsSource = source;
-  audio.ttsElapsedMs = elapsedMs;
-  audio.ttsWorkerMs = Number.isFinite(workerMs) ? workerMs : 0;
   console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
-  console.log(`[latency] tts-http=${elapsedMs}ms worker=${audio.ttsWorkerMs || '?'}ms source=${source}`);
-  return audio;
+  console.log(`[latency] tts-http=${elapsedMs}ms worker=${workerMs || '?'}ms source=${source}`);
+  return { audio, source, elapsedMs, workerMs };
 }
 
 async function warmRecoveryAudio() {
   if (recoveryAudio?.length) return recoveryAudio;
   if (recoveryAudioPromise) return recoveryAudioPromise;
   recoveryAudioPromise = synthesize(RECOVERY_PROMPT)
-    .then((audio) => {
-      recoveryAudio = audio;
-      console.log(`[recovery] cached ${audio.length} bytes`);
-      return audio;
+    .then((result) => {
+      recoveryAudio = result.audio;
+      console.log(`[recovery] cached ${recoveryAudio.length} bytes`);
+      return recoveryAudio;
     })
     .finally(() => { recoveryAudioPromise = null; });
   return recoveryAudioPromise;
@@ -509,15 +439,15 @@ async function playMp3(mp3, options = {}) {
 
   const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
   const playbackStartedPromise = new Promise((resolve) => {
-    const onPlaying = () => {
+    player.once(AudioPlayerStatus.Playing, () => {
       const playbackStartedAt = Date.now();
       const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
       console.log('[tx] playback started');
       try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
       resolve({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs });
-    };
-    player.once(AudioPlayerStatus.Playing, onPlaying);
+    });
   });
+
   player.play(resource);
 
   const completionPromise = new Promise((resolve, reject) => {
@@ -542,30 +472,29 @@ async function playMp3(mp3, options = {}) {
   return startedInfo;
 }
 
-async function processTranscript(text, userId, sessionEpoch, speechMetrics = {}) {
-  if (!text || sessionEpoch !== voiceEpoch) return;
+async function processConfirmedTranscript({ confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
+  if (!confirmedTranscript || sessionEpoch !== voiceEpoch) return;
   if (answering) {
     if (pendingTurns.length < 3) {
-      pendingTurns.push({ text, userId, sessionEpoch, speechMetrics });
-      console.log(`[queue] buffered user=${userId}: ${text}`);
-    } else {
-      console.warn(`[queue] dropped user=${userId}: queue full`);
+      pendingTurns.push({ confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta });
+      console.log(`[queue] buffered user=${userId}: ${confirmedTranscript}`);
     }
     return;
   }
 
+  answering = true;
   const pipelineStarted = Date.now();
-  const utteranceId = String(speechMetrics?.utteranceId || `utt-${randomUUID()}`);
   const turnSerial = ++activeTurnSerial;
   const controller = new AbortController();
   try { activeTurnAbortController?.abort(); } catch {}
   activeTurnAbortController = controller;
-  const speechEndedAt = Number(speechMetrics?.speechEndedAt) || pipelineStarted;
-  const clientTimings = {
-    sttMs: Number(speechMetrics?.sttMs) || 0,
-    speechEndToSttFinalMs: Number(speechMetrics?.speechEndToSttFinalMs ?? speechMetrics?.sttMs) || 0,
-    batchSttMs: Number(speechMetrics?.batchSttMs) || 0,
-    answerStartMs: Math.max(0, pipelineStarted - speechEndedAt),
+
+  const timings = {
+    sttMode: 'web-whisper',
+    captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
+    sttMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.transcribeStartAt || 0)),
+    speechEndToSttFinalMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.utteranceEndAt || 0)),
+    answerStartMs: 0,
     primaryMs: 0,
     verifierMs: 0,
     answerGenerationTotalMs: 0,
@@ -574,158 +503,126 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     speechEndToPlaybackStartMs: 0,
     pipelineCompleteMs: 0,
     ffmpegSpawnMs: 0,
-    sttMode: speechMetrics?.sttMode || 'unknown',
-    sttReused: Boolean(speechMetrics?.sttReused),
-    fallback: speechMetrics?.sttMode === 'batch',
+    playbackMs: 0,
     ttsProvider: '',
-    error: '',
   };
-  answering = true;
-  let firstAudioReadyLogged = false;
-  let playedSentenceCount = 0;
-  let mainAnswerReady = false;
 
+  let pipelineError = '';
   try {
-    console.log(`[stt] final user=${userId}:`, text);
-    console.log('[latency] pipeline-start');
+    timeline.turnStartAt = Date.now();
+    timings.answerStartMs = Math.max(0, timeline.turnStartAt - (timeline.utteranceEndAt || timeline.turnStartAt));
 
-    const waitCueController = new AbortController();
-    const waitCueSignal = AbortSignal.any([controller.signal, waitCueController.signal]);
-    const waitCuePromise = playWaitCue(text, utteranceId, waitCueSignal, () => mainAnswerReady)
-      .catch((error) => {
-        if (!controller.signal.aborted && !mainAnswerReady) console.warn('[wait-cue] failed:', error?.message || error);
-        return { played: false, elapsedMs: 0 };
-      });
+    activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, fastReaction);
+    const turn = await talk(confirmedTranscript, utteranceId, controller.signal);
+    timeline.finalAnswerAt = Date.now();
+    timings.primaryMs = Number(turn?.timings?.primaryMs) || 0;
+    timings.verifierMs = Number(turn?.timings?.verifierMs) || 0;
+    timings.answerGenerationTotalMs = Number(turn?.timings?.totalMs) || Math.max(0, timeline.finalAnswerAt - timeline.turnStartAt);
 
-    let firstTtsRecorded = false;
-    let firstSentenceReadyPromise = null;
-    let playbackChain = waitCuePromise.then(() => undefined);
-    let playbackError = null;
-    let queuedSentences = 0;
-    let totalPlaybackMs = 0;
+    // Waiting audio is never part of the answer dependency chain.
+    activeWaitCue?.stop('final-answer-ready');
+    activeWaitCue = null;
+    player.stop(true);
 
-    const timedSynthesize = (sentence) => {
-      const ttsStarted = Date.now();
-      return synthesize(sentence, controller.signal, { utteranceId, purpose: 'answer' })
-        .then((value) => ({ value, elapsedMs: Date.now() - ttsStarted }), (error) => ({ error }));
-    };
+    timeline.ttsStartAt = Date.now();
+    const tts = await synthesize(turn.answer, controller.signal, { utteranceId, purpose: 'answer' });
+    timeline.ttsEndAt = Date.now();
+    timings.firstTtsMs = tts.elapsedMs;
+    timings.firstAudioReadyMs = Math.max(0, timeline.ttsEndAt - pipelineStarted);
+    timings.ttsProvider = tts.source;
 
-    const queueSentence = (sentence) => {
-      if (!sentence || queuedSentences >= 4) return;
-      const safe = voiceSafeText(sentence);
-      if (!safe) return;
-      mainAnswerReady = true;
-      try { waitCueController.abort('final-answer-ready'); } catch {}
-      queuedSentences += 1;
-
-      // First sentence gets exclusive priority. Later sentences start TTS only
-      // after the first audio is ready, then generate in parallel with playback.
-      let audioPromise;
-      if (queuedSentences === 1) {
-        firstSentenceReadyPromise = timedSynthesize(safe);
-        audioPromise = firstSentenceReadyPromise;
-      } else {
-        audioPromise = Promise.resolve(firstSentenceReadyPromise)
-          .then(() => timedSynthesize(safe));
-      }
-
-      playbackChain = playbackChain.then(async () => {
-        const prefetched = await audioPromise;
-        if (prefetched?.error) throw prefetched.error;
-        if (controller.signal.aborted || turnSerial !== activeTurnSerial || sessionEpoch !== voiceEpoch) return;
-        if (!firstTtsRecorded) {
-          firstTtsRecorded = true;
-          clientTimings.firstTtsMs = prefetched.elapsedMs;
-          clientTimings.ttsProvider = String(prefetched.value?.ttsSource || 'unknown');
-        }
-        if (!firstAudioReadyLogged) {
-          firstAudioReadyLogged = true;
-          clientTimings.firstAudioReadyMs = Date.now() - pipelineStarted;
-          console.log(`[latency] first-audio-ready=${clientTimings.firstAudioReadyMs}ms source=final-answer-first-sentence`);
-        }
-        const playbackWallStarted = Date.now();
-        await playMp3(prefetched.value, {
-          onPlaybackStart: ({ playbackStartedAt, ffmpegSpawnMs }) => {
-            if (!clientTimings.ffmpegSpawnMs) clientTimings.ffmpegSpawnMs = ffmpegSpawnMs;
-            if (!clientTimings.speechEndToPlaybackStartMs && speechEndedAt > 0) {
-              clientTimings.speechEndToPlaybackStartMs = Math.max(0, playbackStartedAt - speechEndedAt);
-              console.log(`[latency] speech-end-to-playback-start=${clientTimings.speechEndToPlaybackStartMs}ms`);
-            }
-          },
-        });
-        playedSentenceCount += 1;
-        totalPlaybackMs += Date.now() - playbackWallStarted;
-      });
-      playbackChain.catch((error) => { playbackError ||= error; });
-    };
-
-    let streamedResult;
-    let streamError = null;
-    try {
-      streamedResult = await talkStream(text, queueSentence, utteranceId, controller.signal);
-      clientTimings.turnStreamMs = Number(streamedResult?.clientElapsedMs) || 0;
-      clientTimings.serverTotalMs = Number(streamedResult?.timings?.totalMs) || 0;
-      clientTimings.primaryMs = Number(streamedResult?.timings?.primaryMs) || 0;
-      clientTimings.verifierMs = Number(streamedResult?.timings?.verifierMs) || 0;
-      clientTimings.answerGenerationTotalMs = Number(streamedResult?.timings?.totalMs) || clientTimings.turnStreamMs;
-      clientTimings.streamed = Boolean(streamedResult?.streamed);
-    } catch (error) {
-      streamError = error;
-      if (!controller.signal.aborted && !error?.partial && queuedSentences === 0) {
-        console.warn('[turn-stream] runtime failure before audio; falling back to /api/turn:', error?.message || error);
-        try {
-          const answer = await talk(text, utteranceId, controller.signal);
-          streamedResult = {
-            answer,
-            streamed: false,
-            sentenceCount: 0,
-            clientElapsedMs: Date.now() - pipelineStarted,
-            timings: {},
-          };
-          streamError = null;
-        } catch (fallbackError) {
-          streamError = fallbackError;
-        }
-      }
-    }
-
-    if (!streamError && streamedResult && !streamedResult.streamed) {
-      mainAnswerReady = true;
-      const spokenAnswer = voiceSafeText(streamedResult.answer);
-      const chunks = voiceChunks(spokenAnswer);
-      for (const chunk of chunks) queueSentence(chunk);
-    }
-
-    await playbackChain.catch((error) => { playbackError ||= error; });
-    clientTimings.playbackMs = totalPlaybackMs;
-    clientTimings.pipelineCompleteMs = Date.now() - pipelineStarted;
-    if (sessionEpoch !== voiceEpoch) return;
-    if (streamError) throw streamError;
-    if (playbackError) throw playbackError;
-    console.log(`[latency] pipeline-complete=${clientTimings.pipelineCompleteMs}ms streamed=${Boolean(streamedResult?.streamed)} sentences=${queuedSentences}`);
+    const playbackWallStarted = Date.now();
+    await playMp3(tts.audio, {
+      onPlaybackStart: ({ playbackStartedAt, ffmpegSpawnMs }) => {
+        timeline.playbackStartAt = playbackStartedAt;
+        timings.ffmpegSpawnMs = ffmpegSpawnMs;
+        timings.speechEndToPlaybackStartMs = Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt));
+      },
+    });
+    timings.playbackMs = Date.now() - playbackWallStarted;
   } catch (error) {
-    clientTimings.error = String(error?.message || error || '').slice(0, 500);
-    if (sessionEpoch !== voiceEpoch) return;
+    pipelineError = String(error?.message || error || '').slice(0, 500);
     if (controller.signal.aborted || turnSerial !== activeTurnSerial) {
       console.log(`[pipeline] interrupted utterance=${utteranceId}`);
     } else {
       console.error('[pipeline]', error?.stack || error);
-      if (playedSentenceCount === 0) {
-        await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch);
-      }
+      await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch);
     }
   } finally {
-    if (!clientTimings.pipelineCompleteMs) clientTimings.pipelineCompleteMs = Date.now() - pipelineStarted;
-    console.log(`[latency-summary] utterance=${utteranceId} sttMs=${clientTimings.sttMs} speechEndToSttFinalMs=${clientTimings.speechEndToSttFinalMs} batchSttMs=${clientTimings.batchSttMs} answerStartMs=${clientTimings.answerStartMs} primaryMs=${clientTimings.primaryMs} verifierMs=${clientTimings.verifierMs} answerGenerationTotalMs=${clientTimings.answerGenerationTotalMs} firstTtsMs=${clientTimings.firstTtsMs} firstAudioReadyMs=${clientTimings.firstAudioReadyMs} ffmpegSpawnMs=${clientTimings.ffmpegSpawnMs} speechEndToPlaybackStartMs=${clientTimings.speechEndToPlaybackStartMs} pipelineCompleteMs=${clientTimings.pipelineCompleteMs}`);
-    postVoiceMetrics(text, clientTimings, utteranceId).catch(() => {});
+    activeWaitCue?.stop?.('pipeline-complete');
+    activeWaitCue = null;
+    timeline.pipelineCompleteAt = Date.now();
+    timings.pipelineCompleteMs = Math.max(0, timeline.pipelineCompleteAt - pipelineStarted);
+    console.log(`[latency-summary] utterance=${utteranceId} captureMs=${timings.captureMs} sttMs=${timings.sttMs} speechEndToSttFinalMs=${timings.speechEndToSttFinalMs} primaryMs=${timings.primaryMs} verifierMs=${timings.verifierMs} answerGenerationTotalMs=${timings.answerGenerationTotalMs} firstTtsMs=${timings.firstTtsMs} ffmpegSpawnMs=${timings.ffmpegSpawnMs} speechEndToPlaybackStartMs=${timings.speechEndToPlaybackStartMs} pipelineCompleteMs=${timings.pipelineCompleteMs}`);
+    postVoiceMetrics({
+      text: confirmedTranscript,
+      utteranceId,
+      timings,
+      timeline,
+      realtimeTranscript: '',
+      confirmedTranscript,
+      geminiInputText: confirmedTranscript,
+      error: pipelineError,
+    }).catch(() => {});
     if (activeTurnAbortController === controller) activeTurnAbortController = null;
     if (turnSerial === activeTurnSerial && sessionEpoch === voiceEpoch) {
       answering = false;
       const next = pendingTurns.shift();
       if (next && next.sessionEpoch === voiceEpoch) {
-        setTimeout(() => processTranscript(next.text, next.userId, next.sessionEpoch, next.speechMetrics), 0);
+        setTimeout(() => processConfirmedTranscript(next), 0);
       }
     }
+  }
+}
+
+async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId, timeline, captureMetrics, voiceProfile }) {
+  if (sessionEpoch !== voiceEpoch) return;
+  const durationOk = Boolean(pcm?.length) && captureMetrics.durationMs >= WEB_VOICE_CAPTURE_POLICY.minSpeechMs;
+  const voicedOk = captureMetrics.voicedMs >= WEB_VOICE_CAPTURE_POLICY.minVoicedMs;
+  const snrOk = captureMetrics.snr >= WEB_VOICE_CAPTURE_POLICY.minSnr;
+  if (!durationOk || !voicedOk || !snrOk) {
+    learnRejectedCapture(voiceProfile, captureMetrics);
+    console.log(`[capture] rejected utterance=${utteranceId} duration=${captureMetrics.durationMs || 0}ms voiced=${captureMetrics.voicedMs || 0}ms snr=${captureMetrics.snr || 0} boost=${voiceProfile?.noiseBoost?.toFixed?.(2) || '1.00'}`);
+    return;
+  }
+
+  const controller = new AbortController();
+  try {
+    const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal);
+    learnSuccessfulSpeech(voiceProfile);
+    await processConfirmedTranscript({
+      confirmedTranscript: stt.confirmedTranscript,
+      fastReaction: stt.fastReaction,
+      userId,
+      sessionEpoch,
+      utteranceId,
+      timeline,
+      captureMetrics,
+      sttMeta: stt,
+    });
+  } catch (error) {
+    learnSttFailure(voiceProfile);
+    const message = String(error?.message || error || '').slice(0, 500);
+    console.error('[stt]', message);
+    timeline.pipelineCompleteAt = Date.now();
+    postVoiceMetrics({
+      text: '',
+      utteranceId,
+      timings: {
+        sttMode: 'web-whisper',
+        captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
+        sttMs: Math.max(0, Date.now() - (timeline.transcribeStartAt || Date.now())),
+        speechEndToSttFinalMs: Math.max(0, Date.now() - (timeline.utteranceEndAt || Date.now())),
+        pipelineCompleteMs: Math.max(0, timeline.pipelineCompleteAt - (timeline.discordReceiveStartAt || timeline.pipelineCompleteAt)),
+        error: message,
+      },
+      timeline,
+      realtimeTranscript: '',
+      confirmedTranscript: '',
+      geminiInputText: '',
+      error: message,
+    }).catch(() => {});
+    await speakRecoveryPrompt('stt-failed', sessionEpoch);
   }
 }
 
@@ -735,6 +632,8 @@ function interruptActiveAnswer(reason = 'user-speech') {
   const controller = activeTurnAbortController;
   activeTurnAbortController = null;
   try { controller?.abort(); } catch {}
+  try { activeWaitCue?.stop?.(reason); } catch {}
+  activeWaitCue = null;
   player.stop(true);
   answering = false;
   pendingTurns.splice(0, pendingTurns.length);
@@ -742,417 +641,158 @@ function interruptActiveAnswer(reason = 'user-speech') {
   return true;
 }
 
-function destroyReusableSttSocket(userId, reason = 'reset') {
-  const transport = realtimeSttSockets.get(userId);
-  if (!transport) return;
-  realtimeSttSockets.delete(userId);
-  clearInterval(transport.keepAliveTimer);
-  try {
-    if (transport.ws?.readyState === WebSocket.OPEN) transport.ws.close(1000, reason);
-    else transport.ws?.terminate();
-  } catch {}
-}
-
-function createRealtimeSttTransport(userId, sessionEpoch, claimed = true) {
-  const ws = new WebSocket(STT_WS_URL);
-  const transport = {
-    ws,
-    epoch: sessionEpoch,
-    lastAudioAt: 0,
-    openedAt: 0,
-    keepAliveTimer: null,
-    claimed,
-  };
-  realtimeSttSockets.set(userId, transport);
-
-  ws.on('open', () => {
-    transport.openedAt = Date.now();
-    console.log(`[stt] websocket open user=${userId} mode=${transport.claimed ? 'active' : 'prewarm'}`);
-    clearInterval(transport.keepAliveTimer);
-    transport.keepAliveTimer = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      if (Date.now() - transport.lastAudioAt < 3000) return;
-      try { ws.send(JSON.stringify({ type: 'KeepAlive' })); } catch {}
-    }, 4000);
-  });
-
-  ws.on('unexpected-response', (_request, response) => {
-    const status = Number(response?.statusCode || 0);
-    if (!transport.claimed) registerRealtimeSttFailure(`prewarm-http-${status || 'unknown'}`, status);
-    clearInterval(transport.keepAliveTimer);
-    if (realtimeSttSockets.get(userId) === transport) realtimeSttSockets.delete(userId);
-  });
-
-  ws.on('error', (error) => {
-    if (!transport.claimed) {
-      const statusMatch = String(error?.message || '').match(/\b(429)\b/);
-      registerRealtimeSttFailure(error?.message || 'prewarm-websocket-error', statusMatch ? 429 : 0);
-    }
-  });
-
-  ws.on('close', (code, reason) => {
-    clearInterval(transport.keepAliveTimer);
-    if (realtimeSttSockets.get(userId) === transport) realtimeSttSockets.delete(userId);
-    console.log('[stt] websocket close', code, String(reason || ''), 'user=' + userId);
-  });
-
-  return transport;
-}
-
-function acquireRealtimeSttSocket(userId, sessionEpoch) {
-  const existing = realtimeSttSockets.get(userId);
-  if (existing && existing.epoch === sessionEpoch && !existing.claimed
-    && (existing.ws?.readyState === WebSocket.OPEN || existing.ws?.readyState === WebSocket.CONNECTING)) {
-    existing.claimed = true;
-    console.log(`[stt] websocket prewarm claimed user=${userId} state=${existing.ws.readyState}`);
-    return { transport: existing, reused: true };
-  }
-  if (existing) destroyReusableSttSocket(userId, 'fresh-utterance');
-
-  return { transport: createRealtimeSttTransport(userId, sessionEpoch, true), reused: false };
-}
-
-function prewarmRealtimeSttSocket(userId, sessionEpoch) {
-  if (sessionEpoch !== voiceEpoch || Date.now() < realtimeSttBackoffUntil) return false;
-  const existing = realtimeSttSockets.get(userId);
-  if (existing) {
-    if (existing.epoch === sessionEpoch && !existing.claimed
-      && (existing.ws?.readyState === WebSocket.OPEN || existing.ws?.readyState === WebSocket.CONNECTING)) return true;
-    if (existing.claimed) return false;
-    destroyReusableSttSocket(userId, 'stale-prewarm');
-  }
-  createRealtimeSttTransport(userId, sessionEpoch, false);
-  console.log(`[stt] websocket prewarm user=${userId}`);
-  return true;
-}
-
 function startReceiverSession(userId, speakingNow = false) {
   if (!connection) return;
-  const existingSession = sessions.get(userId);
-  if (existingSession) {
-    if (speakingNow) existingSession.markSpeaking?.();
+  const existing = sessions.get(userId);
+  if (existing) {
+    if (speakingNow) existing.markSpeaking();
     return;
   }
-  const sessionEpoch = voiceEpoch;
-  console.log('[rx] user=' + userId);
 
+  const sessionEpoch = voiceEpoch;
+  const utteranceId = `utt-${randomUUID()}`;
+  const timeline = {
+    utteranceId,
+    discordReceiveStartAt: 0,
+    firstPcmAt: 0,
+    utteranceEndAt: 0,
+    wavReadyAt: 0,
+    transcribeStartAt: 0,
+    whisperCompleteAt: 0,
+    turnStartAt: 0,
+    finalAnswerAt: 0,
+    ttsStartAt: 0,
+    ttsEndAt: 0,
+    playbackStartAt: 0,
+    pipelineCompleteAt: 0,
+  };
+  const voiceProfile = voiceProfileFor(userId);
+  const capture = new WebCompatibleCapture({
+    noise: voiceProfile.noise,
+    noiseBoost: voiceProfile.noiseBoost,
+  });
   const opus = connection.receiver.subscribe(userId, {
-    // Nova-3 endpointing (350ms) is the primary end-of-utterance signal.
-    // This longer Discord silence threshold is only a safety guard.
+    // Transport safety only. Web-compatible 650 ms PCM VAD finalizes first.
     end: { behavior: EndBehaviorType.AfterSilence, duration: 1600 },
   });
   const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
-  const resampler = createMono16kResampler();
-  const pending = [];
-  const finalParts = [];
-  const pcm16Chunks = [];
-  let latest = '';
-  let inputEnded = false;
-  let completed = false;
-  let finalizeSent = false;
-  let realtimeFailed = Date.now() < realtimeSttBackoffUntil;
-  let realtimeFailureReason = realtimeFailed ? 'rate-limit-backoff' : '';
-  let opusBytes = 0;
-  let pcm48Bytes = 0;
-  let pcm16Bytes = 0;
-  let completionTimer;
-  let settleTimer;
-  let ws = null;
-  let transport = null;
-  let reusedSocket = false;
-  let inputEndedAt = 0;
-  let lastAudioAt = 0;
-  let usedBatchStt = false;
-  let batchSttMs = 0;
-  let packetStartWatchdog = null;
-  let captureWatchdog = null;
-  let firstPacketSeen = false;
+  const resampler = createWebCompatibleResampler();
 
-  const clearReceiverWatchdogs = () => {
+  let completed = false;
+  let speakingMarked = false;
+  let packetStartWatchdog = null;
+  let finalizeTimer = null;
+
+  const clearTimers = () => {
     if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
-    if (captureWatchdog) clearTimeout(captureWatchdog);
+    if (finalizeTimer) clearInterval(finalizeTimer);
     packetStartWatchdog = null;
-    captureWatchdog = null;
+    finalizeTimer = null;
   };
 
   const markSpeaking = () => {
-    if (inputEnded || completed || firstPacketSeen) return;
+    if (completed) return;
+    speakingMarked = true;
+    if (!timeline.discordReceiveStartAt) timeline.discordReceiveStartAt = Date.now();
     if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
     packetStartWatchdog = setTimeout(() => {
-      if (completed || firstPacketSeen) return;
-      console.error(`[rx] speaking produced no audio packets; resetting receiver user=${userId}`);
-      clearReceiverWatchdogs();
-      completed = true;
-      detachWsListeners();
-      sessions.delete(userId);
-      try { opus.destroy(); } catch {}
-      try { decoder.destroy(); } catch {}
-      destroyReusableSttSocket(userId, 'receiver-no-packets');
+      if (completed || capture.firstPcmAt) return;
+      console.error(`[capture] speaking produced no PCM user=${userId}`);
+      finalize('no-pcm');
     }, RECEIVER_PACKET_START_TIMEOUT_MS);
   };
 
-  const session = { opus, decoder, resampler, ws: null, batchAbortController: null, markSpeaking };
-  sessions.set(userId, session);
-  if (speakingNow) markSpeaking();
-
-  const detachWsListeners = () => {
-    if (!ws) return;
-    ws.off('open', onWsOpen);
-    ws.off('message', onWsMessage);
-    ws.off('unexpected-response', onWsUnexpectedResponse);
-    ws.off('error', onWsError);
-    ws.off('close', onWsClose);
-  };
-
-  const markRealtimeFailed = (reason, statusCode = 0) => {
-    if (realtimeFailed) return;
-    realtimeFailed = true;
-    realtimeFailureReason = reason || 'realtime-failed';
-    registerRealtimeSttFailure(realtimeFailureReason, statusCode);
-    console.warn('[stt] realtime unavailable; using batch STT:', realtimeFailureReason);
-    destroyReusableSttSocket(userId, 'realtime-failed');
-  };
-
-  const complete = async (reason = 'complete') => {
-    if (completed) return;
-    completed = true;
-    clearTimeout(completionTimer);
-    clearTimeout(settleTimer);
-    clearReceiverWatchdogs();
-    detachWsListeners();
+  const cleanup = () => {
+    clearTimers();
     sessions.delete(userId);
-    destroyReusableSttSocket(userId, 'utterance-complete');
-    if (!realtimeFailed) prewarmRealtimeSttSocket(userId, sessionEpoch);
-
-    let text = (finalParts.join(' ').trim() || latest).trim();
-    const pcm16 = Buffer.concat(pcm16Chunks);
-    console.log(`[rx] captured user=${userId} opus=${opusBytes}B pcm48=${pcm48Bytes}B pcm16=${pcm16Bytes}B reason=${reason} sttReuse=${reusedSocket}`);
-    if (sessionEpoch !== voiceEpoch) return;
-
-    if (!text && pcm16.length) {
-      // Batch fallback is reserved for missing/failed realtime transcription only.
-      try {
-        usedBatchStt = true;
-        const fallbackStarted = Date.now();
-        const fallbackController = new AbortController();
-        session.batchAbortController = fallbackController;
-        text = await batchTranscribePcm16(pcm16, realtimeFailureReason || reason, fallbackController.signal);
-        batchSttMs = Date.now() - fallbackStarted;
-      } catch (error) {
-        console.error('[stt-fallback]', error?.message || error);
-      }
-    }
-
-    if (sessionEpoch !== voiceEpoch) return;
-    const sttCompletedAt = Date.now();
-    const speechEndedAt = lastAudioAt || inputEndedAt || sttCompletedAt;
-    const speechEndToSttFinalMs = Math.max(0, sttCompletedAt - speechEndedAt);
-    const sttMs = speechEndToSttFinalMs;
-    if (text) {
-      processTranscript(text, userId, sessionEpoch, {
-        sttMs,
-        speechEndToSttFinalMs,
-        batchSttMs,
-        sttMode: usedBatchStt ? 'batch' : 'realtime',
-        sttReused: reusedSocket,
-        speechEndedAt,
-        utteranceId: `utt-${randomUUID()}`,
-      });
-    } else {
-      console.error('[stt] no transcript after realtime+batch; speaking recovery prompt');
-      await speakRecoveryPrompt('stt-exhausted', sessionEpoch);
-    }
-  };
-
-  const sendFinalizeIfReady = () => {
-    if (!inputEnded || realtimeFailed || finalizeSent || !ws || ws.readyState !== WebSocket.OPEN) return;
-    try {
-      ws.send(JSON.stringify({ type: 'Finalize' }));
-      finalizeSent = true;
-      console.log('[stt] finalize sent');
-      completionTimer = setTimeout(() => {
-        markRealtimeFailed('finalize-timeout');
-        complete('finalize-timeout');
-      }, 1500);
-    } catch (error) {
-      console.error('[stt] finalize failed:', error.message);
-      markRealtimeFailed('finalize-error');
-      complete('finalize-error');
-    }
-  };
-
-  const endInput = (reason = 'discord-silence') => {
-    if (inputEnded) return;
-    inputEnded = true;
-    inputEndedAt = Date.now();
-    clearReceiverWatchdogs();
     try { opus.destroy(); } catch {}
     try { decoder.destroy(); } catch {}
     try { resampler.stdin.end(); } catch {}
-
-    if (reason === 'speech-final') {
-      complete('speech-final');
-      return;
-    }
-
-    if (realtimeFailed || !ws) {
-      complete('batch-fallback');
-      return;
-    }
-
-    sendFinalizeIfReady();
-    if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-      markRealtimeFailed('websocket-closed-before-finalize');
-      complete('websocket-closed-before-finalize');
-    }
+    setTimeout(() => {
+      try { if (!resampler.killed) resampler.kill('SIGKILL'); } catch {}
+    }, 250);
   };
 
-  function onWsOpen() {
-    console.log(`[stt] utterance websocket ready user=${userId} reused=${reusedSocket}`);
-    for (const frame of pending.splice(0)) ws.send(frame);
-    sendFinalizeIfReady();
-  }
-
-  function onWsMessage(data) {
-    let payload;
-    try { payload = JSON.parse(String(data)); } catch { return; }
-    const text = transcriptFrom(payload);
-    if (text) {
-      latest = text;
-      registerRealtimeSttHealthy();
-      console.log('[stt]', payload?.is_final ? 'final-part:' : 'interim:', text);
-      if (payload?.is_final) {
-        const previous = finalParts.at(-1);
-        if (previous !== text) finalParts.push(text);
-      }
-    }
-
-    if (payload?.speech_final && text) {
-      // Nova-3 endpointing is authoritative on the normal path. Do not wait
-      // for Discord's 1600ms silence safety guard or send an extra Finalize.
-      if (!inputEnded) endInput('speech-final');
-      else complete('speech-final');
-    } else if (inputEnded && payload?.from_finalize) {
-      clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => complete('from-finalize'), 80);
-    } else if (inputEnded && payload?.is_final && text) {
-      clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => complete('final-result'), 180);
-    }
-  }
-
-  function onWsUnexpectedResponse(_request, response) {
-    const status = Number(response?.statusCode || 0);
-    console.error('[stt] websocket unexpected response:', status);
-    markRealtimeFailed(`http_${status || 'unknown'}`, status);
-    if (inputEnded) complete('unexpected-response');
-  }
-
-  function onWsError(error) {
-    console.error('[stt] websocket error:', error.message);
-    const statusMatch = String(error?.message || '').match(/\b(429)\b/);
-    markRealtimeFailed(error?.message || 'websocket-error', statusMatch ? 429 : 0);
-    if (inputEnded) complete('websocket-error');
-  }
-
-  function onWsClose(code, reason) {
+  const finalize = async (reason = 'web-compatible-silence') => {
     if (completed) return;
-    console.log('[stt] websocket close', code, String(reason || ''));
-    if (!realtimeFailed) markRealtimeFailed(`websocket-close-${code}`);
-    if (inputEnded) complete('websocket-close');
-  }
+    completed = true;
+    const endedAt = Date.now();
+    const captured = capture.finalize(endedAt);
+    voiceProfile.noise = capture.noise;
+    voiceProfile.noiseBoost = capture.noiseBoost;
+    timeline.firstPcmAt = captured.metrics.firstPcmAt || timeline.firstPcmAt;
+    timeline.utteranceEndAt = endedAt;
+    cleanup();
+    // Re-arm immediately so the next utterance is already subscribed before
+    // Discord's speaking event. This preserves the earliest frames for pre-roll.
+    queueMicrotask(() => {
+      if (sessionEpoch === voiceEpoch && connection) startReceiverSession(userId, false);
+    });
+    console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captured.metrics.durationMs}ms voiced=${captured.metrics.voicedMs}ms snr=${captured.metrics.snr}`);
+    await handleCapturedUtterance({
+      pcm: captured.pcm,
+      userId,
+      sessionEpoch,
+      utteranceId,
+      timeline,
+      captureMetrics: captured.metrics,
+      voiceProfile,
+    });
+  };
 
-  if (!realtimeFailed) {
-    const acquired = acquireRealtimeSttSocket(userId, sessionEpoch);
-    transport = acquired.transport;
-    reusedSocket = acquired.reused;
-    ws = transport.ws;
-    session.ws = ws;
+  const session = { opus, decoder, resampler, capture, markSpeaking, finalize };
+  sessions.set(userId, session);
+  if (speakingNow) markSpeaking();
 
-    ws.on('open', onWsOpen);
-    ws.on('message', onWsMessage);
-    ws.on('unexpected-response', onWsUnexpectedResponse);
-    ws.on('error', onWsError);
-    ws.on('close', onWsClose);
-
-    if (ws.readyState === WebSocket.OPEN) {
-      queueMicrotask(onWsOpen);
-    }
-  } else {
-    console.warn(`[stt] realtime backoff active ${Math.max(0, realtimeSttBackoffUntil - Date.now())}ms; batch STT only`);
-  }
+  finalizeTimer = setInterval(() => {
+    if (completed || !capture.firstPcmAt) return;
+    if (capture.shouldFinalize(Date.now())) finalize('web-compatible-silence').catch(() => {});
+  }, 25);
 
   decoder.on('data', (pcm48) => {
-    if (!firstPacketSeen) {
-      firstPacketSeen = true;
-      if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
-      packetStartWatchdog = null;
-      captureWatchdog = setTimeout(() => {
-        if (completed || inputEnded) return;
-        console.error(`[rx] capture watchdog forcing finalize user=${userId}`);
-        endInput();
-      }, RECEIVER_CAPTURE_TIMEOUT_MS);
-    }
-    pcm48Bytes += pcm48.length;
-    if (!resampler.stdin.destroyed && !resampler.stdin.writableEnded) {
-      resampler.stdin.write(pcm48);
-    }
+    if (!resampler.stdin.destroyed && !resampler.stdin.writableEnded) resampler.stdin.write(pcm48);
   });
 
   resampler.stdout.on('data', (pcm16) => {
-    pcm16Bytes += pcm16.length;
-    if (!pcm16.length) return;
-    lastAudioAt = Date.now();
-    if (pcm16Chunks.length < 600) pcm16Chunks.push(Buffer.from(pcm16));
-    if (transport) transport.lastAudioAt = Date.now();
-
-    if (!realtimeFailed && ws?.readyState === WebSocket.OPEN && !inputEnded) {
-      ws.send(pcm16);
-    } else if (!realtimeFailed && ws?.readyState === WebSocket.CONNECTING && !inputEnded) {
-      pending.push(Buffer.from(pcm16));
-      if (pending.length > 250) pending.shift();
-    }
+    if (!pcm16?.length || completed) return;
+    const at = Date.now();
+    if (!timeline.firstPcmAt) timeline.firstPcmAt = at;
+    capture.push(pcm16, at);
   });
 
   resampler.stdout.on('error', (error) => {
     console.error('[resample]', error.message);
-    markRealtimeFailed('resampler-output-error');
-    endInput();
-  });
-
-  decoder.on('error', (error) => {
-    console.error('[decode]', error.message);
-    endInput();
+    finalize('resampler-output-error').catch(() => {});
   });
   resampler.on('error', (error) => {
     console.error('[resample]', error.message);
-    markRealtimeFailed('resampler-process-error');
-    endInput();
+    finalize('resampler-process-error').catch(() => {});
   });
-
-  opus.on('data', (chunk) => { opusBytes += chunk.length; });
+  decoder.on('error', (error) => {
+    console.error('[decode]', error.message);
+    finalize('decoder-error').catch(() => {});
+  });
   opus.on('error', (error) => {
     console.error('[opus]', error.message);
-    endInput();
+    finalize('opus-error').catch(() => {});
   });
-  opus.on('end', endInput);
+  opus.on('end', () => finalize('discord-transport-end').catch(() => {}));
   opus.pipe(decoder);
+
+  if (!speakingMarked) console.log(`[capture] prearmed user=${userId}`);
 }
 
 function destroyVoiceConnection() {
   voiceEpoch += 1;
   resetConversationState();
   for (const session of sessions.values()) {
-    try { session.batchAbortController?.abort(); } catch {}
     try { session.opus?.destroy(); } catch {}
     try { session.decoder?.destroy(); } catch {}
     try { session.resampler?.stdin?.end(); } catch {}
     try { session.resampler?.kill?.('SIGKILL'); } catch {}
   }
   sessions.clear();
-  for (const userId of [...realtimeSttSockets.keys()]) {
-    destroyReusableSttSocket(userId, 'voice-disconnect');
-  }
+  voiceProfiles.clear();
   player.stop(true);
   try { connection?.destroy(); } catch {}
   connection = undefined;
@@ -1160,8 +800,8 @@ function destroyVoiceConnection() {
 
 async function playConnectionGreeting() {
   try {
-    const audio = await synthesize('フォーンズです。接続しました。');
-    await playMp3(audio);
+    const result = await synthesize('フォーンズです。接続しました。');
+    await playMp3(result.audio);
     console.log('[greeting] connection greeting played');
   } catch (error) {
     console.warn('[greeting] connection greeting failed; voice connection remains active:', error?.message || error);
@@ -1183,6 +823,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
   await entersState(connection, VoiceConnectionStatus.Ready, 15000);
   discordSessionId = `discord-${channel.guild.id}-${channel.id}-${randomUUID()}`;
+
   connection.receiver.speaking.on('start', (userId) => {
     if (userId === client.user.id) return;
     interruptActiveAnswer('user-speech');
@@ -1191,7 +832,6 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
   if (initialUserId && initialUserId !== client.user.id) {
     startReceiverSession(initialUserId, false);
-    console.log('[rx] pre-armed user=' + initialUserId);
   }
 
   const boundConnection = connection;
@@ -1207,8 +847,8 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
       boundConnection.subscribe(player);
       return;
     }
-    if (newState.status !== VoiceConnectionStatus.Disconnected) return;
-    if (voiceRecoveryTimer) return;
+    if (newState.status !== VoiceConnectionStatus.Disconnected || voiceRecoveryTimer) return;
+
     const scheduleRecovery = () => {
       if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
       const delayMs = Math.min(8000, 500 * (2 ** Math.min(voiceRecoveryAttempts, 4)));
@@ -1238,20 +878,17 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
   console.log('[discord] voice ready:', channel.name);
   console.log('[discord] conversation session:', discordSessionId);
+  console.log('[discord] input architecture: Opus -> PCM16 web-compatible capture -> /api/transcribe');
+  console.log('[discord] final STT: Whisper Large v3 Turbo via /api/transcribe');
+  console.log('[discord] bridge revision:', DISCORD_BRIDGE_REVISION);
   await playConnectionGreeting();
   warmRecoveryAudio().catch((error) => console.warn('[recovery] warmup failed:', error?.message || error));
   return channel;
 }
 
 const TALKSYS_COMMANDS = [
-  {
-    name: 'talksys',
-    description: 'TalkSysを現在参加中のVCへ呼び出します',
-  },
-  {
-    name: 'leave',
-    description: 'TalkSysをVCから退出させます',
-  },
+  { name: 'talksys', description: 'TalkSysを現在参加中のVCへ呼び出します' },
+  { name: 'leave', description: 'TalkSysをVCから退出させます' },
 ];
 
 async function ensureTalkSysCommands(guild) {
@@ -1272,19 +909,15 @@ client.once('ready', async () => {
   discordHealthTimer = setInterval(() => {
     console.log(`[discord] gateway health ready=${client.isReady()} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
   }, DISCORD_HEALTH_LOG_MS);
+
   console.log(`[discord] gateway ready user=${client.user?.tag || client.user?.id || 'unknown'} ping=${client.ws.ping}ms`);
   try {
     const guilds = [...client.guilds.cache.values()];
     if (!guilds.length) throw new Error('Discord Botがサーバーに参加していません');
-
     for (const guild of guilds) {
       await ensureTalkSysCommands(guild);
       console.log(`[discord] slash commands ready guild=${guild.name}: /talksys /leave`);
     }
-    console.log('[discord] TalkSys realtime STT:', STT_WS_URL);
-    console.log('[discord] bridge revision:', DISCORD_BRIDGE_REVISION);
-    console.log('[discord] output mode: TalkSys TTS (permanent shared token)');
-
     console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
     console.error('[fatal]', error?.stack || error);
@@ -1313,7 +946,6 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply('先にボイスチャンネルへ参加してから /talksys を実行してください。');
         return;
       }
-
       const channel = await interaction.guild.channels.fetch(channelId);
       await connectToVoiceChannel(channel, interaction.user.id);
       await interaction.editReply(`TalkSysを「${channel.name}」へ接続しました。`);

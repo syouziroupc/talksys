@@ -1,4 +1,5 @@
 import { TALK_CLIENT_V43 } from './talk-client-v43.js';
+import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
 export const CLIENT_REVISION = 'talksys-v46-streaming-vad';
 export const INTERACTION_REVISION = 'talksys-v52-native-gemini-3-5-flash-lite-r1';
@@ -165,11 +166,11 @@ function processFrame(a){
   }
   if(!speech){
     pre.push(a.slice());if(pre.length>PRE_ROLL)pre.shift();
-    const peakGate=Math.max(.027,startTh*1.50);
-    if(lv.r<startTh||lv.p<peakGate||snr<1.60){adaptAmbient(lv.r,false);startHits=0;diagUpdate();return;}
+    const peakGate=Math.max(${WEB_VOICE_CAPTURE_POLICY.peakGateMin},startTh*${WEB_VOICE_CAPTURE_POLICY.peakGateStartMultiplier});
+    if(lv.r<startTh||lv.p<peakGate||snr<${WEB_VOICE_CAPTURE_POLICY.startSnr}){adaptAmbient(lv.r,false);startHits=0;diagUpdate();return;}
     startHits++;
-    if(startHits<3){diagUpdate();return;}
-    speech=true;beginVoiceCandidate();frames=pre.splice(0);duration=frames.length*frameMs;silence=0;speechVoicedMs=frameMs*3;speechMaxRms=lv.r;
+    if(startHits<${WEB_VOICE_CAPTURE_POLICY.startHits}){diagUpdate();return;}
+    speech=true;beginVoiceCandidate();frames=pre.splice(0);duration=frames.length*frameMs;silence=0;speechVoicedMs=frameMs*${WEB_VOICE_CAPTURE_POLICY.startHits};speechMaxRms=lv.r;
     log((busy?'処理中の追加入力開始':'発話開始')+' RMS='+lv.r.toFixed(4)+' / noise='+noise.toFixed(4)+' / SNR='+snr.toFixed(2)+' / boost='+noiseBoost.toFixed(2));setStatus('聞いています…');diagUpdate(true);return;
   }
   frames.push(a.slice());duration+=frameMs;speechMaxRms=Math.max(speechMaxRms,lv.r);
@@ -183,7 +184,7 @@ async function commitVoice(reason){
   if(!speech)return;
   const candidateId=currentVoiceCandidateId,data=frames,ms=duration,voicedMs=speechVoicedMs,maxRms=speechMaxRms,snr=maxRms/Math.max(.001,noise),captureId=++voiceCaptureSeq;
   currentVoiceCandidateId=0;resetTurn();
-  if(ms<MIN_SPEECH_MS||voicedMs<240||snr<1.55){
+  if(ms<MIN_SPEECH_MS||voicedMs<${WEB_VOICE_CAPTURE_POLICY.minVoicedMs}||snr<${WEB_VOICE_CAPTURE_POLICY.minSnr}){
     finishVoiceCandidate(candidateId);falseNoiseRejects++;noiseBoost=Math.min(2.8,noiseBoost*1.12+.04);if(maxRms>0)noise=Math.max(noise,Math.min(.04,maxRms*.38));
     log('雑音候補を自動破棄 '+Math.round(ms)+'ms / voiced='+Math.round(voicedMs)+'ms / SNR='+snr.toFixed(2)+' / 感度補正='+noiseBoost.toFixed(2));
     if(resumePlan)await resumeInterruptedSpeech();diagUpdate(true);return;
@@ -280,13 +281,13 @@ async function startMic(){
     const track=stream.getAudioTracks()[0],settings=track?.getSettings?.()||{};
     micProcessingSettings='EC='+(settings.echoCancellation??'?')+' NS='+(settings.noiseSuppression??'?')+' AGC='+(settings.autoGainControl??'?')+(settings.voiceIsolation!==undefined?' VI='+settings.voiceIsolation:'');
     const AC=window.AudioContext||window.webkitAudioContext;ctx=new AC();await ctx.resume();source=ctx.createMediaStreamSource(stream);
-    inputFilter=ctx.createBiquadFilter();inputFilter.type='highpass';inputFilter.frequency.value=90;inputFilter.Q.value=.707;
+    inputFilter=ctx.createBiquadFilter();inputFilter.type='highpass';inputFilter.frequency.value=${WEB_VOICE_CAPTURE_POLICY.highpassHz};inputFilter.Q.value=.707;
     processor=ctx.createScriptProcessor(2048,1,1);silentGain=ctx.createGain();silentGain.gain.value=0;
     const convert=resampler(ctx.sampleRate);processor.onaudioprocess=e=>{const d=e.inputBuffer.getChannelData(0);for(const f of convert(d)){sendRealtimeSttFrame(f);processFrame(f);}};
     source.connect(inputFilter);inputFilter.connect(processor);processor.connect(silentGain);silentGain.connect(ctx.destination);
     openRealtimeStt();
     micOn=true;calibrationUntil=Date.now()+1400;startHits=0;noiseBoost=Math.max(1,noiseBoost*.96);mic.classList.add('on');mic.textContent='マイク会話を停止';
-    setStatus(playing?'話しています…':'周囲の雑音を調整中…');log('マイク開始 '+ctx.sampleRate+'Hz → 16000Hz / '+micProcessingSettings+' / HPF 90Hz');diagUpdate(true);
+    setStatus(playing?'話しています…':'周囲の雑音を調整中…');log('マイク開始 '+ctx.sampleRate+'Hz → ${WEB_VOICE_CAPTURE_POLICY.targetRate}Hz / '+micProcessingSettings+' / HPF ${WEB_VOICE_CAPTURE_POLICY.highpassHz}Hz');diagUpdate(true);
   }catch(e){lastError=e.name+': '+String(e.message||e);log('マイク開始失敗: '+lastError);setStatus('マイクを開始できません');stopMic();}
 }
 `;
@@ -309,12 +310,12 @@ let client = TALK_CLIENT_V43
   .replaceAll('talksys-v43-smoke-weather-adaptive-vad', CLIENT_REVISION)
   .replaceAll('TalkSys v43 起動', 'TalkSys v46 起動')
   .replaceAll('u.rate=1.0;', 'u.rate=1.12;')
-  .replace('SILENCE_MS=760', 'SILENCE_MS=650')
+  .replace('SILENCE_MS=760', `SILENCE_MS=${WEB_VOICE_CAPTURE_POLICY.silenceMs}`)
   .replace(FORM_HANDLER_OLD, FORM_HANDLER_NEW);
 
 client = client.replace(
   "const TARGET=16000, MAX_HISTORY=14, SILENCE_MS=650, MAX_UTTERANCE_MS=16000, MIN_SPEECH_MS=320, PRE_ROLL=8;",
-  "let geminiInteractionId=null;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=650, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
+  `let geminiInteractionId=null;\nconst TARGET=${WEB_VOICE_CAPTURE_POLICY.targetRate}, MAX_HISTORY=14, SILENCE_MS=${WEB_VOICE_CAPTURE_POLICY.silenceMs}, MAX_UTTERANCE_MS=${WEB_VOICE_CAPTURE_POLICY.maxUtteranceMs}, MIN_SPEECH_MS=${WEB_VOICE_CAPTURE_POLICY.minSpeechMs}, PRE_ROLL=${WEB_VOICE_CAPTURE_POLICY.preRollFrames};`,
 );
 
 client = client.replaceAll(
@@ -344,7 +345,7 @@ client = client.replace(
 client = client.replace(RESUME_OLD, RESUME_NEW);
 
 client = client.replace(
-  "let geminiInteractionId=null;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=650, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
+  `let geminiInteractionId=null;\nconst TARGET=${WEB_VOICE_CAPTURE_POLICY.targetRate}, MAX_HISTORY=14, SILENCE_MS=${WEB_VOICE_CAPTURE_POLICY.silenceMs}, MAX_UTTERANCE_MS=${WEB_VOICE_CAPTURE_POLICY.maxUtteranceMs}, MIN_SPEECH_MS=${WEB_VOICE_CAPTURE_POLICY.minSpeechMs}, PRE_ROLL=${WEB_VOICE_CAPTURE_POLICY.preRollFrames};`,
   "let geminiInteractionId=null,activeTurnController=null,voiceCandidateEpoch=0,voiceCandidateCount=0,currentVoiceCandidateId=0,voiceCaptureSeq=0,latestAcceptedVoiceSeq=0,inputFilter=null,micProcessingSettings='',realtimeSttSocket=null,realtimeSttReady=false,realtimeInterim='',realtimeFinalParts=[],realtimeLastBoundaryText='',realtimeLastBoundaryAt=0,realtimeSpeechStartedAt=0,realtimeReactionSeq=0,realtimeReactionTimer=0,realtimeReactionAbort=null,realtimeReactionText='',realtimeReactionSourceText='',realtimeReactionAt=0,fastReactionPlayingPromise=null,lastVoiceCandidateAt=0;\nconst TARGET=16000, MAX_HISTORY=14, SILENCE_MS=650, MAX_UTTERANCE_MS=12000, MIN_SPEECH_MS=260, PRE_ROLL=8;",
 );
 client = client.replace(

@@ -98,12 +98,13 @@
     "speech.turntaking": {
       "canonical": "src/voice-fast-reaction.js",
       "status": "production",
-      "responsibility": "Deterministic short conversational backchannels and utterance matching used by realtime browser turn-taking and integrated phone replies",
+      "responsibility": "Shared speech turn-taking policy, deterministic backchannels, and Web-compatible capture thresholds reused by browser and voice adapters",
       "companions": [
         "src/integrated-entry.js",
-        "src/telephony/index.js"
+        "src/telephony/index.js",
+        "src/voice-capture-policy.js"
       ],
-      "migrationNote": "Realtime STT is an acceleration layer only. Existing adaptive VAD and batch Whisper remain fallback/confirmation paths; factual answer generation remains in the shared Gemini turn runner."
+      "migrationNote": "Realtime STT is an optional browser acceleration layer only. Confirmed speech input remains batch Whisper via /api/transcribe; Discord reuses the Web capture policy instead of defining an independent STT system."
     }
   },
   "legacyPriorArt": {

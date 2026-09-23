@@ -39,13 +39,11 @@ test('browser client starts the real turn and parallel search preface path', () 
   assert.match(TALK_CLIENT_V45, /await searchAnnouncementTask/);
 });
 
-test('Discord uses the same search preface as a non-answer wait cue without changing final answer generation', () => {
+test('Discord uses search preface only as independent wait audio', () => {
   assert.match(discord, /\/api\/search-preface/);
-  assert.match(discord, /\/api\/fast-reaction/);
-  assert.match(discord, /async function playWaitCue/);
-  assert.match(discord, /const waitCuePromise = playWaitCue/);
-  assert.match(discord, /waitCueController\.abort\('final-answer-ready'\)/);
-  assert.match(discord, /streamedResult = await talkStream\(text, queueSentence, utteranceId, controller\.signal\)/);
-  assert.doesNotMatch(discord, /onSpeculative|speculativeText|speculativeAudioPromise/);
-  assert.match(discord, /falling back to \/api\/turn/);
+  assert.match(discord, /function startWaitCue/);
+  assert.match(discord, /activeWaitCue = startWaitCue\(confirmedTranscript/);
+  assert.match(discord, /const turn = await talk\(confirmedTranscript/);
+  assert.match(discord, /activeWaitCue\?\.stop\('final-answer-ready'\)/);
+  assert.doesNotMatch(discord, /waitCuePromise|talkStream|\/api\/turn-stream/);
 });

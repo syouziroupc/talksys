@@ -3,6 +3,7 @@ import { handleTelephonyRequest } from './telephony/index.js';
 import { fastReaction, FAST_REACTION_REVISION } from './voice-fast-reaction.js';
 import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 import { persistTalkLog, listTalkLogs } from './log-v42.js';
+import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
 export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v4-observability-common-turn';
 export const PERSONALIZATION_REVISION = 'talksys-v55-gemini-personalization-r1';
@@ -11,7 +12,7 @@ export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
-export const DISCORD_PIPELINE_REVISION = 'talksys-v78-common-turn-observability-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v79-web-audio-adapter-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -618,6 +619,11 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     immediateTransit,
   });
   const primaryMs = Date.now() - primaryStarted;
+  emitLatencyLog('gemini-primary-complete', body, {
+    durationMs: primaryMs,
+    model: GEMINI_MODEL,
+    searched: searchedInInteraction(interaction.payload),
+  });
 
   // Kept in the response contract for telemetry compatibility. The normal
   // answer path no longer performs a separate primary search retry.
@@ -632,8 +638,8 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   let verifierMs = 0;
   if (shouldRunGenericVerification(text, interaction.payload)) {
     genericVerificationAttempted = true;
+    const verifierStarted = Date.now();
     try {
-      const verifierStarted = Date.now();
       const verified = await runGenericGeminiVerification(env, body, interaction, signal, now);
       verifierMs = Date.now() - verifierStarted;
       if (verified?.answer) {
@@ -641,10 +647,27 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
         genericVerificationSucceeded = true;
         verifierSearched = searchedInInteraction(verified.payload);
       }
-    } catch {
+      emitLatencyLog('gemini-verifier-complete', body, {
+        durationMs: verifierMs,
+        model: GEMINI_MODEL,
+        searched: verifierSearched,
+        succeeded: genericVerificationSucceeded,
+      });
+    } catch (error) {
+      verifierMs = Date.now() - verifierStarted;
       verificationFailOpen = true;
       interaction = primaryInteraction;
+      emitLatencyLog('gemini-verifier-error', body, {
+        durationMs: verifierMs,
+        model: GEMINI_MODEL,
+        error: compact(error?.message || error, 500),
+      }, 'warn');
     }
+  } else {
+    emitLatencyLog('gemini-verifier-skipped', body, {
+      durationMs: 0,
+      model: GEMINI_MODEL,
+    });
   }
 
   let temporalRepairRetried = false;
@@ -729,205 +752,6 @@ export async function commonTalkSysTurn(body = {}, env = {}, signal, options = {
   return runGeminiTurn(body, env, signal, options);
 }
 
-function sseData(value) {
-  return `data: ${JSON.stringify(value)}\n\n`;
-}
-
-function splitCompleteSpokenSentences(value = '') {
-  let rest = String(value || '');
-  const sentences = [];
-  while (rest) {
-    const match = rest.match(/[。！？!?]/);
-    if (!match) break;
-    const end = Number(match.index) + 1;
-    const sentence = rest.slice(0, end).trim();
-    rest = rest.slice(end);
-    if (sentence) sentences.push(sentence);
-  }
-  return { sentences, rest };
-}
-
-function firstSpokenSentence(value = '') {
-  const normalized = normalizeSpokenJapanese(value);
-  if (!normalized) return '';
-  const parts = normalized.match(/[^。！？!?]+[。！？!?]?/g) || [normalized];
-  return compact(parts[0] || '', 1200);
-}
-
-async function createGeminiInteractionStream(env, body = {}, signal, { allowPrevious = true, forceSearch = true, verificationContinuation = false, now = new Date(), immediateTransit = false } = {}) {
-  const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
-  if (!key) throw new Error('gemini_api_key_missing');
-  const previousInteractionId = allowPrevious ? compact(body?.previousInteractionId, 400) : '';
-  const inputBody = allowPrevious ? body : { ...body, previousInteractionId: '' };
-  const searchAllowed = forceSearch || !TRIVIAL_CONVERSATION_RE.test(resolvedUserQuestion(inputBody));
-  const requestBody = {
-    model: GEMINI_MODEL,
-    input: interactionInput(inputBody, { forceSearch, immediateTransit, now }),
-    system_instruction: buildTalkSysSystemInstruction(now, { forceSearch, immediateTransit, verificationContinuation }),
-    ...(searchAllowed ? { tools: [{ type: 'google_search' }] } : {}),
-    ...(previousInteractionId ? { previous_interaction_id: previousInteractionId } : {}),
-    stream: true,
-  };
-  const response = await fetch(GEMINI_INTERACTIONS_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'text/event-stream',
-      'x-goog-api-key': key,
-    },
-    body: JSON.stringify(requestBody),
-    signal,
-  });
-  if (!response.ok || !response.body) {
-    const raw = await response.text().catch(() => '');
-    let payload = {};
-    try { payload = raw ? JSON.parse(raw) : {}; } catch {}
-    const detail = compact(payload?.error?.message || raw || response.statusText, 700);
-    const invalidPrevious = Boolean(previousInteractionId)
-      && (response.status === 400 || response.status === 404)
-      && /previous|interaction|not found|invalid/i.test(detail);
-    if (invalidPrevious && allowPrevious) {
-      return createGeminiInteractionStream(env, body, signal, { allowPrevious: false, forceSearch, verificationContinuation, now, immediateTransit });
-    }
-    throw new Error(`gemini_interactions_stream_http_${response.status}${detail ? `:${detail}` : ''}`);
-  }
-  return response;
-}
-
-async function consumeInteractionSse(response, onEvent) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (value) buffer += decoder.decode(value, { stream: !done }).replace(/\r/g, '');
-    let boundary;
-    while ((boundary = buffer.indexOf('\n\n')) >= 0) {
-      const block = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      const data = block.split('\n')
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trimStart())
-        .join('\n')
-        .trim();
-      if (!data || data === '[DONE]') continue;
-      let event = null;
-      try { event = JSON.parse(data); } catch {}
-      if (event) await onEvent(event);
-    }
-    if (done) break;
-  }
-}
-
-function streamedTurnResult({ answer, primary, interactionId = '', interactionStatus = 'completed', primaryMs = 0, verifierMs = 0, verifierSearched = false, verificationSucceeded = false, verificationFailOpen = false, started = Date.now(), now = new Date() }) {
-  const searched = searchedInInteraction(primary?.payload || {}) || verifierSearched;
-  return {
-    ok: true,
-    answer,
-    route: 'gemini-native-interactions-stream',
-    planner: 'gemini-native-personalized-v55',
-    search: searched,
-    searchUseful: searched,
-    searchPolicy: 'aggressive-native-google-search',
-    searchRetried: false,
-    genericVerificationAttempted: true,
-    genericVerificationSucceeded: verificationSucceeded,
-    genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
-    verifierSearched,
-    verificationFailOpen,
-    temporalTransitGuard: false,
-    temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
-    temporalRepairRetried: false,
-    temporalRepairAttempts: 0,
-    authoritativeJst: currentJstIso(now),
-    queries: interactionQueries(primary?.payload || {}),
-    sources: interactionSources(primary?.payload || {}),
-    apiSources: [],
-    interactionId: compact(interactionId, 400),
-    interactionStatus: compact(interactionStatus, 80),
-    model: GEMINI_MODEL,
-    generationProvider: 'gemini',
-    generationModel: GEMINI_MODEL,
-    personalizationRevision: PERSONALIZATION_REVISION,
-    languageMode: 'ja-spoken',
-    speechOptimized: true,
-    nativeGeminiAnswerPath: true,
-    nativeGoogleSearch: true,
-    customTruthGateApplied: false,
-    blanketFailClosed: false,
-    legacyGlmExecution: false,
-    streamedFinalVerification: true,
-    timings: {
-      totalMs: Date.now() - started,
-      geminiMs: Date.now() - started,
-      primaryMs,
-      searchRetryMs: 0,
-      verifierMs,
-      searchMs: 0,
-    },
-  };
-}
-
-function discordTurnStreamResponse(request, env, body, ctx) {
-  const encoder = new TextEncoder();
-  const stream = new TransformStream();
-  const writer = stream.writable.getWriter();
-  const started = Date.now();
-  let emittedSentences = 0;
-
-  const send = (value) => writer.write(encoder.encode(sseData(value)));
-  const emitFinalAnswer = async (answer) => {
-    const normalized = normalizeSpokenJapanese(answer);
-    const parts = normalized.match(/[^。！？!?]+[。！？!?]?/g) || [normalized];
-    for (const part of parts.slice(0, 4)) {
-      const text = compact(part, 1800);
-      if (!text) continue;
-      await send({ type: 'sentence', text, index: emittedSentences });
-      emittedSentences += 1;
-    }
-  };
-
-  (async () => {
-    try {
-      const commonBody = { ...body, channel: compact(body?.channel || 'discord', 80) };
-      emitLatencyLog('api-turn-stream-start', commonBody, { route: '/api/turn-stream' });
-      const result = await runTalkSysTurn(request, env, commonBody, request.signal, ctx);
-      // Only the common final answer is emitted. No primary/speculative answer is speakable.
-      await emitFinalAnswer(result.answer);
-      emitLatencyLog('api-turn-stream-complete', commonBody, {
-        route: '/api/turn-stream',
-        durationMs: Date.now() - started,
-        primaryMs: result?.timings?.primaryMs || 0,
-        verifierMs: result?.timings?.verifierMs || 0,
-        answerGenerationTotalMs: result?.timings?.totalMs || 0,
-      });
-      await send({ type: 'done', ...result, commonTurn: true, streamedFinalVerification: false });
-    } catch (error) {
-      const failedBody = { ...body, channel: compact(body?.channel || 'discord', 80) };
-      emitLatencyLog('api-turn-stream-error', failedBody, {
-        route: '/api/turn-stream',
-        durationMs: Date.now() - started,
-        error: compact(error?.message || error, 500),
-      }, 'error');
-      await send({ type: 'error', error: compact(error?.message || error, 900), partial: false });
-    } finally {
-      try { await writer.close(); } catch {}
-    }
-  })();
-
-  return new Response(stream.readable, {
-    status: 200,
-    headers: {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-store',
-      'x-accel-buffering': 'no',
-      'x-talksys-integrated-entry-revision': INTEGRATED_ENTRY_REVISION,
-      'x-talksys-discord-pipeline-revision': DISCORD_PIPELINE_REVISION,
-      'x-talksys-common-turn': 'true',
-    },
-  });
-}
-
 function latencyIdentity(body = {}, defaultChannel = 'web') {
   return {
     utteranceId: compact(body?.utteranceId || '', 180),
@@ -965,19 +789,20 @@ function writeLatencyAnalytics(env, body = {}, timings = {}, extra = {}) {
         id.utteranceId || 'none',
         id.sessionId || 'none',
         compact(timings?.sttMode || extra?.sttMode || '', 40),
-        compact(timings?.ttsProvider || timings?.ttsSource || extra?.ttsProvider || '', 80),
+        compact(timings?.ttsProvider || extra?.ttsProvider || '', 80),
         extra?.fallback ? 'fallback' : 'normal',
         compact(extra?.stage || 'utterance', 80),
         compact(extra?.route || '', 80),
         compact(extra?.error || '', 300),
+        compact(extra?.transcriptMatch || '', 32),
       ],
       doubles: [
         finiteMetric(timings?.speechEndToSttFinalMs ?? timings?.sttMs),
-        finiteMetric(timings?.batchSttMs),
+        finiteMetric(timings?.captureMs),
         finiteMetric(timings?.answerStartMs),
         finiteMetric(timings?.primaryMs),
         finiteMetric(timings?.verifierMs),
-        finiteMetric(timings?.answerGenerationTotalMs ?? timings?.serverTotalMs ?? timings?.totalMs),
+        finiteMetric(timings?.answerGenerationTotalMs ?? timings?.totalMs),
         finiteMetric(timings?.firstTtsMs),
         finiteMetric(timings?.firstAudioReadyMs),
         finiteMetric(timings?.speechEndToPlaybackStartMs),
@@ -1095,19 +920,63 @@ async function conversationLogsResponse(request, env) {
 }
 
 async function transcribeWithFastReaction(request, env, ctx) {
+  const started = Date.now();
+  const meta = {
+    sessionId: compact(request.headers.get('x-talksys-session') || '', 180),
+    utteranceId: compact(request.headers.get('x-talksys-utterance') || '', 180),
+    channel: compact(request.headers.get('x-talksys-channel') || 'web', 80),
+  };
+  emitLatencyLog('transcribe-start', meta, {
+    route: '/api/transcribe',
+    sttProvider: 'workers-ai',
+    sttModel: '@cf/openai/whisper-large-v3-turbo',
+  });
   const response = await talksys.fetch(request, env, ctx);
   const type = response.headers.get('content-type') || '';
-  if (!/application\/json/i.test(type)) return response;
+  if (!/application\/json/i.test(type)) {
+    emitLatencyLog('transcribe-non-json', meta, {
+      route: '/api/transcribe',
+      durationMs: Date.now() - started,
+      status: response.status,
+    }, 'warn');
+    return response;
+  }
   try {
     const body = await response.json();
+    const durationMs = Date.now() - started;
     const reaction = body?.ok && body?.text ? fastReaction(body.text) : { kind: 'none', text: '', shouldSpeak: false, terminal: false };
+    emitLatencyLog(body?.ok ? 'transcribe-complete' : 'transcribe-rejected', meta, {
+      route: '/api/transcribe',
+      durationMs,
+      status: response.status,
+      confirmedTranscript: compact(body?.text || '', 1200),
+      rejected: compact(body?.rejected || '', 120),
+      error: compact(body?.error || '', 300),
+      sttProvider: 'workers-ai',
+      sttModel: compact(body?.model || '@cf/openai/whisper-large-v3-turbo', 120),
+    }, body?.ok ? 'log' : 'warn');
+    writeLatencyAnalytics(env, meta, {
+      sttMs: durationMs,
+      speechEndToSttFinalMs: durationMs,
+      sttMode: 'web-whisper',
+    }, {
+      stage: body?.ok ? 'transcribe-complete' : 'transcribe-rejected',
+      route: '/api/transcribe',
+      sttMode: 'web-whisper',
+      error: compact(body?.error || '', 300),
+    });
     return json({
       ...body,
       fastReaction: reaction,
       fastReactionRevision: FAST_REACTION_REVISION,
       realtimeVoiceRevision: REALTIME_VOICE_REVISION,
     }, response.status, response.headers);
-  } catch {
+  } catch (error) {
+    emitLatencyLog('transcribe-parse-error', meta, {
+      route: '/api/transcribe',
+      durationMs: Date.now() - started,
+      error: compact(error?.message || error, 300),
+    }, 'error');
     return response;
   }
 }
@@ -1248,12 +1117,10 @@ async function synthesizeGeminiJapaneseTts(text, env, signal) {
 
 function compactClientTimings(value = {}) {
   const allowed = [
+    'captureMs',
     'sttMs',
     'speechEndToSttFinalMs',
-    'batchSttMs',
     'answerStartMs',
-    'turnStreamMs',
-    'serverTotalMs',
     'primaryMs',
     'verifierMs',
     'answerGenerationTotalMs',
@@ -1270,12 +1137,31 @@ function compactClientTimings(value = {}) {
     if (Number.isFinite(n) && n >= 0 && n <= 600000) out[key] = Math.round(n);
   }
   if (typeof value?.sttMode === 'string') out.sttMode = compact(value.sttMode, 40);
-  if (typeof value?.streamed === 'boolean') out.streamed = value.streamed;
-  if (typeof value?.sttReused === 'boolean') out.sttReused = value.sttReused;
-  if (typeof value?.ttsSource === 'string') out.ttsSource = compact(value.ttsSource, 80);
   if (typeof value?.ttsProvider === 'string') out.ttsProvider = compact(value.ttsProvider, 80);
   if (typeof value?.error === 'string') out.error = compact(value.error, 500);
-  if (typeof value?.fallback === 'boolean') out.fallback = value.fallback;
+  return out;
+}
+
+function compactVoiceTimeline(value = {}) {
+  const allowed = [
+    'discordReceiveStartAt',
+    'firstPcmAt',
+    'utteranceEndAt',
+    'wavReadyAt',
+    'transcribeStartAt',
+    'whisperCompleteAt',
+    'turnStartAt',
+    'finalAnswerAt',
+    'ttsStartAt',
+    'ttsEndAt',
+    'playbackStartAt',
+    'pipelineCompleteAt',
+  ];
+  const out = {};
+  for (const key of allowed) {
+    const n = Number(value?.[key]);
+    if (Number.isFinite(n) && n > 0) out[key] = Math.round(n);
+  }
   return out;
 }
 
@@ -1289,46 +1175,64 @@ function discordVoiceMetricsResponse(request, env, ctx) {
     catch { return json({ ok: false, error: 'invalid_json' }, 400); }
 
     const timings = compactClientTimings(body?.timings || {});
+    const timeline = compactVoiceTimeline(body?.timeline || {});
+    const realtimeTranscript = compact(body?.realtimeTranscript || '', 1600);
+    const confirmedTranscript = compact(body?.confirmedTranscript || body?.text || '', 1600);
+    const geminiInputText = compact(body?.geminiInputText || confirmedTranscript, 1600);
+    const transcriptMatch = typeof body?.transcriptMatch === 'boolean' ? body.transcriptMatch : null;
+    const error = compact(body?.error || timings?.error || '', 500);
+
     const result = {
-      ok: true,
+      ok: !error,
       route: 'discord-client-metrics',
       search: false,
       searchUseful: false,
       timings,
+      timeline,
+      realtimeTranscript,
+      confirmedTranscript,
+      geminiInputText,
+      transcriptMatch,
+      error,
       model: GEMINI_MODEL,
       languageMode: 'ja-spoken',
     };
     const logBody = {
-      text: compact(body?.text, 5000),
+      text: confirmedTranscript,
       sessionId: compact(body?.sessionId, 180),
       utteranceId: compact(body?.utteranceId, 180),
-      channel: 'discord-voice-smoke',
+      channel: 'discord',
       history: [],
     };
     scheduleConversationLog(ctx, env, request, logBody, result, 'voice-metrics', 202);
     emitLatencyLog('discord-utterance-complete', logBody, {
       route: '/api/voice-metrics',
-      sttMode: timings.sttMode || '',
+      sttMode: timings.sttMode || 'web-whisper',
+      captureMs: timings.captureMs ?? 0,
       speechEndToSttFinalMs: timings.speechEndToSttFinalMs ?? timings.sttMs ?? 0,
-      batchSttMs: timings.batchSttMs ?? 0,
+      sttMs: timings.sttMs ?? 0,
       answerStartMs: timings.answerStartMs ?? 0,
       primaryMs: timings.primaryMs ?? 0,
       verifierMs: timings.verifierMs ?? 0,
-      answerGenerationTotalMs: timings.answerGenerationTotalMs ?? timings.serverTotalMs ?? 0,
+      answerGenerationTotalMs: timings.answerGenerationTotalMs ?? 0,
       firstTtsMs: timings.firstTtsMs ?? 0,
       firstAudioReadyMs: timings.firstAudioReadyMs ?? 0,
       speechEndToPlaybackStartMs: timings.speechEndToPlaybackStartMs ?? 0,
       pipelineCompleteMs: timings.pipelineCompleteMs ?? 0,
       ffmpegSpawnMs: timings.ffmpegSpawnMs ?? 0,
-      ttsProvider: timings.ttsProvider || timings.ttsSource || '',
-      fallback: Boolean(timings.fallback || timings.sttMode === 'batch'),
-      error: timings.error || '',
-    }, timings.error ? 'warn' : 'log');
+      ttsProvider: timings.ttsProvider || '',
+      realtimeTranscript,
+      confirmedTranscript,
+      geminiInputText,
+      transcriptMatch,
+      timeline,
+      error,
+    }, error ? 'warn' : 'log');
     writeLatencyAnalytics(env, logBody, timings, {
       stage: 'discord-utterance-complete',
       route: '/api/voice-metrics',
-      fallback: Boolean(timings.fallback || timings.sttMode === 'batch'),
-      error: timings.error || '',
+      transcriptMatch: transcriptMatch === null ? 'not-collected' : String(transcriptMatch),
+      error,
     });
     return json({ ok: true, stored: true, analyticsQueued: true }, 202);
   })();
@@ -1420,8 +1324,20 @@ async function voiceHealth(request, env, ctx) {
       realtimeSttModel: REALTIME_STT_MODEL,
       realtimeVoiceRevision: REALTIME_VOICE_REVISION,
       discordPipelineRevision: DISCORD_PIPELINE_REVISION,
-      discordTurnStream: true,
-      discordTurnStreamEndpoint: '/api/turn-stream',
+      webVoiceCapturePolicy: {
+        targetRate: WEB_VOICE_CAPTURE_POLICY.targetRate,
+        silenceMs: WEB_VOICE_CAPTURE_POLICY.silenceMs,
+        minSpeechMs: WEB_VOICE_CAPTURE_POLICY.minSpeechMs,
+        maxUtteranceMs: WEB_VOICE_CAPTURE_POLICY.maxUtteranceMs,
+        preRollFrames: WEB_VOICE_CAPTURE_POLICY.preRollFrames,
+        minVoicedMs: WEB_VOICE_CAPTURE_POLICY.minVoicedMs,
+        minSnr: WEB_VOICE_CAPTURE_POLICY.minSnr,
+        highpassHz: WEB_VOICE_CAPTURE_POLICY.highpassHz,
+      },
+      discordArchitecture: 'web-audio-adapter',
+      discordFinalStt: 'whisper-large-v3-turbo-via-api-transcribe',
+      discordRealtimeSttAuthoritative: false,
+      discordTurnEndpoint: '/api/turn',
       discordVoiceMetricsEndpoint: '/api/voice-metrics',
       discordBridgeConfigured: typeof env?.DISCORD_BRIDGE_TOKEN === 'string' && env.DISCORD_BRIDGE_TOKEN.trim().length > 0,
       persistentConversationLogs: env?.TALKSYS_LOG_DB ? 'd1-private' : 'disabled',
@@ -1466,14 +1382,6 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/api/voice-metrics') {
       return discordVoiceMetricsResponse(request, env, ctx);
-    }
-
-    if (request.method === 'POST' && url.pathname === '/api/turn-stream') {
-      if (!discordVoiceTtsAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
-      let body = {};
-      try { body = await request.json(); }
-      catch { return json({ ok: false, error: 'invalid_json' }, 400); }
-      return discordTurnStreamResponse(request, env, body, ctx);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/fast-reaction') {

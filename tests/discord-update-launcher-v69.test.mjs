@@ -21,8 +21,10 @@ test('Discord update launcher starts the existing secret-aware launcher after up
   assert.match(updater, /start\.ps1/);
   assert.match(updater, /git rev-parse --short HEAD/);
   assert.match(readme, /update-and-start\.ps1/);
-  assert.match(readme, /\[stt\] websocket open user=\.\.\. mode=active/);
+  assert.match(readme, /\[capture\] finalized/);
+  assert.match(readme, /\[stt\] confirmed Whisper start/);
   assert.match(readme, /\[metrics\] voice latency persisted/);
+  assert.doesNotMatch(readme, /WebSocket先行接続|batch STT|\/api\/turn-stream/);
 });
 
 
