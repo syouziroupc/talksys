@@ -33,8 +33,9 @@ test('integrated entry keeps Telnyx transport but routes phone turns through the
   const source = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
   assert.match(source, /import talksys from '\.\/entry\.js'/);
   assert.match(source, /turn: \(body, signal\) => runTalkSysTurn\(request, env, body, signal \|\| request\.signal, ctx\)/);
-  assert.match(source, /const result = await runGeminiTurn\(body \|\| \{\}, env, signal\)/);
-  assert.match(source, /scheduleConversationLog\(ctx, env, request, body, result, 'turn', 200\)/);
+  assert.match(source, /const result = await commonTalkSysTurn\(commonBody, env, signal\)/);
+  assert.match(source, /return runGeminiTurn\(body, env, signal, options\)/);
+  assert.match(source, /scheduleConversationLog\(ctx, env, request, commonBody, result, 'turn', 200\)/);
   assert.match(source, /return talksys\.fetch\(request, env, ctx\)/);
   assert.doesNotMatch(source, /gemini-3\.8-live/i);
   assert.doesNotMatch(source, /BidiGenerateContent/i);
