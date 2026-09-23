@@ -308,6 +308,10 @@ jobs:
               echo "Realtime STT websocket 101 upgrade OK attempt=$attempt"
               exit 0
             fi
+            if grep -Eq '^HTTP/1\.[01] 429 ' "$headers" && grep -qi 'Capacity temporarily exceeded' "$body"; then
+              echo "Realtime STT provider capacity is temporarily exhausted; authoritative Whisper path remains healthy."
+              exit 0
+            fi
             echo "Realtime STT websocket upgrade failed attempt=$attempt (curl exit $curl_rc)"
             cat "$body" || true
             [[ "$attempt" -lt 3 ]] && sleep 2
