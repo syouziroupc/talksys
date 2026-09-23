@@ -19,7 +19,7 @@ Discord VC
   -> Discord VC
 ```
 
-Discord固有処理は、Discord音声の受信・PCM変換と、TalkSys音声のDiscord再生だけです。
+Discord固有処理は、Discordのspeaking gateで受けた音声の受信・48kHz stereo→16kHz mono変換・90Hz HPFと、TalkSys音声のDiscord再生だけです。ブラウザ用RMS/SNR VADはDiscord側では再適用しません。
 
 ## 音声認識
 
@@ -34,7 +34,7 @@ Discord固有処理は、Discord音声の受信・PCM変換と、TalkSys音声�
 - adaptive noise floor
 - RMS / peak / SNR 開始判定
 - 90 Hz high-pass
-- 1600 ms Discord無音判定はtransport safetyのみ
+- 発話区間はDiscord transport側を基準にし、最後のPCMから650 msで確定します。1600 ms Discord無音判定はtransport safetyのみです。
 
 Whisperのタイムアウトは30秒です。数百msの短縮より認識品質を優先します。
 
@@ -104,7 +104,7 @@ powershell -ExecutionPolicy Bypass -File .\update-and-start.ps1
 最低限、普通の声、小さい声、途中に自然な間を入れた発話、長めの発話、短い発話を試します。確認対象は速度より先に次の一致です。
 
 1. Web版Whisper transcript
-2. Discord版Whisper transcript
+2. Discord transport-gated PCM → Whisper transcript
 3. Geminiへ渡したtext
 4. 最終回答
 

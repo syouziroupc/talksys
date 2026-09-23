@@ -98,13 +98,13 @@
     "speech.turntaking": {
       "canonical": "src/voice-fast-reaction.js",
       "status": "production",
-      "responsibility": "Shared speech turn-taking policy, deterministic backchannels, and Web-compatible capture thresholds reused by browser and voice adapters",
+      "responsibility": "Shared speech turn-taking policy and browser capture thresholds; Discord uses the Discord transport speaking gate and only reuses the shared target audio format/timing constants.",
       "companions": [
         "src/integrated-entry.js",
         "src/telephony/index.js",
         "src/voice-capture-policy.js"
       ],
-      "migrationNote": "Realtime STT is an optional browser acceleration layer only. Confirmed speech input remains batch Whisper via /api/transcribe; Discord reuses the Web capture policy instead of defining an independent STT system."
+      "migrationNote": "Realtime STT is an optional browser acceleration layer only. Confirmed speech input remains Whisper via /api/transcribe. Discord must not reapply browser RMS/SNR VAD to already speech-gated Discord audio; it normalizes transport audio to the same 16 kHz mono STT format."
     }
   },
   "legacyPriorArt": {

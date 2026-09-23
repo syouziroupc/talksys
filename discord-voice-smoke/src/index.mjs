@@ -15,7 +15,6 @@ import {
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY } from '../../src/voice-capture-policy.js';
-import { WebCompatibleCapture } from './web-compatible-capture.mjs';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -28,7 +27,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v79-web-audio-adapter-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v80-discord-transport-gate-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -49,7 +48,6 @@ const client = new Client({
 
 const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
 const sessions = new Map();
-const voiceProfiles = new Map();
 const history = [];
 let searchTrace = null;
 let previousInteractionId = '';
@@ -86,37 +84,6 @@ function resetConversationState() {
   answering = false;
   pendingTurns.splice(0, pendingTurns.length);
   discordSessionId = '';
-}
-
-function voiceProfileFor(userId) {
-  let profile = voiceProfiles.get(userId);
-  if (!profile) {
-    profile = { noise: WEB_VOICE_CAPTURE_POLICY.initialNoise, noiseBoost: 1 };
-    voiceProfiles.set(userId, profile);
-  }
-  return profile;
-}
-
-function learnRejectedCapture(profile, metrics = {}) {
-  if (!profile || !metrics?.speechDetected) return;
-  profile.noiseBoost = Math.min(2.8, profile.noiseBoost * 1.12 + 0.04);
-  const maxRms = Number(metrics.maxRms) || 0;
-  if (maxRms > 0) {
-    profile.noise = Math.max(
-      profile.noise,
-      Math.min(WEB_VOICE_CAPTURE_POLICY.noiseMax, maxRms * 0.38),
-    );
-  }
-}
-
-function learnSuccessfulSpeech(profile) {
-  if (!profile) return;
-  profile.noiseBoost = Math.max(1, profile.noiseBoost * 0.93);
-}
-
-function learnSttFailure(profile) {
-  if (!profile) return;
-  profile.noiseBoost = Math.min(2.8, profile.noiseBoost * 1.10 + 0.03);
 }
 
 function boundedSignal(parentSignal, timeoutMs) {
@@ -438,14 +405,21 @@ async function playMp3(mp3, options = {}) {
   ffmpeg.stdin.end(mp3);
 
   const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
-  const playbackStartedPromise = new Promise((resolve) => {
-    player.once(AudioPlayerStatus.Playing, () => {
+  const playbackStartedPromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      player.off(AudioPlayerStatus.Playing, onPlaying);
+      try { ffmpeg.kill('SIGKILL'); } catch {}
+      reject(new Error('playback_start_timeout'));
+    }, 5000);
+    const onPlaying = () => {
+      clearTimeout(timeout);
       const playbackStartedAt = Date.now();
       const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
       console.log('[tx] playback started');
       try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
       resolve({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs });
-    });
+    };
+    player.once(AudioPlayerStatus.Playing, onPlaying);
   });
 
   player.play(resource);
@@ -575,21 +549,16 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
   }
 }
 
-async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId, timeline, captureMetrics, voiceProfile }) {
+async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId, timeline, captureMetrics }) {
   if (sessionEpoch !== voiceEpoch) return;
-  const durationOk = Boolean(pcm?.length) && captureMetrics.durationMs >= WEB_VOICE_CAPTURE_POLICY.minSpeechMs;
-  const voicedOk = captureMetrics.voicedMs >= WEB_VOICE_CAPTURE_POLICY.minVoicedMs;
-  const snrOk = captureMetrics.snr >= WEB_VOICE_CAPTURE_POLICY.minSnr;
-  if (!durationOk || !voicedOk || !snrOk) {
-    learnRejectedCapture(voiceProfile, captureMetrics);
-    console.log(`[capture] rejected utterance=${utteranceId} duration=${captureMetrics.durationMs || 0}ms voiced=${captureMetrics.voicedMs || 0}ms snr=${captureMetrics.snr || 0} boost=${voiceProfile?.noiseBoost?.toFixed?.(2) || '1.00'}`);
+  if (!pcm?.length) {
+    console.log(`[capture] rejected empty utterance=${utteranceId}`);
     return;
   }
 
   const controller = new AbortController();
   try {
     const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal);
-    learnSuccessfulSpeech(voiceProfile);
     await processConfirmedTranscript({
       confirmedTranscript: stt.confirmedTranscript,
       fastReaction: stt.fastReaction,
@@ -601,7 +570,6 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
       sttMeta: stt,
     });
   } catch (error) {
-    learnSttFailure(voiceProfile);
     const message = String(error?.message || error || '').slice(0, 500);
     console.error('[stt]', message);
     timeline.pipelineCompleteAt = Date.now();
@@ -666,22 +634,23 @@ function startReceiverSession(userId, speakingNow = false) {
     playbackStartAt: 0,
     pipelineCompleteAt: 0,
   };
-  const voiceProfile = voiceProfileFor(userId);
-  const capture = new WebCompatibleCapture({
-    noise: voiceProfile.noise,
-    noiseBoost: voiceProfile.noiseBoost,
-  });
+
+  // Discord already gates outgoing voice by speaking state. Do not apply the
+  // browser RMS/SNR rejection gate again or normal Discord speech can be lost.
+  // We only normalize the transport audio to the same Web STT input format.
   const opus = connection.receiver.subscribe(userId, {
-    // Transport safety only. Web-compatible 650 ms PCM VAD finalizes first.
     end: { behavior: EndBehaviorType.AfterSilence, duration: 1600 },
   });
   const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
   const resampler = createWebCompatibleResampler();
+  const pcm16Chunks = [];
 
   let completed = false;
   let speakingMarked = false;
   let packetStartWatchdog = null;
   let finalizeTimer = null;
+  let pcm16Bytes = 0;
+  let lastPcmAt = 0;
 
   const clearTimers = () => {
     if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
@@ -696,9 +665,9 @@ function startReceiverSession(userId, speakingNow = false) {
     if (!timeline.discordReceiveStartAt) timeline.discordReceiveStartAt = Date.now();
     if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
     packetStartWatchdog = setTimeout(() => {
-      if (completed || capture.firstPcmAt) return;
+      if (completed || pcm16Bytes > 0) return;
       console.error(`[capture] speaking produced no PCM user=${userId}`);
-      finalize('no-pcm');
+      finalize('no-pcm').catch(() => {});
     }, RECEIVER_PACKET_START_TIMEOUT_MS);
   };
 
@@ -713,40 +682,47 @@ function startReceiverSession(userId, speakingNow = false) {
     }, 250);
   };
 
-  const finalize = async (reason = 'web-compatible-silence') => {
+  const finalize = async (reason = 'discord-silence') => {
     if (completed) return;
     completed = true;
     const endedAt = Date.now();
-    const captured = capture.finalize(endedAt);
-    voiceProfile.noise = capture.noise;
-    voiceProfile.noiseBoost = capture.noiseBoost;
-    timeline.firstPcmAt = captured.metrics.firstPcmAt || timeline.firstPcmAt;
+    const pcm = pcm16Chunks.length ? Buffer.concat(pcm16Chunks) : Buffer.alloc(0);
+    const durationMs = pcm.length / 2 / WEB_VOICE_CAPTURE_POLICY.targetRate * 1000;
     timeline.utteranceEndAt = endedAt;
     cleanup();
-    // Re-arm immediately so the next utterance is already subscribed before
-    // Discord's speaking event. This preserves the earliest frames for pre-roll.
+
     queueMicrotask(() => {
       if (sessionEpoch === voiceEpoch && connection) startReceiverSession(userId, false);
     });
-    console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captured.metrics.durationMs}ms voiced=${captured.metrics.voicedMs}ms snr=${captured.metrics.snr}`);
+
+    const captureMetrics = {
+      durationMs: Math.round(durationMs),
+      rawPcmBytes: pcm16Bytes,
+      acceptedPcmBytes: pcm.length,
+      speechDetected: pcm.length > 0,
+      transportGated: true,
+      browserVadBypassed: true,
+    };
+    console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captureMetrics.durationMs}ms pcm=${pcm.length}B transport-gated=true`);
     await handleCapturedUtterance({
-      pcm: captured.pcm,
+      pcm,
       userId,
       sessionEpoch,
       utteranceId,
       timeline,
-      captureMetrics: captured.metrics,
-      voiceProfile,
+      captureMetrics,
     });
   };
 
-  const session = { opus, decoder, resampler, capture, markSpeaking, finalize };
+  const session = { opus, decoder, resampler, markSpeaking, finalize };
   sessions.set(userId, session);
   if (speakingNow) markSpeaking();
 
   finalizeTimer = setInterval(() => {
-    if (completed || !capture.firstPcmAt) return;
-    if (capture.shouldFinalize(Date.now())) finalize('web-compatible-silence').catch(() => {});
+    if (completed || !lastPcmAt || pcm16Bytes === 0) return;
+    if (Date.now() - lastPcmAt >= WEB_VOICE_CAPTURE_POLICY.silenceMs) {
+      finalize('discord-pcm-silence').catch(() => {});
+    }
   }, 25);
 
   decoder.on('data', (pcm48) => {
@@ -757,7 +733,10 @@ function startReceiverSession(userId, speakingNow = false) {
     if (!pcm16?.length || completed) return;
     const at = Date.now();
     if (!timeline.firstPcmAt) timeline.firstPcmAt = at;
-    capture.push(pcm16, at);
+    if (!timeline.discordReceiveStartAt) timeline.discordReceiveStartAt = at;
+    lastPcmAt = at;
+    pcm16Bytes += pcm16.length;
+    pcm16Chunks.push(Buffer.from(pcm16));
   });
 
   resampler.stdout.on('error', (error) => {
@@ -792,7 +771,6 @@ function destroyVoiceConnection() {
     try { session.resampler?.kill?.('SIGKILL'); } catch {}
   }
   sessions.clear();
-  voiceProfiles.clear();
   player.stop(true);
   try { connection?.destroy(); } catch {}
   connection = undefined;
@@ -803,8 +781,10 @@ async function playConnectionGreeting() {
     const result = await synthesize('フォーンズです。接続しました。');
     await playMp3(result.audio);
     console.log('[greeting] connection greeting played');
+    return true;
   } catch (error) {
-    console.warn('[greeting] connection greeting failed; voice connection remains active:', error?.message || error);
+    console.error('[greeting] connection greeting failed:', error?.message || error);
+    throw new Error(`connection_greeting_failed: ${String(error?.message || error).slice(0, 240)}`);
   }
 }
 
@@ -878,7 +858,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
   console.log('[discord] voice ready:', channel.name);
   console.log('[discord] conversation session:', discordSessionId);
-  console.log('[discord] input architecture: Opus -> PCM16 web-compatible capture -> /api/transcribe');
+  console.log('[discord] input architecture: Discord speaking gate -> Opus -> PCM16 Web STT format -> /api/transcribe');
   console.log('[discord] final STT: Whisper Large v3 Turbo via /api/transcribe');
   console.log('[discord] bridge revision:', DISCORD_BRIDGE_REVISION);
   await playConnectionGreeting();
@@ -957,7 +937,7 @@ client.on('interactionCreate', async (interaction) => {
   } catch (error) {
     console.error('[command]', error?.stack || error);
     try {
-      await interaction.editReply('TalkSysのVC操作に失敗しました。コンソールログを確認してください。');
+      await interaction.editReply(`TalkSysのVC操作に失敗しました: ${String(error?.message || error).slice(0, 180)}`);
     } catch (replyError) {
       console.error('[command] failure reply failed:', replyError?.message || replyError);
     }

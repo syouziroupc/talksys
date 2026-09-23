@@ -10,7 +10,6 @@ const secretStore = fs.readFileSync(new URL('../discord-voice-smoke/secret-store
 
 test('Discord bridge is only input adapter, common HTTP STT/turn, and output adapter', () => {
   assert.match(source, /createWebCompatibleResampler/);
-  assert.match(source, /WebCompatibleCapture/);
   assert.match(source, /\/api\/transcribe/);
   assert.match(source, /\/api\/turn/);
   assert.match(source, /\/api\/voice\/synthesize/);
@@ -28,13 +27,14 @@ test('Discord Whisper transcription is the normal path, not a fallback', () => {
   assert.doesNotMatch(source, /batchTranscribePcm16|fallbackController|realtimeSttFailure|realtimeSttBackoff|realtimeSttSockets/i);
 });
 
-test('Discord capture mirrors web segmentation while keeping 1600 ms only as transport safety', () => {
+test('Discord trusts its speaking transport gate and normalizes audio to the Web STT format', () => {
   assert.match(source, /WEB_VOICE_CAPTURE_POLICY/);
-  assert.match(source, /WebCompatibleCapture/);
+  assert.match(source, /Discord already gates outgoing voice by speaking state/);
   assert.match(source, /EndBehaviorType\.AfterSilence, duration: 1600/);
-  assert.match(source, /capture\.shouldFinalize\(Date\.now\(\)\)/);
-  assert.match(source, /web-compatible-silence/);
+  assert.match(source, /Date\.now\(\) - lastPcmAt >= WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
   assert.match(source, /highpass=f=\$\{WEB_VOICE_CAPTURE_POLICY\.highpassHz\},aresample=\$\{WEB_VOICE_CAPTURE_POLICY\.targetRate\}/);
+  assert.match(source, /pcm16Chunks\.push\(Buffer\.from\(pcm16\)\)/);
+  assert.doesNotMatch(source, /WebCompatibleCapture|captureMetrics\.voicedMs|captureMetrics\.snr|voiceProfiles/);
   assert.match(source, /queueMicrotask\(\(\) => \{[\s\S]*startReceiverSession\(userId, false\)/);
 });
 
@@ -81,15 +81,18 @@ test('Discord pre-caches recovery voice and speaks it on STT or answer failure',
   assert.match(source, /speakRecoveryPrompt\('answer-pipeline-failed'/);
 });
 
-test('Discord playback watchdog kills stuck ffmpeg instead of leaking the pipeline', () => {
+test('Discord playback watchdog kills stuck ffmpeg and detects silent start failures', () => {
   assert.match(source, /ffmpeg\.kill\('SIGKILL'\)/);
   assert.match(source, /playback_timeout/);
+  assert.match(source, /playback_start_timeout/);
 });
 
-test('Discord slash join restores the audible connection greeting', () => {
+test('Discord slash join requires an audible connection greeting and surfaces failure', () => {
   assert.match(source, /async function playConnectionGreeting/);
   assert.match(source, /フォーンズです。接続しました。/);
   assert.match(source, /await playConnectionGreeting\(\)/);
+  assert.match(source, /connection_greeting_failed/);
+  assert.match(source, /TalkSysのVC操作に失敗しました:/);
 });
 
 test('Discord slash commands are updated without bulk-overwriting unrelated commands', () => {
