@@ -64,3 +64,11 @@ test('wait cue is independent from the final answer dependency chain', () => {
   assert.match(bridge, /activeWaitCue\?\.stop\('final-answer-ready'\)/);
   assert.doesNotMatch(bridge, /await activeWaitCue\.done/);
 });
+
+
+test('Discord slash logs expose end-to-end latency summary', () => {
+  assert.match(bridge, /mirrorRuntimeLog\('LATENCY'/);
+  assert.match(bridge, /gemini=\$\{timings\.answerGenerationTotalMs\}ms/);
+  assert.match(bridge, /verify=\$\{timings\.verifierMs\}ms/);
+  assert.match(bridge, /playStart=\$\{timings\.speechEndToPlaybackStartMs\}ms/);
+});
