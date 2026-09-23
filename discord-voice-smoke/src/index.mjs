@@ -1340,7 +1340,9 @@ client.once('ready', async () => {
     if (runtimeLogChannel) mirrorRuntimeLog('HEALTH', `gateway=${client.isReady()} ping=${client.ws.ping}ms sessions=${sessions.size}`);
   }, DISCORD_HEALTH_LOG_MS);
 
+  console.log(`[discord] bridge revision=${DISCORD_BRIDGE_REVISION}`);
   console.log(`[discord] gateway ready user=${client.user?.tag || client.user?.id || 'unknown'} ping=${client.ws.ping}ms`);
+  mirrorRuntimeLog('VERSION', DISCORD_BRIDGE_REVISION);
   mirrorRuntimeLog('GATEWAY', `ready ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
   try {
     const guilds = [...client.guilds.cache.values()];
