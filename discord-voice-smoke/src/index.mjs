@@ -67,6 +67,7 @@ let immediateAckAudio = null;
 let immediateAckAudioPromise = null;
 const recentBotSpeech = [];
 let activeBotPlaybackRecord = null;
+let lastBotPlaybackEndedAt = 0;
 let lastUserSpeechAt = 0;
 let lastUserPcmAt = 0;
 let recoveryAudio = null;
@@ -91,6 +92,7 @@ function resetConversationState() {
   activeImmediateAck = null;
   recentBotSpeech.splice(0, recentBotSpeech.length);
   activeBotPlaybackRecord = null;
+  lastBotPlaybackEndedAt = 0;
   lastUserSpeechAt = 0;
   lastUserPcmAt = 0;
   activeTurnSerial += 1;
@@ -549,8 +551,8 @@ async function playMp3(mp3, options = {}) {
       player.stop(true);
       reject(new Error('playback_timeout'));
     }, 30000);
-    const done = () => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); resolve(); };
-    const fail = (error) => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); reject(error); };
+    const done = () => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now(); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); resolve(); };
+    const fail = (error) => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now(); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); reject(error); };
     const cleanup = () => {
       player.off(AudioPlayerStatus.Idle, done);
       player.off('error', fail);
@@ -973,7 +975,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
   connection.receiver.speaking.on('start', (userId) => {
     if (userId === client.user.id) return;
-    const startedDuringBotPlayback = Boolean(activeBotPlaybackRecord) || player.state.status === AudioPlayerStatus.Playing;
+    const startedDuringBotPlayback = Boolean(activeBotPlaybackRecord) || player.state.status === AudioPlayerStatus.Playing || (Date.now() - lastBotPlaybackEndedAt < 1200);
     interruptActiveAnswer('user-speech');
     startReceiverSession(userId, true, { startedDuringBotPlayback });
   });
