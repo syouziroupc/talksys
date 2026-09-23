@@ -589,9 +589,11 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     console.log(`[stt] final user=${userId}:`, text);
     console.log('[latency] pipeline-start');
 
-    const waitCuePromise = playWaitCue(text, utteranceId, controller.signal, () => mainAnswerReady)
+    const waitCueController = new AbortController();
+    const waitCueSignal = AbortSignal.any([controller.signal, waitCueController.signal]);
+    const waitCuePromise = playWaitCue(text, utteranceId, waitCueSignal, () => mainAnswerReady)
       .catch((error) => {
-        if (!controller.signal.aborted) console.warn('[wait-cue] failed:', error?.message || error);
+        if (!controller.signal.aborted && !mainAnswerReady) console.warn('[wait-cue] failed:', error?.message || error);
         return { played: false, elapsedMs: 0 };
       });
 
@@ -613,6 +615,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
       const safe = voiceSafeText(sentence);
       if (!safe) return;
       mainAnswerReady = true;
+      try { waitCueController.abort('final-answer-ready'); } catch {}
       queuedSentences += 1;
 
       // First sentence gets exclusive priority. Later sentences start TTS only
