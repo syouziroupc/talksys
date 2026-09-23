@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v85-turn-integrity-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v85-turn-integrity-cue-arbiter-r2';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -68,6 +68,7 @@ let activeTurnAbortController = null;
 let activeTurnSerial = 0;
 let activeWaitCue = null;
 let activeFastReaction = null;
+let preAnswerCueSerial = 0;
 const fastReactionAudioCache = new Map();
 const realtimeHelpers = new Map();
 const recentBotSpeech = [];
@@ -100,6 +101,7 @@ function resetConversationState() {
   activeTurnAbortController = null;
   activeWaitCue = null;
   activeFastReaction = null;
+  preAnswerCueSerial += 1;
   recentBotSpeech.splice(0, recentBotSpeech.length);
   recentAcceptedUserTurns.splice(0, recentAcceptedUserTurns.length);
   activeBotPlaybackRecord = null;
@@ -278,6 +280,9 @@ async function warmFastReactionAudio() {
 function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, realtimeTranscript = '') {
   if (!reaction?.shouldSpeak || !String(reaction?.text || '').trim()) return null;
   try { activeFastReaction?.stop?.('replaced'); } catch {}
+  try { activeWaitCue?.stop?.('fast-reaction-won'); } catch {}
+  activeWaitCue = null;
+  const cueSerial = ++preAnswerCueSerial;
   let stopped = false;
   let playing = false;
   const controller = new AbortController();
@@ -289,7 +294,7 @@ function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, real
     try {
       const text = String(reaction.text).trim();
       const audio = await cachedReactionAudio(text, controller.signal);
-      if (!audio?.length || stopped || sessionEpoch !== voiceEpoch) return false;
+      if (!audio?.length || stopped || sessionEpoch !== voiceEpoch || cueSerial !== preAnswerCueSerial) return false;
       playing = true;
       mirrorRuntimeLog('REACTION', `${reaction.kind || 'unknown'}: ${text}`);
       await playMp3(audio, {
@@ -620,6 +625,7 @@ async function fetchSearchPreface(text, signal) {
 function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
   const controller = new AbortController();
   const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
+  const cueSerial = ++preAnswerCueSerial;
   let playing = false;
   let stopped = false;
 
@@ -631,9 +637,9 @@ function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
       } else {
         cue = await fetchSearchPreface(text, signal);
       }
-      if (!cue || signal.aborted || stopped) return false;
+      if (!cue || signal.aborted || stopped || cueSerial !== preAnswerCueSerial) return false;
       const synthesized = await synthesize(cue, signal, { utteranceId, purpose: 'wait-cue' });
-      if (signal.aborted || stopped) return false;
+      if (signal.aborted || stopped || cueSerial !== preAnswerCueSerial) return false;
       playing = true;
       await playMp3(synthesized.audio, { spokenText: cue, purpose: 'wait-cue' });
       return true;
@@ -1026,6 +1032,7 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     // Only classifyVoiceTurn(...)=interrupt can abort it.
 
     // Waiting audio is never part of the answer dependency chain.
+    preAnswerCueSerial += 1;
     activeWaitCue?.stop('final-answer-ready');
     activeWaitCue = null;
     activeFastReaction?.stop?.('final-answer-ready');
