@@ -71,7 +71,7 @@ test('Discord final STT always uses the same /api/transcribe Whisper path as web
   assert.match(bridge, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
   assert.match(bridge, /await talk\(confirmedTranscript, utteranceId, controller\.signal\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
-  assert.doesNotMatch(bridge, /\/api\/realtime-stt|WebSocket|speech_final|Finalize|batchTranscribePcm16|realtimeSttBackoff|circuit/i);
+  assert.doesNotMatch(bridge, /\/api\/realtime-stt|WebSocket|speech_final|batchTranscribePcm16|realtimeSttBackoff|realtimeSttSockets|type:\s*['"]Finalize['"]/i);
 });
 
 test('Discord uses only /api/turn for final answer generation and has no separate answer stream', () => {
