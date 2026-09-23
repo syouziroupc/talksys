@@ -34,7 +34,7 @@ test('broken realtime STT always falls back and opens a bounded circuit breaker'
   assert.match(source, /registerRealtimeSttFailure\(realtimeFailureReason, statusCode\)/);
   assert.match(source, /realtimeSttFailureCount = Math\.min\(6, realtimeSttFailureCount \+ 1\)/);
   assert.match(source, /realtimeSttBackoffUntil = Math\.max/);
-  assert.match(source, /else if \(pcm16\.length\) \{/);
+  assert.match(source, /if \(!text && pcm16\.length\) \{/);
   assert.match(source, /batchTranscribePcm16\(pcm16, realtimeFailureReason \|\| reason\)/);
   assert.match(source, /markRealtimeFailed\('finalize-timeout'\)/);
   assert.match(source, /Date\.now\(\) < realtimeSttBackoffUntil/);
