@@ -77,6 +77,18 @@ export class WebCompatibleCapture {
       this.speech = true;
       this.speechStartAt = at;
       this.frames = this.pre.splice(0);
+      // Browser capture continuously receives ambient frames, so its pre-roll
+      // is already full before speech. Discord sends no packets while silent.
+      // Pad only the missing pre-roll with digital silence so short utterances
+      // get the same leading context window without inventing speech content.
+      const missingPreRoll = Math.max(0, this.policy.preRollFrames - this.frames.length);
+      if (missingPreRoll) {
+        const silence = Buffer.alloc(this.frameBytes);
+        this.frames = [
+          ...Array.from({ length: missingPreRoll }, () => Buffer.from(silence)),
+          ...this.frames,
+        ];
+      }
       this.durationMs = this.frames.length * this.policy.frameMs;
       this.voicedMs = this.policy.startHits * this.policy.frameMs;
       this.maxRms = level.rms;
