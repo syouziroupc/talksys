@@ -54,6 +54,22 @@ if ($current -ne $remote) {
 
 $revision = (& git rev-parse --short HEAD).Trim()
 Write-Host "[ok] TalkSys revision: $revision"
+
+# Stop only an older TalkSys Discord bridge process from this checkout.
+$entry = Join-Path $PSScriptRoot 'src\index.mjs'
+$entryPattern = [regex]::Escape($entry)
+$oldBridges = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -and $_.CommandLine -match $entryPattern })
+
+foreach ($proc in $oldBridges) {
+  Write-Host "[restart] stopping old Discord bridge pid=$($proc.ProcessId)..."
+  Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+}
+
+if ($oldBridges.Count -gt 0) {
+  Start-Sleep -Milliseconds 600
+}
+
 Write-Host "[start] launching Discord voice bridge..."
 & powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\start.ps1"
 exit $LASTEXITCODE
