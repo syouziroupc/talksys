@@ -24,8 +24,8 @@ test('web and Discord final answers use the same common TalkSys turn function', 
 test('Discord final STT is confirmed Whisper, never Nova', () => {
   assert.match(bridge, /transcribeCapturedUtterance/);
   assert.match(bridge, /\/api\/transcribe/);
-  assert.match(bridge, /sttMode: 'whisper-batch'/);
-  assert.match(bridge, /fallback: false/);
+  assert.match(bridge, /sttMode: 'web-whisper'/);
+  assert.doesNotMatch(bridge, /batchSttMs|batchTranscribePcm16|fallbackController|realtimeSttBackoff|realtimeSttSockets/);
   assert.doesNotMatch(bridge, /\/api\/realtime-stt|speech_final|WebSocket|batchTranscribePcm16|type:\s*['"]Finalize['"]/);
 });
 
