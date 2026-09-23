@@ -28,7 +28,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const STT_WS_URL = TALKSYS_BASE_URL.replace(/^http/i, 'ws') + '/api/realtime-stt';
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v77-stt-critical-six-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v78-observability-common-turn-r1';
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const RECEIVER_CAPTURE_TIMEOUT_MS = 30000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -41,6 +41,7 @@ const REQUEST_BUDGET_MS = Object.freeze({
   turn: 35000,
   tts: 12000,
   metrics: 5000,
+  waitCue: 1800,
 });
 
 const client = new Client({
@@ -253,6 +254,44 @@ async function postVoiceMetrics(text, timings = {}, utteranceId = '') {
   }
 }
 
+async function fetchWaitCue(text, signal) {
+  const endpoints = ['/api/search-preface', '/api/fast-reaction'];
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetchWithRetry(TALKSYS_BASE_URL + endpoint, {
+        method: 'POST',
+        signal,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      }, {
+        timeoutMs: REQUEST_BUDGET_MS.waitCue,
+        retries: 0,
+        label: 'wait-cue',
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok && body?.shouldSpeak && String(body?.text || '').trim()) {
+        return String(body.text).trim();
+      }
+    } catch (error) {
+      if (signal?.aborted) return '';
+      console.warn('[wait-cue] unavailable:', error?.message || error);
+    }
+  }
+  return '';
+}
+
+async function playWaitCue(text, utteranceId, signal, shouldSkip = () => false) {
+  const cueStarted = Date.now();
+  const cue = await fetchWaitCue(text, signal);
+  if (!cue || shouldSkip() || signal?.aborted) return { played: false, elapsedMs: Date.now() - cueStarted };
+  const audio = await synthesize(cue, signal, { utteranceId, purpose: 'wait-cue' });
+  if (shouldSkip() || signal?.aborted) return { played: false, elapsedMs: Date.now() - cueStarted };
+  await playMp3(audio);
+  const elapsedMs = Date.now() - cueStarted;
+  console.log(`[wait-cue] played elapsed=${elapsedMs}ms text=${cue}`);
+  return { played: true, elapsedMs };
+}
+
 async function talk(text, utteranceId = '', signal) {
   const started = Date.now();
   console.log('[turn] user:', text);
@@ -266,7 +305,7 @@ async function talk(text, utteranceId = '', signal) {
       sessionId: discordSessionId || `discord-${randomUUID()}`,
       utteranceId,
       previousInteractionId,
-      channel: 'discord-voice-smoke',
+      channel: 'discord',
     }),
   }, {
     timeoutMs: REQUEST_BUDGET_MS.turn,
@@ -286,7 +325,7 @@ async function talk(text, utteranceId = '', signal) {
   return body.answer;
 }
 
-async function talkStream(text, onSentence, utteranceId = '', signal, onSpeculative = null) {
+async function talkStream(text, onSentence, utteranceId = '', signal) {
   const started = Date.now();
   console.log('[turn-stream] user:', text);
   const response = await fetch(TALKSYS_BASE_URL + '/api/turn-stream', {
@@ -302,7 +341,7 @@ async function talkStream(text, onSentence, utteranceId = '', signal, onSpeculat
       sessionId: discordSessionId || `discord-${randomUUID()}`,
       utteranceId,
       previousInteractionId,
-      channel: 'discord-voice-smoke',
+      channel: 'discord',
     }),
   });
   const type = response.headers.get('content-type') || '';
@@ -327,10 +366,6 @@ async function talkStream(text, onSentence, utteranceId = '', signal, onSpeculat
     if (!data) return;
     let event = null;
     try { event = JSON.parse(data); } catch { return; }
-    if (event?.type === 'speculative' && event?.text) {
-      if (typeof onSpeculative === 'function') onSpeculative(String(event.text));
-      return;
-    }
     if (event?.type === 'sentence' && event?.text) {
       sentenceCount += 1;
       onSentence(String(event.text));
@@ -378,7 +413,7 @@ async function talkStream(text, onSentence, utteranceId = '', signal, onSpeculat
   return { answer: doneBody.answer, streamed: sentenceCount > 0, sentenceCount, clientElapsedMs: elapsed, timings: doneBody?.timings || {} };
 }
 
-async function synthesize(text, signal) {
+async function synthesize(text, signal, meta = {}) {
   const started = Date.now();
   const response = await fetchWithRetry(TALKSYS_BASE_URL + '/api/voice/synthesize', {
     method: 'POST',
@@ -387,7 +422,13 @@ async function synthesize(text, signal) {
       'content-type': 'application/json',
       authorization: 'Bearer ' + BRIDGE_TOKEN,
     },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({
+      text,
+      sessionId: discordSessionId || `discord-${randomUUID()}`,
+      utteranceId: String(meta?.utteranceId || ''),
+      channel: 'discord',
+      purpose: String(meta?.purpose || 'answer'),
+    }),
   }, {
     timeoutMs: REQUEST_BUDGET_MS.tts,
     retries: 0,
@@ -397,11 +438,18 @@ async function synthesize(text, signal) {
     const detail = await response.text().catch(() => '');
     throw new Error(`tts_http_${response.status}: ${detail.slice(0, 300)}`);
   }
+  // The Worker-side TTS APIs currently complete synthesis before returning the body.
+  // Use sentence-level pipelining instead of pretending this body is true incremental audio.
   const audio = Buffer.from(await response.arrayBuffer());
   const type = response.headers.get('content-type') || 'unknown';
   const source = response.headers.get('x-talksys-voice-source') || 'unknown';
+  const workerMs = Number(response.headers.get('x-talksys-tts-ms') || 0);
+  const elapsedMs = Date.now() - started;
+  audio.ttsSource = source;
+  audio.ttsElapsedMs = elapsedMs;
+  audio.ttsWorkerMs = Number.isFinite(workerMs) ? workerMs : 0;
   console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
-  console.log(`[latency] tts-http=${Date.now() - started}ms source=${source}`);
+  console.log(`[latency] tts-http=${elapsedMs}ms worker=${audio.ttsWorkerMs || '?'}ms source=${source}`);
   return audio;
 }
 
@@ -437,8 +485,9 @@ async function speakRecoveryPrompt(reason = 'pipeline-failure', sessionEpoch = v
   }
 }
 
-async function playMp3(mp3) {
+async function playMp3(mp3, options = {}) {
   if (!ffmpegPath) throw new Error('ffmpeg_static_missing');
+  const ffmpegStarted = Date.now();
   const ffmpeg = spawn(ffmpegPath, [
     '-hide_banner', '-loglevel', 'error',
     '-i', 'pipe:0',
@@ -449,14 +498,29 @@ async function playMp3(mp3) {
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
   let ffmpegError = '';
+  let ffmpegSpawnMs = 0;
   ffmpeg.stderr.on('data', (d) => { ffmpegError += String(d); });
+  ffmpeg.stdout.once('data', () => {
+    ffmpegSpawnMs = Date.now() - ffmpegStarted;
+    console.log(`[latency] ffmpeg-first-output=${ffmpegSpawnMs}ms`);
+  });
   ffmpeg.on('error', (error) => console.error('[ffmpeg]', error.message));
   ffmpeg.stdin.end(mp3);
 
   const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+  const playbackStartedPromise = new Promise((resolve) => {
+    const onPlaying = () => {
+      const playbackStartedAt = Date.now();
+      const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
+      console.log('[tx] playback started');
+      try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
+      resolve({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs });
+    };
+    player.once(AudioPlayerStatus.Playing, onPlaying);
+  });
   player.play(resource);
-  console.log('[tx] playback started');
-  await new Promise((resolve, reject) => {
+
+  const completionPromise = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       try { ffmpeg.kill('SIGKILL'); } catch {}
       player.stop(true);
@@ -471,7 +535,11 @@ async function playMp3(mp3) {
     player.once(AudioPlayerStatus.Idle, done);
     player.once('error', fail);
   });
+
+  const startedInfo = await playbackStartedPromise;
+  await completionPromise;
   if (ffmpegError.trim()) console.log('[ffmpeg]', ffmpegError.trim());
+  return startedInfo;
 }
 
 async function processTranscript(text, userId, sessionEpoch, speechMetrics = {}) {
@@ -492,78 +560,98 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
   const controller = new AbortController();
   try { activeTurnAbortController?.abort(); } catch {}
   activeTurnAbortController = controller;
+  const speechEndedAt = Number(speechMetrics?.speechEndedAt) || pipelineStarted;
   const clientTimings = {
     sttMs: Number(speechMetrics?.sttMs) || 0,
+    speechEndToSttFinalMs: Number(speechMetrics?.speechEndToSttFinalMs ?? speechMetrics?.sttMs) || 0,
     batchSttMs: Number(speechMetrics?.batchSttMs) || 0,
+    answerStartMs: Math.max(0, pipelineStarted - speechEndedAt),
     primaryMs: 0,
     verifierMs: 0,
+    answerGenerationTotalMs: 0,
     firstTtsMs: 0,
     firstAudioReadyMs: 0,
     speechEndToPlaybackStartMs: 0,
+    pipelineCompleteMs: 0,
+    ffmpegSpawnMs: 0,
     sttMode: speechMetrics?.sttMode || 'unknown',
     sttReused: Boolean(speechMetrics?.sttReused),
+    fallback: speechMetrics?.sttMode === 'batch',
+    ttsProvider: '',
+    error: '',
   };
-  const speechEndedAt = Number(speechMetrics?.speechEndedAt) || 0;
   answering = true;
   let firstAudioReadyLogged = false;
   let playedSentenceCount = 0;
+  let mainAnswerReady = false;
+
   try {
     console.log(`[stt] final user=${userId}:`, text);
     console.log('[latency] pipeline-start');
 
+    const waitCuePromise = playWaitCue(text, utteranceId, controller.signal, () => mainAnswerReady)
+      .catch((error) => {
+        if (!controller.signal.aborted) console.warn('[wait-cue] failed:', error?.message || error);
+        return { played: false, elapsedMs: 0 };
+      });
+
     let firstTtsRecorded = false;
-    let playbackChain = Promise.resolve();
+    let firstSentenceReadyPromise = null;
+    let playbackChain = waitCuePromise.then(() => undefined);
     let playbackError = null;
     let queuedSentences = 0;
     let totalPlaybackMs = 0;
-    let speculativeText = '';
-    let speculativeAudioPromise = null;
 
     const timedSynthesize = (sentence) => {
       const ttsStarted = Date.now();
-      return synthesize(sentence, controller.signal)
+      return synthesize(sentence, controller.signal, { utteranceId, purpose: 'answer' })
         .then((value) => ({ value, elapsedMs: Date.now() - ttsStarted }), (error) => ({ error }));
-    };
-
-    const prefetchSpeculative = (sentence) => {
-      const safe = voiceSafeText(sentence);
-      if (!safe || speculativeAudioPromise || controller.signal.aborted) return;
-      speculativeText = safe;
-      speculativeAudioPromise = timedSynthesize(safe);
-      console.log('[tts-prefetch] speculative primary sentence queued');
     };
 
     const queueSentence = (sentence) => {
       if (!sentence || queuedSentences >= 4) return;
       const safe = voiceSafeText(sentence);
       if (!safe) return;
+      mainAnswerReady = true;
       queuedSentences += 1;
-      const speculativeMatch = Boolean(speculativeAudioPromise && speculativeText === safe);
-      const audioPromise = speculativeMatch
-        ? speculativeAudioPromise.then((result) => result?.error ? timedSynthesize(safe) : result)
-        : timedSynthesize(safe);
-      if (speculativeMatch) console.log('[tts-prefetch] verified exact match; reusing prefetched audio');
+
+      // First sentence gets exclusive priority. Later sentences start TTS only
+      // after the first audio is ready, then generate in parallel with playback.
+      let audioPromise;
+      if (queuedSentences === 1) {
+        firstSentenceReadyPromise = timedSynthesize(safe);
+        audioPromise = firstSentenceReadyPromise;
+      } else {
+        audioPromise = Promise.resolve(firstSentenceReadyPromise)
+          .then(() => timedSynthesize(safe));
+      }
+
       playbackChain = playbackChain.then(async () => {
         const prefetched = await audioPromise;
-        if (prefetched.error) throw prefetched.error;
+        if (prefetched?.error) throw prefetched.error;
         if (controller.signal.aborted || turnSerial !== activeTurnSerial || sessionEpoch !== voiceEpoch) return;
         if (!firstTtsRecorded) {
           firstTtsRecorded = true;
           clientTimings.firstTtsMs = prefetched.elapsedMs;
+          clientTimings.ttsProvider = String(prefetched.value?.ttsSource || 'unknown');
         }
         if (!firstAudioReadyLogged) {
           firstAudioReadyLogged = true;
           clientTimings.firstAudioReadyMs = Date.now() - pipelineStarted;
-          console.log(`[latency] first-audio-ready=${clientTimings.firstAudioReadyMs}ms source=${speculativeMatch ? 'speculative-prefetch' : 'verifier-stream'}`);
+          console.log(`[latency] first-audio-ready=${clientTimings.firstAudioReadyMs}ms source=final-answer-first-sentence`);
         }
-        const playbackStarted = Date.now();
-        if (!clientTimings.speechEndToPlaybackStartMs && speechEndedAt > 0) {
-          clientTimings.speechEndToPlaybackStartMs = Math.max(0, playbackStarted - speechEndedAt);
-          console.log(`[latency] speech-end-to-playback-start=${clientTimings.speechEndToPlaybackStartMs}ms`);
-        }
-        await playMp3(prefetched.value);
+        const playbackWallStarted = Date.now();
+        await playMp3(prefetched.value, {
+          onPlaybackStart: ({ playbackStartedAt, ffmpegSpawnMs }) => {
+            if (!clientTimings.ffmpegSpawnMs) clientTimings.ffmpegSpawnMs = ffmpegSpawnMs;
+            if (!clientTimings.speechEndToPlaybackStartMs && speechEndedAt > 0) {
+              clientTimings.speechEndToPlaybackStartMs = Math.max(0, playbackStartedAt - speechEndedAt);
+              console.log(`[latency] speech-end-to-playback-start=${clientTimings.speechEndToPlaybackStartMs}ms`);
+            }
+          },
+        });
         playedSentenceCount += 1;
-        totalPlaybackMs += Date.now() - playbackStarted;
+        totalPlaybackMs += Date.now() - playbackWallStarted;
       });
       playbackChain.catch((error) => { playbackError ||= error; });
     };
@@ -571,11 +659,12 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     let streamedResult;
     let streamError = null;
     try {
-      streamedResult = await talkStream(text, queueSentence, utteranceId, controller.signal, prefetchSpeculative);
+      streamedResult = await talkStream(text, queueSentence, utteranceId, controller.signal);
       clientTimings.turnStreamMs = Number(streamedResult?.clientElapsedMs) || 0;
       clientTimings.serverTotalMs = Number(streamedResult?.timings?.totalMs) || 0;
       clientTimings.primaryMs = Number(streamedResult?.timings?.primaryMs) || 0;
       clientTimings.verifierMs = Number(streamedResult?.timings?.verifierMs) || 0;
+      clientTimings.answerGenerationTotalMs = Number(streamedResult?.timings?.totalMs) || clientTimings.turnStreamMs;
       clientTimings.streamed = Boolean(streamedResult?.streamed);
     } catch (error) {
       streamError = error;
@@ -598,6 +687,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     }
 
     if (!streamError && streamedResult && !streamedResult.streamed) {
+      mainAnswerReady = true;
       const spokenAnswer = voiceSafeText(streamedResult.answer);
       const chunks = voiceChunks(spokenAnswer);
       for (const chunk of chunks) queueSentence(chunk);
@@ -611,6 +701,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     if (playbackError) throw playbackError;
     console.log(`[latency] pipeline-complete=${clientTimings.pipelineCompleteMs}ms streamed=${Boolean(streamedResult?.streamed)} sentences=${queuedSentences}`);
   } catch (error) {
+    clientTimings.error = String(error?.message || error || '').slice(0, 500);
     if (sessionEpoch !== voiceEpoch) return;
     if (controller.signal.aborted || turnSerial !== activeTurnSerial) {
       console.log(`[pipeline] interrupted utterance=${utteranceId}`);
@@ -622,7 +713,7 @@ async function processTranscript(text, userId, sessionEpoch, speechMetrics = {})
     }
   } finally {
     if (!clientTimings.pipelineCompleteMs) clientTimings.pipelineCompleteMs = Date.now() - pipelineStarted;
-    console.log(`[latency-summary] utterance=${utteranceId} sttMs=${clientTimings.sttMs} batchSttMs=${clientTimings.batchSttMs} primaryMs=${clientTimings.primaryMs} verifierMs=${clientTimings.verifierMs} firstTtsMs=${clientTimings.firstTtsMs} firstAudioReadyMs=${clientTimings.firstAudioReadyMs} speechEndToPlaybackStartMs=${clientTimings.speechEndToPlaybackStartMs}`);
+    console.log(`[latency-summary] utterance=${utteranceId} sttMs=${clientTimings.sttMs} speechEndToSttFinalMs=${clientTimings.speechEndToSttFinalMs} batchSttMs=${clientTimings.batchSttMs} answerStartMs=${clientTimings.answerStartMs} primaryMs=${clientTimings.primaryMs} verifierMs=${clientTimings.verifierMs} answerGenerationTotalMs=${clientTimings.answerGenerationTotalMs} firstTtsMs=${clientTimings.firstTtsMs} firstAudioReadyMs=${clientTimings.firstAudioReadyMs} ffmpegSpawnMs=${clientTimings.ffmpegSpawnMs} speechEndToPlaybackStartMs=${clientTimings.speechEndToPlaybackStartMs} pipelineCompleteMs=${clientTimings.pipelineCompleteMs}`);
     postVoiceMetrics(text, clientTimings, utteranceId).catch(() => {});
     if (activeTurnAbortController === controller) activeTurnAbortController = null;
     if (turnSerial === activeTurnSerial && sessionEpoch === voiceEpoch) {
@@ -767,6 +858,7 @@ function startReceiverSession(userId, speakingNow = false) {
   let transport = null;
   let reusedSocket = false;
   let inputEndedAt = 0;
+  let lastAudioAt = 0;
   let usedBatchStt = false;
   let batchSttMs = 0;
   let packetStartWatchdog = null;
@@ -835,6 +927,7 @@ function startReceiverSession(userId, speakingNow = false) {
     if (sessionEpoch !== voiceEpoch) return;
 
     if (!text && pcm16.length) {
+      // Batch fallback is reserved for missing/failed realtime transcription only.
       try {
         usedBatchStt = true;
         const fallbackStarted = Date.now();
@@ -848,14 +941,18 @@ function startReceiverSession(userId, speakingNow = false) {
     }
 
     if (sessionEpoch !== voiceEpoch) return;
-    const sttMs = inputEndedAt ? Math.max(0, Date.now() - inputEndedAt) : 0;
+    const sttCompletedAt = Date.now();
+    const speechEndedAt = lastAudioAt || inputEndedAt || sttCompletedAt;
+    const speechEndToSttFinalMs = Math.max(0, sttCompletedAt - speechEndedAt);
+    const sttMs = speechEndToSttFinalMs;
     if (text) {
       processTranscript(text, userId, sessionEpoch, {
         sttMs,
+        speechEndToSttFinalMs,
         batchSttMs,
         sttMode: usedBatchStt ? 'batch' : 'realtime',
         sttReused: reusedSocket,
-        speechEndedAt: inputEndedAt || Date.now(),
+        speechEndedAt,
         utteranceId: `utt-${randomUUID()}`,
       });
     } else {
@@ -881,7 +978,7 @@ function startReceiverSession(userId, speakingNow = false) {
     }
   };
 
-  const endInput = () => {
+  const endInput = (reason = 'discord-silence') => {
     if (inputEnded) return;
     inputEnded = true;
     inputEndedAt = Date.now();
@@ -889,6 +986,11 @@ function startReceiverSession(userId, speakingNow = false) {
     try { opus.destroy(); } catch {}
     try { decoder.destroy(); } catch {}
     try { resampler.stdin.end(); } catch {}
+
+    if (reason === 'speech-final') {
+      complete('speech-final');
+      return;
+    }
 
     if (realtimeFailed || !ws) {
       complete('batch-fallback');
@@ -923,9 +1025,10 @@ function startReceiverSession(userId, speakingNow = false) {
     }
 
     if (payload?.speech_final && text) {
-      if (!inputEnded) endInput();
-      clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => complete('speech-final'), 100);
+      // Nova-3 endpointing is authoritative on the normal path. Do not wait
+      // for Discord's 1600ms silence safety guard or send an extra Finalize.
+      if (!inputEnded) endInput('speech-final');
+      else complete('speech-final');
     } else if (inputEnded && payload?.from_finalize) {
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => complete('from-finalize'), 80);
@@ -996,6 +1099,7 @@ function startReceiverSession(userId, speakingNow = false) {
   resampler.stdout.on('data', (pcm16) => {
     pcm16Bytes += pcm16.length;
     if (!pcm16.length) return;
+    lastAudioAt = Date.now();
     if (pcm16Chunks.length < 600) pcm16Chunks.push(Buffer.from(pcm16));
     if (transport) transport.lastAudioAt = Date.now();
 
