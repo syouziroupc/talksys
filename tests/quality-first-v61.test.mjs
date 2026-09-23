@@ -14,11 +14,12 @@ const {
   runGeminiTurn,
 } = __test;
 
-test('v61 quality-first prompt skips search only for greeting-like trivial conversation', () => {
+test('v84 quality-first prompt avoids duplicate search while keeping external facts grounded', () => {
   const prompt = buildTalkSysSystemInstruction(new Date('2026-09-18T05:00:00Z'));
-  assert.match(prompt, /明確なあいさつ、礼、短い相づちだけは検索しなくて構いません/);
-  assert.match(prompt, /それ以外の質問・依頼は、計算や文章処理を含め、原則としてGoogle検索/);
-  assert.match(prompt, /速度より正確さを優先/);
+  assert.match(prompt, /明確なあいさつ、礼、短い相づち、単純計算/);
+  assert.match(prompt, /外部事実を含む回答は検索根拠を優先/);
+  assert.match(prompt, /同じ内容を検証目的で二重検索しない/);
+  assert.match(prompt, /根拠がない固有名詞/);
 });
 
 test('pure greeting does not even expose Google Search to Gemini', async () => {
