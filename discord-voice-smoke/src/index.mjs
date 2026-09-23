@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v82-web-fast-reaction-live-log-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v83-stable-turn-gating-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -36,6 +36,7 @@ const DISCORD_READY_TIMEOUT_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
+const DISCORD_SEGMENT_SILENCE_MS = Math.max(WEB_VOICE_CAPTURE_POLICY.silenceMs, 1000);
 const REQUEST_BUDGET_MS = Object.freeze({
   stt: 30000,
   turn: 35000,
@@ -833,6 +834,14 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     timings.verifierMs = Number(turn?.timings?.verifierMs) || 0;
     timings.answerGenerationTotalMs = Number(turn?.timings?.totalMs) || Math.max(0, timeline.finalAnswerAt - timeline.turnStartAt);
 
+    // If the user resumed speaking while this answer was being generated,
+    // do not let the now-stale answer start talking over the newer utterance.
+    if (lastUserSpeechAt > (timeline.utteranceEndAt || 0)) {
+      console.log(`[pipeline] stale answer suppressed utterance=${utteranceId} newerSpeechAt=${lastUserSpeechAt}`);
+      mirrorRuntimeLog('TURN', `stale answer suppressed ${utteranceId}`);
+      return;
+    }
+
     // Waiting audio is never part of the answer dependency chain.
     activeWaitCue?.stop('final-answer-ready');
     activeWaitCue = null;
@@ -1122,7 +1131,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
 
   finalizeTimer = setInterval(() => {
     if (completed || !lastPcmAt || pcm16Bytes === 0) return;
-    if (Date.now() - lastPcmAt >= WEB_VOICE_CAPTURE_POLICY.silenceMs) {
+    if (Date.now() - lastPcmAt >= DISCORD_SEGMENT_SILENCE_MS) {
       finalize('discord-pcm-silence').catch(() => {});
     }
   }, 25);
@@ -1219,8 +1228,20 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
   connection.receiver.speaking.on('start', (userId) => {
     if (userId === client.user.id) return;
-    const startedDuringBotPlayback = Boolean(activeBotPlaybackRecord) || player.state.status === AudioPlayerStatus.Playing || (Date.now() - lastBotPlaybackEndedAt < 1200);
-    interruptActiveAnswer('user-speech');
+    const botAudiblySpeaking = Boolean(activeBotPlaybackRecord) || player.state.status === AudioPlayerStatus.Playing;
+    const startedDuringBotPlayback = botAudiblySpeaking || (Date.now() - lastBotPlaybackEndedAt < 1200);
+
+    // A Discord speaking-start can be a continuation after a short pause.
+    // Only barge into an answer when TalkSys is actually audible; otherwise
+    // keep the in-flight answer alive and let stale-answer suppression decide
+    // whether it is still valid once generation completes.
+    if (botAudiblySpeaking) {
+      interruptActiveAnswer('user-barge-in');
+    } else if (activeFastReaction) {
+      try { activeFastReaction.stop?.('user-continued-speaking'); } catch {}
+      activeFastReaction = null;
+    }
+
     startReceiverSession(userId, true, { startedDuringBotPlayback });
   });
 
