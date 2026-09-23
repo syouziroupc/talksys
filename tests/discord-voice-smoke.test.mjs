@@ -151,11 +151,12 @@ test('Discord uses Node native WebSocket and carries no extra websocket dependen
 });
 
 
-test('v84 Discord falls back to Windows Japanese TTS when Cloudflare MeloTTS returns 3043', () => {
+test('v84 Discord uses Windows Japanese TTS first and only tries Cloudflare as recovery', () => {
   assert.match(source, /synthesizeWindowsJapaneseTts/);
   assert.match(source, /System\.Speech\.Synthesis\.SpeechSynthesizer/);
-  assert.match(source, /MeloTTS exhausted JP retries/);
-  assert.match(source, /Cloudflare MeloTTS failed; falling back to Windows System\.Speech/);
+  assert.match(source, /if \(process\.platform === 'win32'\)/);
+  assert.match(source, /Windows System\.Speech failed; trying Cloudflare MeloTTS/);
+  assert.match(source, /async function synthesizeCloudflareTts/);
   assert.match(source, /source: 'windows-system-speech'/);
 });
 
