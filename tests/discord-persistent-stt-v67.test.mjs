@@ -4,10 +4,11 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
-test('legacy realtime STT transport is absent from Discord bridge', () => {
-  assert.doesNotMatch(source, /WebSocket|realtimeSttSockets|prewarmRealtimeSttSocket|acquireRealtimeSttSocket/);
-  assert.doesNotMatch(source, /KeepAlive|speech_final|from_finalize|type:\s*['"]Finalize['"]/);
-  assert.doesNotMatch(source, /registerRealtimeSttFailure|realtimeSttBackoffUntil|circuit/i);
+test('realtime STT exists only as the Web-compatible fast-reaction helper', () => {
+  assert.match(source, /new WebSocket\(realtimeSttUrl\(\)\)/);
+  assert.match(source, /\/api\/fast-reaction/);
+  assert.match(source, /speech_final/);
+  assert.doesNotMatch(source, /prewarmRealtimeSttSocket|acquireRealtimeSttSocket|registerRealtimeSttFailure|realtimeSttBackoffUntil|circuit|type:\s*['"]Finalize['"]/i);
 });
 
 test('Whisper /api/transcribe is called for every accepted captured utterance', () => {
@@ -23,7 +24,7 @@ test('Discord transport gate owns segmentation and finalizes after the shared 65
   assert.match(source, /Date\.now\(\) - lastPcmAt >= WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
   assert.match(source, /finalize\('discord-pcm-silence'\)/);
   assert.match(source, /browserVadBypassed: true/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v81-fast-ack-echo-guard-r1'/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v82-web-fast-reaction-live-log-r1'/);
   assert.doesNotMatch(source, /capture\.shouldFinalize|web-compatible-silence|WebCompatibleCapture/);
 });
 
