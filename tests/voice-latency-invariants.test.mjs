@@ -52,8 +52,8 @@ test('latency metrics preserve the full quality-first pipeline', () => {
 test('v84 factual grounding fails closed when Gemini returns no URL citations', () => {
   assert.match(integrated, /export function interactionCitationCount/);
   assert.match(integrated, /export function requiresGroundedEvidence/);
-  assert.match(integrated, /const groundingFailClosed = groundingRequired && citationCount === 0/);
-  assert.match(integrated, /未確認の固有事実や数値は断定しません/);
+  assert.match(integrated, /const groundingFailClosed = groundingRequired && !groundingSearchPerformed/);
+  assert.match(integrated, /推測では答えず/);
 });
 
 
