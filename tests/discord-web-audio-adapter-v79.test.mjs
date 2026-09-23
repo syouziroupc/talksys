@@ -23,7 +23,8 @@ test('Discord transport speaking gate is authoritative and browser VAD cannot di
   assert.match(bridge, /pcm16Chunks\.push\(Buffer\.from\(pcm16\)\)/);
   assert.match(bridge, /browserVadBypassed: true/);
   assert.match(bridge, /transportGated: true/);
-  assert.match(bridge, /Date\.now\(\) - lastPcmAt >= WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
+  assert.match(bridge, /const DISCORD_SEGMENT_SILENCE_MS = Math\.max\(WEB_VOICE_CAPTURE_POLICY\.silenceMs, 1000\)/);
+  assert.match(bridge, /Date\.now\(\) - lastPcmAt >= DISCORD_SEGMENT_SILENCE_MS/);
   assert.doesNotMatch(bridge, /WebCompatibleCapture|captureMetrics\.voicedMs|captureMetrics\.snr|voiceProfiles|learnRejectedCapture|learnSuccessfulSpeech|learnSttFailure/);
 });
 
