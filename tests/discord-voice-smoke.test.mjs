@@ -23,8 +23,8 @@ test('Discord Whisper transcription is the normal path, not a fallback', () => {
   assert.match(source, /stt: 30000/);
   assert.match(source, /content-type': 'audio\/wav'/);
   assert.match(source, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
-  assert.match(source, /sttMode: 'whisper-batch'/);
-  assert.match(source, /fallback: false/);
+  assert.match(source, /sttMode: 'web-whisper'/);
+  assert.doesNotMatch(source, /batchSttMs|batchTranscribePcm16|fallbackController|realtimeSttBackoff|realtimeSttSockets/);
   assert.doesNotMatch(source, /batchTranscribePcm16|fallbackController|realtimeSttFailure|realtimeSttBackoff|realtimeSttSockets/i);
 });
 
