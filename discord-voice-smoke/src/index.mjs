@@ -458,12 +458,10 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
   activeTurnAbortController = controller;
 
   const timings = {
-    sttMode: 'whisper-batch',
-    fallback: false,
+    sttMode: 'web-whisper',
     captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
     sttMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.transcribeStartAt || 0)),
     speechEndToSttFinalMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.utteranceEndAt || 0)),
-    batchSttMs: 0,
     answerStartMs: 0,
     primaryMs: 0,
     verifierMs: 0,
@@ -573,8 +571,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
       text: '',
       utteranceId,
       timings: {
-        sttMode: 'whisper-batch',
-        fallback: false,
+        sttMode: 'web-whisper',
         captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
         sttMs: Math.max(0, Date.now() - (timeline.transcribeStartAt || Date.now())),
         speechEndToSttFinalMs: Math.max(0, Date.now() - (timeline.utteranceEndAt || Date.now())),
