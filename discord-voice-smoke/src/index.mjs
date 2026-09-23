@@ -682,6 +682,11 @@ function startReceiverSession(userId, speakingNow = false) {
     timeline.firstPcmAt = captured.metrics.firstPcmAt || timeline.firstPcmAt;
     timeline.utteranceEndAt = endedAt;
     cleanup();
+    // Re-arm immediately so the next utterance is already subscribed before
+    // Discord's speaking event. This preserves the earliest frames for pre-roll.
+    queueMicrotask(() => {
+      if (sessionEpoch === voiceEpoch && connection) startReceiverSession(userId, false);
+    });
     console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captured.metrics.durationMs}ms voiced=${captured.metrics.voicedMs}ms snr=${captured.metrics.snr}`);
     await handleCapturedUtterance({
       pcm: captured.pcm,
