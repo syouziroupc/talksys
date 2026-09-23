@@ -582,6 +582,7 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
     sttMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.transcribeStartAt || 0)),
     speechEndToSttFinalMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.utteranceEndAt || 0)),
+    immediateAckMs: Math.max(0, (timeline.immediateAckPlaybackAt || 0) - (timeline.utteranceEndAt || 0)),
     answerStartMs: 0,
     primaryMs: 0,
     verifierMs: 0,
@@ -649,7 +650,7 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     activeImmediateAck = null;
     timeline.pipelineCompleteAt = Date.now();
     timings.pipelineCompleteMs = Math.max(0, timeline.pipelineCompleteAt - pipelineStarted);
-    console.log(`[latency-summary] utterance=${utteranceId} captureMs=${timings.captureMs} sttMs=${timings.sttMs} speechEndToSttFinalMs=${timings.speechEndToSttFinalMs} primaryMs=${timings.primaryMs} verifierMs=${timings.verifierMs} answerGenerationTotalMs=${timings.answerGenerationTotalMs} firstTtsMs=${timings.firstTtsMs} ffmpegSpawnMs=${timings.ffmpegSpawnMs} speechEndToPlaybackStartMs=${timings.speechEndToPlaybackStartMs} pipelineCompleteMs=${timings.pipelineCompleteMs}`);
+    console.log(`[latency-summary] utterance=${utteranceId} captureMs=${timings.captureMs} sttMs=${timings.sttMs} speechEndToSttFinalMs=${timings.speechEndToSttFinalMs} immediateAckMs=${timings.immediateAckMs} primaryMs=${timings.primaryMs} verifierMs=${timings.verifierMs} answerGenerationTotalMs=${timings.answerGenerationTotalMs} firstTtsMs=${timings.firstTtsMs} ffmpegSpawnMs=${timings.ffmpegSpawnMs} speechEndToPlaybackStartMs=${timings.speechEndToPlaybackStartMs} pipelineCompleteMs=${timings.pipelineCompleteMs}`);
     postVoiceMetrics({
       text: confirmedTranscript,
       utteranceId,
@@ -745,7 +746,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
 }
 
 function interruptActiveAnswer(reason = 'user-speech') {
-  if (!answering && player.state.status !== AudioPlayerStatus.Playing) return false;
+  if (!answering && !activeImmediateAck && player.state.status !== AudioPlayerStatus.Playing) return false;
   activeTurnSerial += 1;
   const controller = activeTurnAbortController;
   activeTurnAbortController = null;
