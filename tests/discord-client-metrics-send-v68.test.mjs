@@ -22,8 +22,11 @@ test('Discord turn stream exposes server timing fields to client metrics', () =>
 test('Discord records first TTS, first audio, playback, and pipeline completion', () => {
   assert.match(source, /clientTimings\.firstTtsMs = prefetched\.elapsedMs/);
   assert.match(source, /clientTimings\.firstAudioReadyMs = Date\.now\(\) - pipelineStarted/);
+  assert.match(source, /speechEndToSttFinalMs/);
+  assert.match(source, /answerGenerationTotalMs/);
+  assert.match(source, /ffmpegSpawnMs/);
   assert.match(source, /speechEndToPlaybackStartMs/);
-  assert.match(source, /\[latency-summary\].*sttMs=.*batchSttMs=.*primaryMs=.*verifierMs=.*firstTtsMs=.*firstAudioReadyMs=/);
+  assert.match(source, /\[latency-summary\].*sttMs=.*speechEndToSttFinalMs=.*batchSttMs=.*answerStartMs=.*primaryMs=.*verifierMs=.*answerGenerationTotalMs=.*firstTtsMs=.*firstAudioReadyMs=.*ffmpegSpawnMs=.*speechEndToPlaybackStartMs=/);
   assert.match(source, /clientTimings\.playbackMs = totalPlaybackMs/);
   assert.match(source, /clientTimings\.pipelineCompleteMs = Date\.now\(\) - pipelineStarted/);
 });
@@ -36,17 +39,19 @@ test('STT completion reports realtime versus batch and records prewarmed socket 
   assert.match(source, /return \{ transport: createRealtimeSttTransport\(userId, sessionEpoch, true\), reused: false \}/);
   assert.match(source, /return \{ transport: existing, reused: true \}/);
   assert.match(source, /sttMs,/);
+  assert.match(source, /speechEndToSttFinalMs,/);
+  assert.match(source, /speechEndedAt,/);
 });
 
 test('queued turns preserve their original speech metrics', () => {
   assert.match(source, /pendingTurns\.push\(\{ text, userId, sessionEpoch, speechMetrics \}\)/);
   assert.match(source, /processTranscript\(next\.text, next\.userId, next\.sessionEpoch, next\.speechMetrics\)/);
-  assert.match(source, /talksys-discord-bridge-v77-stt-critical-six-r1/);
+  assert.match(source, /talksys-discord-bridge-v78-observability-common-turn-r1/);
 });
 
 test('one utterance id links the turn request and its voice metrics event', () => {
   assert.match(source, /const utteranceId = String\(speechMetrics\?\.utteranceId \|\| `utt-\$\{randomUUID\(\)\}`\)/);
-  assert.match(source, /talkStream\(text, queueSentence, utteranceId, controller\.signal, prefetchSpeculative\)/);
+  assert.match(source, /talkStream\(text, queueSentence, utteranceId, controller\.signal\)/);
   assert.match(source, /utteranceId,/);
   assert.match(source, /postVoiceMetrics\(text, clientTimings, utteranceId\)/);
 });
