@@ -71,6 +71,8 @@ export function isLikelySttHallucination(text, metrics) {
   if (!value) return true;
   if (/^(?:ご視聴ありがとうございました|ご清聴ありがとうございました|最後までご視聴ありがとうございました|チャンネル登録(?:を)?(?:お願い(?:します|いたします)|よろしくお願いします)|字幕(?:をご覧いただき)?ありがとうございました)[。．.!！?？]*$/u.test(value)
       && (!metrics?.valid || metrics.rms < 0.010 || metrics.activeMs < 650 || metrics.activeRatio < 0.24)) return true;
+  if (/^(?:ありがとうございました|どうもありがとうございました|お疲れ様でした|よろしくお願いします)[。．.!！?？]*$/u.test(value)
+      && (!metrics?.valid || metrics.rms < 0.0065 || metrics.activeMs < 280 || metrics.activeRatio < 0.12)) return true;
   if (/^(?:えー|あー|うー|んー|…|\.\.\.)$/u.test(value) && weakSpeechSignal(metrics)) return true;
   return false;
 }
