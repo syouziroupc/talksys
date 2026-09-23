@@ -64,7 +64,7 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
 test('v84 preserves authoritative Whisper while sharing the turn policy', () => {
   assert.match(bridge, /talksys-discord-bridge-v84-unified-force-reply-r1/);
   assert.match(integrated, /talksys-v84-unified-force-reply-r1/);
-  assert.match(bridge, /voice-turn-policy\.js/);
+  assert.match(bridge, /voice-fast-reaction\\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/turn'/);
 });
