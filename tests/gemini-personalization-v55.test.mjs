@@ -135,3 +135,49 @@ test('integrated browser and Telnyx turns share the same personalized Gemini run
   assert.match(source, /url\.pathname === '\/api\/turn'/);
   assert.doesNotMatch(source, /LEGACY_GLM|@cf\/zai-org\/glm/);
 });
+
+
+test('current time is answered deterministically from authoritative JST without Gemini or search', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error('should not fetch'); };
+  try {
+    const result = await runGeminiTurn(
+      { text: '今何時ですか?', history: [] },
+      { GEMINI_API_KEY: 'test-key' },
+      undefined,
+      { now: new Date('2026-09-23T13:42:00Z') },
+    );
+    assert.equal(calls, 0);
+    assert.equal(result.route, 'deterministic-jst-clock');
+    assert.equal(result.search, false);
+    assert.equal(result.answer, '現在は22時42分です。');
+    assert.equal(result.authoritativeJst, '2026-09-23T22:42:00+09:00');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('casual contextual speech does not force Google Search', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    const req = JSON.parse(options.body);
+    assert.equal(req.tools, undefined);
+    assert.doesNotMatch(req.system_instruction, /この回答ではGoogle検索を実行/);
+    return new Response(JSON.stringify({
+      id: 'casual-turn',
+      status: 'completed',
+      steps: [{ type: 'model_output', content: [{ type: 'text', text: 'そうですね、前より会話はつながっています。' }] }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const result = await runGeminiTurn({
+      text: 'これ変わったな',
+      history: [{ role: 'user', content: '会話が成立し始めた' }],
+    }, { GEMINI_API_KEY: 'test-key' });
+    assert.equal(result.search, false);
+    assert.match(result.answer, /前より会話/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
