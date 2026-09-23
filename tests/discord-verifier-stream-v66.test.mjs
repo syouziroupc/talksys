@@ -11,11 +11,12 @@ test('Discord no longer has a private final-answer stream endpoint', () => {
   assert.match(discord, /TALKSYS_BASE_URL \+ '\/api\/turn'/);
 });
 
-test('generic verification remains in the common web/Discord turn runner', () => {
+test('v84 common web/Discord turn runner is single-pass grounded', () => {
   assert.match(server, /export async function commonTalkSysTurn/);
   assert.match(server, /return runGeminiTurn\(body, env, signal, options\)/);
-  assert.match(server, /shouldRunGenericVerification\(text, interaction\.payload\)/);
-  assert.match(server, /runGenericGeminiVerification\(env, body, interaction, signal, now\)/);
+  assert.match(server, /shouldRunGenericVerification\(_text = '', _payload = \{\}\)/);
+  assert.match(server, /reason: 'v84-single-pass-grounded'/);
+  assert.doesNotMatch(server, /if \(shouldRunGenericVerification\(text, interaction\.payload\)\)/);
   assert.match(server, /const result = await commonTalkSysTurn\(commonBody, env, signal\)/);
 });
 
