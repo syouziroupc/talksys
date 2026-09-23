@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v84-dedupe-tts-observable-r2';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v85-turn-integrity-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -36,6 +36,8 @@ const DISCORD_READY_TIMEOUT_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
+const RECENT_USER_TURN_WINDOW_MS = 2500;
+const BOT_OVERLAP_SHORT_TEXT_MAX = 12;
 const DISCORD_SEGMENT_SILENCE_MS = WEB_VOICE_CAPTURE_POLICY.silenceMs;
 const REQUEST_BUDGET_MS = Object.freeze({
   stt: 30000,
@@ -69,6 +71,7 @@ let activeFastReaction = null;
 const fastReactionAudioCache = new Map();
 const realtimeHelpers = new Map();
 const recentBotSpeech = [];
+const recentAcceptedUserTurns = [];
 let runtimeLogChannel = null;
 let runtimeLogMessage = null;
 let runtimeLogFlushTimer = null;
@@ -98,6 +101,7 @@ function resetConversationState() {
   activeWaitCue = null;
   activeFastReaction = null;
   recentBotSpeech.splice(0, recentBotSpeech.length);
+  recentAcceptedUserTurns.splice(0, recentAcceptedUserTurns.length);
   activeBotPlaybackRecord = null;
   lastBotPlaybackEndedAt = 0;
   lastUserSpeechAt = 0;
@@ -149,6 +153,48 @@ function looksLikeRecentBotEcho(text, timeline = {}) {
     if (overlaps && sameUtterance(value, record.text)) return record;
   }
   return null;
+}
+
+function pruneRecentAcceptedUserTurns(now = Date.now()) {
+  while (recentAcceptedUserTurns.length && now - (recentAcceptedUserTurns[0]?.endedAt || 0) > RECENT_USER_TURN_WINDOW_MS) {
+    recentAcceptedUserTurns.shift();
+  }
+}
+
+function rememberAcceptedUserTurn(text, userId, timeline = {}) {
+  const value = String(text || '').trim();
+  if (!value) return;
+  const endedAt = Number(timeline.utteranceEndAt || Date.now());
+  const startedAt = Number(timeline.discordReceiveStartAt || timeline.firstPcmAt || endedAt);
+  pruneRecentAcceptedUserTurns(endedAt);
+  recentAcceptedUserTurns.push({ text: value, userId: String(userId || ''), startedAt, endedAt });
+  if (recentAcceptedUserTurns.length > 8) recentAcceptedUserTurns.splice(0, recentAcceptedUserTurns.length - 8);
+}
+
+function looksLikeRecentUserDuplicate(text, userId, timeline = {}) {
+  const value = String(text || '').trim();
+  if (!value) return null;
+  const now = Date.now();
+  const startedAt = Number(timeline.discordReceiveStartAt || timeline.firstPcmAt || now);
+  const endedAt = Number(timeline.utteranceEndAt || now);
+  pruneRecentAcceptedUserTurns(now);
+  for (let i = recentAcceptedUserTurns.length - 1; i >= 0; i -= 1) {
+    const prior = recentAcceptedUserTurns[i];
+    if (String(prior.userId || '') !== String(userId || '')) continue;
+    const adjacent = startedAt <= Number(prior.endedAt || 0) + RECENT_USER_TURN_WINDOW_MS
+      && endedAt >= Number(prior.startedAt || 0) - 250;
+    if (adjacent && sameUtterance(value, prior.text)) return prior;
+  }
+  return null;
+}
+
+function shouldDropUncorroboratedBotOverlap(text, captureMetrics = {}, policy = {}) {
+  if (!captureMetrics?.overlappedBotPlayback || policy?.action === 'interrupt') return false;
+  const confirmed = String(text || '').trim();
+  if (!confirmed || confirmed.length > BOT_OVERLAP_SHORT_TEXT_MAX) return false;
+  if (/^(?:違う|ちがう|いや|そうじゃない|それ違う|訂正)/.test(confirmed)) return false;
+  const realtime = String(captureMetrics?.realtimeTranscript || '').trim();
+  return Boolean(realtime) && !sameUtterance(confirmed, realtime);
 }
 
 function runtimeLogText() {
@@ -889,6 +935,13 @@ async function playMp3(mp3, options = {}) {
 async function processConfirmedTranscript({ confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
   if (!confirmedTranscript || sessionEpoch !== voiceEpoch) return;
 
+  const recentDuplicate = looksLikeRecentUserDuplicate(confirmedTranscript, userId, timeline);
+  if (recentDuplicate) {
+    console.warn(`[dedupe] suppressed adjacent completed duplicate utterance=${utteranceId}: ${confirmedTranscript}`);
+    mirrorRuntimeLog('DEDUPE', `adjacent completed duplicate: ${confirmedTranscript}`);
+    return;
+  }
+
   if (answering && activeUserText && sameUtterance(confirmedTranscript, activeUserText)) {
     console.warn(`[dedupe] suppressed duplicate in-flight utterance=${utteranceId} active=${activeUserUtteranceId}: ${confirmedTranscript}`);
     mirrorRuntimeLog('DEDUPE', `in-flight duplicate: ${confirmedTranscript}`);
@@ -912,6 +965,11 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     mirrorRuntimeLog('INTERRUPT', `explicit stop: ${confirmedTranscript}`);
     return;
   }
+  if (shouldDropUncorroboratedBotOverlap(confirmedTranscript, captureMetrics, policy)) {
+    console.warn(`[turn-policy] dropped reason=bot-overlap-unconfirmed whisper="${confirmedTranscript}" realtime="${String(captureMetrics?.realtimeTranscript || '')}"`);
+    mirrorRuntimeLog('DROP', `bot-overlap-unconfirmed: ${confirmedTranscript}`);
+    return;
+  }
   if (answering) {
     const nextTurn = { confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta };
     if (pendingTurns.length === 0) pendingTurns.push(nextTurn);
@@ -924,6 +982,7 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
   answering = true;
   activeUserText = confirmedTranscript;
   activeUserUtteranceId = utteranceId;
+  rememberAcceptedUserTurn(confirmedTranscript, userId, timeline);
   const pipelineStarted = Date.now();
   const turnSerial = ++activeTurnSerial;
   const controller = new AbortController();
