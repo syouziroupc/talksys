@@ -20,6 +20,18 @@ test('post-STT wait cue is skipped when the immediate acknowledgement was alread
   assert.match(bridge, /activeImmediateAck\?\.stop\?\.\(reason\)/);
 });
 
+test('speech that starts during bot playback cannot create an acknowledgement echo loop', () => {
+  assert.match(bridge, /let activeBotPlaybackRecord = null/);
+  assert.match(bridge, /const startedDuringBotPlayback = Boolean\(activeBotPlaybackRecord\) \|\| player\.state\.status === AudioPlayerStatus\.Playing/);
+  assert.match(bridge, /startReceiverSession\(userId, true, \{ startedDuringBotPlayback \}\)/);
+  assert.match(bridge, /if \(!overlappedBotPlayback\) startImmediateAck/);
+  assert.match(bridge, /defer acknowledgement for bot-overlap/);
+});
+
+test('acknowledgement audio is prewarmed when the Discord gateway becomes ready', () => {
+  assert.match(bridge, /warmImmediateAckAudio\(\)\.catch\(\(error\) => console\.warn\('\[ack\] gateway warmup failed:'/);
+});
+
 test('renewed user speech cancels an acknowledgement even while TTS is still pending', () => {
   assert.match(bridge, /if \(!answering && !activeImmediateAck && player\.state\.status !== AudioPlayerStatus\.Playing\) return false/);
   assert.match(bridge, /activeImmediateAck\?\.stop\?\.\(reason\)/);
