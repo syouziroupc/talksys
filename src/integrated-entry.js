@@ -422,7 +422,7 @@ export function shouldStronglyPreferSearch(text = '') {
   if (SIMPLE_ARITHMETIC_RE.test(value) || LOCAL_TRANSFORM_RE.test(value)) return false;
   if (/(?:検索|調べ|確認|探して|見つけて)/i.test(value)) return true;
   if (STRICT_DYNAMIC_GROUNDING_RE.test(value) || isImmediateTransitQuestion(value)) return true;
-  return /(?:誰|どこ|いつ|何日|いくら|価格|値段|相場|在庫|天気|運行|時刻表|乗換|乗り換え|おすすめ|候補|店|店舗|会社|企業|病院|ホテル|商品|製品|型番|仕様|互換|対応|住所|電話番号|営業時間|ニュース|法律|制度|社長|CEO|大統領|首相|発売|販売中)/i.test(value);
+  return /(?:誰|どこ|いつ|何日|いくら|価格|値段|相場|在庫|天気|運行|時刻表|乗換|乗り換え|おすすめ|候補|店|店舗|会社|企業|病院|ホテル|商品|製品|型番|仕様|互換|対応|住所|電話番号|営業時間|ニュース|法律|制度|社長|CEO|大統領|首相|発売|販売中|高さ|標高|人口|面積|年齢|生年月日|発売日|性能|スペック|重量|重さ|長さ|容量|速度)/i.test(value);
 }
 
 export function searchAnnouncementTopic(text = '') {
