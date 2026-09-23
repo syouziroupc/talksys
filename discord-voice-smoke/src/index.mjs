@@ -66,6 +66,7 @@ let activeImmediateAck = null;
 let immediateAckAudio = null;
 let immediateAckAudioPromise = null;
 const recentBotSpeech = [];
+let activeBotPlaybackRecord = null;
 let lastUserSpeechAt = 0;
 let lastUserPcmAt = 0;
 let recoveryAudio = null;
@@ -89,6 +90,7 @@ function resetConversationState() {
   activeWaitCue = null;
   activeImmediateAck = null;
   recentBotSpeech.splice(0, recentBotSpeech.length);
+  activeBotPlaybackRecord = null;
   lastUserSpeechAt = 0;
   lastUserPcmAt = 0;
   activeTurnSerial += 1;
@@ -527,7 +529,10 @@ async function playMp3(mp3, options = {}) {
     const onPlaying = () => {
       clearTimeout(timeout);
       const playbackStartedAt = Date.now();
-      if (options?.spokenText) botSpeechRecord = rememberBotSpeech(options.spokenText, options?.purpose || '', playbackStartedAt);
+      if (options?.spokenText) {
+        botSpeechRecord = rememberBotSpeech(options.spokenText, options?.purpose || '', playbackStartedAt);
+        activeBotPlaybackRecord = botSpeechRecord;
+      }
       const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
       console.log('[tx] playback started');
       try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
@@ -544,8 +549,8 @@ async function playMp3(mp3, options = {}) {
       player.stop(true);
       reject(new Error('playback_timeout'));
     }, 30000);
-    const done = () => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); cleanup(); resolve(); };
-    const fail = (error) => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); cleanup(); reject(error); };
+    const done = () => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); resolve(); };
+    const fail = (error) => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); reject(error); };
     const cleanup = () => {
       player.off(AudioPlayerStatus.Idle, done);
       player.off('error', fail);
@@ -762,11 +767,11 @@ function interruptActiveAnswer(reason = 'user-speech') {
   return true;
 }
 
-function startReceiverSession(userId, speakingNow = false) {
+function startReceiverSession(userId, speakingNow = false, options = {}) {
   if (!connection) return;
   const existing = sessions.get(userId);
   if (existing) {
-    if (speakingNow) existing.markSpeaking();
+    if (speakingNow) existing.markSpeaking(Boolean(options?.startedDuringBotPlayback));
     return;
   }
 
@@ -806,6 +811,7 @@ function startReceiverSession(userId, speakingNow = false) {
   let finalizeTimer = null;
   let pcm16Bytes = 0;
   let lastPcmAt = 0;
+  let overlappedBotPlayback = Boolean(options?.startedDuringBotPlayback);
 
   const clearTimers = () => {
     if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
@@ -814,9 +820,10 @@ function startReceiverSession(userId, speakingNow = false) {
     finalizeTimer = null;
   };
 
-  const markSpeaking = () => {
+  const markSpeaking = (startedDuringBotPlayback = false) => {
     if (completed) return;
     speakingMarked = true;
+    if (startedDuringBotPlayback) overlappedBotPlayback = true;
     lastUserSpeechAt = Date.now();
     if (!timeline.discordReceiveStartAt) timeline.discordReceiveStartAt = lastUserSpeechAt;
     if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
@@ -858,9 +865,11 @@ function startReceiverSession(userId, speakingNow = false) {
       speechDetected: pcm.length > 0,
       transportGated: true,
       browserVadBypassed: true,
+      overlappedBotPlayback,
     };
-    console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captureMetrics.durationMs}ms pcm=${pcm.length}B transport-gated=true`);
-    startImmediateAck(utteranceId, sessionEpoch, timeline);
+    console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captureMetrics.durationMs}ms pcm=${pcm.length}B transport-gated=true botOverlap=${overlappedBotPlayback}`);
+    if (!overlappedBotPlayback) startImmediateAck(utteranceId, sessionEpoch, timeline);
+    else console.log(`[echo-guard] defer acknowledgement for bot-overlap utterance=${utteranceId}`);
     await handleCapturedUtterance({
       pcm,
       userId,
@@ -873,7 +882,7 @@ function startReceiverSession(userId, speakingNow = false) {
 
   const session = { opus, decoder, resampler, markSpeaking, finalize };
   sessions.set(userId, session);
-  if (speakingNow) markSpeaking();
+  if (speakingNow) markSpeaking(Boolean(options?.startedDuringBotPlayback));
 
   finalizeTimer = setInterval(() => {
     if (completed || !lastPcmAt || pcm16Bytes === 0) return;
@@ -964,8 +973,9 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
   connection.receiver.speaking.on('start', (userId) => {
     if (userId === client.user.id) return;
+    const startedDuringBotPlayback = Boolean(activeBotPlaybackRecord) || player.state.status === AudioPlayerStatus.Playing;
     interruptActiveAnswer('user-speech');
-    startReceiverSession(userId, true);
+    startReceiverSession(userId, true, { startedDuringBotPlayback });
   });
 
   if (initialUserId && initialUserId !== client.user.id) {
@@ -1057,6 +1067,8 @@ client.once('ready', async () => {
       await ensureTalkSysCommands(guild);
       console.log(`[discord] slash commands ready guild=${guild.name}: /talksys /leave`);
     }
+    warmImmediateAckAudio().catch((error) => console.warn('[ack] gateway warmup failed:', error?.message || error));
+    warmRecoveryAudio().catch((error) => console.warn('[recovery] gateway warmup failed:', error?.message || error));
     console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
     console.error('[fatal]', error?.stack || error);
