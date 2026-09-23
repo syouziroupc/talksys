@@ -23,7 +23,7 @@ Discord固有処理は、Discordのspeaking gateで受けた音声の受信・48
 
 ## 音声認識
 
-確定文字起こしは毎回 `/api/transcribe` を使用します。Discord bridge内にRealtime STTの確定経路、Whisper fallback、STT投票、circuit breakerはありません。
+確定文字起こしは毎回 `/api/transcribe` を使用します。Web版と同じく `/api/realtime-stt` のNova-3は暫定文字列から `/api/fast-reaction` を呼ぶ高速相槌専用で、Novaの文字列をTalkSys回答へ渡しません。Whisper fallback、STT投票、circuit breakerはありません。
 
 発話区間はWeb版と同じ基準へ合わせています。
 
@@ -66,6 +66,7 @@ Whisperのタイムアウトは30秒です。数百msの短縮より認識品質
 ## 必要なDiscord Bot権限
 
 - View Channels
+- Send Messages（起動・通話ライブログ表示用）
 - Connect
 - Speak
 - Use Application Commands
@@ -98,6 +99,8 @@ powershell -ExecutionPolicy Bypass -File .\update-and-start.ps1
 `TALKSYS_BASE_URL` は省略時にproduction URLを使います。サーバーIDやVC IDの手入力は不要です。
 
 利用者がVCへ参加して `/talksys` を実行するとBotが同じVCへ参加します。`/leave` で退出します。
+
+`/logs` を実行すると、そのテキストチャンネルに1つのライブログメッセージを表示し、起動状態、Realtime STT補助接続、Whisper、回答、TTS、主要レイテンシ、エラーを更新表示します。`/talksys` 実行時にも同じチャンネルへ自動的にライブログを表示します。
 
 ## 実音声の合格確認
 
