@@ -4,48 +4,29 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
-test('Discord bridge prewarms a fresh STT websocket without reusing a finalized utterance socket', () => {
-  assert.match(source, /function prewarmRealtimeSttSocket\(userId, sessionEpoch\)/);
-  assert.match(source, /websocket prewarm user=/);
-  assert.match(source, /websocket prewarm claimed user=/);
-  assert.match(source, /destroyReusableSttSocket\(userId, 'utterance-complete'\)/);
-  assert.match(source, /prewarmRealtimeSttSocket\(userId, sessionEpoch\)/);
-  assert.doesNotMatch(source, /websocket reuse user=/);
+test('legacy realtime STT transport is absent from Discord bridge', () => {
+  assert.doesNotMatch(source, /WebSocket|realtimeSttSockets|prewarmRealtimeSttSocket|acquireRealtimeSttSocket/);
+  assert.doesNotMatch(source, /KeepAlive|Finalize|speech_final|from_finalize/);
+  assert.doesNotMatch(source, /registerRealtimeSttFailure|realtimeSttBackoffUntil|circuit/i);
 });
 
-test('idle prewarmed STT sockets stay alive until claimed by the next utterance', () => {
-  assert.match(source, /JSON\.stringify\(\{ type: 'KeepAlive' \}\)/);
-  assert.match(source, /Date\.now\(\) - transport\.lastAudioAt < 3000/);
-  assert.match(source, /existing\.claimed = true/);
-  assert.match(source, /existing\.epoch === sessionEpoch && !existing\.claimed/);
+test('Whisper /api/transcribe is called for every accepted captured utterance', () => {
+  assert.match(source, /async function handleCapturedUtterance/);
+  assert.match(source, /const stt = await transcribeCapturedUtterance\(pcm, utteranceId, timeline, controller\.signal\)/);
+  assert.match(source, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
+  assert.match(source, /confirmedTranscript: stt\.confirmedTranscript/);
+  assert.doesNotMatch(source, /if \(!text && pcm16\.length\)|batchTranscribePcm16/);
 });
 
-test('Finalize remains a fallback while Nova speech_final completes immediately', () => {
-  assert.match(source, /JSON\.stringify\(\{ type: 'Finalize' \}\)/);
-  assert.match(source, /payload\?\.from_finalize/);
-  assert.match(source, /complete\('from-finalize'\)/);
-  assert.match(source, /detachWsListeners\(\)/);
-  assert.match(source, /destroyReusableSttSocket\(userId, 'utterance-complete'\)/);
-  assert.match(source, /\}, 1500\)/);
-  assert.match(source, /if \(reason === 'speech-final'\) \{\s*complete\('speech-final'\);/s);
-  assert.match(source, /if \(payload\?\.speech_final && text\)/);
-  assert.doesNotMatch(source, /setTimeout\(\(\) => complete\('speech-final'\), 100\)/);
+test('Discord transport silence is only a safety guard behind web-compatible PCM finalization', () => {
+  assert.match(source, /EndBehaviorType\.AfterSilence, duration: 1600/);
+  assert.match(source, /capture\.shouldFinalize\(Date\.now\(\)\)/);
+  assert.match(source, /finalize\('web-compatible-silence'\)/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v79-web-audio-adapter-r1'/);
 });
 
-test('broken realtime STT always falls back and opens a bounded circuit breaker', () => {
-  assert.match(source, /destroyReusableSttSocket\(userId, 'realtime-failed'\)/);
-  assert.match(source, /registerRealtimeSttFailure\(realtimeFailureReason, statusCode\)/);
-  assert.match(source, /realtimeSttFailureCount = Math\.min\(6, realtimeSttFailureCount \+ 1\)/);
-  assert.match(source, /realtimeSttBackoffUntil = Math\.max/);
-  assert.match(source, /if \(!text && pcm16\.length\) \{/);
-  assert.match(source, /batchTranscribePcm16\(pcm16, realtimeFailureReason \|\| reason, fallbackController\.signal\)/);
-  assert.match(source, /markRealtimeFailed\('finalize-timeout'\)/);
-  assert.match(source, /Date\.now\(\) < realtimeSttBackoffUntil/);
-  assert.match(source, /registerRealtimeSttHealthy\(\)/);
-});
-
-test('voice disconnect closes any current STT socket and exposes the responsiveness revision', () => {
-  assert.match(source, /for \(const userId of \[\.\.\.realtimeSttSockets\.keys\(\)\]\)/);
-  assert.match(source, /destroyReusableSttSocket\(userId, 'voice-disconnect'\)/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v78-observability-common-turn-r1'/);
+test('receiver is rearmed after each utterance to protect the next utterance pre-roll', () => {
+  assert.match(source, /queueMicrotask\(\(\) => \{/);
+  assert.match(source, /startReceiverSession\(userId, false\)/);
+  assert.match(source, /prearmed user=/);
 });
