@@ -22,11 +22,11 @@ test('search preface names the topic for non-greeting search turns', () => {
   assert.equal(searchAnnouncementTopic('CF-SV8の中古価格は？'), 'CF-SV8の中古価格');
   assert.equal(searchAnnouncementTopic('おすすめのノートPCを探して'), 'おすすめのノートPC');
 
-  assert.deepEqual(searchPreface('別府市の今日の天気は？'), {
-    shouldSpeak: true,
-    topic: '別府市の今日の天気',
-    text: '別府市の今日の天気について検索しています。',
-  });
+  const preface = searchPreface('別府市の今日の天気は？');
+  assert.equal(preface.shouldSpeak, true);
+  assert.equal(preface.topic, '別府市の今日の天気');
+  assert.match(preface.text, /別府市の今日の天気/);
+  assert.match(preface.text, /調べています|確認しています|検索して確かめています|最新情報を確認しています|少し調べます/);
   assert.equal(searchPreface('12345÷15').shouldSpeak, false);
 });
 
@@ -46,4 +46,16 @@ test('Discord uses search preface only as independent wait audio', () => {
   assert.match(discord, /const turn = await talk\(confirmedTranscript/);
   assert.match(discord, /activeWaitCue\?\.stop\('final-answer-ready'\)/);
   assert.doesNotMatch(discord, /waitCuePromise|talkStream|\/api\/turn-stream/);
+});
+
+
+test('search prefaces vary deterministically across different lookup questions', () => {
+  const phrases = new Set([
+    searchPreface('別府市の今日の天気は？').text,
+    searchPreface('CF-SV8の中古価格は？').text,
+    searchPreface('城島高原パークの営業時間は？').text,
+    searchPreface('別府駅の始発は何時？').text,
+    searchPreface('大分市のおすすめPC店は？').text,
+  ]);
+  assert.ok(phrases.size >= 2);
 });
