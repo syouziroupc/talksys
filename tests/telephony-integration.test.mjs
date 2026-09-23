@@ -59,3 +59,19 @@ test('phone turn sends only prior history and never duplicates the current STT t
   assert.match(source, /deps\.turn\(\{ text: current, history: priorHistory/);
   assert.doesNotMatch(source, /deps\.turn\(\{ text, history: history\.slice\(-16\)/);
 });
+
+
+test('telephone transport shares the 900ms voice end policy and duplicate suppression', () => {
+  const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+  assert.match(source, /WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
+  assert.match(source, /sameUtterance\(stt\.text, lastAcceptedUserText\)/);
+  assert.match(source, /phone_duplicate_suppressed/);
+  assert.match(source, /talksys-telephony-v84-shared-turn-dedupe/);
+});
+
+test('telephone outbound TTS is pluggable without replacing Telnyx media transport', () => {
+  const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+  assert.match(source, /typeof deps\?\.synthesize === 'function'/);
+  assert.match(source, /synthesizeMp3\(env, text, deps\)/);
+  assert.match(source, /pluggableTts: true/);
+});
