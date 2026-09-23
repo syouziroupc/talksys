@@ -1,12 +1,67 @@
-# TalkSys Discord Voice Smoke
+# TalkSys Discord Voice Adapter
 
-面談用の暫定音声疎通試験です。長期運用用ではありません。
+Discord音声をWeb版TalkSysへ接続するための薄い入出力アダプターです。
 
-## 試験経路
+## 現在の経路
 
-Discord VC -> Opus -> PCM 48k stereo -> PCM 16k mono -> TalkSys STT (次発話用WebSocket先行接続 / 異常時は回路遮断して `/api/transcribe`) -> `/api/turn-stream` (35秒上限 / 障害時 `/api/turn`) -> 文単位 `/api/voice/synthesize` (12秒上限) -> Discord VC
+```
+Discord VC
+  -> Opus
+  -> 48 kHz stereo PCM
+  -> 90 Hz high-pass + 16 kHz mono PCM
+  -> Web互換発話区間判定
+  -> WAV
+  -> POST /api/transcribe
+  -> Whisper Large v3 Turbo
+  -> POST /api/turn
+  -> 共通TalkSys回答
+  -> POST /api/voice/synthesize
+  -> Discord VC
+```
 
-Discord側ではTTSしません。返送音声はTalkSys側で生成した音声です。
+Discord固有処理は、Discord音声の受信・PCM変換と、TalkSys音声のDiscord再生だけです。
+
+## 音声認識
+
+確定文字起こしは毎回 `/api/transcribe` を使用します。Discord bridge内にRealtime STTの確定経路、Whisper fallback、STT投票、circuit breakerはありません。
+
+発話区間はWeb版と同じ基準へ合わせています。
+
+- 16 kHz mono
+- 650 ms 無音で発話終了
+- 260 ms 最短発話
+- 8フレーム pre-roll
+- adaptive noise floor
+- RMS / peak / SNR 開始判定
+- 90 Hz high-pass
+- 1600 ms Discord無音判定はtransport safetyのみ
+
+Whisperのタイムアウトは30秒です。数百msの短縮より認識品質を優先します。
+
+## 回答
+
+確定Whisper transcriptをそのまま `/api/turn` へ渡します。Discord専用のGeminiプロンプト、検索ルール、verification、回答短縮はありません。会話履歴、`previousInteractionId`、検索文脈もWeb版と同じ形式で渡します。
+
+検索案内などの待ち時間音声は回答とは別系統です。本回答が完成した時点で待ち音声を停止し、本回答TTSを優先します。
+
+## 監視
+
+各発話に1つの `utteranceId` を付け、以下をCloudflareのログ・Analytics Engine・conversation logsへ関連付けます。
+
+- Discord受信開始
+- 最初のPCM
+- 発話終了
+- WAV完成
+- `/api/transcribe`開始
+- Whisper完了
+- confirmed transcript
+- `/api/turn`開始
+- primary / verifier / 最終回答
+- TTS開始 / 終了
+- Discord再生開始
+- pipeline完了
+
+`realtimeTranscript`、`confirmedTranscript`、`geminiInputText`も保存できる契約です。現在DiscordではNovaを使わないため、`realtimeTranscript`は空で、`confirmedTranscript`と`geminiInputText`が一致します。
 
 ## 必要なDiscord Bot権限
 
@@ -15,60 +70,55 @@ Discord側ではTTSしません。返送音声はTalkSys側で生成した音声
 - Speak
 - Use Application Commands
 
-Botはサーバーに追加済みである必要があります。Message Content Intentは不要です。既存招待に application commands 権限が無い場合は、Discord Developer Portal からBotを再招待してください。
-
-## TalkSys側
-
-Discord返答音声は恒久運用の `DISCORD_BRIDGE_TOKEN` で認証します。期限付きデモヘッダーは廃止済みです。
-
-`start.ps1` は環境変数にトークンが無い場合だけ安全入力を求めます。トークンをチャットやログへ貼り付ける必要はありません。
+Message Content Intentは不要です。
 
 ## 初回セットアップ
-
-Cloudflareの `DISCORD_BRIDGE_TOKEN` とローカル側の同一トークンは、手入力せず次で一度だけ作成できます。
 
 ```powershell
 cd discord-voice-smoke
 powershell -ExecutionPolicy Bypass -File .\setup-bridge-secret.ps1
 ```
 
-32byteのランダム値を生成し、Cloudflare Worker Secretへ登録したうえで、同じ値をWindows DPAPIで暗号化して `%LOCALAPPDATA%\TalkSys` に保存します。平文トークンを表示・リポジトリ保存しません。
+この処理はCloudflareの `DISCORD_BRIDGE_TOKEN` とローカルの同一トークンを作成し、ローカル側はWindows DPAPIで保存します。
 
 ## 起動
 
-通常は `update-and-start.ps1` を実行してください。ローカル変更が無いことを確認して `origin/main` へfast-forward更新した後、`start.ps1` を起動します。これにより、古いDiscordブリッジを誤って試験することを防ぎます。Node.js 22.12以上を確認し、依存関係を自動導入します。Discord Bot Tokenは初回入力後にWindows DPAPIで保存するため、2回目以降は通常そのまま起動できます。
+通常はリポジトリの `main` で次を実行します。
 
 ```powershell
 cd discord-voice-smoke
 powershell -ExecutionPolicy Bypass -File .\update-and-start.ps1
 ```
 
-起動時に必要なのは次の2項目です。
+必要な値は次だけです。
 
 - `DISCORD_TOKEN`
 - `DISCORD_BRIDGE_TOKEN`
 
-`DISCORD_BRIDGE_TOKEN` は初回セットアップで自動保存されるため、実際にユーザーが入力するのはDiscord Bot Tokenだけです。サーバーIDやVC IDは不要です。
+`TALKSYS_BASE_URL` は省略時にproduction URLを使います。サーバーIDやVC IDの手入力は不要です。
 
-TalkSys側URL、STT WebSocket、`/api/turn-stream`、TalkSys TTSはコード側に設定済みです。診断用raw echoは廃止し、ユーザー音声をVCへ返しません。
+利用者がVCへ参加して `/talksys` を実行するとBotが同じVCへ参加します。`/leave` で退出します。
 
-起動後、Botが参加しているDiscordサーバーを自動検出し、既存の他コマンドを削除せず、`/talksys` と `/leave` だけを作成・更新します。利用者がVCに参加した状態で `/talksys` を実行すると、そのVCへBotが参加します。接続時は「フォーンズです。接続しました。」と1回だけ発声します。検索案内TTSは行いません。`/leave` で退出します。人が話すと受信音声をSTTへ送り、認識結果を `/api/turn-stream` へ渡し、検証済み回答を文単位でTalkSys側TTSへ先行投入してVCへ返します。Realtime STTが失敗した場合は音声を捨てず必ずbatch STTへ回し、同種障害は指数バックオフで回路遮断します。生成・TTSにも有限の待ち時間を設定し、回答音声を一度も返せない場合は事前キャッシュした「もう一度お願いします」音声を再生して無言停止を避けます。フォーンズが回答生成・再生中でも受音を止めず、利用者が話し始めた場合は古い回答生成と再生を中断して新しい発話を優先します。各発話で使用したSTTソケットは使い回さず破棄し、次の発話専用ソケットだけを先に接続して待機させます。/talksys 実行者の受音ストリームは接続直後に先行して準備し、話し始めの取りこぼしを減らします。
+## 実音声の合格確認
 
-## 合格条件
+最低限、普通の声、小さい声、途中に自然な間を入れた発話、長めの発話、短い発話を試します。確認対象は速度より先に次の一致です。
 
-コンソールで次の順に確認します。
+1. Web版Whisper transcript
+2. Discord版Whisper transcript
+3. Geminiへ渡したtext
+4. 最終回答
+
+コンソールでは概ね次の順序になります。
 
 ```
 [discord] voice ready
-[rx] user=...
-[stt] websocket open user=... mode=active
-[stt] websocket prewarm user=...
-[stt] ...
-[turn-stream] ...
-[latency] first-audio-ready=...ms source=verifier-stream
-[tts] ... bytes
+[capture] finalized ...
+[stt] confirmed Whisper start ...
+[stt] confirmed model=...
+[turn] user: ...
+[turn] assistant: ...
+[tts] ...
 [tx] playback started
+[latency-summary] ...
 [metrics] voice latency persisted
 ```
-
-合格条件には、Realtime STT障害、batch STT障害、生成SSE障害、TTS障害、再生ハング時に永久待ち・発話破棄・無言停止へ入らないことを含みます。多人数同時発話と長時間耐久は別試験です。
