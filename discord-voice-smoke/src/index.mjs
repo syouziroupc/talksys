@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v104-phonetic-first-stt-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v105-clock-transit-asr-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -865,7 +865,7 @@ function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
   };
 }
 
-async function talk(text, utteranceId = '', signal) {
+async function talk(text, utteranceId = '', signal, speechAlternatives = []) {
   const started = Date.now();
   console.log('[turn] user:', text);
   mirrorRuntimeLog('TURN', `user: ${text}`);
@@ -876,6 +876,7 @@ async function talk(text, utteranceId = '', signal) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       text,
+      speechAlternatives: Array.isArray(speechAlternatives) ? speechAlternatives.slice(0, 3) : [],
       history: previous,
       searchTrace,
       sessionId: discordSessionId || `discord-${randomUUID()}`,
@@ -1247,7 +1248,11 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     if (!timeline.fastReactionRequestedAt) {
       activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, fastReaction);
     }
-    const turn = await talk(confirmedTranscript, utteranceId, controller.signal);
+    const realtimeAlternative = String(captureMetrics?.realtimeTranscript || '').trim();
+    const speechAlternatives = realtimeAlternative && !sameUtterance(realtimeAlternative, confirmedTranscript)
+      ? [realtimeAlternative]
+      : [];
+    const turn = await talk(confirmedTranscript, utteranceId, controller.signal, speechAlternatives);
     timeline.finalAnswerAt = Date.now();
     timings.primaryMs = Number(turn?.timings?.primaryMs) || 0;
     timings.verifierMs = Number(turn?.timings?.verifierMs) || 0;
