@@ -1849,7 +1849,7 @@ export default {
         configured,
         provider: 'gemini',
         model: GEMINI_MODEL,
-        api: 'interactions+generateContent-region-fallback',
+        api: 'interactions',
         nativeGoogleSearch: true,
         interactionsRegionFallback: 'generateContent',
         searchDefault: 'single-pass-grounded-google-search',
