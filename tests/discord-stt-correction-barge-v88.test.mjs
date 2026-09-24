@@ -25,12 +25,21 @@ test('v94 relaxed barge-in keeps 150ms continuity and self-voice guard', () => {
   assert.match(bridge, /bargeInTriggerMs/);
 });
 
-test('v102 interrupted pipeline cannot clear replacement turn cues', () => {
+test('v103 interrupted pipeline cannot clear replacement turn cues', () => {
   assert.match(bridge, /activeWaitCue\?\.utteranceId === utteranceId/);
   assert.match(bridge, /activeFastReaction\?\.utteranceId === utteranceId/);
   assert.match(bridge, /interruptedUtteranceId/);
   assert.match(bridge, /preAnswerCueSerial \+= 1/);
   assert.match(bridge, /do not touch receiver sessions/);
+});
+
+test('v103 contextually rewrites 10式戦車 phonetic-kanji ASR errors without generic number guessing', () => {
+  assert.match(bridge, /STT_CONTEXT_REWRITES/);
+  assert.match(bridge, /canonical: '10式'/);
+  assert.match(bridge, /'人丸式'/);
+  assert.match(bridge, /anchor: '\(\?:戦車\|MBT\|主力戦車\)'/);
+  assert.match(bridge, /applyContextualSttRewrites/);
+  assert.match(bridge, /contextual-fixed-term:10式戦車/);
 });
 
 test('v94 server persists transcript provenance and barge-in latency', () => {
@@ -70,7 +79,7 @@ test('v99 rescues usable realtime transcript when Whisper returns empty transcri
   assert.match(bridge, /hallucination-guard/);
 });
 
-test('v102 only invalidates an older STT after a newer result resolves', () => {
+test('v103 only invalidates an older STT after a newer result resolves', () => {
   assert.match(bridge, /voiceUtteranceSerial/);
   assert.match(bridge, /latestResolvedVoiceByUser/);
   assert.match(bridge, /isStaleVoiceResult/);
