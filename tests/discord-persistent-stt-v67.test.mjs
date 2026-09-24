@@ -35,12 +35,10 @@ test('receiver is rearmed after each utterance to protect the next utterance pre
   assert.match(source, /prearmed user=/);
 });
 
-test('Discord join warms helpers without prearming the initial user receiver before the greeting', () => {
+test('v92 stability profile prearms the initial user receiver at join', () => {
   const start = source.indexOf('async function connectToVoiceChannel');
   const end = source.indexOf('const TALKSYS_COMMANDS', start);
   const connect = source.slice(start, end);
   assert.match(connect, /ensureRealtimeHelper\(initialUserId\)/);
-  assert.doesNotMatch(connect, /startReceiverSession\(initialUserId, false\)/);
-  assert.match(source, /async function warmConnectionGreetingAudio/);
-  assert.match(source, /warmConnectionGreetingAudio\(\)\.catch/);
+  assert.match(connect, /startReceiverSession\(initialUserId, false\)/);
 });

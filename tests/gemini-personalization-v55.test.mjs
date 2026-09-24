@@ -311,5 +311,5 @@ test('v97 clients clear stale previous interaction state after a regional rescue
   const discord = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
   assert.match(webClient, /if\(j\.interactionReset\)geminiInteractionId=''/);
   assert.match(discord, /if \(body\.interactionReset\) previousInteractionId = ''/);
-  assert.match(discord, /talksys-discord-bridge-v98-serialized-local-tts-r1/);
+  assert.match(discord, /talksys-discord-bridge-v92-stability-restore-r1/);
 });
