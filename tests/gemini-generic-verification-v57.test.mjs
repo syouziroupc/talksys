@@ -35,7 +35,7 @@ test('dynamic factual turn uses one grounded Gemini interaction', async () => {
     const req = JSON.parse(options.body);
     assert.equal(req.model, 'gemini-3.5-flash-lite');
     assert.deepEqual(req.tools, [{ type: 'google_search' }]);
-    assert.match(req.system_instruction, /同じ内容を検証目的で二重検索しない/);
+    assert.match(req.system_instruction, /Google検索を一度実行/);
     return new Response(JSON.stringify({
       id: 'primary-grounded',
       status: 'completed',
