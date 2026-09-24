@@ -5,8 +5,8 @@ import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 import { persistTalkLog, listTalkLogs } from './log-v42.js';
 import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
-export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v86-compact-core-fast';
-export const PERSONALIZATION_REVISION = 'talksys-v86-compact-core-personalization-r1';
+export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v87-jst-location-voice-align';
+export const PERSONALIZATION_REVISION = 'talksys-v87-jst-location-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
@@ -24,7 +24,9 @@ const JST_WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
 const SIMPLE_ARITHMETIC_RE = /^\s*[\d０-９,.，+＋\-−ー*＊×xX÷/／()（）%％\s]+\s*$/;
 const TRIVIAL_CONVERSATION_RE = /^(?:もしもし|おはよう(?:ございます)?|こんにちは|こんばんは|ありがとう(?:ございます)?|ありがと|どうも|はい|うん|ううん|了解|わかった|分かった|またね|じゃあね)[。！!？?…\s]*$/i;
-const CURRENT_TIME_ONLY_RE = /^(?:今|現在)(?:の)?(?:時刻|時間)?(?:は)?(?:何時|なんじ)(?:ですか|なの|だ|でしょうか)?[。！!？?…\s]*$/i;
+const CURRENT_TIME_ONLY_RE = /^(?:(?:今|現在)(?:の)?(?:時刻|時間)?(?:は)?(?:何時|なんじ)(?:ですか|なの|だ|でしょうか)?|(?:今|現在)(?:の)?(?:時刻|時間)(?:を)?(?:教えて|おしえて|知りたい)(?:ください|下さい)?|(?:時間|時刻)(?:は)?(?:何時|なんじ)(?:ですか)?|(?:時間|時刻)(?:を)?(?:教えて|おしえて)(?:ください|下さい)?)[。！!？?…\s]*$/i;
+const LOCATION_DEPENDENT_RE = /(?:天気|気温|降水|雨(?:降る)?|雪(?:降る)?|近く|近所|周辺|最寄り|おすすめ(?:の)?(?:店|店舗|病院|ホテル|飲食店|レストラン)|(?:店|店舗|病院|ホテル|レストラン).*(?:近い|近く|おすすめ)|今日.*(?:営業|開いて)|今.*(?:営業|開いて))/i;
+const EXPLICIT_LOCATION_RE = /(?:北海道|東京都|京都府|大阪府|.{1,12}[都道府県市区町村]|.{1,12}(?:駅|空港|港|温泉|公園|大学|病院|ホテル)|日本全国|全国)/u;
 const LOCAL_TRANSFORM_RE = /(?:この文章|この文|次の文章|以下の文章).{0,30}(?:要約|翻訳|言い換え|添削|校正|短く|整えて)/i;
 const FACTUAL_OR_LOOKUP_RE = /[？?]|(?:誰|どこ|いつ|何時|何日|時刻|いくら|価格|値段|相場|在庫|最新|現在|今日|明日|天気|運行|時刻表|乗換|乗り換え|おすすめ|候補|店|店舗|会社|企業|病院|ホテル|商品|製品|型番|仕様|互換|対応|住所|電話番号|営業時間|ニュース|法律|制度|社長|CEO|大統領|首相|発売|販売中|検索|調べ|探して|確認して|教えて)/i;
 const TRANSIT_QUERY_RE = /(?:電車|鉄道|列車|新幹線|特急|快速|普通列車|乗換|乗り換え|時刻表|発車|出発|駅)/i;
@@ -249,6 +251,43 @@ function deterministicCurrentTimeResult(text = '', now = new Date(), started = D
 }
 
 
+function deterministicLocationClarificationResult(text = '', started = Date.now()) {
+  const value = compact(text, 500);
+  if (!value || !LOCATION_DEPENDENT_RE.test(value) || EXPLICIT_LOCATION_RE.test(value)) return null;
+  return {
+    ok: true,
+    answer: '地域によって変わります。どの地域について知りたいですか？',
+    route: 'deterministic-location-clarification',
+    planner: 'local-location-clarifier-v1',
+    search: false,
+    searchUseful: false,
+    searchPolicy: 'clarify-location-before-external-lookup',
+    searchRetried: false,
+    genericVerificationAttempted: false,
+    genericVerificationSucceeded: false,
+    genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
+    verifierSearched: false,
+    verificationFailOpen: false,
+    temporalTransitGuard: false,
+    temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
+    temporalRepairRetried: false,
+    temporalRepairAttempts: 0,
+    authoritativeJst: '',
+    queries: [],
+    sources: [],
+    apiSources: [],
+    interactionId: '',
+    interactionStatus: 'completed',
+    model: 'deterministic-location-clarifier-v1',
+    generationProvider: 'local',
+    generationModel: 'deterministic-location-clarifier-v1',
+    personalizationRevision: PERSONALIZATION_REVISION,
+    languageMode: 'ja-spoken',
+    speechOptimized: true,
+    timings: { totalMs: Math.max(0, Date.now() - started), primaryMs: 0, searchRetryMs: 0, verifierMs: 0 },
+  };
+}
+
 export function buildTalkSysSystemInstruction(now = new Date(), { forceSearch = false, immediateTransit = false, verificationContinuation = false } = {}) {
   const searchRule = verificationContinuation
     ? 'previous interaction の検索tool contextを事実根拠として再利用し、現在性が強い情報、矛盾、証拠不足だけ追加検索してください。同じ内容を無意味に二重検索しないでください。'
@@ -260,7 +299,7 @@ export function buildTalkSysSystemInstruction(now = new Date(), { forceSearch = 
     'あなたはTalkSysの日本語音声アシスタント、フォーンズです。回答はそのまま電話で読み上げます。',
     '最初の文から質問へ直接答え、通常2文から5文。不要な前置き、検索手順、Markdown、箇条書き、表、URL、引用番号、絵文字、装飾記号を出さないでください。',
     '英数字や単位は聞き取りやすい日本語音声を優先してください。たとえば8GBは8ギガバイト、20:30は20時30分、15%は15パーセント、3.5は3点5です。正確さに必要な型番は残してください。',
-    '地域指定がなければ日本、日本標準時、円、摂氏、メートル法を既定とします。外国や別単位が明示された場合は指定を優先してください。',
+    '基本利用地域は日本です。地域指定がなく、日本国内なら答えが全国共通の時刻・通貨・単位などは逆質問せず、日本標準時、円、摂氏、メートル法で即答してください。天気、近隣店舗、現地の営業時間など地域によって答えが変わり、必要な地域が文脈にもない場合だけ、短く地域を確認してください。外国や別地域・別単位が明示された場合は指定を優先してください。',
     currentJstInstruction(now),
     ...(immediateTransit ? [immediateTransitInstruction(now)] : []),
     searchRule,
@@ -726,6 +765,9 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
 
   const clock = deterministicCurrentTimeResult(text, now, started);
   if (clock) return clock;
+
+  const locationClarification = deterministicLocationClarificationResult(text, started);
+  if (locationClarification) return locationClarification;
 
   const immediateTransit = isImmediateTransitQuestion(text);
   const externalFactSearch = shouldStronglyPreferSearch(text);
