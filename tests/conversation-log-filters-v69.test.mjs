@@ -22,3 +22,14 @@ test('private conversation log endpoint exposes bounded filter parameters', () =
   assert.match(server, /listTalkLogs\(env, limit, filters\)/);
   assert.match(server, /conversationLogAuthorized\(request, env\)/);
 });
+
+test('latest D1 view selects the newest session and collapses duplicate event rows by utterance', () => {
+  assert.match(logSource, /filters\?\.latestSessionOnly/);
+  assert.match(logSource, /SELECT session_id FROM conversation_logs/);
+  assert.match(logSource, /export function collapseTalkLogs/);
+  assert.match(logSource, /events:\[\],sourceIds:\[\]/);
+  assert.match(server, /url\.searchParams\.get\('view'\) \|\| 'latest'/);
+  assert.match(server, /view === 'raw' \? rawLogs : collapseTalkLogs\(rawLogs\)/);
+  assert.match(server, /latestSessionId: latest\?\.sessionId \|\| ''/);
+  assert.match(server, /currentRuntimeRevision: INTEGRATED_ENTRY_REVISION/);
+});
