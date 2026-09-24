@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-stability-restore-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-stability-r2-output-guard';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -962,15 +962,29 @@ async function synthesizeCloudflareTts(text, signal, meta = {}) {
     timeoutMs: REQUEST_BUDGET_MS.tts,
     label: 'tts',
   });
-  const audio = Buffer.from(await response.arrayBuffer());
-  const type = response.headers.get('content-type') || 'unknown';
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const type = String(response.headers.get('content-type') || 'unknown').toLowerCase();
   const source = response.headers.get('x-talksys-voice-source') || 'unknown';
   const workerMs = Number(response.headers.get('x-talksys-tts-ms') || 0);
   const elapsedMs = Date.now() - started;
-  console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
+
+  if (!response.ok) {
+    const detail = bytes.toString('utf8').replace(/\s+/g, ' ').trim().slice(0, 320);
+    throw new Error(`tts_http_${response.status}: ${detail || response.statusText || 'tts request failed'}`);
+  }
+  if (!/audio\/(?:mpeg|mp3|wav|wave|x-wav|ogg|opus)|application\/octet-stream/.test(type)) {
+    const detail = bytes.toString('utf8').replace(/\s+/g, ' ').trim().slice(0, 320);
+    throw new Error(`tts_invalid_content_type type=${type} bytes=${bytes.length} detail=${detail}`);
+  }
+  if (bytes.length < 64) {
+    throw new Error(`tts_audio_too_small bytes=${bytes.length} type=${type}`);
+  }
+
+  console.log(`[tts] ${bytes.length} bytes type=${type} source=${source}`);
   console.log(`[latency] tts-http=${elapsedMs}ms worker=${workerMs || '?'}ms source=${source}`);
   mirrorRuntimeLog('TTS', `${elapsedMs}ms source=${source}`);
-  return { audio, source, elapsedMs, workerMs };
+  return { audio: bytes, source, elapsedMs, workerMs };
 }
 
 async function synthesize(text, signal, meta = {}) {
@@ -1029,6 +1043,8 @@ async function speakRecoveryPrompt(reason = 'pipeline-failure', sessionEpoch = v
 
 async function playMp3(mp3, options = {}) {
   if (!ffmpegPath) throw new Error('ffmpeg_static_missing');
+  if (!mp3?.length) throw new Error('playback_audio_empty');
+
   const ffmpegStarted = Date.now();
   const ffmpeg = spawn(ffmpegPath, [
     '-hide_banner', '-loglevel', 'error',
@@ -1042,60 +1058,99 @@ async function playMp3(mp3, options = {}) {
   let ffmpegError = '';
   let ffmpegSpawnMs = 0;
   let botSpeechRecord = null;
+  let settled = false;
+  let playbackStartedAt = 0;
+  let startTimeout = null;
+  let playbackTimeout = null;
+
+  const cleanup = () => {
+    player.off(AudioPlayerStatus.Playing, onPlaying);
+    player.off(AudioPlayerStatus.Idle, onIdle);
+    player.off('error', onPlayerError);
+    ffmpeg.off('error', onFfmpegError);
+    ffmpeg.off('close', onFfmpegClose);
+    ffmpeg.stdin.off('error', onPipeError);
+    ffmpeg.stdout.off('error', onPipeError);
+  };
+
+  let resolveDone;
+  let rejectDone;
+  const done = new Promise((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
+
+  const finish = (error = null) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(startTimeout);
+    clearTimeout(playbackTimeout);
+    finishBotSpeech(botSpeechRecord);
+    if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now();
+    if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null;
+    cleanup();
+    if (error) rejectDone(error);
+    else resolveDone({ playbackStartedAt, ffmpegSpawnMs: ffmpegSpawnMs || Math.max(0, Date.now() - ffmpegStarted) });
+  };
+
+  const onPipeError = (error) => finish(new Error(`ffmpeg_pipe_error: ${error?.message || error}`));
+  const onFfmpegError = (error) => finish(new Error(`ffmpeg_spawn_error: ${error?.message || error}`));
+  const onFfmpegClose = (code, signal) => {
+    if (!settled && !playbackStartedAt && code !== 0) {
+      finish(new Error(`ffmpeg_exit_before_playback code=${code} signal=${signal || ''} detail=${ffmpegError.trim().slice(0, 300)}`));
+    }
+  };
+  const onPlayerError = (error) => finish(error instanceof Error ? error : new Error(String(error)));
+  const onIdle = () => finish();
+  const onPlaying = () => {
+    if (settled || playbackStartedAt) return;
+    playbackStartedAt = Date.now();
+    if (options?.spokenText) {
+      botSpeechRecord = rememberBotSpeech(options.spokenText, options?.purpose || '', playbackStartedAt);
+      activeBotPlaybackRecord = botSpeechRecord;
+    }
+    const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
+    ffmpegSpawnMs = measuredFfmpegMs;
+    console.log('[tx] playback started');
+    try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
+  };
+
   ffmpeg.stderr.on('data', (d) => { ffmpegError += String(d); });
   ffmpeg.stdout.once('data', () => {
     ffmpegSpawnMs = Date.now() - ffmpegStarted;
     console.log(`[latency] ffmpeg-first-output=${ffmpegSpawnMs}ms`);
   });
-  ffmpeg.on('error', (error) => console.error('[ffmpeg]', error.message));
-  ffmpeg.stdin.end(mp3);
+  ffmpeg.on('error', onFfmpegError);
+  ffmpeg.on('close', onFfmpegClose);
+  ffmpeg.stdin.on('error', onPipeError);
+  ffmpeg.stdout.on('error', onPipeError);
+  player.on('error', onPlayerError);
+  player.on(AudioPlayerStatus.Idle, onIdle);
+  player.on(AudioPlayerStatus.Playing, onPlaying);
 
-  const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
-  const playbackStartedPromise = new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      player.off(AudioPlayerStatus.Playing, onPlaying);
-      try { ffmpeg.kill('SIGKILL'); } catch {}
-      reject(new Error('playback_start_timeout'));
-    }, 5000);
-    const onPlaying = () => {
-      clearTimeout(timeout);
-      const playbackStartedAt = Date.now();
-      if (options?.spokenText) {
-        botSpeechRecord = rememberBotSpeech(options.spokenText, options?.purpose || '', playbackStartedAt);
-        activeBotPlaybackRecord = botSpeechRecord;
-      }
-      const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
-      console.log('[tx] playback started');
-      try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
-      resolve({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs });
-    };
-    player.once(AudioPlayerStatus.Playing, onPlaying);
-  });
+  startTimeout = setTimeout(() => {
+    try { ffmpeg.kill('SIGKILL'); } catch {}
+    player.stop(true);
+    finish(new Error(`playback_start_timeout detail=${ffmpegError.trim().slice(0, 300)}`));
+  }, 5000);
+  playbackTimeout = setTimeout(() => {
+    try { ffmpeg.kill('SIGKILL'); } catch {}
+    player.stop(true);
+    finish(new Error(`playback_timeout detail=${ffmpegError.trim().slice(0, 300)}`));
+  }, 30000);
 
-  player.play(resource);
+  try {
+    ffmpeg.stdin.end(mp3);
+    const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+    player.play(resource);
+  } catch (error) {
+    finish(error instanceof Error ? error : new Error(String(error)));
+  }
 
-  const completionPromise = new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      try { ffmpeg.kill('SIGKILL'); } catch {}
-      player.stop(true);
-      reject(new Error('playback_timeout'));
-    }, 30000);
-    const done = () => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now(); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); resolve(); };
-    const fail = (error) => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now(); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); reject(error); };
-    const cleanup = () => {
-      player.off(AudioPlayerStatus.Idle, done);
-      player.off('error', fail);
-    };
-    player.once(AudioPlayerStatus.Idle, done);
-    player.once('error', fail);
-  });
-
-  const startedInfo = await playbackStartedPromise;
-  await completionPromise;
+  const result = await done;
   if (ffmpegError.trim()) console.log('[ffmpeg]', ffmpegError.trim());
-  return startedInfo;
+  return result;
 }
-
 async function processConfirmedTranscript({ confirmedTranscript, rawTranscript = '', correctedTranscript = '', correctionReason = '', fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
   if (!confirmedTranscript || sessionEpoch !== voiceEpoch) return;
 

@@ -177,3 +177,19 @@ test('v98 serializes Windows System.Speech and avoids parallel startup warmups',
   assert.doesNotMatch(readyBlock, /warmFastReactionAudio\(\)/);
   assert.doesNotMatch(readyBlock, /warmRecoveryAudio\(\)/);
 });
+
+test('V92 output guard rejects non-audio Cloudflare TTS responses before ffmpeg', () => {
+  assert.match(source, /if \(!response\.ok\)/);
+  assert.match(source, /tts_invalid_content_type/);
+  assert.match(source, /tts_audio_too_small/);
+  assert.match(source, /audio\\\/\(\?:mpeg\|mp3\|wav\|wave\|x-wav\|ogg\|opus\)/);
+});
+
+test('V92 output guard handles ffmpeg pipe and early-exit errors through one settled promise', () => {
+  assert.match(source, /ffmpeg\.stdin\.on\('error', onPipeError\)/);
+  assert.match(source, /ffmpeg\.stdout\.on\('error', onPipeError\)/);
+  assert.match(source, /ffmpeg_exit_before_playback/);
+  assert.match(source, /let settled = false/);
+  assert.match(source, /const finish = \(error = null\) =>/);
+  assert.doesNotMatch(source, /const completionPromise = new Promise/);
+});
