@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v95-startup-stability-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v96-region-fallback-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -810,7 +810,8 @@ async function talk(text, utteranceId = '', signal) {
   if (!body?.ok || !body?.answer) {
     throw new Error(body?.detail || body?.error || 'turn_empty_answer');
   }
-  if (body.interactionId) previousInteractionId = body.interactionId;
+  if (body.interactionReset) previousInteractionId = '';
+  else if (body.interactionId) previousInteractionId = body.interactionId;
   if (body.search) {
     searchTrace = {
       resolvedQuestion: body.resolvedQuestion || text,

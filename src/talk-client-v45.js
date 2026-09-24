@@ -249,7 +249,7 @@ async function ask(text,spokenBackchannelOverride=''){
 
     const r=await turnPromise;
     const j=await r.json();if(seq!==turnSeq)return;
-    if(j.interactionId)geminiInteractionId=j.interactionId;
+    if(j.interactionReset)geminiInteractionId='';else if(j.interactionId)geminiInteractionId=j.interactionId;
     if(voiceCandidateCount>0){log('追加入力候補を認識中。旧回答の表示を保留');if(!await waitForVoiceCandidate(seq))return;}
     if(seq!==turnSeq)return;
     lastGlmMs=j?.timings?.geminiMs||j?.timings?.glmMs||Date.now()-t;lastSearchMs=j?.timings?.searchMs||0;
