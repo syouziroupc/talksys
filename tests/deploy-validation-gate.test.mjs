@@ -46,8 +46,8 @@ test('production deploy preserves the Cloudflare Discord secret and uploads only
   assert.match(workflow, /\/gemini-health/);
   assert.match(workflow, /generationProvider==='gemini'/);
   assert.match(workflow, /generationModel==='gemini-3\.5-flash-lite'/);
-  assert.match(workflow, /interactions\+generateContent-region-fallback/);
-  assert.match(workflow, /interactionsRegionFallback==='generateContent'/);
+  assert.match(workflow, /interactions\+workers-ai-region-rescue/);
+  assert.match(workflow, /interactionsRegionFallback==='workers-ai-v45'/);
   assert.match(workflow, /legacyGlmExecution===false/);
 });
 
@@ -70,7 +70,7 @@ test('production deploy keeps UI, microphone, deterministic, weather, and contex
   assert.match(workflow, /\/api\/turn/);
   assert.match(workflow, /12345÷15/);
   assert.match(workflow, /別府市の今日の天気は？/);
-  assert.match(workflow, /gemini-generate-content-region-fallback/);
+  assert.match(workflow, /cloudflare-region-rescue/);
   assert.match(workflow, /大学のレポート用に中古ノートPCを探してる。予算は3万円。/);
 });
 
@@ -93,7 +93,14 @@ test('answer smoke enforces quality-first search before the blocking realtime ST
   assert.match(workflow, /d\.search!==true/);
   assert.match(workflow, /d\.genericVerificationAttempted!==false/);
   assert.match(workflow, /d\.genericVerificationSucceeded!==false/);
-  assert.match(workflow, /d\.verifierSearched!==false/);
   assert.match(workflow, /Number\.isFinite\(d\.timings\?\.primaryMs\)/);
   assert.match(workflow, /Number\.isFinite\(d\.timings\?\.verifierMs\)/);
+  assert.match(workflow, /generationProvider!=='workers-ai'/);
+  assert.match(workflow, /startsWith\('cloudflare-region-rescue:'\)/);
+});
+
+test('production deploy archives prior D1 revisions after deploy', () => {
+  assert.match(workflow, /Archive prior D1 conversation revisions/);
+  assert.match(workflow, /\/api\/internal\/archive-conversation-logs/);
+  assert.match(workflow, /deploy-revision-rollover|v97-region-rescue-d1-archive/);
 });

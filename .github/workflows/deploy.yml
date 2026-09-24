@@ -179,6 +179,15 @@ jobs:
           token="$(node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update(process.env.GEMINI_API_KEY+':talksys-tts-diagnostic-v1').digest('hex'))")"
           body="$(curl -fsS --max-time 45 -H "x-talksys-diagnostic: $token" "$PRODUCTION_URL/api/internal/tts-diagnostic")"
           echo "$body"
+
+      - name: Archive prior D1 conversation revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update(process.env.GEMINI_API_KEY+':talksys-tts-diagnostic-v1').digest('hex'))")"
+          body="$(curl -fsS --max-time 45 -X POST -H "x-talksys-diagnostic: $token" "$PRODUCTION_URL/api/internal/archive-conversation-logs")"
+          echo "$body"
+          ARCHIVE_RESULT="$body" node -e "const d=JSON.parse(process.env.ARCHIVE_RESULT||'{}');if(d.ok!==true||!Number.isFinite(Number(d.archived))||!String(d.keepRevision||'').includes('v97-region-rescue-d1-archive'))throw new Error(process.env.ARCHIVE_RESULT);"
       - name: Dump signed recent Discord logs for diagnostics
         shell: bash
         run: |
@@ -246,7 +255,7 @@ jobs:
           let d={};
           try { d=JSON.parse(process.env.GEMINI_HEALTH||'{}'); } catch {}
           const ok = d.ok===true && d.configured===true && d.provider==='gemini' && d.model==='gemini-3.5-flash-lite'
-            && d.api==='interactions+generateContent-region-fallback' && d.interactionsRegionFallback==='generateContent' && d.nativeGoogleSearch===true
+            && d.api==='interactions+workers-ai-region-rescue' && d.interactionsRegionFallback==='workers-ai-v45' && d.nativeGoogleSearch===true
             && d.searchDefault==='single-pass-grounded-google-search'
             && d.personalizationRevision==='talksys-v87-jst-location-personalization-r1'
             && d.speechOptimized===true && d.ttsProvider==='cloudflare-melotts-only' && d.geminiTtsFallback===false
@@ -295,7 +304,7 @@ jobs:
           # Only greeting-like trivial conversation may bypass Google Search and verification.
           payload='{"text":"こんにちは","history":[]}'
           out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const r=['gemini-native-interactions','gemini-generate-content-region-fallback'];if(!d.ok||!r.includes(d.route)||d.search!==false||d.genericVerificationAttempted!==false||!String(d.answer||'').trim())throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const rescue=String(d.route||'').startsWith('cloudflare-region-rescue:');if(!d.ok||!(d.route==='gemini-native-interactions'||rescue)||d.search!==false||!String(d.answer||'').trim())throw new Error(process.env.OUT);"
 
           # Pure arithmetic stays on the deterministic local path; no search or verifier is needed.
           payload='{"text":"12345÷15","history":[]}'
@@ -304,11 +313,11 @@ jobs:
 
           payload='{"text":"別府市の今日の天気は？","history":[]}'
           out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const r=['gemini-native-interactions','gemini-generate-content-region-fallback'];if(!d.ok||!r.includes(d.route)||d.nativeGoogleSearch!==true||d.search!==true||d.genericVerificationAttempted!==false||d.genericVerificationSucceeded!==false||d.verifierSearched!==false||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v87-jst-location-personalization-r1'||!String(d.answer||'').trim())throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const rescue=String(d.route||'').startsWith('cloudflare-region-rescue:');if(!d.ok||!(d.route==='gemini-native-interactions'||rescue)||d.search!==true||d.personalizationRevision!=='talksys-v87-jst-location-personalization-r1'||!String(d.answer||'').trim()||(!rescue&&(d.nativeGoogleSearch!==true||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'))||(rescue&&d.generationProvider!=='workers-ai'))throw new Error(process.env.OUT);"
 
           payload='{"text":"どれがいい？","history":[{"role":"user","content":"大学のレポート用に中古ノートPCを探してる。予算は3万円。"},{"role":"assistant","content":"Officeとブラウザ中心ですね。"}]}'
           out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');const r=['gemini-native-interactions','gemini-generate-content-region-fallback'];if(!d.ok||!r.includes(d.route)||d.search!==false||d.genericVerificationAttempted!==false||d.genericVerificationSucceeded!==false||a.length<8||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v87-jst-location-personalization-r1'||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');const rescue=String(d.route||'').startsWith('cloudflare-region-rescue:');if(!d.ok||!(d.route==='gemini-native-interactions'||rescue)||a.length<8||d.personalizationRevision!=='talksys-v87-jst-location-personalization-r1'||/何について|もう少し詳しく|詳しく教えて/.test(a)||(!rescue&&(d.search!==false||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'))||(rescue&&d.generationProvider!=='workers-ai'))throw new Error(process.env.OUT);"
 
       - name: Verify Discord bridge auth is enforced
         shell: bash

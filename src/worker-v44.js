@@ -131,6 +131,7 @@ function userHistory(value) {
 }
 
 function schedule(ctx, env, input) {
+  if (input?.body?.__suppressNestedLog === true) return;
   const promise = persistTalkLog(env, { ...input, revision: REVISION });
   if (ctx?.waitUntil) ctx.waitUntil(promise);
   else promise.catch(() => {});

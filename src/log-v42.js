@@ -1,4 +1,4 @@
-export const LOG_V42_REVISION='talksys-log-v95-latest-session-view';
+export const LOG_V42_REVISION='talksys-log-v97-archive-rollover';
 let conversationLogSchemaPromise;
 
 function clean(v,max=12000){return String(v??'').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'').slice(0,max);}
@@ -37,6 +37,25 @@ async function ensureConversationLogSchema(env){
       await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_conversation_logs_time ON conversation_logs(timestamp DESC)').run();
       await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_conversation_logs_session ON conversation_logs(session_id, timestamp)').run();
       await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_conversation_logs_event_time ON conversation_logs(event, timestamp DESC)').run();
+      await env.TALKSYS_LOG_DB.prepare(`CREATE TABLE IF NOT EXISTS conversation_logs_archive (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        event TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        jst TEXT NOT NULL,
+        revision TEXT,
+        path TEXT,
+        status INTEGER,
+        user_text TEXT,
+        history_json TEXT,
+        search_plan_json TEXT,
+        result_json TEXT,
+        audio_bytes INTEGER NOT NULL DEFAULT 0,
+        archived_at TEXT NOT NULL,
+        archive_reason TEXT NOT NULL
+      )`).run();
+      await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_conversation_logs_archive_time ON conversation_logs_archive(timestamp DESC)').run();
+      await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_conversation_logs_archive_session ON conversation_logs_archive(session_id, timestamp)').run();
       return true;
     })().catch((error)=>{
       conversationLogSchemaPromise=undefined;
@@ -111,6 +130,56 @@ export async function listTalkLogs(env,limit=100,filters={}){
   });
 }
 
+function mapTalkLogRow(row){
+  let result={};try{result=JSON.parse(row.result_json||'{}')||{};}catch{}
+  return {
+    id:row.id,sessionId:row.session_id,event:row.event,timestamp:row.timestamp,jst:row.jst,revision:row.revision,path:row.path,status:row.status,
+    channel:clean(result?.channel,80),utteranceId:clean(result?.utteranceId,180),userText:clean(row.user_text,5000),assistantText:clean(result?.answer||result?.text,9000),error:clean(result?.error,1800),
+    route:clean(result?.route,180),search:Boolean(result?.search),timings:result?.timings&&typeof result.timings==='object'?result.timings:null,realtimeTranscript:clean(result?.realtimeTranscript,4000),confirmedTranscript:clean(result?.confirmedTranscript,4000),rawTranscript:clean(result?.rawTranscript,4000),correctedTranscript:clean(result?.correctedTranscript,4000),correctionReason:clean(result?.correctionReason,1200),bargeInTriggerMs:Number(result?.bargeInTriggerMs)||0,geminiInputText:clean(result?.geminiInputText,4000),transcriptMatch:typeof result?.transcriptMatch==='boolean'?result.transcriptMatch:null,
+    archivedAt:clean(row.archived_at,80),archiveReason:clean(row.archive_reason,160)
+  };
+}
+
+export async function listArchivedTalkLogs(env,limit=100,filters={}){
+  if(!(await ensureConversationLogSchema(env)))throw new Error('TALKSYS_LOG_DB binding missing');
+  const count=Math.max(1,Math.min(500,Number(limit)||100));
+  const where=[],binds=[];
+  const exactSession=clean(filters?.sessionId,180).trim();
+  const sessionPrefix=clean(filters?.sessionPrefix,120).replace(/[^A-Za-z0-9._-]/g,'').trim();
+  const event=clean(filters?.event,120).trim();
+  const utteranceId=clean(filters?.utteranceId,180).trim();
+  const q=clean(filters?.q,500).trim();
+  if(exactSession){where.push('session_id = ?');binds.push(exactSession);}
+  else if(sessionPrefix){where.push('session_id LIKE ?');binds.push(sessionPrefix+'%');}
+  if(event){where.push('event = ?');binds.push(event);}
+  if(utteranceId){where.push("json_extract(result_json, '$.utteranceId') = ?");binds.push(utteranceId);}
+  if(q){where.push('user_text LIKE ?');binds.push('%'+q+'%');}
+  const sql='SELECT id,session_id,event,timestamp,jst,revision,path,status,user_text,result_json,archived_at,archive_reason FROM conversation_logs_archive'
+    +(where.length?' WHERE '+where.join(' AND '):'')
+    +' ORDER BY timestamp DESC LIMIT ?';
+  const data=await env.TALKSYS_LOG_DB.prepare(sql).bind(...binds,count).all();
+  return (data?.results||[]).map(mapTalkLogRow);
+}
+
+export async function archiveTalkLogs(env,{keepRevision='',reason='revision-rollover'}={}){
+  if(!(await ensureConversationLogSchema(env)))throw new Error('TALKSYS_LOG_DB binding missing');
+  const revision=clean(keepRevision,160).trim();
+  if(!revision)throw new Error('keepRevision required');
+  const archiveReason=clean(reason,160)||'revision-rollover';
+  const archivedAt=new Date().toISOString();
+  const countRow=await env.TALKSYS_LOG_DB.prepare("SELECT COUNT(*) AS count FROM conversation_logs WHERE COALESCE(revision,'') <> ?").bind(revision).first();
+  const count=Math.max(0,Number(countRow?.count)||0);
+  if(!count)return {ok:true,archived:0,keepRevision:revision};
+  await env.TALKSYS_LOG_DB.batch([
+    env.TALKSYS_LOG_DB.prepare(`INSERT OR IGNORE INTO conversation_logs_archive
+      (id,session_id,event,timestamp,jst,revision,path,status,user_text,history_json,search_plan_json,result_json,audio_bytes,archived_at,archive_reason)
+      SELECT id,session_id,event,timestamp,jst,revision,path,status,user_text,history_json,search_plan_json,result_json,audio_bytes,?,?
+      FROM conversation_logs WHERE COALESCE(revision,'') <> ?`).bind(archivedAt,archiveReason,revision),
+    env.TALKSYS_LOG_DB.prepare("DELETE FROM conversation_logs WHERE COALESCE(revision,'') <> ?").bind(revision),
+  ]);
+  return {ok:true,archived:count,keepRevision:revision,archivedAt,reason:archiveReason};
+}
+
 export function collapseTalkLogs(logs=[]){
   const groups=new Map();
   for(const row of Array.isArray(logs)?logs:[]){
@@ -137,4 +206,4 @@ export function collapseTalkLogs(logs=[]){
   return [...groups.values()];
 }
 
-export const __test={safeId,compactHistory,compactPlan,compactResult,keyFor,buildLogRecord,collapseTalkLogs};
+export const __test={safeId,compactHistory,compactPlan,compactResult,keyFor,buildLogRecord,collapseTalkLogs,mapTalkLogRow};

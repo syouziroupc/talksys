@@ -136,7 +136,8 @@ test('integrated browser and Telnyx turns share the same personalized Gemini run
   assert.match(source, /return runGeminiTurn\(body, env, signal, options\)/);
   assert.match(source, /scheduleConversationLog\(ctx, env, request, commonBody, result, 'turn', 200\)/);
   assert.match(source, /url\.pathname === '\/api\/turn'/);
-  assert.doesNotMatch(source, /LEGACY_GLM|@cf\/zai-org\/glm/);
+  assert.match(source, /import fallbackWorker from '\.\/worker-v44\.js'/);
+  assert.match(source, /runCloudflareRegionalRescue/);
 });
 
 
@@ -248,56 +249,49 @@ test('v87 answers common time phrasings in JST without Gemini and clarifies only
 });
 
 
-test('v96 falls back to generateContent only when Interactions rejects the current execution location', async () => {
+test('v97 rescues Gemini regional rejection through the Cloudflare Workers AI route', async () => {
   const originalFetch = globalThis.fetch;
-  let calls = 0;
-  globalThis.fetch = async (url, options = {}) => {
-    calls += 1;
-    const href = String(url);
-    const req = JSON.parse(options.body || '{}');
-    if (calls === 1) {
-      assert.match(href, /\/v1beta\/interactions$/);
-      return new Response(JSON.stringify({
-        error: { message: 'This API is not available in your current location. See https://ai.google.dev/gemini-api/docs/available-regions.' },
-      }), { status: 400, headers: { 'content-type': 'application/json' } });
-    }
-    assert.match(href, /\/v1beta\/models\/gemini-3\.5-flash-lite:generateContent$/);
-    assert.deepEqual(req.tools, [{ google_search: {} }]);
-    assert.match(req.systemInstruction.parts[0].text, /電話で読み上げ/);
-    assert.match(req.contents[0].parts[0].text, /Google検索を実行して事実確認/);
+  let fetchCalls = 0;
+  const modelCalls = [];
+  globalThis.fetch = async (url) => {
+    fetchCalls += 1;
+    assert.match(String(url), /\/v1beta\/interactions$/);
     return new Response(JSON.stringify({
-      candidates: [{
-        content: { parts: [{ text: '実在ショップを確認できました。' }] },
-        groundingMetadata: {
-          webSearchQueries: ['別府 中古PC 店'],
-          groundingChunks: [{ web: { title: '実在ショップ', uri: 'https://example.com/shop' } }],
-          groundingSupports: [{ segment: { text: '実在ショップ' }, groundingChunkIndices: [0] }],
-        },
-      }],
-    }), { status: 200, headers: { 'content-type': 'application/json' } });
+      error: { message: 'This API is not available in your current location. See https://ai.google.dev/gemini-api/docs/available-regions.' },
+    }), { status: 400, headers: { 'content-type': 'application/json' } });
+  };
+  const env = {
+    GEMINI_API_KEY: 'test-key',
+    AI: {
+      async run(model) {
+        modelCalls.push(model);
+        return { response: '地域制限時も会話を継続できます。' };
+      },
+    },
   };
   try {
     const result = await runGeminiTurn({
-      text: '別府で中古PC店を教えて',
-      history: [{ role: 'user', content: '予算は3万円です' }],
+      text: 'これ変わったな',
+      history: [{ role: 'user', content: '会話が成立し始めた' }],
       previousInteractionId: 'old-interaction',
-    }, { GEMINI_API_KEY: 'test-key' });
-    assert.equal(calls, 2);
+    }, env);
+    assert.equal(fetchCalls, 1);
     assert.equal(result.ok, true);
-    assert.equal(result.route, 'gemini-generate-content-region-fallback');
-    assert.equal(result.generationTransport, 'generateContent');
+    assert.match(result.route, /^cloudflare-region-rescue:/);
+    assert.equal(result.generationTransport, 'workers-ai');
+    assert.equal(result.generationProvider, 'workers-ai');
     assert.equal(result.interactionsRegionFallback, true);
     assert.equal(result.interactionReset, true);
     assert.equal(result.interactionId, '');
-    assert.equal(result.search, true);
-    assert.equal(result.queries[0], '別府 中古PC 店');
-    assert.equal(result.sources[0].title, '実在ショップ');
+    assert.equal(result.legacyGlmExecution, true);
+    assert.ok(modelCalls.some((model) => /@cf\/zai-org\/glm-/.test(model)));
+    assert.match(result.answer, /会話を継続/);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('v96 does not hide unrelated Interactions HTTP 400 errors behind the regional fallback', async () => {
+test('v97 does not hide unrelated Interactions HTTP 400 errors behind the regional rescue', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({
     error: { message: 'Bad request for another reason' },
@@ -312,7 +306,7 @@ test('v96 does not hide unrelated Interactions HTTP 400 errors behind the region
   }
 });
 
-test('v96 clients clear stale previous interaction state after a generateContent fallback', () => {
+test('v97 clients clear stale previous interaction state after a regional rescue', () => {
   const webClient = fs.readFileSync(new URL('../src/talk-client-v45.js', import.meta.url), 'utf8');
   const discord = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
   assert.match(webClient, /if\(j\.interactionReset\)geminiInteractionId=''/);
