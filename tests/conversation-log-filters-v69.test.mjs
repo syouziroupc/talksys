@@ -29,7 +29,7 @@ test('latest D1 view selects the newest session and collapses duplicate event ro
   assert.match(logSource, /export function collapseTalkLogs/);
   assert.match(logSource, /events:\[\],sourceIds:\[\]/);
   assert.match(server, /url\.searchParams\.get\('view'\) \|\| 'latest'/);
-  assert.match(server, /view === 'raw' \? rawLogs : collapseTalkLogs\(rawLogs\)/);
+  assert.match(server, /view === 'latest' \? collapseTalkLogs\(rawLogs\) : rawLogs/);
   assert.match(server, /latestSessionId: latest\?\.sessionId \|\| ''/);
   assert.match(server, /currentRuntimeRevision: INTEGRATED_ENTRY_REVISION/);
 });
