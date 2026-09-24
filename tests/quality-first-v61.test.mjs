@@ -16,9 +16,9 @@ const {
 
 test('v84 quality-first prompt avoids duplicate search while keeping external facts grounded', () => {
   const prompt = buildTalkSysSystemInstruction(new Date('2026-09-18T05:00:00Z'));
-  assert.match(prompt, /明確なあいさつ、礼、短い相づち、単純計算/);
-  assert.match(prompt, /外部事実を含む回答は検索根拠を優先/);
-  assert.match(prompt, /同じ内容を検証目的で二重検索しない/);
+  assert.match(prompt, /あいさつ、礼、短い相づち、単純計算/);
+  assert.match(prompt, /外部事実や現在情報が必要な質問ではGoogle検索を使い/);
+  assert.match(prompt, /回答を返す直前に内部で一度だけ確認/);
   assert.match(prompt, /根拠がない固有名詞/);
 });
 
