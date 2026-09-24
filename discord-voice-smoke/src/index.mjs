@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v100-resolved-stt-order-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v101-eou-fast-reaction-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -455,6 +455,27 @@ function triggerWebFastReaction(helper, text) {
       console.warn('[fast-reaction] endpoint failed:', error?.message || error);
     }
   }, 90);
+}
+
+function triggerEndOfUtteranceReaction(helper, text) {
+  const active = helper?.active;
+  const value = String(text || '').trim();
+  if (!active || active.reactionIssued || !value || active.sessionEpoch !== voiceEpoch) return false;
+  if (active.startedDuringBotPlayback) return false;
+
+  // At Discord utterance finalization we already have a useful realtime
+  // transcript. Do not wait for Whisper or another HTTP classifier round-trip:
+  // use the same local fastReaction policy that prewarms the audio cache.
+  active.latestRealtimeTranscript = value;
+  active.reactionIssued = true;
+  helper.reactionSeq += 1;
+  const reaction = fastReaction(value);
+  active.reaction = reaction;
+  if (!reaction?.shouldSpeak || !String(reaction?.text || '').trim()) return false;
+
+  mirrorRuntimeLog('REACTION', `eou-local ${reaction.kind || 'unknown'}: ${reaction.text}`);
+  playWebFastReaction(reaction, active.utteranceId, active.sessionEpoch, active.timeline, value);
+  return true;
 }
 
 function handleRealtimeMessage(helper, data) {
@@ -1592,6 +1613,14 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     const realtimeConfidence = realtimeActive && Number.isFinite(Number(realtimeActive.latestRealtimeConfidence))
       ? Number(realtimeActive.latestRealtimeConfidence) : null;
     const realtimeWords = realtimeActive && Array.isArray(realtimeActive.realtimeWords) ? realtimeActive.realtimeWords.slice(0,120) : [];
+
+    // Start the acknowledgement immediately at end-of-utterance from the
+    // realtime transcript. Whisper remains authoritative for the actual turn.
+    // Keeping helper.active until after this call prevents the cue from being
+    // lost simply because Nova did not emit speech_final/UtteranceEnd.
+    if (realtimeActive && realtimeTranscript) {
+      triggerEndOfUtteranceReaction(realtimeHelper, realtimeTranscript);
+    }
     if (realtimeActive) realtimeHelper.active = null;
     timeline.realtimeTranscript = realtimeTranscript;
     const captureMetrics = {
