@@ -25,7 +25,7 @@ test('v94 relaxed barge-in keeps 150ms continuity and self-voice guard', () => {
   assert.match(bridge, /bargeInTriggerMs/);
 });
 
-test('v103 interrupted pipeline cannot clear replacement turn cues', () => {
+test('v104 interrupted pipeline cannot clear replacement turn cues', () => {
   assert.match(bridge, /activeWaitCue\?\.utteranceId === utteranceId/);
   assert.match(bridge, /activeFastReaction\?\.utteranceId === utteranceId/);
   assert.match(bridge, /interruptedUtteranceId/);
@@ -33,13 +33,13 @@ test('v103 interrupted pipeline cannot clear replacement turn cues', () => {
   assert.match(bridge, /do not touch receiver sessions/);
 });
 
-test('v103 contextually rewrites 10式戦車 phonetic-kanji ASR errors without generic number guessing', () => {
-  assert.match(bridge, /STT_CONTEXT_REWRITES/);
-  assert.match(bridge, /canonical: '10式'/);
-  assert.match(bridge, /'人丸式'/);
-  assert.match(bridge, /anchor: '\(\?:戦車\|MBT\|主力戦車\)'/);
-  assert.match(bridge, /applyContextualSttRewrites/);
-  assert.match(bridge, /contextual-fixed-term:10式戦車/);
+test('v104 uses phonetic-first Japanese Whisper prompting instead of narrow term rewrites', () => {
+  assert.match(stt, /JAPANESE_PHONETIC_FIRST_PROMPT/);
+  assert.match(stt, /initial_prompt: JAPANESE_PHONETIC_FIRST_PROMPT/);
+  assert.match(stt, /意味を推測して漢字を補わない/);
+  assert.match(stt, /ひらがなまたはカタカナのまま転写/);
+  assert.doesNotMatch(bridge, /STT_CONTEXT_REWRITES/);
+  assert.doesNotMatch(bridge, /contextual-fixed-term:10式戦車/);
 });
 
 test('v94 server persists transcript provenance and barge-in latency', () => {
@@ -79,7 +79,7 @@ test('v99 rescues usable realtime transcript when Whisper returns empty transcri
   assert.match(bridge, /hallucination-guard/);
 });
 
-test('v103 only invalidates an older STT after a newer result resolves', () => {
+test('v104 only invalidates an older STT after a newer result resolves', () => {
   assert.match(bridge, /voiceUtteranceSerial/);
   assert.match(bridge, /latestResolvedVoiceByUser/);
   assert.match(bridge, /isStaleVoiceResult/);
