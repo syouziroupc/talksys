@@ -165,3 +165,15 @@ test('VC connection survives greeting TTS failure', () => {
   assert.doesNotMatch(source, /throw new Error\(`connection_greeting_failed/);
   assert.match(source, /return false/);
 });
+
+test('v98 serializes Windows System.Speech and avoids parallel startup warmups', () => {
+  assert.match(source, /let windowsTtsQueue = Promise\.resolve\(\)/);
+  assert.match(source, /windowsTtsQueue[\s\S]*\.then\(async \(\) =>/);
+  assert.match(source, /windowsTtsConsecutiveFailures >= 3/);
+  assert.match(source, /windowsTtsDisabledUntil = Date\.now\(\) \+ 30000/);
+  assert.match(source, /timedOut=\$\{timedOut\} bytes=\$\{audio\.length\}/);
+  assert.match(source, /Greeting is the only startup-critical sound/);
+  const readyBlock = source.slice(source.indexOf("client.once('ready'"), source.indexOf("client.on('interactionCreate'"));
+  assert.doesNotMatch(readyBlock, /warmFastReactionAudio\(\)/);
+  assert.doesNotMatch(readyBlock, /warmRecoveryAudio\(\)/);
+});
