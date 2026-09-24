@@ -83,13 +83,13 @@ export function sameUtterance(a = '', b = '') {
 }
 
 
-export const VOICE_TURN_POLICY_REVISION = 'talksys-v84-unified-turn-policy-r1';
+export const VOICE_TURN_POLICY_REVISION = 'talksys-v89-fragment-hallucination-policy-r1';
 
 const EXPLICIT_STOP_RE = /^(?:止めて|とめて|停止|中止|キャンセル|黙って|だまって|もういい|待って|まって)(?:ください|下さい|くれ|よ)?[。！!？?…\s]*$/i;
 const ACK_ONLY_RE = /^(?:はい|うん|ううん|そう|そうそう|なるほど|了解|わかった|分かった|おっけー|オッケー|OK|ええ|ああ)[。！!？?…\s]*$/i;
 const TURN_FILLER_ONLY_RE = /^(?:えー+と?|えっと|あの+|その+|うー+ん|んー+|えー|あー+|ん+|まあ|ほら)[。！!？?…\s]*$/i;
 const LAUGHTER_ONLY_RE = /^(?:は+|ハ+|ふ+|フ+|笑+|w+|ｗ+)[ッっハはフふ笑wｗ\s。！!？?…]*$/i;
-const KNOWN_STT_HALLUCINATION_RE = /^(?:ご視聴ありがとうございました|ご清聴ありがとうございました|字幕(?:をご覧いただき)?ありがとうございました)[。！!？?…\s]*$/i;
+const KNOWN_STT_HALLUCINATION_RE = /^(?:ご視聴ありがとうございました|ご清聴ありがとうございました|最後までご視聴ありがとうございました|ご視聴いただきありがとうございました|チャンネル登録(?:を)?(?:お願い(?:します|いたします)|よろしくお願いします)|字幕(?:をご覧いただき)?ありがとうございました)[。！!？?…\s]*$/i;
 
 export function classifyVoiceTurn(text = '', { answerInFlight = false } = {}) {
   const value = clean(text, 1200);
