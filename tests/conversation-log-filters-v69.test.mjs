@@ -40,3 +40,16 @@ test('signed recent Discord diagnostics use the latest logical session view', ()
   assert.match(server, /latestSessionId: rawLogs\[0\]\?\.sessionId \|\| ''/);
   assert.match(server, /latestRevision: rawLogs\[0\]\?\.revision \|\| ''/);
 });
+
+test('v97 archives prior D1 revisions atomically and exposes an archive view', () => {
+  assert.match(logSource, /CREATE TABLE IF NOT EXISTS conversation_logs_archive/);
+  assert.match(logSource, /export async function archiveTalkLogs/);
+  assert.match(logSource, /TALKSYS_LOG_DB\.batch/);
+  assert.match(logSource, /INSERT OR IGNORE INTO conversation_logs_archive/);
+  assert.match(logSource, /DELETE FROM conversation_logs WHERE COALESCE\(revision,''\) <> \?/);
+  assert.match(logSource, /export async function listArchivedTalkLogs/);
+  assert.match(server, /requestedView === 'raw' \|\| requestedView === 'archive'/);
+  assert.match(server, /await listArchivedTalkLogs\(env, limit, filters\)/);
+  assert.match(server, /\/api\/internal\/archive-conversation-logs/);
+  assert.match(server, /keepRevision: INTEGRATED_ENTRY_REVISION/);
+});
