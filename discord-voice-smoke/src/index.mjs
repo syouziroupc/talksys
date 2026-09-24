@@ -1705,7 +1705,10 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
     warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] warmup failed:', error?.message || error));
     warmRecoveryAudio().catch((error) => console.warn('[recovery] warmup failed:', error?.message || error));
   } else {
-    mirrorRuntimeLog('READY', 'Windows TTS background warmup skipped to keep answer queue clear');
+    // Windows fast-reaction phrases are prepared before Discord login.
+    // Never enqueue background TTS after joining a call: it can sit in front
+    // of the real answer on windowsTtsQueue and increase perceived latency.
+    mirrorRuntimeLog('READY', `Windows fast-reaction cache=${fastReactionAudioCache.size}`);
   }
   return channel;
 }
@@ -1836,6 +1839,18 @@ discordReadyWatchdog = setTimeout(() => {
 
 mirrorRuntimeLog('BOOT', `process start node=${process.version}`);
 mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
+// Prepare only the small, fixed backchannel set before the bot becomes
+// available. This moves System.Speech cost to process startup and keeps the
+// runtime answer queue clear. Recovery TTS remains lazy on Windows.
+if (process.platform === 'win32') {
+  try {
+    await warmFastReactionAudio();
+    console.log(`[boot] fast-reaction cache ready=${fastReactionAudioCache.size}`);
+  } catch (error) {
+    console.warn('[boot] fast-reaction warmup failed:', error?.message || error);
+  }
+}
+
 client.login(DISCORD_TOKEN).catch((error) => {
   if (discordReadyWatchdog) clearTimeout(discordReadyWatchdog);
   console.error('[fatal] Discord login failed:', error?.stack || error);
