@@ -62,7 +62,7 @@ test('v99 rescues usable realtime transcript when Whisper returns empty transcri
   assert.match(bridge, /hallucination-guard/);
 });
 
-test('v100 only invalidates an older STT after a newer result resolves', () => {
+test('v101 only invalidates an older STT after a newer result resolves', () => {
   assert.match(bridge, /voiceUtteranceSerial/);
   assert.match(bridge, /latestResolvedVoiceByUser/);
   assert.match(bridge, /isStaleVoiceResult/);
