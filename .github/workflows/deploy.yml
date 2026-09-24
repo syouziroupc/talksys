@@ -211,7 +211,7 @@ jobs:
             && d.legacyWebSocketVoice===false
             && d.durableObjectVoice===false
             && d.legacyAgentRoute===false
-            && d.personalizationRevision==='talksys-v55-gemini-personalization-r1'
+            && d.personalizationRevision==='talksys-v86-compact-core-personalization-r1'
             && d.nativeGeminiAnswerPath===true
             && d.nativeGoogleSearch===true
             && d.searchDefault==='single-pass-grounded-google-search'
@@ -245,7 +245,7 @@ jobs:
           if (!d.ok || !d.configured || d.provider!=='gemini' || d.model!=='gemini-3.5-flash-lite'
               || d.api!=='interactions' || d.nativeGoogleSearch!==true
               || d.searchDefault!=='single-pass-grounded-google-search'
-              || d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'
+              || d.personalizationRevision!=='talksys-v86-compact-core-personalization-r1'
               || d.speechOptimized!==true || d.ttsProvider!=='cloudflare-melotts-only' || d.geminiTtsFallback!==false || d.promptInjectionDefense!==true
               || d.blanketFailClosed!==false || d.legacyGlmExecution!==false) {
             throw new Error(process.env.GEMINI_HEALTH);
@@ -296,11 +296,11 @@ jobs:
 
           payload='{"text":"別府市の今日の天気は？","history":[]}'
           out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='gemini-native-interactions'||d.nativeGoogleSearch!==true||d.search!==true||d.genericVerificationAttempted!==false||d.genericVerificationSucceeded!==false||d.verifierSearched!==false||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'||!String(d.answer||'').trim())throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='gemini-native-interactions'||d.nativeGoogleSearch!==true||d.search!==true||d.genericVerificationAttempted!==false||d.genericVerificationSucceeded!==false||d.verifierSearched!==false||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v86-compact-core-personalization-r1'||!String(d.answer||'').trim())throw new Error(process.env.OUT);"
 
           payload='{"text":"どれがいい？","history":[{"role":"user","content":"大学のレポート用に中古ノートPCを探してる。予算は3万円。"},{"role":"assistant","content":"Officeとブラウザ中心ですね。"}]}'
           out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||d.route!=='gemini-native-interactions'||d.search!==false||d.genericVerificationAttempted!==false||d.genericVerificationSucceeded!==false||a.length<8||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v55-gemini-personalization-r1'||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');if(!d.ok||d.route!=='gemini-native-interactions'||d.search!==false||d.genericVerificationAttempted!==false||d.genericVerificationSucceeded!==false||a.length<8||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'||d.personalizationRevision!=='talksys-v86-compact-core-personalization-r1'||/何について|もう少し詳しく|詳しく教えて/.test(a))throw new Error(process.env.OUT);"
 
       - name: Verify Discord bridge auth is enforced
         shell: bash
