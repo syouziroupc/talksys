@@ -165,3 +165,13 @@ test('VC connection survives greeting TTS failure', () => {
   assert.doesNotMatch(source, /throw new Error\(`connection_greeting_failed/);
   assert.match(source, /return false/);
 });
+
+test('V92 TTS hotfix serializes local System.Speech and uses a temp WAV file', () => {
+  assert.match(source, /import fs from 'node:fs'/);
+  assert.match(source, /let windowsTtsQueue = Promise\.resolve\(\)/);
+  assert.match(source, /SetOutputToWaveFile\(\$out\)/);
+  assert.match(source, /TALKSYS_TTS_OUT/);
+  assert.match(source, /fs\.promises\.readFile\(tempFile\)/);
+  assert.match(source, /fs\.promises\.unlink\(tempFile\)/);
+  assert.match(source, /windowsTtsQueue[\s\S]*synthesizeWindowsJapaneseTtsUnlocked/);
+});
