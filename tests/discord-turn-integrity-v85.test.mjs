@@ -47,3 +47,11 @@ test('v87 Discord Windows TTS uses the same Japanese voice preference family as 
   assert.match(bridge, /Google\.\*\(\?:日本語\|Japanese\)/);
   assert.match(bridge, /voice=\'\+\$pick\.VoiceInfo\.Name/);
 });
+
+
+test('v87 r2 Windows TTS selector avoids complex Sort-Object syntax and stays PowerShell 5.1 friendly', () => {
+  assert.match(bridge, /foreach\(\$v in \$ja\)/);
+  assert.match(bridge, /\$best=-1/);
+  assert.doesNotMatch(bridge, /Sort-Object @\{Expression/);
+  assert.match(bridge, /voice-align-r2/);
+});
