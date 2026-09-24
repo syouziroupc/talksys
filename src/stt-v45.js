@@ -1,5 +1,5 @@
 export const STT_MODEL = '@cf/openai/whisper-large-v3-turbo';
-export const STT_REVISION = 'talksys-v89-hardened-whisper-outro-guard';
+export const STT_REVISION = 'talksys-v90-short-utterance-safe';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -63,7 +63,21 @@ export function analyzeWav(buffer) {
 }
 
 export function weakSpeechSignal(metrics) {
-  return !metrics?.valid || metrics.durationMs < 260 || metrics.peak < 0.010 || metrics.rms < 0.0018 || metrics.activeMs < 120 || metrics.activeRatio < 0.06;
+  if (!metrics?.valid) return true;
+  const durationMs = Number(metrics.durationMs) || 0;
+  const peak = Number(metrics.peak) || 0;
+  const rms = Number(metrics.rms) || 0;
+  const activeMs = Number(metrics.activeMs) || 0;
+  const activeRatio = Number(metrics.activeRatio) || 0;
+
+  // Do not equate a short utterance with silence. Japanese acknowledgements and
+  // greetings can be brief; accept them when the waveform has clear speech energy.
+  if (durationMs < 100) return true;
+  if (durationMs < 260) {
+    const clearShortSpeech = peak >= 0.018 && rms >= 0.0035 && activeMs >= 60 && activeRatio >= 0.10;
+    return !clearShortSpeech;
+  }
+  return peak < 0.010 || rms < 0.0018 || activeMs < 120 || activeRatio < 0.06;
 }
 
 export function isLikelySttHallucination(text, metrics) {
