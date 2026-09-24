@@ -1,4 +1,4 @@
-export const LOG_V42_REVISION='talksys-log-v89-d1-voice-diagnostics';
+export const LOG_V42_REVISION='talksys-log-v95-latest-session-view';
 let conversationLogSchemaPromise;
 
 function clean(v,max=12000){return String(v??'').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'').slice(0,max);}
@@ -80,7 +80,20 @@ export async function listTalkLogs(env,limit=100,filters={}){
   const utteranceId=clean(filters?.utteranceId,180).trim();
   const q=clean(filters?.q,500).trim();
   if(exactSession){where.push('session_id = ?');binds.push(exactSession);}
-  else if(sessionPrefix){where.push('session_id LIKE ?');binds.push(sessionPrefix+'%');}
+  else if(filters?.latestSessionOnly){
+    const headWhere=[],headBinds=[];
+    if(sessionPrefix){headWhere.push('session_id LIKE ?');headBinds.push(sessionPrefix+'%');}
+    if(event){headWhere.push('event = ?');headBinds.push(event);}
+    if(utteranceId){headWhere.push("json_extract(result_json, '$.utteranceId') = ?");headBinds.push(utteranceId);}
+    if(q){headWhere.push('user_text LIKE ?');headBinds.push('%'+q+'%');}
+    const headSql='SELECT session_id FROM conversation_logs'
+      +(headWhere.length?' WHERE '+headWhere.join(' AND '):'')
+      +' ORDER BY timestamp DESC LIMIT 1';
+    const head=await env.TALKSYS_LOG_DB.prepare(headSql).bind(...headBinds).all();
+    const latestSession=clean(head?.results?.[0]?.session_id,180).trim();
+    if(!latestSession)return [];
+    where.push('session_id = ?');binds.push(latestSession);
+  }else if(sessionPrefix){where.push('session_id LIKE ?');binds.push(sessionPrefix+'%');}
   if(event){where.push('event = ?');binds.push(event);}
   if(utteranceId){where.push("json_extract(result_json, '$.utteranceId') = ?");binds.push(utteranceId);}
   if(q){where.push('user_text LIKE ?');binds.push('%'+q+'%');}
@@ -92,10 +105,36 @@ export async function listTalkLogs(env,limit=100,filters={}){
     let result={};try{result=JSON.parse(row.result_json||'{}')||{};}catch{}
     return {
       id:row.id,sessionId:row.session_id,event:row.event,timestamp:row.timestamp,jst:row.jst,revision:row.revision,path:row.path,status:row.status,
-      channel:clean(result?.channel,80),utteranceId:clean(result?.utteranceId,180),userText:clean(row.user_text,5000),assistantText:clean(result?.answer||result?.text,9000),
+      channel:clean(result?.channel,80),utteranceId:clean(result?.utteranceId,180),userText:clean(row.user_text,5000),assistantText:clean(result?.answer||result?.text,9000),error:clean(result?.error,1800),
       route:clean(result?.route,180),search:Boolean(result?.search),timings:result?.timings&&typeof result.timings==='object'?result.timings:null,realtimeTranscript:clean(result?.realtimeTranscript,4000),confirmedTranscript:clean(result?.confirmedTranscript,4000),rawTranscript:clean(result?.rawTranscript,4000),correctedTranscript:clean(result?.correctedTranscript,4000),correctionReason:clean(result?.correctionReason,1200),bargeInTriggerMs:Number(result?.bargeInTriggerMs)||0,geminiInputText:clean(result?.geminiInputText,4000),transcriptMatch:typeof result?.transcriptMatch==='boolean'?result.transcriptMatch:null
     };
   });
 }
 
-export const __test={safeId,compactHistory,compactPlan,compactResult,keyFor,buildLogRecord};
+export function collapseTalkLogs(logs=[]){
+  const groups=new Map();
+  for(const row of Array.isArray(logs)?logs:[]){
+    const utteranceId=clean(row?.utteranceId,180);
+    const key=utteranceId?clean(row?.sessionId,180)+':'+utteranceId:'row:'+clean(row?.id,180);
+    let merged=groups.get(key);
+    if(!merged){
+      merged={...row,events:[],sourceIds:[]};
+      groups.set(key,merged);
+    }
+    if(row?.event&&!merged.events.includes(row.event))merged.events.push(row.event);
+    if(row?.id)merged.sourceIds.push(row.id);
+    if(!merged.userText&&row?.userText)merged.userText=row.userText;
+    if(!merged.assistantText&&row?.assistantText)merged.assistantText=row.assistantText;
+    if(!merged.error&&row?.error)merged.error=row.error;
+    if(!merged.route&&row?.route)merged.route=row.route;
+    if(!merged.timings&&row?.timings)merged.timings=row.timings;
+    for(const field of ['realtimeTranscript','confirmedTranscript','rawTranscript','correctedTranscript','correctionReason','geminiInputText']){
+      if(!merged[field]&&row?.[field])merged[field]=row[field];
+    }
+    if(!merged.bargeInTriggerMs&&row?.bargeInTriggerMs)merged.bargeInTriggerMs=row.bargeInTriggerMs;
+    if(merged.transcriptMatch===null&&typeof row?.transcriptMatch==='boolean')merged.transcriptMatch=row.transcriptMatch;
+  }
+  return [...groups.values()];
+}
+
+export const __test={safeId,compactHistory,compactPlan,compactResult,keyFor,buildLogRecord,collapseTalkLogs};
