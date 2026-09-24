@@ -136,7 +136,8 @@ test('integrated browser and Telnyx turns share the same personalized Gemini run
   assert.match(source, /return runGeminiTurn\(body, env, signal, options\)/);
   assert.match(source, /scheduleConversationLog\(ctx, env, request, commonBody, result, 'turn', 200\)/);
   assert.match(source, /url\.pathname === '\/api\/turn'/);
-  assert.doesNotMatch(source, /LEGACY_GLM|@cf\/zai-org\/glm/);
+  assert.match(source, /import fallbackWorker from '\.\/worker-v44\.js'/);
+  assert.match(source, /runCloudflareRegionalRescue/);
 });
 
 
