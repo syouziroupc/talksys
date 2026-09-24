@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v101-eou-fast-reaction-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v102-barge-generation-guard-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -1291,10 +1291,18 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
       await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch, timeline.utteranceEndAt || 0);
     }
   } finally {
-    activeWaitCue?.stop?.('pipeline-complete');
-    activeWaitCue = null;
-    activeFastReaction?.stop?.('pipeline-complete');
-    activeFastReaction = null;
+    // An interrupted pipeline may finish after the replacement turn has
+    // already created its own cue/reaction. Only clean up handles that still
+    // belong to this utterance; otherwise the old finally block can kill the
+    // new turn and make barge-in appear frozen.
+    if (activeWaitCue?.utteranceId === utteranceId) {
+      activeWaitCue.stop?.('pipeline-complete');
+      activeWaitCue = null;
+    }
+    if (activeFastReaction?.utteranceId === utteranceId) {
+      activeFastReaction.stop?.('pipeline-complete');
+      activeFastReaction = null;
+    }
     timeline.pipelineCompleteAt = Date.now();
     timings.pipelineCompleteMs = Math.max(0, timeline.pipelineCompleteAt - pipelineStarted);
     console.log(`[latency-summary] utterance=${utteranceId} captureMs=${timings.captureMs} sttMs=${timings.sttMs} speechEndToSttFinalMs=${timings.speechEndToSttFinalMs} fastReactionMs=${timings.fastReactionMs} primaryMs=${timings.primaryMs} verifierMs=${timings.verifierMs} answerGenerationTotalMs=${timings.answerGenerationTotalMs} firstTtsMs=${timings.firstTtsMs} ffmpegSpawnMs=${timings.ffmpegSpawnMs} speechEndToPlaybackStartMs=${timings.speechEndToPlaybackStartMs} pipelineCompleteMs=${timings.pipelineCompleteMs}`);
@@ -1483,20 +1491,34 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
 
 function interruptActiveAnswer(reason = 'user-speech') {
   if (!answering && !activeFastReaction && player.state.status !== AudioPlayerStatus.Playing) return false;
+
+  const interruptedUtteranceId = activeUserUtteranceId || activeWaitCue?.utteranceId || activeFastReaction?.utteranceId || '';
   activeTurnSerial += 1;
+  preAnswerCueSerial += 1;
+
   const controller = activeTurnAbortController;
   activeTurnAbortController = null;
-  try { controller?.abort(); } catch {}
-  try { activeWaitCue?.stop?.(reason); } catch {}
-  try { activeFastReaction?.stop?.(reason); } catch {}
-  activeWaitCue = null;
-  activeFastReaction = null;
-  player.stop(true);
+  try { controller?.abort?.(reason); } catch {}
+
+  if (!interruptedUtteranceId || activeWaitCue?.utteranceId === interruptedUtteranceId) {
+    try { activeWaitCue?.stop?.(reason); } catch {}
+    activeWaitCue = null;
+  }
+  if (!interruptedUtteranceId || activeFastReaction?.utteranceId === interruptedUtteranceId) {
+    try { activeFastReaction?.stop?.(reason); } catch {}
+    activeFastReaction = null;
+  }
+
+  // Stop output immediately, but do not touch receiver sessions: the user
+  // utterance that caused the barge-in is already being captured there.
+  try { player.stop(true); } catch {}
+
   answering = false;
   activeUserText = '';
   activeUserUtteranceId = '';
   pendingTurns.splice(0, pendingTurns.length);
-  console.log(`[barge-in] interrupted active answer reason=${reason}`);
+  mirrorRuntimeLog('BARGE', `released old turn utterance=${interruptedUtteranceId || '-'} reason=${reason}`);
+  console.log(`[barge-in] interrupted active answer utterance=${interruptedUtteranceId || '-'} reason=${reason}`);
   return true;
 }
 
