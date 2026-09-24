@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-stability-r2-output-guard';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-stability-r3-voice-ready-retry';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -1681,20 +1681,60 @@ async function playConnectionGreeting() {
   }
 }
 
+async function createReadyVoiceConnection(channel) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const candidate = joinVoiceChannel({
+      channelId: channel.id,
+      guildId: channel.guild.id,
+      adapterCreator: channel.guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: false,
+      daveEncryption: false,
+      debug: true,
+    });
+
+    const onState = (oldState, newState) => {
+      const from = oldState?.status || 'unknown';
+      const to = newState?.status || 'unknown';
+      console.log(`[discord] voice connect attempt=${attempt} state=${from}->${to}`);
+      mirrorRuntimeLog('VOICE-CONNECT', `attempt=${attempt} ${from}->${to}`);
+    };
+    const onDebug = (message) => {
+      const value = String(message || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+      if (value) mirrorRuntimeLog('VOICE-DEBUG', `attempt=${attempt} ${value}`);
+    };
+    candidate.on('stateChange', onState);
+    candidate.on('debug', onDebug);
+
+    try {
+      mirrorRuntimeLog('VOICE-CONNECT', `attempt=${attempt}/3 dave=false`);
+      await entersState(candidate, VoiceConnectionStatus.Ready, 20000);
+      candidate.off('stateChange', onState);
+      candidate.off('debug', onDebug);
+      mirrorRuntimeLog('VOICE-CONNECT', `ready attempt=${attempt}`);
+      return candidate;
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || error || '').slice(0, 220);
+      console.warn(`[discord] voice ready failed attempt=${attempt}/3: ${message}`);
+      mirrorRuntimeLog('VOICE-CONNECT', `failed attempt=${attempt}: ${message}`);
+      candidate.off('stateChange', onState);
+      candidate.off('debug', onDebug);
+      try { candidate.destroy(); } catch {}
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
+    }
+  }
+  throw lastError || new Error('voice_ready_failed');
+}
+
 async function connectToVoiceChannel(channel, initialUserId = '') {
   if (!channel || !channel.isVoiceBased()) throw new Error('target channel is not voice based');
   destroyVoiceConnection();
 
-  connection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId: channel.guild.id,
-    adapterCreator: channel.guild.voiceAdapterCreator,
-    selfDeaf: false,
-    selfMute: false,
-  });
+  connection = await createReadyVoiceConnection(channel);
   connection.subscribe(player);
 
-  await entersState(connection, VoiceConnectionStatus.Ready, 15000);
   discordSessionId = `discord-${channel.guild.id}-${channel.id}-${randomUUID()}`;
 
   connection.receiver.speaking.on('start', (userId) => {
