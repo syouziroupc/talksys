@@ -27,6 +27,7 @@ const TRIVIAL_CONVERSATION_RE = /^(?:もしもし|おはよう(?:ございます
 const CURRENT_TIME_ONLY_RE = /^(?:(?:今|現在)(?:の)?(?:時刻|時間)?(?:は)?(?:何時|なんじ)(?:ですか|なの|だ|でしょうか)?|(?:今|現在)(?:の)?(?:時刻|時間)(?:を)?(?:教えて|おしえて|知りたい)(?:ください|下さい)?|(?:時間|時刻)(?:は)?(?:何時|なんじ)(?:ですか)?|(?:時間|時刻)(?:を)?(?:教えて|おしえて)(?:ください|下さい)?)[。！!？?…\s]*$/i;
 const LOCATION_DEPENDENT_RE = /(?:天気|気温|降水|雨(?:降る)?|雪(?:降る)?|近く|近所|周辺|最寄り|おすすめ(?:の)?(?:店|店舗|病院|ホテル|飲食店|レストラン)|(?:店|店舗|病院|ホテル|レストラン).*(?:近い|近く|おすすめ)|今日.*(?:営業|開いて)|今.*(?:営業|開いて))/i;
 const EXPLICIT_LOCATION_RE = /(?:北海道|東京都|京都府|大阪府|.{1,12}[都道府県市区町村]|.{1,12}(?:駅|空港|港|温泉|公園|大学|病院|ホテル)|日本全国|全国)/u;
+const SPECIFIC_PLACE_ENTITY_RE = /(?:[A-Za-z0-9一-龠々ァ-ヴー]{1,24}(?:店|店舗|病院|ホテル|レストラン))/u;
 const LOCAL_TRANSFORM_RE = /(?:この文章|この文|次の文章|以下の文章).{0,30}(?:要約|翻訳|言い換え|添削|校正|短く|整えて)/i;
 const FACTUAL_OR_LOOKUP_RE = /[？?]|(?:誰|どこ|いつ|何時|何日|時刻|いくら|価格|値段|相場|在庫|最新|現在|今日|明日|天気|運行|時刻表|乗換|乗り換え|おすすめ|候補|店|店舗|会社|企業|病院|ホテル|商品|製品|型番|仕様|互換|対応|住所|電話番号|営業時間|ニュース|法律|制度|社長|CEO|大統領|首相|発売|販売中|検索|調べ|探して|確認して|教えて)/i;
 const TRANSIT_QUERY_RE = /(?:電車|鉄道|列車|新幹線|特急|快速|普通列車|乗換|乗り換え|時刻表|発車|出発|駅)/i;
@@ -255,7 +256,7 @@ function deterministicLocationClarificationResult(text = '', body = {}, started 
   const value = compact(text, 500);
   const historyLocation = (Array.isArray(body?.history) ? body.history.slice(-8) : [])
     .map((item) => compact(item?.content, 500)).join(' ');
-  if (!value || !LOCATION_DEPENDENT_RE.test(value) || EXPLICIT_LOCATION_RE.test(value) || EXPLICIT_LOCATION_RE.test(historyLocation)) return null;
+  if (!value || !LOCATION_DEPENDENT_RE.test(value) || EXPLICIT_LOCATION_RE.test(value) || EXPLICIT_LOCATION_RE.test(historyLocation) || SPECIFIC_PLACE_ENTITY_RE.test(value)) return null;
   return {
     ok: true,
     answer: '地域によって変わります。どの地域について知りたいですか？',
