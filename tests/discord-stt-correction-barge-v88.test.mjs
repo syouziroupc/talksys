@@ -30,10 +30,12 @@ test('v94 server persists transcript provenance and barge-in latency', () => {
 });
 
 
-test('v94 rejects common subtitle outro hallucinations unconditionally', () => {
-  assert.match(stt, /ご視聴ありがとうございました/);
-  assert.match(stt, /outro hallucinations are not valid TalkSys conversation turns/);
-  assert.doesNotMatch(stt, /ご視聴ありがとうございました[^\n]+&& \(!metrics/);
+test('v99 only hard-drops known subtitle hallucinations and preserves real speech', () => {
+  assert.match(stt, /KNOWN_STT_HALLUCINATION_RE/);
+  assert.match(stt, /isKnownSttHallucination/);
+  assert.match(stt, /Number\(metrics\.peak\) >= 0\.05/);
+  assert.match(stt, /Number\(metrics\.activeMs\) >= 150/);
+  assert.match(stt, /if \(realSpeech\) return false/);
 });
 
 test('v94 ordinary short utterances are never deferred or timeout-dropped', () => {
@@ -51,11 +53,23 @@ test('v94 STT only pre-drops physically tiny or effectively silent captures', ()
   assert.doesNotMatch(stt, /clearShortSpeech/);
 });
 
-test('v94 rescues usable realtime transcript when Whisper returns an ignorable 422', () => {
+test('v99 rescues usable realtime transcript when Whisper returns empty transcript or ignorable 422', () => {
   assert.match(bridge, /STT-RESCUE/);
   assert.match(bridge, /realtime-rescue-after-whisper-failure/);
   assert.match(bridge, /Whisper failed -> realtime/);
   assert.match(bridge, /processConfirmedTranscript/);
+  assert.match(bridge, /empty-or-silent-stt/);
+  assert.match(bridge, /hallucination-guard/);
+});
+
+test('v99 invalidates stale STT by epoch, utterance id and serial and immediately releases drop work', () => {
+  assert.match(bridge, /voiceUtteranceSerial/);
+  assert.match(bridge, /latestVoiceUtteranceByUser/);
+  assert.match(bridge, /isCurrentVoiceUtterance/);
+  assert.match(bridge, /STT-STALE/);
+  assert.match(bridge, /releaseDroppedUtterance/);
+  assert.match(bridge, /reactionSeq \+= 1/);
+  assert.match(bridge, /startReceiverSession\(userId, false\)/);
 });
 
 test('v94 retries strong-signal empty Whisper transcript only once', () => {
