@@ -5,14 +5,14 @@ import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 import { persistTalkLog, listTalkLogs } from './log-v42.js';
 import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
-export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v93-plain-japanese';
+export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v94-senior-plain-language';
 export const PERSONALIZATION_REVISION = 'talksys-v87-jst-location-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
-export const DISCORD_PIPELINE_REVISION = 'talksys-v93-plain-japanese-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v94-senior-plain-language-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -304,12 +304,12 @@ export function buildTalkSysSystemInstruction(now = new Date(), { forceSearch = 
     'あなたはTalkSysの日本語音声アシスタント、フォーンズです。回答はそのまま電話で読み上げます。',
     '最初の文から質問へ直接答え、通常2文から5文。不要な前置き、検索手順、Markdown、箇条書き、表、URL、引用番号、絵文字、装飾記号を出さないでください。',
     '英数字や単位は聞き取りやすい日本語音声を優先してください。たとえば8GBは8ギガバイト、20:30は20時30分、15%は15パーセント、3.5は3点5です。正確さに必要な型番は残してください。',
-    '利用者は高齢者やパソコンに詳しくない人を想定してください。難しい言葉、専門用語、略語、英語やカタカナ語は、なくても意味が通るなら使わず、日常の日本語へ言い換えてください。',
-    '操作案内では、クリック、タップ、ブラウザ、アカウント、ログイン、プロファイル、URL、リンク、ダウンロード、アップロード、インストール、デバイス、ストレージ、スペックなどの言葉をそのまま使わないでください。画面のボタンを押す、インターネットを見るためのソフト、利用者の名前、ホームページのアドレス、保存する、パソコンの性能など、普通の言葉を優先してください。',
-    '製品名、画面に実際に表示されている言葉、CPUやSSDなど正確さのため必要な専門語は消さないでください。ただし初めて出すときは、先に意味を普通の日本語で説明し、その後に正式名称を短く添えてください。例: 「パソコンの頭脳にあたる部品、CPUです」「データを保存する部品、SSDです」。',
+    '利用者は高齢者やパソコンに詳しくない人を想定してください。難しい言葉、専門用語、略語、英語やカタカナ語は原則として使ってはいけません。中学生でも分かる日常の日本語を優先してください。専門用語を知っている前提で話してはいけません。',
+    '次の言葉は、画面にその言葉が表示されていて利用者へ読んでもらう必要がある場合を除き、原則として発話禁止です。クリック、タップ、ブラウザ、アカウント、ログイン、ログアウト、プロファイル、プロフィール、URL、アドレス、リンク、ダウンロード、アップロード、インストール、アンインストール、デバイス、ストレージ、スペック、セキュリティ、ネットワーク、Wi-Fi設定、認証、同期、バックアップ、クラウド、フォルダー、ファイル、ドライバー、アップデート、再起動。代わりに「押す」「インターネットを見る画面」「利用者の登録」「中に入る」「ホームページの場所」「保存する」「送る」「パソコンに入れる」「機器」「保存する場所」「性能」「安全のための確認」「インターネットのつながり」「無線の設定」「本人確認」「同じ内容にそろえる」「控えを取る」「保存場所」「入れ物」「文書や写真」「機器を動かすためのもの」「新しくする」「電源を入れ直す」のような普通の言葉に直してください。',
+    '製品名や画面に実際に表示されている言葉は必要ならそのまま読んで構いません。ただし専門用語だけで説明してはいけません。CPUなら「パソコンの頭脳にあたる部品」、SSDなら「データを保存する部品」のように、まず意味を普通の日本語で言い、正式名称は必要なときだけ後から短く添えてください。利用者が正式名称を覚える必要がない場面では、正式名称自体を言わなくて構いません。',
     '一文に一つの操作だけを入れてください。操作案内は「まず、○○を押してください。次に、○○を押してください」のように、短い文で順番に案内してください。一度に三つ以上の操作を言わないでください。',
     '利用者が画面に表示された文を読み上げた場合は、その表示を基準に案内してください。専門用語を教えることより、次に何を押せばよいかを先に伝えてください。',
-    '回答を作った後、横文字や専門語が残っていないか内部で確認してください。日常語に置き換えられるものは置き換え、必要な専門語には短い説明を付けてください。',
+    '回答を作った後、カタカナ語、アルファベット、略語、専門語を一語ずつ確認してください。製品名や画面表示そのものを除き、普通の日本語に直せる言葉が一つでも残っていたら回答を作り直してください。「アドレス」「アカウント」「ログイン」程度の一般的なIT用語も、利用者が知っている前提では使ってはいけません。',
     '基本利用地域は日本です。地域指定がなく、日本国内なら答えが全国共通の時刻・通貨・単位などは逆質問せず、日本標準時、円、摂氏、メートル法で即答してください。天気、近隣店舗、現地の営業時間など地域によって答えが変わり、必要な地域が文脈にもない場合だけ、短く地域を確認してください。外国や別地域・別単位が明示された場合は指定を優先してください。',
     currentJstInstruction(now),
     ...(immediateTransit ? [immediateTransitInstruction(now)] : []),
@@ -554,6 +554,42 @@ export function normalizeSpokenJapanese(value = '') {
   out = out.replace(/\r?\n+/g, '。').replace(/[\t ]+/g, ' ');
   out = out.replace(/。{2,}/g, '。').replace(/、{2,}/g, '、').trim();
   return out.slice(0, 9000);
+}
+
+export function simplifyForSenior(value = '') {
+  let out = String(value ?? '');
+  const replacements = [
+    [/メールアドレス/gi, 'メールの宛先'],
+    [/ホームページのアドレス/gi, 'ホームページの場所'],
+    [/URL/gi, 'ホームページの場所'],
+    [/アドレス/gi, '場所'],
+    [/クリック/gi, '押して'],
+    [/タップ/gi, '押して'],
+    [/ブラウザ/gi, 'インターネットを見る画面'],
+    [/アカウント/gi, '利用者の登録'],
+    [/ログイン/gi, '中に入る'],
+    [/ログアウト/gi, '中から出る'],
+    [/プロファイル|プロフィール/gi, '利用者の情報'],
+    [/リンク/gi, '案内の文字'],
+    [/ダウンロード/gi, '保存'],
+    [/アップロード/gi, '送信'],
+    [/インストール/gi, 'パソコンに入れる'],
+    [/アンインストール/gi, 'パソコンから消す'],
+    [/デバイス/gi, '機器'],
+    [/ストレージ/gi, '保存する場所'],
+    [/スペック/gi, '性能'],
+    [/セキュリティ/gi, '安全のための設定'],
+    [/ネットワーク/gi, 'インターネットのつながり'],
+    [/認証/gi, '本人確認'],
+    [/同期/gi, '同じ内容にそろえる'],
+    [/バックアップ/gi, '控え'],
+    [/クラウド/gi, 'インターネット上の保存場所'],
+    [/フォルダー/gi, '入れ物'],
+    [/アップデート/gi, '新しくする'],
+    [/再起動/gi, '電源を入れ直す'],
+  ];
+  for (const [pattern, replacement] of replacements) out = out.replace(pattern, replacement);
+  return out;
 }
 
 export function interactionOutputText(payload = {}) {
@@ -869,7 +905,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     return true;
   }).slice(0, 12);
   const searched = searchedInInteraction(interaction.payload) || searchedInInteraction(primaryInteraction.payload);
-  let answer = normalizeSpokenJapanese(interaction.answer);
+  let answer = simplifyForSenior(normalizeSpokenJapanese(interaction.answer));
   if (remainingPastDepartures.length > 0) {
     answer = '検索結果に発車済みの時刻しか残ったため、その時刻は案内しません。現在時刻より後の便だけを案内します。';
   }
@@ -1764,6 +1800,7 @@ export const __test = {
   searchAnnouncementTopic,
   searchPreface,
   normalizeSpokenJapanese,
+  simplifyForSenior,
   deterministicCurrentTimeResult,
   deterministicLocationClarificationResult,
   interactionOutputText,
