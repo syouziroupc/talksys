@@ -1060,6 +1060,8 @@ async function playMp3(mp3, options = {}) {
   let botSpeechRecord = null;
   let settled = false;
   let playbackStartedAt = 0;
+  let startTimeout = null;
+  let playbackTimeout = null;
 
   const cleanup = () => {
     player.off(AudioPlayerStatus.Playing, onPlaying);
@@ -1126,12 +1128,12 @@ async function playMp3(mp3, options = {}) {
   player.on(AudioPlayerStatus.Idle, onIdle);
   player.on(AudioPlayerStatus.Playing, onPlaying);
 
-  const startTimeout = setTimeout(() => {
+  startTimeout = setTimeout(() => {
     try { ffmpeg.kill('SIGKILL'); } catch {}
     player.stop(true);
     finish(new Error(`playback_start_timeout detail=${ffmpegError.trim().slice(0, 300)}`));
   }, 5000);
-  const playbackTimeout = setTimeout(() => {
+  playbackTimeout = setTimeout(() => {
     try { ffmpeg.kill('SIGKILL'); } catch {}
     player.stop(true);
     finish(new Error(`playback_timeout detail=${ffmpegError.trim().slice(0, 300)}`));
