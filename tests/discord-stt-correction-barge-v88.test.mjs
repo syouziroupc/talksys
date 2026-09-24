@@ -75,10 +75,10 @@ test('v94 searches unknown entity explanation questions and contextual follow-up
 
 test('v94 system prompt requires plain Japanese and stepwise guidance', () => {
   assert.match(entry, /高齢者やパソコンに詳しくない人/);
-  assert.match(entry, /日常の日本語へ言い換えて/);
+  assert.match(entry, /中学生でも分かる日常の日本語/);
   assert.match(entry, /一文に一つの操作/);
-  assert.match(entry, /パソコンの頭脳にあたる部品、CPU/);
-  assert.match(entry, /データを保存する部品、SSD/);
+  assert.match(entry, /CPUなら「パソコンの頭脳にあたる部品」/);
+  assert.match(entry, /SSDなら「データを保存する部品」/);
   assert.match(entry, /次に何を押せばよいかを先に/);
 });
 

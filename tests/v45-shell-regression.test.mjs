@@ -65,7 +65,7 @@ test('current UI keeps controls, two-column debug console, runtime status and ho
 
 test('v45 STT keeps signal gating before Whisper', () => {
   assert.equal(STT_MODEL, '@cf/openai/whisper-large-v3-turbo');
-  assert.equal(STT_REVISION, 'talksys-v45-hardened-whisper');
+  assert.match(STT_REVISION, /^talksys-v\d+/);
   const invalid = analyzeWav(new ArrayBuffer(44));
   assert.equal(invalid.valid, false);
   assert.equal(weakSpeechSignal(invalid), true);

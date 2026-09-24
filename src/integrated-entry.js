@@ -2,17 +2,17 @@ import talksys from './entry.js';
 import { handleTelephonyRequest } from './telephony/index.js';
 import { fastReaction, FAST_REACTION_REVISION } from './voice-fast-reaction.js';
 import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
-import { persistTalkLog, listTalkLogs } from './log-v42.js';
+import { persistTalkLog, listTalkLogs, collapseTalkLogs } from './log-v42.js';
 import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
-export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v94-senior-plain-language';
+export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v95-d1-latest-view';
 export const PERSONALIZATION_REVISION = 'talksys-v87-jst-location-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
-export const DISCORD_PIPELINE_REVISION = 'talksys-v94-senior-plain-language-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v95-d1-startup-stability-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -1120,15 +1120,30 @@ async function conversationLogsResponse(request, env) {
   try {
     const url = new URL(request.url);
     const limit = Number(url.searchParams.get('limit') || 100);
+    const view = String(url.searchParams.get('view') || 'latest').toLowerCase() === 'raw' ? 'raw' : 'latest';
     const filters = {
       sessionId: url.searchParams.get('sessionId') || '',
       sessionPrefix: url.searchParams.get('sessionPrefix') || '',
       event: url.searchParams.get('event') || '',
       utteranceId: url.searchParams.get('utteranceId') || '',
       q: url.searchParams.get('q') || '',
+      latestSessionOnly: view === 'latest' && !url.searchParams.get('sessionId'),
     };
-    const logs = await listTalkLogs(env, limit, filters);
-    return json({ ok: true, count: logs.length, filters, logs });
+    const rawLogs = await listTalkLogs(env, limit, filters);
+    const logs = view === 'raw' ? rawLogs : collapseTalkLogs(rawLogs);
+    const latest = rawLogs[0] || null;
+    return json({
+      ok: true,
+      view,
+      count: logs.length,
+      rawCount: rawLogs.length,
+      currentRuntimeRevision: INTEGRATED_ENTRY_REVISION,
+      latestSessionId: latest?.sessionId || '',
+      latestRevision: latest?.revision || '',
+      latestJst: latest?.jst || '',
+      filters,
+      logs,
+    });
   } catch (error) {
     return json({ ok: false, error: 'conversation_log_read_failed', detail: compact(error?.message || error, 500) }, 503);
   }
