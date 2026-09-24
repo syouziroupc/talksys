@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v98-serialized-local-tts-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-stability-restore-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -1658,9 +1658,11 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   });
 
   if (initialUserId && initialUserId !== client.user.id) {
-    // Warm the reaction socket only. Audio capture starts from Discord speaking.start
-    // so join/greeting noise cannot become the first synthetic utterance.
+    // V92 stability profile: keep one receiver session prearmed for the caller.
+    // Discord speaking.start marks the existing session instead of spawning a fresh
+    // capture for every transient speaking notification.
     ensureRealtimeHelper(initialUserId);
+    startReceiverSession(initialUserId, false);
   }
 
   const boundConnection = connection;
