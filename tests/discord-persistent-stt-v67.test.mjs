@@ -25,7 +25,7 @@ test('Discord transport gate owns segmentation and finalizes after the stabilize
   assert.match(source, /Date\.now\(\) - lastPcmAt >= DISCORD_SEGMENT_SILENCE_MS/);
   assert.match(source, /finalize\('discord-pcm-silence'\)/);
   assert.match(source, /browserVadBypassed: true/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v87-web-voice-align-r1'/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v87-web-voice-align-r2'/);
   assert.doesNotMatch(source, /capture\.shouldFinalize|web-compatible-silence|WebCompatibleCapture/);
 });
 
