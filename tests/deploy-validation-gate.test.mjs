@@ -102,5 +102,7 @@ test('answer smoke enforces quality-first search before the blocking realtime ST
 test('production deploy archives prior D1 revisions after deploy', () => {
   assert.match(workflow, /Archive prior D1 conversation revisions/);
   assert.match(workflow, /\/api\/internal\/archive-conversation-logs/);
-  assert.match(workflow, /deploy-revision-rollover|v97-region-rescue-d1-archive/);
+  assert.match(workflow, /expected_archive_revision/);
+  assert.match(workflow, /INTEGRATED_ENTRY_REVISION/);
+  assert.match(workflow, /EXPECTED_ARCHIVE_REVISION/);
 });
