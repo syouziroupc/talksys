@@ -28,13 +28,14 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v94-senior-plain-language-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v95-startup-stability-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
 const DISCORD_READY_TIMEOUT_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
+const CONNECTION_GREETING = 'フォーンズです。接続しました。';
 const BOT_ECHO_WINDOW_MS = 20000;
 const RECENT_USER_TURN_WINDOW_MS = 2500;
 const BOT_OVERLAP_SHORT_TEXT_MAX = 12;
@@ -97,6 +98,8 @@ let lastUserSpeechAt = 0;
 let lastUserPcmAt = 0;
 let recoveryAudio = null;
 let recoveryAudioPromise = null;
+let connectionGreetingAudio = null;
+let connectionGreetingAudioPromise = null;
 let recoverySpeaking = false;
 let voiceRecoveryTimer = null;
 let voiceRecoveryAttempts = 0;
@@ -1563,10 +1566,24 @@ function destroyVoiceConnection() {
   connection = undefined;
 }
 
+async function warmConnectionGreetingAudio() {
+  if (connectionGreetingAudio?.length) return connectionGreetingAudio;
+  if (connectionGreetingAudioPromise) return connectionGreetingAudioPromise;
+  connectionGreetingAudioPromise = synthesize(CONNECTION_GREETING, undefined, { purpose: 'greeting-warmup' })
+    .then((result) => {
+      connectionGreetingAudio = result.audio;
+      console.log(`[greeting] cached ${connectionGreetingAudio.length} bytes`);
+      return connectionGreetingAudio;
+    })
+    .finally(() => { connectionGreetingAudioPromise = null; });
+  return connectionGreetingAudioPromise;
+}
+
 async function playConnectionGreeting() {
   try {
-    const result = await synthesize('フォーンズです。接続しました。');
-    await playMp3(result.audio, { spokenText: 'フォーンズです。接続しました。', purpose: 'greeting' });
+    let audio = connectionGreetingAudio;
+    if (!audio?.length) audio = await warmConnectionGreetingAudio();
+    await playMp3(audio, { spokenText: CONNECTION_GREETING, purpose: 'greeting' });
     console.log('[greeting] connection greeting played');
     return true;
   } catch (error) {
@@ -1608,8 +1625,9 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   });
 
   if (initialUserId && initialUserId !== client.user.id) {
+    // Warm the reaction socket only. Audio capture starts from Discord speaking.start
+    // so join/greeting noise cannot become the first synthetic utterance.
     ensureRealtimeHelper(initialUserId);
-    startReceiverSession(initialUserId, false);
   }
 
   const boundConnection = connection;
@@ -1708,6 +1726,7 @@ client.once('ready', async () => {
     }
     warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] gateway warmup failed:', error?.message || error));
     warmRecoveryAudio().catch((error) => console.warn('[recovery] gateway warmup failed:', error?.message || error));
+    warmConnectionGreetingAudio().catch((error) => console.warn('[greeting] gateway warmup failed:', error?.message || error));
     console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
     console.error('[fatal]', error?.stack || error);
