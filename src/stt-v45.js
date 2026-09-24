@@ -1,5 +1,5 @@
 export const STT_MODEL = '@cf/openai/whisper-large-v3-turbo';
-export const STT_REVISION = 'talksys-v92-empty-transcript-retry';
+export const STT_REVISION = 'talksys-v98-latency-tune';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -121,7 +121,7 @@ export async function transcribeV45(request, env) {
       task: 'transcribe',
       language: 'ja',
       vad_filter: true,
-      beam_size: 5,
+      beam_size: 3,
       condition_on_previous_text: false,
       no_speech_threshold: 0.48,
       compression_ratio_threshold: 2.2,
