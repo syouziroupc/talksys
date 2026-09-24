@@ -24,12 +24,11 @@ test('Nova realtime text is reaction-only and Whisper remains authoritative', ()
   assert.doesNotMatch(bridge, /processConfirmedTranscript\(\{[\s\S]{0,300}(?:realtimeTranscript|helper\.interim|latestRealtimeTranscript)/);
 });
 
-test('Discord fast reaction audio remains cacheable but v98 does not prewarm it during startup', () => {
+test('Discord fast reaction audio is prewarmed from the shared fastReaction function', () => {
   assert.match(bridge, /async function warmFastReactionAudio/);
   assert.match(bridge, /samples\.map\(\(sample\) => fastReaction\(sample\)\)/);
   assert.match(bridge, /fastReactionAudioCache/);
-  const readyBlock = bridge.slice(bridge.indexOf("client.once('ready'"), bridge.indexOf("client.on('interactionCreate'"));
-  assert.doesNotMatch(readyBlock, /warmFastReactionAudio\(\)\.catch/);
+  assert.match(bridge, /warmFastReactionAudio\(\)\.catch/);
 });
 
 test('speech overlapping bot playback cannot create reaction echo loops', () => {
@@ -62,9 +61,9 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
   assert.match(integrated, /discordRuntimeLogCommand: '\/logs'/);
 });
 
-test('Discord preserves authoritative Whisper while sharing the turn policy', () => {
-  assert.match(bridge, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v\d+/);
-  assert.match(integrated, /export const DISCORD_PIPELINE_REVISION = 'talksys-v\d+/);
+test('v84 preserves authoritative Whisper while sharing the turn policy', () => {
+  assert.match(bridge, /talksys-discord-bridge-v89-outro-fragment-observability-r1/);
+  assert.match(integrated, /talksys-v89-outro-fragment-observability-r1/);
   assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/turn'/);
