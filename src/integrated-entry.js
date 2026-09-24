@@ -215,7 +215,7 @@ function deterministicArithmeticResult(text = '', started = Date.now()) {
 function deterministicCurrentTimeResult(text = '', now = new Date(), started = Date.now()) {
   if (!CURRENT_TIME_ONLY_RE.test(compact(text, 200))) return null;
   const p = jstParts(now);
-  const answer = `現在は${p.hour}時${pad2(p.minute)}分です。`;
+  const answer = `日本時間では現在${p.hour}時${pad2(p.minute)}分です。`;
   return {
     ok: true,
     answer,
@@ -251,9 +251,11 @@ function deterministicCurrentTimeResult(text = '', now = new Date(), started = D
 }
 
 
-function deterministicLocationClarificationResult(text = '', started = Date.now()) {
+function deterministicLocationClarificationResult(text = '', body = {}, started = Date.now()) {
   const value = compact(text, 500);
-  if (!value || !LOCATION_DEPENDENT_RE.test(value) || EXPLICIT_LOCATION_RE.test(value)) return null;
+  const historyLocation = (Array.isArray(body?.history) ? body.history.slice(-8) : [])
+    .map((item) => compact(item?.content, 500)).join(' ');
+  if (!value || !LOCATION_DEPENDENT_RE.test(value) || EXPLICIT_LOCATION_RE.test(value) || EXPLICIT_LOCATION_RE.test(historyLocation)) return null;
   return {
     ok: true,
     answer: '地域によって変わります。どの地域について知りたいですか？',
@@ -766,7 +768,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   const clock = deterministicCurrentTimeResult(text, now, started);
   if (clock) return clock;
 
-  const locationClarification = deterministicLocationClarificationResult(text, started);
+  const locationClarification = deterministicLocationClarificationResult(text, body, started);
   if (locationClarification) return locationClarification;
 
   const immediateTransit = isImmediateTransitQuestion(text);
@@ -1723,6 +1725,8 @@ export const __test = {
   searchAnnouncementTopic,
   searchPreface,
   normalizeSpokenJapanese,
+  deterministicCurrentTimeResult,
+  deterministicLocationClarificationResult,
   interactionOutputText,
   interactionQueries,
   interactionSources,
