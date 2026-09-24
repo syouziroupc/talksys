@@ -193,3 +193,13 @@ test('V92 output guard handles ffmpeg pipe and early-exit errors through one set
   assert.match(source, /const finish = \(error = null\) =>/);
   assert.doesNotMatch(source, /const completionPromise = new Promise/);
 });
+
+test('V92 voice connection disables DAVE and retries aborted Ready handshakes', () => {
+  assert.match(source, /async function createReadyVoiceConnection/);
+  assert.match(source, /for \(let attempt = 1; attempt <= 3; attempt \+= 1\)/);
+  assert.match(source, /daveEncryption: false/);
+  assert.match(source, /debug: true/);
+  assert.match(source, /entersState\(candidate, VoiceConnectionStatus\.Ready, 20000\)/);
+  assert.match(source, /candidate\.destroy\(\)/);
+  assert.match(source, /VOICE-CONNECT/);
+});
