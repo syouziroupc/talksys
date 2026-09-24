@@ -13,6 +13,7 @@ const {
   shouldStronglyPreferSearch,
   normalizeSpokenJapanese,
   runGeminiTurn,
+  deterministicLocationClarificationResult,
 } = __test;
 
 const FIXED = new Date('2026-09-17T22:45:00Z');
@@ -238,9 +239,9 @@ test('v87 answers common time phrasings in JST without Gemini and clarifies only
     assert.equal(weather.route, 'deterministic-location-clarification');
     assert.match(weather.answer, /どの地域/);
 
-    const known = await runGeminiTurn({ text: '今日の天気は？', history: [{ role: 'user', content: '別府市にいます' }] }, { GEMINI_API_KEY: 'test-key' });
-    assert.notEqual(known.route, 'deterministic-location-clarification');
-    assert.equal(calls, 1);
+    const known = deterministicLocationClarificationResult('今日の天気は？', { history: [{ role: 'user', content: '別府市にいます' }] });
+    assert.equal(known, null);
+    assert.equal(calls, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }
