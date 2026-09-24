@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v89-outro-fragment-observability-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v90-short-utterance-safe-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -42,7 +42,6 @@ const DISCORD_SEGMENT_SILENCE_MS = WEB_VOICE_CAPTURE_POLICY.silenceMs;
 const STT_LOW_CONFIDENCE_THRESHOLD = 0.88;
 const BARGE_IN_CONFIRM_MS = 150;
 const BARGE_IN_RELAX_FACTOR = 0.85;
-const FRAGMENT_JOIN_WINDOW_MS = 4000;
 const BARGE_IN_RMS_THRESHOLD = WEB_VOICE_CAPTURE_POLICY.startRmsMin * BARGE_IN_RELAX_FACTOR;
 const BARGE_IN_PEAK_THRESHOLD = WEB_VOICE_CAPTURE_POLICY.peakGateMin * BARGE_IN_RELAX_FACTOR;
 const STT_GLOSSARY = Object.freeze([
@@ -103,8 +102,6 @@ let voiceRecoveryTimer = null;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
-let deferredFragment = null;
-let deferredFragmentTimer = null;
 
 function resetConversationState() {
   if (voiceRecoveryTimer) {
@@ -133,9 +130,6 @@ function resetConversationState() {
   activeUserText = '';
   activeUserUtteranceId = '';
   pendingTurns.splice(0, pendingTurns.length);
-  if (deferredFragmentTimer) clearTimeout(deferredFragmentTimer);
-  deferredFragmentTimer = null;
-  deferredFragment = null;
   discordSessionId = '';
 }
 
@@ -291,51 +285,6 @@ function updateBargeInVoiceGate(active, pcm16) {
     active.bargeInArmedAt = Date.now();
     maybeTriggerConfirmedBargeIn(active);
   }
-}
-
-function normalizedFragmentText(text = '') {
-  return String(text || '').normalize('NFKC').trim().replace(/[。．.!！?？…]+$/u, '').trim();
-}
-
-function isLikelyIncompleteFragment(text = '') {
-  const value = normalizedFragmentText(text);
-  if (!value) return false;
-  if (/^(?:ください|下さい|お願いします|お願い|お願い致します|お願いいたします|して|して下さい|してほしい)$/u.test(value)) return true;
-  if (value.length <= 12 && /(?:が|けど|けれど|ので|から|を|に|で|と|って|は|も|へ|の)$/u.test(value)) return true;
-  return false;
-}
-
-function clearDeferredFragment(reason = '') {
-  if (deferredFragmentTimer) clearTimeout(deferredFragmentTimer);
-  deferredFragmentTimer = null;
-  const prior = deferredFragment;
-  deferredFragment = null;
-  if (prior && reason) mirrorRuntimeLog('FRAGMENT', reason + ': ' + prior.correctedTranscript);
-  return prior;
-}
-
-function deferIncompleteFragment(payload) {
-  clearDeferredFragment('');
-  deferredFragment = { ...payload, storedAt: Date.now() };
-  deferredFragmentTimer = setTimeout(() => {
-    const stale = deferredFragment;
-    deferredFragment = null;
-    deferredFragmentTimer = null;
-    if (stale) mirrorRuntimeLog('DROP', 'incomplete-fragment-timeout: ' + stale.correctedTranscript);
-  }, FRAGMENT_JOIN_WINDOW_MS);
-  mirrorRuntimeLog('FRAGMENT', 'deferred: ' + payload.correctedTranscript);
-}
-
-function consumeDeferredFragment(userId = '') {
-  const prior = deferredFragment;
-  if (!prior) return null;
-  const age = Date.now() - Number(prior.storedAt || 0);
-  if (age > FRAGMENT_JOIN_WINDOW_MS || String(prior.userId || '') !== String(userId || '')) {
-    clearDeferredFragment(age > FRAGMENT_JOIN_WINDOW_MS ? 'expired' : 'different-user');
-    return null;
-  }
-  clearDeferredFragment('');
-  return prior;
 }
 
 function shouldDropUncorroboratedBotOverlap(text, captureMetrics = {}, policy = {}) {
@@ -1289,40 +1238,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
     const correction = correctLowConfidenceTranscript(rawTranscript, captureMetrics, history);
     let correctedTranscript = correction.correctedTranscript || rawTranscript;
     let correctionReason = correction.correctionReason || '';
-    const priorFragment = consumeDeferredFragment(userId);
-    if (priorFragment) {
-      rawTranscript = [priorFragment.rawTranscript, rawTranscript].filter(Boolean).join(' ');
-      correctedTranscript = [priorFragment.correctedTranscript, correctedTranscript].filter(Boolean).join(' ');
-      correctionReason = [priorFragment.correctionReason, correctionReason, 'fragment-joined'].filter(Boolean).join(';');
-      mirrorRuntimeLog('FRAGMENT', 'joined: ' + correctedTranscript);
-    }
     if (correctionReason) mirrorRuntimeLog('STT-CORRECT', correctionReason + ': "' + rawTranscript + '" -> "' + correctedTranscript + '"');
-    if (isLikelyIncompleteFragment(correctedTranscript)) {
-      deferIncompleteFragment({ rawTranscript, correctedTranscript, correctionReason, userId, utteranceId, timeline, captureMetrics, sttMeta: stt });
-      timeline.pipelineCompleteAt = Date.now();
-      postVoiceMetrics({
-        text: correctedTranscript,
-        utteranceId,
-        timings: {
-          sttMode: 'web-whisper',
-          captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
-          sttMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.transcribeStartAt || 0)),
-          speechEndToSttFinalMs: Math.max(0, (timeline.whisperCompleteAt || 0) - (timeline.utteranceEndAt || 0)),
-          pipelineCompleteMs: Math.max(0, timeline.pipelineCompleteAt - (timeline.discordReceiveStartAt || timeline.pipelineCompleteAt)),
-          fragmentDeferred: true,
-        },
-        timeline,
-        realtimeTranscript: String(captureMetrics?.realtimeTranscript || ''),
-        confirmedTranscript: correctedTranscript,
-        rawTranscript,
-        correctedTranscript,
-        correctionReason: [correctionReason, 'fragment-deferred'].filter(Boolean).join(';'),
-        bargeInTriggerMs: Number(timeline?.bargeInTriggerMs) || 0,
-        geminiInputText: '',
-        error: '',
-      }).catch(() => {});
-      return;
-    }
     const echoRecord = looksLikeRecentBotEcho(rawTranscript, timeline);
     if (echoRecord) {
       console.warn(`[echo-guard] suppressed bot echo utterance=${utteranceId} purpose=${echoRecord.purpose}: ${stt.confirmedTranscript}`);
