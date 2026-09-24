@@ -62,14 +62,15 @@ test('v99 rescues usable realtime transcript when Whisper returns empty transcri
   assert.match(bridge, /hallucination-guard/);
 });
 
-test('v99 invalidates stale STT by epoch, utterance id and serial and immediately releases drop work', () => {
+test('v100 only invalidates an older STT after a newer result resolves', () => {
   assert.match(bridge, /voiceUtteranceSerial/);
-  assert.match(bridge, /latestVoiceUtteranceByUser/);
-  assert.match(bridge, /isCurrentVoiceUtterance/);
+  assert.match(bridge, /latestResolvedVoiceByUser/);
+  assert.match(bridge, /isStaleVoiceResult/);
+  assert.match(bridge, /markVoiceResultResolved/);
+  assert.match(bridge, /Number\(utteranceSerial\) < Number\(latest\.serial\)/);
   assert.match(bridge, /STT-STALE/);
   assert.match(bridge, /releaseDroppedUtterance/);
-  assert.match(bridge, /reactionSeq \+= 1/);
-  assert.match(bridge, /startReceiverSession\(userId, false\)/);
+  assert.doesNotMatch(bridge, /latestVoiceUtteranceByUser/);
 });
 
 test('v94 retries strong-signal empty Whisper transcript only once', () => {
