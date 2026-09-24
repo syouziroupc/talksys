@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-tts-hotfix-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v98-latency-error-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -1306,24 +1306,6 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
     const message = String(error?.message || error || '').slice(0, 500);
     console.error('[stt]', message);
     mirrorRuntimeLog('ERROR', `STT: ${message}`);
-    timeline.pipelineCompleteAt = Date.now();
-    postVoiceMetrics({
-      text: '',
-      utteranceId,
-      timings: {
-        sttMode: 'web-whisper',
-        captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
-        sttMs: Math.max(0, Date.now() - (timeline.transcribeStartAt || Date.now())),
-        speechEndToSttFinalMs: Math.max(0, Date.now() - (timeline.utteranceEndAt || Date.now())),
-        pipelineCompleteMs: Math.max(0, timeline.pipelineCompleteAt - (timeline.discordReceiveStartAt || timeline.pipelineCompleteAt)),
-        error: message,
-      },
-      timeline,
-      realtimeTranscript: String(captureMetrics?.realtimeTranscript || ''),
-      confirmedTranscript: '',
-      geminiInputText: '',
-      error: message,
-    }).catch(() => {});
     activeFastReaction?.stop?.('stt-failed');
     activeFastReaction = null;
     if (isIgnorableSttFailure(message)) {
@@ -1349,8 +1331,44 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
         return;
       }
       mirrorRuntimeLog('DROP', `ignorable STT failure without usable realtime text: ${message}`);
+      timeline.pipelineCompleteAt = Date.now();
+      postVoiceMetrics({
+        text: '',
+        utteranceId,
+        timings: {
+          sttMode: 'web-whisper',
+          captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
+          sttMs: Math.max(0, Date.now() - (timeline.transcribeStartAt || Date.now())),
+          speechEndToSttFinalMs: Math.max(0, Date.now() - (timeline.utteranceEndAt || Date.now())),
+          pipelineCompleteMs: Math.max(0, timeline.pipelineCompleteAt - (timeline.discordReceiveStartAt || timeline.pipelineCompleteAt)),
+          error: message,
+        },
+        timeline,
+        realtimeTranscript: String(captureMetrics?.realtimeTranscript || ''),
+        confirmedTranscript: '',
+        geminiInputText: '',
+        error: message,
+      }).catch(() => {});
       return;
     }
+    timeline.pipelineCompleteAt = Date.now();
+    postVoiceMetrics({
+      text: '',
+      utteranceId,
+      timings: {
+        sttMode: 'web-whisper',
+        captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
+        sttMs: Math.max(0, Date.now() - (timeline.transcribeStartAt || Date.now())),
+        speechEndToSttFinalMs: Math.max(0, Date.now() - (timeline.utteranceEndAt || Date.now())),
+        pipelineCompleteMs: Math.max(0, timeline.pipelineCompleteAt - (timeline.discordReceiveStartAt || timeline.pipelineCompleteAt)),
+        error: message,
+      },
+      timeline,
+      realtimeTranscript: String(captureMetrics?.realtimeTranscript || ''),
+      confirmedTranscript: '',
+      geminiInputText: '',
+      error: message,
+    }).catch(() => {});
     await speakRecoveryPrompt('stt-failed', sessionEpoch, timeline.utteranceEndAt || 0);
   }
 }
@@ -1683,8 +1701,12 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   mirrorRuntimeLog('ARCH', 'Nova helper is reaction-only; Whisper remains authoritative');
   console.log('[discord] bridge revision:', DISCORD_BRIDGE_REVISION);
   await playConnectionGreeting();
-  warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] warmup failed:', error?.message || error));
-  warmRecoveryAudio().catch((error) => console.warn('[recovery] warmup failed:', error?.message || error));
+  if (process.platform !== 'win32') {
+    warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] warmup failed:', error?.message || error));
+    warmRecoveryAudio().catch((error) => console.warn('[recovery] warmup failed:', error?.message || error));
+  } else {
+    mirrorRuntimeLog('READY', 'Windows TTS background warmup skipped to keep answer queue clear');
+  }
   return channel;
 }
 
