@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v103-contextual-jp-stt-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v104-phonetic-first-stt-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -55,18 +55,6 @@ const STT_GLOSSARY = Object.freeze([
   { canonical: 'OpenAI', aliases: ['オープンAI','Open AI'], always: false },
 ]);
 
-// Japanese ASR sometimes returns the phonetic reading as an unrelated kanji
-// spelling. Keep these rewrites narrow: only documented fixed terms with an
-// adjacent semantic anchor are eligible. This must never become a generic
-// number/name guessing layer.
-const STT_CONTEXT_REWRITES = Object.freeze([
-  {
-    canonical: '10式',
-    aliases: ['人丸式', 'ひとまる式', 'ヒトマル式', '一〇式'],
-    anchor: '(?:戦車|MBT|主力戦車)',
-    reason: 'contextual-fixed-term:10式戦車',
-  },
-]);
 const REQUEST_BUDGET_MS = Object.freeze({
   stt: 30000,
   turn: 35000,
@@ -254,31 +242,12 @@ function lowConfidenceEvidenceForAlias(alias, captureMetrics = {}) {
   const disagreement = Boolean(realtime) && !sameUtterance(String(captureMetrics?.rawTranscript || ''), realtime);
   return utteranceLow && disagreement ? 'nova-utterance-low-confidence-disagreement' : '';
 }
-function applyContextualSttRewrites(rawTranscript = '') {
-  let corrected = String(rawTranscript || '').trim();
-  const reasons = [];
-  if (!corrected) return { correctedTranscript: '', correctionReasons: [] };
-
-  for (const entry of STT_CONTEXT_REWRITES) {
-    for (const alias of entry.aliases || []) {
-      const pattern = new RegExp(escapeSttRegExp(alias) + '(?=\\s*' + entry.anchor + ')', 'giu');
-      corrected = corrected.replace(pattern, (match) => {
-        if (match === entry.canonical) return match;
-        reasons.push(entry.reason);
-        return entry.canonical;
-      });
-    }
-  }
-  return { correctedTranscript: corrected, correctionReasons: [...new Set(reasons)] };
-}
-
 function correctLowConfidenceTranscript(rawTranscript, captureMetrics = {}, recentHistory = []) {
   const raw = String(rawTranscript || '').trim();
   if (!raw) return { rawTranscript: '', correctedTranscript: '', correctionReason: '' };
-  const contextual = applyContextualSttRewrites(raw);
   const metrics = { ...captureMetrics, rawTranscript: raw };
-  let corrected = contextual.correctedTranscript || raw;
-  const reasons = [...(contextual.correctionReasons || [])];
+  let corrected = raw;
+  const reasons = [];
   for (const entry of STT_GLOSSARY) {
     if (!glossaryContextSupports(entry, recentHistory)) continue;
     for (const alias of [...(entry.aliases || [])].sort((a,b)=>String(b).length-String(a).length)) {
