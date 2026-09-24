@@ -1,4 +1,4 @@
-export const FAST_REACTION_REVISION = 'talksys-v105-clock-transit-asr-r1';
+export const FAST_REACTION_REVISION = 'talksys-v61-quality-buffer-r1';
 
 function clean(value, max = 800) {
   return String(value ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, max);
