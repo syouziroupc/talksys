@@ -5,14 +5,14 @@ import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 import { persistTalkLog, listTalkLogs } from './log-v42.js';
 import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
-export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v87-jst-location-voice-align';
+export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v88-low-confidence-barge';
 export const PERSONALIZATION_REVISION = 'talksys-v87-jst-location-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
-export const DISCORD_PIPELINE_REVISION = 'talksys-v84-unified-force-reply-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v88-low-confidence-barge-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -1316,6 +1316,7 @@ function compactVoiceTimeline(value = {}) {
     'ttsEndAt',
     'playbackStartAt',
     'pipelineCompleteAt',
+    'bargeInTriggerMs',
   ];
   const out = {};
   for (const key of allowed) {
@@ -1338,7 +1339,12 @@ function discordVoiceMetricsResponse(request, env, ctx) {
     const timeline = compactVoiceTimeline(body?.timeline || {});
     const realtimeTranscript = compact(body?.realtimeTranscript || '', 1600);
     const confirmedTranscript = compact(body?.confirmedTranscript || body?.text || '', 1600);
-    const geminiInputText = compact(body?.geminiInputText || confirmedTranscript, 1600);
+    const rawTranscript = compact(body?.rawTranscript || confirmedTranscript, 1600);
+    const correctedTranscript = compact(body?.correctedTranscript || confirmedTranscript, 1600);
+    const correctionReason = compact(body?.correctionReason || '', 500);
+    const bargeRaw = Number(body?.bargeInTriggerMs ?? timeline?.bargeInTriggerMs ?? 0);
+    const bargeInTriggerMs = Number.isFinite(bargeRaw) && bargeRaw >= 0 && bargeRaw <= 600000 ? Math.round(bargeRaw) : 0;
+    const geminiInputText = compact(body?.geminiInputText || correctedTranscript || confirmedTranscript, 1600);
     const transcriptMatch = typeof body?.transcriptMatch === 'boolean' ? body.transcriptMatch : null;
     const error = compact(body?.error || timings?.error || '', 500);
 
@@ -1351,6 +1357,10 @@ function discordVoiceMetricsResponse(request, env, ctx) {
       timeline,
       realtimeTranscript,
       confirmedTranscript,
+      rawTranscript,
+      correctedTranscript,
+      correctionReason,
+      bargeInTriggerMs,
       geminiInputText,
       transcriptMatch,
       error,
@@ -1358,7 +1368,7 @@ function discordVoiceMetricsResponse(request, env, ctx) {
       languageMode: 'ja-spoken',
     };
     const logBody = {
-      text: confirmedTranscript,
+      text: correctedTranscript || confirmedTranscript,
       sessionId: compact(body?.sessionId, 180),
       utteranceId: compact(body?.utteranceId, 180),
       channel: 'discord',
@@ -1385,6 +1395,10 @@ function discordVoiceMetricsResponse(request, env, ctx) {
       ttsProvider: timings.ttsProvider || '',
       realtimeTranscript,
       confirmedTranscript,
+      rawTranscript,
+      correctedTranscript,
+      correctionReason,
+      bargeInTriggerMs,
       geminiInputText,
       transcriptMatch,
       timeline,

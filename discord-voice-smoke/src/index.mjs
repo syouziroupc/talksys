@@ -14,7 +14,7 @@ import {
 } from '@discordjs/voice';
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
-import { WEB_VOICE_CAPTURE_POLICY } from '../../src/voice-capture-policy.js';
+import { WEB_VOICE_CAPTURE_POLICY, pcm16Level } from '../../src/voice-capture-policy.js';
 import { fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure } from '../../src/voice-fast-reaction.js';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v87-web-voice-align-r2';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v88-voice-align-r2-low-confidence-barge-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -39,6 +39,20 @@ const BOT_ECHO_WINDOW_MS = 20000;
 const RECENT_USER_TURN_WINDOW_MS = 2500;
 const BOT_OVERLAP_SHORT_TEXT_MAX = 12;
 const DISCORD_SEGMENT_SILENCE_MS = WEB_VOICE_CAPTURE_POLICY.silenceMs;
+const STT_LOW_CONFIDENCE_THRESHOLD = 0.88;
+const BARGE_IN_CONFIRM_MS = 150;
+const BARGE_IN_RELAX_FACTOR = 0.85;
+const BARGE_IN_RMS_THRESHOLD = WEB_VOICE_CAPTURE_POLICY.startRmsMin * BARGE_IN_RELAX_FACTOR;
+const BARGE_IN_PEAK_THRESHOLD = WEB_VOICE_CAPTURE_POLICY.peakGateMin * BARGE_IN_RELAX_FACTOR;
+const STT_GLOSSARY = Object.freeze([
+  { canonical: 'TalkSys', aliases: ['トークシス','トークシステム','Talk Sys','TalkSis','TalkSIS'], always: true },
+  { canonical: 'Discord', aliases: ['ディスコード','ディスコート','デスコード','Discored'], always: true },
+  { canonical: 'Gemini', aliases: ['ジェミニ','ゼミニ','Gemeni','Geminy'], always: true },
+  { canonical: 'Whisper', aliases: ['ウィスパー','ウイスパー','Wisper','Whispher'], always: true },
+  { canonical: 'Cloudflare', aliases: ['クラウドフレア','Cloud Flare'], always: false },
+  { canonical: 'GitHub', aliases: ['ギットハブ','Github','Git Hub'], always: false },
+  { canonical: 'OpenAI', aliases: ['オープンAI','Open AI'], always: false },
+]);
 const REQUEST_BUDGET_MS = Object.freeze({
   stt: 30000,
   turn: 35000,
@@ -188,6 +202,89 @@ function looksLikeRecentUserDuplicate(text, userId, timeline = {}) {
     if (adjacent && sameUtterance(value, prior.text)) return prior;
   }
   return null;
+}
+
+
+function normalizeSttToken(value = '') {
+  return String(value || '').normalize('NFKC').toLowerCase().replace(/[\s。、，,.！？!?「」『』（）()・ー~〜_-]/g, '');
+}
+function escapeSttRegExp(value = '') {
+  return String(value || '').replace(/[.*+?^{}$()|[\]\\]/g, '\\$&');
+}
+function glossaryContextSupports(entry, recentHistory = []) {
+  if (entry?.always) return true;
+  const context = recentHistory.slice(-8).map((item) => String(item?.content || '')).join(' ');
+  const haystack = normalizeSttToken(context);
+  return Boolean(haystack) && [entry.canonical, ...(entry.aliases || [])]
+    .some((term) => haystack.includes(normalizeSttToken(term)));
+}
+function lowConfidenceEvidenceForAlias(alias, captureMetrics = {}) {
+  const wanted = normalizeSttToken(alias);
+  const words = Array.isArray(captureMetrics?.realtimeWords) ? captureMetrics.realtimeWords : [];
+  const localLow = words.some((item) => {
+    const confidence = Number(item?.confidence);
+    if (!Number.isFinite(confidence) || confidence >= STT_LOW_CONFIDENCE_THRESHOLD) return false;
+    const heard = normalizeSttToken(item?.word || '');
+    return Boolean(heard && wanted && (heard.includes(wanted) || wanted.includes(heard)));
+  });
+  if (localLow) return 'nova-word-low-confidence';
+  const rawConfidence = captureMetrics?.realtimeConfidence;
+  const confidence = Number(rawConfidence);
+  const realtime = String(captureMetrics?.realtimeTranscript || '').trim();
+  const utteranceLow = rawConfidence !== null && rawConfidence !== undefined
+    && Number.isFinite(confidence) && confidence < STT_LOW_CONFIDENCE_THRESHOLD;
+  const disagreement = Boolean(realtime) && !sameUtterance(String(captureMetrics?.rawTranscript || ''), realtime);
+  return utteranceLow && disagreement ? 'nova-utterance-low-confidence-disagreement' : '';
+}
+function correctLowConfidenceTranscript(rawTranscript, captureMetrics = {}, recentHistory = []) {
+  const raw = String(rawTranscript || '').trim();
+  if (!raw) return { rawTranscript: '', correctedTranscript: '', correctionReason: '' };
+  const metrics = { ...captureMetrics, rawTranscript: raw };
+  let corrected = raw;
+  const reasons = [];
+  for (const entry of STT_GLOSSARY) {
+    if (!glossaryContextSupports(entry, recentHistory)) continue;
+    for (const alias of [...(entry.aliases || [])].sort((a,b)=>String(b).length-String(a).length)) {
+      const evidence = lowConfidenceEvidenceForAlias(alias, metrics);
+      if (!evidence) continue;
+      corrected = corrected.replace(new RegExp(escapeSttRegExp(alias), 'giu'), (match) => {
+        if (match === entry.canonical || /[0-9０-９¥￥$€£]/u.test(match)) return match;
+        reasons.push(entry.canonical + ':' + evidence);
+        return entry.canonical;
+      });
+    }
+  }
+  return { rawTranscript: raw, correctedTranscript: corrected, correctionReason: [...new Set(reasons)].join(';') };
+}
+function maybeTriggerConfirmedBargeIn(active, transcript = '') {
+  if (!active?.bargeInArmed || active.bargeInTriggered || !active.startedDuringBotPlayback) return false;
+  const value = String(transcript || active.latestRealtimeTranscript || '').trim();
+  if (!value) return false;
+  if (looksLikeRecentBotEcho(value, { ...(active.timeline || {}), utteranceEndAt: Date.now() })) {
+    active.bargeInEchoBlocked = true;
+    mirrorRuntimeLog('BARGE', 'self-voice blocked: ' + value);
+    return false;
+  }
+  if (!activeBotPlaybackRecord && player.state.status !== AudioPlayerStatus.Playing) return false;
+  active.bargeInTriggered = true;
+  const origin = Number(active.timeline?.firstPcmAt || active.timeline?.discordReceiveStartAt || Date.now());
+  const triggerMs = Math.max(0, Date.now() - origin);
+  if (active.timeline) active.timeline.bargeInTriggerMs = triggerMs;
+  interruptActiveAnswer('confirmed-user-barge-in');
+  mirrorRuntimeLog('BARGE', 'trigger=' + triggerMs + 'ms confirm=' + BARGE_IN_CONFIRM_MS + 'ms');
+  return true;
+}
+function updateBargeInVoiceGate(active, pcm16) {
+  if (!active?.startedDuringBotPlayback || active.bargeInTriggered || !pcm16?.length) return;
+  const level = pcm16Level(pcm16);
+  const durationMs = (pcm16.length / 2 / WEB_VOICE_CAPTURE_POLICY.targetRate) * 1000;
+  const voiced = level.rms >= BARGE_IN_RMS_THRESHOLD && level.peak >= BARGE_IN_PEAK_THRESHOLD;
+  active.bargeInVoicedMs = voiced ? Number(active.bargeInVoicedMs || 0) + durationMs : 0;
+  if (!active.bargeInArmed && active.bargeInVoicedMs >= BARGE_IN_CONFIRM_MS) {
+    active.bargeInArmed = true;
+    active.bargeInArmedAt = Date.now();
+    maybeTriggerConfirmedBargeIn(active);
+  }
 }
 
 function shouldDropUncorroboratedBotOverlap(text, captureMetrics = {}, policy = {}) {
@@ -358,7 +455,13 @@ function handleRealtimeMessage(helper, data) {
   let payload;
   try { payload = JSON.parse(String(data)); } catch { return; }
   const type = String(payload?.type || payload?.event || '');
-  const transcript = String(payload?.channel?.alternatives?.[0]?.transcript || payload?.transcript || '').trim();
+  const alternative = payload?.channel?.alternatives?.[0] || {};
+  const transcript = String(alternative?.transcript || payload?.transcript || '').trim();
+  const confidenceValue = Number(alternative?.confidence);
+  const confidence = Number.isFinite(confidenceValue) ? Math.max(0, Math.min(1, confidenceValue)) : null;
+  const realtimeWords = (Array.isArray(alternative?.words) ? alternative.words : [])
+    .map((item) => ({ word: String(item?.word || item?.punctuated_word || '').trim(), confidence: Number(item?.confidence) }))
+    .filter((item) => item.word && Number.isFinite(item.confidence));
   if (/SpeechStarted/i.test(type)) {
     helper.finalParts = [];
     helper.interim = '';
@@ -366,7 +469,12 @@ function handleRealtimeMessage(helper, data) {
   }
   if (transcript) {
     helper.interim = transcript;
-    if (helper.active) helper.active.latestRealtimeTranscript = transcript;
+    if (helper.active) {
+      helper.active.latestRealtimeTranscript = transcript;
+      if (confidence !== null) helper.active.latestRealtimeConfidence = confidence;
+      if (realtimeWords.length) helper.active.realtimeWords = realtimeWords;
+      maybeTriggerConfirmedBargeIn(helper.active, transcript);
+    }
   }
   if (/Results/i.test(type)) {
     if (payload?.is_final && transcript && !helper.finalParts.includes(transcript)) helper.finalParts.push(transcript);
@@ -440,6 +548,13 @@ function beginRealtimeUtterance(userId, meta) {
     reactionIssued: false,
     reaction: null,
     latestRealtimeTranscript: '',
+    latestRealtimeConfidence: null,
+    realtimeWords: [],
+    bargeInVoicedMs: 0,
+    bargeInArmed: false,
+    bargeInArmedAt: 0,
+    bargeInTriggered: false,
+    bargeInEchoBlocked: false,
   };
   return helper;
 }
@@ -569,7 +684,7 @@ async function transcribeCapturedUtterance(pcm, utteranceId, timeline, signal) {
   };
 }
 
-async function postVoiceMetrics({ text, utteranceId, timings, timeline, realtimeTranscript = '', confirmedTranscript = '', geminiInputText = '', error = '' }) {
+async function postVoiceMetrics({ text, utteranceId, timings, timeline, realtimeTranscript = '', confirmedTranscript = '', rawTranscript = '', correctedTranscript = '', correctionReason = '', bargeInTriggerMs = 0, geminiInputText = '', error = '' }) {
   try {
     const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice-metrics', {
       method: 'POST',
@@ -586,6 +701,10 @@ async function postVoiceMetrics({ text, utteranceId, timings, timeline, realtime
         timeline,
         realtimeTranscript,
         confirmedTranscript,
+        rawTranscript: rawTranscript || confirmedTranscript,
+        correctedTranscript: correctedTranscript || confirmedTranscript,
+        correctionReason,
+        bargeInTriggerMs: Number(bargeInTriggerMs) || Number(timeline?.bargeInTriggerMs) || 0,
         geminiInputText,
         transcriptMatch: realtimeTranscript ? realtimeTranscript === confirmedTranscript : null,
         error,
@@ -941,7 +1060,7 @@ async function playMp3(mp3, options = {}) {
   return startedInfo;
 }
 
-async function processConfirmedTranscript({ confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
+async function processConfirmedTranscript({ confirmedTranscript, rawTranscript = '', correctedTranscript = '', correctionReason = '', fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
   if (!confirmedTranscript || sessionEpoch !== voiceEpoch) return;
 
   const recentDuplicate = looksLikeRecentUserDuplicate(confirmedTranscript, userId, timeline);
@@ -980,7 +1099,7 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
     return;
   }
   if (answering) {
-    const nextTurn = { confirmedTranscript, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta };
+    const nextTurn = { confirmedTranscript, rawTranscript, correctedTranscript, correctionReason, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta };
     if (pendingTurns.length === 0) pendingTurns.push(nextTurn);
     else pendingTurns[0] = nextTurn;
     console.log(`[queue] buffered latest user=${userId}: ${confirmedTranscript}`);
@@ -1085,6 +1204,10 @@ async function processConfirmedTranscript({ confirmedTranscript, fastReaction, u
       timeline,
       realtimeTranscript: String(captureMetrics?.realtimeTranscript || ''),
       confirmedTranscript,
+      rawTranscript: rawTranscript || confirmedTranscript,
+      correctedTranscript: correctedTranscript || confirmedTranscript,
+      correctionReason,
+      bargeInTriggerMs: Number(timeline?.bargeInTriggerMs) || 0,
       geminiInputText: confirmedTranscript,
       error: pipelineError,
     }).catch(() => {});
@@ -1111,7 +1234,12 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
   const controller = new AbortController();
   try {
     const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal);
-    const echoRecord = looksLikeRecentBotEcho(stt.confirmedTranscript, timeline);
+    const rawTranscript = stt.confirmedTranscript;
+    const correction = correctLowConfidenceTranscript(rawTranscript, captureMetrics, history);
+    const correctedTranscript = correction.correctedTranscript || rawTranscript;
+    const correctionReason = correction.correctionReason || '';
+    if (correctionReason) mirrorRuntimeLog('STT-CORRECT', correctionReason + ': "' + rawTranscript + '" -> "' + correctedTranscript + '"');
+    const echoRecord = looksLikeRecentBotEcho(rawTranscript, timeline);
     if (echoRecord) {
       console.warn(`[echo-guard] suppressed bot echo utterance=${utteranceId} purpose=${echoRecord.purpose}: ${stt.confirmedTranscript}`);
       mirrorRuntimeLog('ECHO', `suppressed ${echoRecord.purpose}: ${stt.confirmedTranscript}`);
@@ -1132,14 +1260,21 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
         },
         timeline,
         realtimeTranscript: String(captureMetrics?.realtimeTranscript || ''),
-        confirmedTranscript: stt.confirmedTranscript,
+        confirmedTranscript: correctedTranscript,
+        rawTranscript,
+        correctedTranscript,
+        correctionReason,
+        bargeInTriggerMs: Number(timeline?.bargeInTriggerMs) || 0,
         geminiInputText: '',
         error: '',
       }).catch(() => {});
       return;
     }
     await processConfirmedTranscript({
-      confirmedTranscript: stt.confirmedTranscript,
+      confirmedTranscript: correctedTranscript,
+      rawTranscript,
+      correctedTranscript,
+      correctionReason,
       fastReaction: stt.fastReaction,
       userId,
       sessionEpoch,
@@ -1226,6 +1361,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     ttsEndAt: 0,
     playbackStartAt: 0,
     pipelineCompleteAt: 0,
+    bargeInTriggerMs: 0,
   };
 
   // Discord already gates outgoing voice by speaking state. Do not apply the
@@ -1300,10 +1436,12 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
       if (sessionEpoch === voiceEpoch && connection) startReceiverSession(userId, false);
     });
 
-    const realtimeTranscript = realtimeHelper?.active?.utteranceId === utteranceId
-      ? String(realtimeHelper.active.latestRealtimeTranscript || '')
-      : '';
-    if (realtimeHelper?.active?.utteranceId === utteranceId) realtimeHelper.active = null;
+    const realtimeActive = realtimeHelper?.active?.utteranceId === utteranceId ? realtimeHelper.active : null;
+    const realtimeTranscript = realtimeActive ? String(realtimeActive.latestRealtimeTranscript || '') : '';
+    const realtimeConfidence = realtimeActive && Number.isFinite(Number(realtimeActive.latestRealtimeConfidence))
+      ? Number(realtimeActive.latestRealtimeConfidence) : null;
+    const realtimeWords = realtimeActive && Array.isArray(realtimeActive.realtimeWords) ? realtimeActive.realtimeWords.slice(0,120) : [];
+    if (realtimeActive) realtimeHelper.active = null;
     timeline.realtimeTranscript = realtimeTranscript;
     const captureMetrics = {
       durationMs: Math.round(durationMs),
@@ -1314,6 +1452,9 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
       browserVadBypassed: true,
       overlappedBotPlayback,
       realtimeTranscript,
+      realtimeConfidence,
+      realtimeWords,
+      bargeInTriggerMs: Number(timeline.bargeInTriggerMs) || 0,
     };
     console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captureMetrics.durationMs}ms pcm=${pcm.length}B transport-gated=true botOverlap=${overlappedBotPlayback}`);
     mirrorRuntimeLog('CAPTURE', `${captureMetrics.durationMs}ms ${reason} realtime="${realtimeTranscript || '-'}"`);
@@ -1360,6 +1501,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
       });
     }
     sendRealtimePcm(realtimeHelper, pcm16);
+    if (realtimeHelper?.active?.utteranceId === utteranceId) updateBargeInVoiceGate(realtimeHelper.active, pcm16);
   });
 
   resampler.stdout.on('error', (error) => {
