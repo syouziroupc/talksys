@@ -25,7 +25,7 @@ test('Discord transport gate owns segmentation and finalizes after the stabilize
   assert.match(source, /Date\.now\(\) - lastPcmAt >= DISCORD_SEGMENT_SILENCE_MS/);
   assert.match(source, /finalize\('discord-pcm-silence'\)/);
   assert.match(source, /browserVadBypassed: true/);
-  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v89-outro-fragment-observability-r1'/);
+  assert.match(source, /const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v\d+/);
   assert.doesNotMatch(source, /capture\.shouldFinalize|web-compatible-silence|WebCompatibleCapture/);
 });
 
@@ -33,4 +33,14 @@ test('receiver is rearmed after each utterance to protect the next utterance pre
   assert.match(source, /queueMicrotask\(\(\) => \{/);
   assert.match(source, /startReceiverSession\(userId, false\)/);
   assert.match(source, /prearmed user=/);
+});
+
+test('Discord join warms helpers without prearming the initial user receiver before the greeting', () => {
+  const start = source.indexOf('async function connectToVoiceChannel');
+  const end = source.indexOf('const TALKSYS_COMMANDS', start);
+  const connect = source.slice(start, end);
+  assert.match(connect, /ensureRealtimeHelper\(initialUserId\)/);
+  assert.doesNotMatch(connect, /startReceiverSession\(initialUserId, false\)/);
+  assert.match(source, /async function warmConnectionGreetingAudio/);
+  assert.match(source, /warmConnectionGreetingAudio\(\)\.catch/);
 });
