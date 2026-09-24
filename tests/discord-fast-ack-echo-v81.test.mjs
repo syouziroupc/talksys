@@ -61,8 +61,8 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
   assert.match(integrated, /discordRuntimeLogCommand: '\/logs'/);
 });
 
-test('current V98 Discord bridge preserves authoritative Whisper while current Worker keeps its own revision', () => {
-  assert.match(bridge, /talksys-discord-bridge-v98-latency-error-r1/);
+test('current V99 Discord bridge preserves authoritative Whisper while current Worker keeps its own revision', () => {
+  assert.match(bridge, /talksys-discord-bridge-v99-stale-stt-drop-r1/);
   assert.match(integrated, /talksys-integrated-entry-v97-region-rescue-d1-archive/);
   assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
