@@ -59,3 +59,10 @@ test('search prefaces vary deterministically across different lookup questions',
   ]);
   assert.ok(phrases.size >= 2);
 });
+
+
+test('v105 deterministic clock questions never emit a search preface', () => {
+  for (const text of ['今何時ですか?', '現在時刻を教えてください', '時間を教えて']) {
+    assert.equal(searchPreface(text).shouldSpeak, false);
+  }
+});
