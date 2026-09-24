@@ -25,6 +25,14 @@ test('v94 relaxed barge-in keeps 150ms continuity and self-voice guard', () => {
   assert.match(bridge, /bargeInTriggerMs/);
 });
 
+test('v102 interrupted pipeline cannot clear replacement turn cues', () => {
+  assert.match(bridge, /activeWaitCue\?\.utteranceId === utteranceId/);
+  assert.match(bridge, /activeFastReaction\?\.utteranceId === utteranceId/);
+  assert.match(bridge, /interruptedUtteranceId/);
+  assert.match(bridge, /preAnswerCueSerial \+= 1/);
+  assert.match(bridge, /do not touch receiver sessions/);
+});
+
 test('v94 server persists transcript provenance and barge-in latency', () => {
   for (const key of ['rawTranscript','correctedTranscript','correctionReason','bargeInTriggerMs']) assert.match(entry, new RegExp(key));
 });
@@ -62,7 +70,7 @@ test('v99 rescues usable realtime transcript when Whisper returns empty transcri
   assert.match(bridge, /hallucination-guard/);
 });
 
-test('v101 only invalidates an older STT after a newer result resolves', () => {
+test('v102 only invalidates an older STT after a newer result resolves', () => {
   assert.match(bridge, /voiceUtteranceSerial/);
   assert.match(bridge, /latestResolvedVoiceByUser/);
   assert.match(bridge, /isStaleVoiceResult/);
