@@ -185,7 +185,24 @@ jobs:
         run: |
           set -euo pipefail
           token="$(node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update(process.env.GEMINI_API_KEY+':talksys-tts-diagnostic-v1').digest('hex'))")"
-          body="$(curl -fsS --max-time 45 -X POST -H "x-talksys-diagnostic: $token" "$PRODUCTION_URL/api/internal/archive-conversation-logs")"
+          body=""
+          code=""
+          for attempt in $(seq 1 20); do
+            body_file="$(mktemp)"
+            code="$(curl --silent --show-error --max-time 45 -X POST -o "$body_file" -w '%{http_code}' -H "x-talksys-diagnostic: $token" "$PRODUCTION_URL/api/internal/archive-conversation-logs" || true)"
+            body="$(cat "$body_file")"
+            rm -f "$body_file"
+            if [[ "$code" == "200" ]]; then
+              break
+            fi
+            if [[ "$code" == "404" && "$attempt" -lt 20 ]]; then
+              echo "Archive endpoint not propagated yet; retrying attempt=$attempt"
+              sleep 3
+              continue
+            fi
+            echo "Archive request failed code=$code body=$body"
+            exit 1
+          done
           echo "$body"
           ARCHIVE_RESULT="$body" node -e "const d=JSON.parse(process.env.ARCHIVE_RESULT||'{}');if(d.ok!==true||!Number.isFinite(Number(d.archived))||!String(d.keepRevision||'').includes('v97-region-rescue-d1-archive'))throw new Error(process.env.ARCHIVE_RESULT);"
       - name: Dump signed recent Discord logs for diagnostics
