@@ -239,18 +239,26 @@ jobs:
           done
           echo "$body"
 
-          gemini="$(curl -fsS --max-time 20 "$PRODUCTION_URL/gemini-health")"
-          GEMINI_HEALTH="$gemini" node - <<'NODE'
-          const d=JSON.parse(process.env.GEMINI_HEALTH||'{}');
-          if (!d.ok || !d.configured || d.provider!=='gemini' || d.model!=='gemini-3.5-flash-lite'
-              || d.api!=='interactions' || d.nativeGoogleSearch!==true
-              || d.searchDefault!=='single-pass-grounded-google-search'
-              || d.personalizationRevision!=='talksys-v87-jst-location-personalization-r1'
-              || d.speechOptimized!==true || d.ttsProvider!=='cloudflare-melotts-only' || d.geminiTtsFallback!==false || d.promptInjectionDefense!==true
-              || d.blanketFailClosed!==false || d.legacyGlmExecution!==false) {
-            throw new Error(process.env.GEMINI_HEALTH);
-          }
+          gemini=""
+          for attempt in $(seq 1 20); do
+            gemini="$(curl -fsS --max-time 20 "$PRODUCTION_URL/gemini-health" || true)"
+            ok="$(GEMINI_HEALTH="$gemini" node - <<'NODE'
+          let d={};
+          try { d=JSON.parse(process.env.GEMINI_HEALTH||'{}'); } catch {}
+          const ok = d.ok===true && d.configured===true && d.provider==='gemini' && d.model==='gemini-3.5-flash-lite'
+            && d.api==='interactions' && d.nativeGoogleSearch===true
+            && d.searchDefault==='single-pass-grounded-google-search'
+            && d.personalizationRevision==='talksys-v87-jst-location-personalization-r1'
+            && d.speechOptimized===true && d.ttsProvider==='cloudflare-melotts-only' && d.geminiTtsFallback===false
+            && d.promptInjectionDefense===true && d.blanketFailClosed===false && d.legacyGlmExecution===false;
+          process.stdout.write(String(Boolean(ok)));
           NODE
+            )"
+            [[ "$ok" == "true" ]] && break
+            [[ "$attempt" -eq 20 ]] && { echo "$gemini"; exit 1; }
+            sleep 3
+          done
+          echo "$gemini"
 
       - name: Verify live v45 UI and microphone client
         shell: bash
