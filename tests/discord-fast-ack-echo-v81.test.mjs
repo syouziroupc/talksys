@@ -27,7 +27,7 @@ test('v101 emits a local end-of-utterance reaction before Whisper final', () => 
 test('Nova realtime text is reaction-only and Whisper remains authoritative', () => {
   assert.match(bridge, /triggerWebFastReaction/);
   assert.match(bridge, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
-  assert.match(bridge, /const turn = await talk\\(confirmedTranscript, utteranceId, controller\\.signal, speechAlternatives\\)/);
+  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
   assert.doesNotMatch(bridge, /talk\((?:value|transcript|realtimeTranscript|helper\.interim)/);
   assert.doesNotMatch(bridge, /processConfirmedTranscript\(\{[\s\S]{0,300}(?:realtimeTranscript|helper\.interim|latestRealtimeTranscript)/);
