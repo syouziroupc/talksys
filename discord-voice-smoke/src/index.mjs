@@ -28,14 +28,13 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-stability-r3-voice-ready-retry';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-empty-transcript-entity-search-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
 const DISCORD_READY_TIMEOUT_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
-const CONNECTION_GREETING = 'フォーンズです。接続しました。';
 const BOT_ECHO_WINDOW_MS = 20000;
 const RECENT_USER_TURN_WINDOW_MS = 2500;
 const BOT_OVERLAP_SHORT_TEXT_MAX = 12;
@@ -98,16 +97,11 @@ let lastUserSpeechAt = 0;
 let lastUserPcmAt = 0;
 let recoveryAudio = null;
 let recoveryAudioPromise = null;
-let connectionGreetingAudio = null;
-let connectionGreetingAudioPromise = null;
 let recoverySpeaking = false;
 let voiceRecoveryTimer = null;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
-let windowsTtsQueue = Promise.resolve();
-let windowsTtsConsecutiveFailures = 0;
-let windowsTtsDisabledUntil = 0;
 
 function resetConversationState() {
   if (voiceRecoveryTimer) {
@@ -813,8 +807,7 @@ async function talk(text, utteranceId = '', signal) {
   if (!body?.ok || !body?.answer) {
     throw new Error(body?.detail || body?.error || 'turn_empty_answer');
   }
-  if (body.interactionReset) previousInteractionId = '';
-  else if (body.interactionId) previousInteractionId = body.interactionId;
+  if (body.interactionId) previousInteractionId = body.interactionId;
   if (body.search) {
     searchTrace = {
       resolvedQuestion: body.resolvedQuestion || text,
@@ -831,7 +824,7 @@ async function talk(text, utteranceId = '', signal) {
   return body;
 }
 
-async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
+async function synthesizeWindowsJapaneseTts(text, signal) {
   if (process.platform !== 'win32') throw new Error('windows_tts_unavailable_non_windows');
   const spoken = String(text || '').trim();
   if (!spoken) throw new Error('windows_tts_empty_text');
@@ -878,11 +871,9 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
   child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
   child.stderr.on('data', (chunk) => { stderr += String(chunk); });
 
-  let timedOut = false;
   const timeout = setTimeout(() => {
-    timedOut = true;
     try { child.kill(); } catch {}
-  }, 15000);
+  }, 8000);
 
   let abortHandler = null;
   if (signal) {
@@ -904,7 +895,7 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
   if (signal?.aborted) throw signal.reason || new Error('aborted');
   const audio = Buffer.concat(stdout);
   if (code !== 0 || audio.length < 44) {
-    throw new Error(`windows_tts_failed code=${code} timedOut=${timedOut} bytes=${audio.length} detail=${stderr.trim().slice(0, 240)}`);
+    throw new Error(`windows_tts_failed code=${code} detail=${stderr.trim().slice(0, 240)}`);
   }
 
   return {
@@ -913,33 +904,6 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
     elapsedMs: Date.now() - started,
     workerMs: 0,
   };
-}
-
-
-async function synthesizeWindowsJapaneseTts(text, signal) {
-  if (process.platform !== 'win32') throw new Error('windows_tts_unavailable_non_windows');
-  if (Date.now() < windowsTtsDisabledUntil) {
-    throw new Error('windows_tts_temporarily_disabled_after_failures');
-  }
-
-  const task = windowsTtsQueue
-    .catch(() => {})
-    .then(async () => {
-      try {
-        const result = await synthesizeWindowsJapaneseTtsUnlocked(text, signal);
-        windowsTtsConsecutiveFailures = 0;
-        return result;
-      } catch (error) {
-        windowsTtsConsecutiveFailures += 1;
-        if (windowsTtsConsecutiveFailures >= 3) {
-          windowsTtsDisabledUntil = Date.now() + 30000;
-          mirrorRuntimeLog('TTS', 'Windows local temporarily disabled for 30s after repeated failures');
-        }
-        throw error;
-      }
-    });
-  windowsTtsQueue = task.catch(() => {});
-  return task;
 }
 
 async function synthesizeCloudflareTts(text, signal, meta = {}) {
@@ -962,29 +926,15 @@ async function synthesizeCloudflareTts(text, signal, meta = {}) {
     timeoutMs: REQUEST_BUDGET_MS.tts,
     label: 'tts',
   });
-
-  const bytes = Buffer.from(await response.arrayBuffer());
-  const type = String(response.headers.get('content-type') || 'unknown').toLowerCase();
+  const audio = Buffer.from(await response.arrayBuffer());
+  const type = response.headers.get('content-type') || 'unknown';
   const source = response.headers.get('x-talksys-voice-source') || 'unknown';
   const workerMs = Number(response.headers.get('x-talksys-tts-ms') || 0);
   const elapsedMs = Date.now() - started;
-
-  if (!response.ok) {
-    const detail = bytes.toString('utf8').replace(/\s+/g, ' ').trim().slice(0, 320);
-    throw new Error(`tts_http_${response.status}: ${detail || response.statusText || 'tts request failed'}`);
-  }
-  if (!/audio\/(?:mpeg|mp3|wav|wave|x-wav|ogg|opus)|application\/octet-stream/.test(type)) {
-    const detail = bytes.toString('utf8').replace(/\s+/g, ' ').trim().slice(0, 320);
-    throw new Error(`tts_invalid_content_type type=${type} bytes=${bytes.length} detail=${detail}`);
-  }
-  if (bytes.length < 64) {
-    throw new Error(`tts_audio_too_small bytes=${bytes.length} type=${type}`);
-  }
-
-  console.log(`[tts] ${bytes.length} bytes type=${type} source=${source}`);
+  console.log(`[tts] ${audio.length} bytes type=${type} source=${source}`);
   console.log(`[latency] tts-http=${elapsedMs}ms worker=${workerMs || '?'}ms source=${source}`);
   mirrorRuntimeLog('TTS', `${elapsedMs}ms source=${source}`);
-  return { audio: bytes, source, elapsedMs, workerMs };
+  return { audio, source, elapsedMs, workerMs };
 }
 
 async function synthesize(text, signal, meta = {}) {
@@ -1043,8 +993,6 @@ async function speakRecoveryPrompt(reason = 'pipeline-failure', sessionEpoch = v
 
 async function playMp3(mp3, options = {}) {
   if (!ffmpegPath) throw new Error('ffmpeg_static_missing');
-  if (!mp3?.length) throw new Error('playback_audio_empty');
-
   const ffmpegStarted = Date.now();
   const ffmpeg = spawn(ffmpegPath, [
     '-hide_banner', '-loglevel', 'error',
@@ -1058,99 +1006,60 @@ async function playMp3(mp3, options = {}) {
   let ffmpegError = '';
   let ffmpegSpawnMs = 0;
   let botSpeechRecord = null;
-  let settled = false;
-  let playbackStartedAt = 0;
-  let startTimeout = null;
-  let playbackTimeout = null;
-
-  const cleanup = () => {
-    player.off(AudioPlayerStatus.Playing, onPlaying);
-    player.off(AudioPlayerStatus.Idle, onIdle);
-    player.off('error', onPlayerError);
-    ffmpeg.off('error', onFfmpegError);
-    ffmpeg.off('close', onFfmpegClose);
-    ffmpeg.stdin.off('error', onPipeError);
-    ffmpeg.stdout.off('error', onPipeError);
-  };
-
-  let resolveDone;
-  let rejectDone;
-  const done = new Promise((resolve, reject) => {
-    resolveDone = resolve;
-    rejectDone = reject;
-  });
-
-  const finish = (error = null) => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(startTimeout);
-    clearTimeout(playbackTimeout);
-    finishBotSpeech(botSpeechRecord);
-    if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now();
-    if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null;
-    cleanup();
-    if (error) rejectDone(error);
-    else resolveDone({ playbackStartedAt, ffmpegSpawnMs: ffmpegSpawnMs || Math.max(0, Date.now() - ffmpegStarted) });
-  };
-
-  const onPipeError = (error) => finish(new Error(`ffmpeg_pipe_error: ${error?.message || error}`));
-  const onFfmpegError = (error) => finish(new Error(`ffmpeg_spawn_error: ${error?.message || error}`));
-  const onFfmpegClose = (code, signal) => {
-    if (!settled && !playbackStartedAt && code !== 0) {
-      finish(new Error(`ffmpeg_exit_before_playback code=${code} signal=${signal || ''} detail=${ffmpegError.trim().slice(0, 300)}`));
-    }
-  };
-  const onPlayerError = (error) => finish(error instanceof Error ? error : new Error(String(error)));
-  const onIdle = () => finish();
-  const onPlaying = () => {
-    if (settled || playbackStartedAt) return;
-    playbackStartedAt = Date.now();
-    if (options?.spokenText) {
-      botSpeechRecord = rememberBotSpeech(options.spokenText, options?.purpose || '', playbackStartedAt);
-      activeBotPlaybackRecord = botSpeechRecord;
-    }
-    const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
-    ffmpegSpawnMs = measuredFfmpegMs;
-    console.log('[tx] playback started');
-    try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
-  };
-
   ffmpeg.stderr.on('data', (d) => { ffmpegError += String(d); });
   ffmpeg.stdout.once('data', () => {
     ffmpegSpawnMs = Date.now() - ffmpegStarted;
     console.log(`[latency] ffmpeg-first-output=${ffmpegSpawnMs}ms`);
   });
-  ffmpeg.on('error', onFfmpegError);
-  ffmpeg.on('close', onFfmpegClose);
-  ffmpeg.stdin.on('error', onPipeError);
-  ffmpeg.stdout.on('error', onPipeError);
-  player.on('error', onPlayerError);
-  player.on(AudioPlayerStatus.Idle, onIdle);
-  player.on(AudioPlayerStatus.Playing, onPlaying);
+  ffmpeg.on('error', (error) => console.error('[ffmpeg]', error.message));
+  ffmpeg.stdin.end(mp3);
 
-  startTimeout = setTimeout(() => {
-    try { ffmpeg.kill('SIGKILL'); } catch {}
-    player.stop(true);
-    finish(new Error(`playback_start_timeout detail=${ffmpegError.trim().slice(0, 300)}`));
-  }, 5000);
-  playbackTimeout = setTimeout(() => {
-    try { ffmpeg.kill('SIGKILL'); } catch {}
-    player.stop(true);
-    finish(new Error(`playback_timeout detail=${ffmpegError.trim().slice(0, 300)}`));
-  }, 30000);
+  const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+  const playbackStartedPromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      player.off(AudioPlayerStatus.Playing, onPlaying);
+      try { ffmpeg.kill('SIGKILL'); } catch {}
+      reject(new Error('playback_start_timeout'));
+    }, 5000);
+    const onPlaying = () => {
+      clearTimeout(timeout);
+      const playbackStartedAt = Date.now();
+      if (options?.spokenText) {
+        botSpeechRecord = rememberBotSpeech(options.spokenText, options?.purpose || '', playbackStartedAt);
+        activeBotPlaybackRecord = botSpeechRecord;
+      }
+      const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
+      console.log('[tx] playback started');
+      try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
+      resolve({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs });
+    };
+    player.once(AudioPlayerStatus.Playing, onPlaying);
+  });
 
-  try {
-    ffmpeg.stdin.end(mp3);
-    const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
-    player.play(resource);
-  } catch (error) {
-    finish(error instanceof Error ? error : new Error(String(error)));
-  }
+  player.play(resource);
 
-  const result = await done;
+  const completionPromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      try { ffmpeg.kill('SIGKILL'); } catch {}
+      player.stop(true);
+      reject(new Error('playback_timeout'));
+    }, 30000);
+    const done = () => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now(); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); resolve(); };
+    const fail = (error) => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now(); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); reject(error); };
+    const cleanup = () => {
+      player.off(AudioPlayerStatus.Idle, done);
+      player.off('error', fail);
+    };
+    player.once(AudioPlayerStatus.Idle, done);
+    player.once('error', fail);
+  });
+
+  const startedInfo = await playbackStartedPromise;
+  await completionPromise;
   if (ffmpegError.trim()) console.log('[ffmpeg]', ffmpegError.trim());
-  return result;
+  return startedInfo;
 }
+
 async function processConfirmedTranscript({ confirmedTranscript, rawTranscript = '', correctedTranscript = '', correctionReason = '', fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
   if (!confirmedTranscript || sessionEpoch !== voiceEpoch) return;
 
@@ -1654,24 +1563,10 @@ function destroyVoiceConnection() {
   connection = undefined;
 }
 
-async function warmConnectionGreetingAudio() {
-  if (connectionGreetingAudio?.length) return connectionGreetingAudio;
-  if (connectionGreetingAudioPromise) return connectionGreetingAudioPromise;
-  connectionGreetingAudioPromise = synthesize(CONNECTION_GREETING, undefined, { purpose: 'greeting-warmup' })
-    .then((result) => {
-      connectionGreetingAudio = result.audio;
-      console.log(`[greeting] cached ${connectionGreetingAudio.length} bytes`);
-      return connectionGreetingAudio;
-    })
-    .finally(() => { connectionGreetingAudioPromise = null; });
-  return connectionGreetingAudioPromise;
-}
-
 async function playConnectionGreeting() {
   try {
-    let audio = connectionGreetingAudio;
-    if (!audio?.length) audio = await warmConnectionGreetingAudio();
-    await playMp3(audio, { spokenText: CONNECTION_GREETING, purpose: 'greeting' });
+    const result = await synthesize('フォーンズです。接続しました。');
+    await playMp3(result.audio, { spokenText: 'フォーンズです。接続しました。', purpose: 'greeting' });
     console.log('[greeting] connection greeting played');
     return true;
   } catch (error) {
@@ -1681,60 +1576,20 @@ async function playConnectionGreeting() {
   }
 }
 
-async function createReadyVoiceConnection(channel) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const candidate = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: channel.guild.id,
-      adapterCreator: channel.guild.voiceAdapterCreator,
-      selfDeaf: false,
-      selfMute: false,
-      daveEncryption: false,
-      debug: true,
-    });
-
-    const onState = (oldState, newState) => {
-      const from = oldState?.status || 'unknown';
-      const to = newState?.status || 'unknown';
-      console.log(`[discord] voice connect attempt=${attempt} state=${from}->${to}`);
-      mirrorRuntimeLog('VOICE-CONNECT', `attempt=${attempt} ${from}->${to}`);
-    };
-    const onDebug = (message) => {
-      const value = String(message || '').replace(/\s+/g, ' ').trim().slice(0, 220);
-      if (value) mirrorRuntimeLog('VOICE-DEBUG', `attempt=${attempt} ${value}`);
-    };
-    candidate.on('stateChange', onState);
-    candidate.on('debug', onDebug);
-
-    try {
-      mirrorRuntimeLog('VOICE-CONNECT', `attempt=${attempt}/3 dave=false`);
-      await entersState(candidate, VoiceConnectionStatus.Ready, 20000);
-      candidate.off('stateChange', onState);
-      candidate.off('debug', onDebug);
-      mirrorRuntimeLog('VOICE-CONNECT', `ready attempt=${attempt}`);
-      return candidate;
-    } catch (error) {
-      lastError = error;
-      const message = String(error?.message || error || '').slice(0, 220);
-      console.warn(`[discord] voice ready failed attempt=${attempt}/3: ${message}`);
-      mirrorRuntimeLog('VOICE-CONNECT', `failed attempt=${attempt}: ${message}`);
-      candidate.off('stateChange', onState);
-      candidate.off('debug', onDebug);
-      try { candidate.destroy(); } catch {}
-      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
-    }
-  }
-  throw lastError || new Error('voice_ready_failed');
-}
-
 async function connectToVoiceChannel(channel, initialUserId = '') {
   if (!channel || !channel.isVoiceBased()) throw new Error('target channel is not voice based');
   destroyVoiceConnection();
 
-  connection = await createReadyVoiceConnection(channel);
+  connection = joinVoiceChannel({
+    channelId: channel.id,
+    guildId: channel.guild.id,
+    adapterCreator: channel.guild.voiceAdapterCreator,
+    selfDeaf: false,
+    selfMute: false,
+  });
   connection.subscribe(player);
 
+  await entersState(connection, VoiceConnectionStatus.Ready, 15000);
   discordSessionId = `discord-${channel.guild.id}-${channel.id}-${randomUUID()}`;
 
   connection.receiver.speaking.on('start', (userId) => {
@@ -1753,9 +1608,6 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   });
 
   if (initialUserId && initialUserId !== client.user.id) {
-    // V92 stability profile: keep one receiver session prearmed for the caller.
-    // Discord speaking.start marks the existing session instead of spawning a fresh
-    // capture for every transient speaking notification.
     ensureRealtimeHelper(initialUserId);
     startReceiverSession(initialUserId, false);
   }
@@ -1812,8 +1664,8 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   mirrorRuntimeLog('ARCH', 'Nova helper is reaction-only; Whisper remains authoritative');
   console.log('[discord] bridge revision:', DISCORD_BRIDGE_REVISION);
   await playConnectionGreeting();
-  // Keep post-join audio generation lazy as well. Concurrent Windows System.Speech
-  // processes previously deadlocked/timeouted during connection startup.
+  warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] warmup failed:', error?.message || error));
+  warmRecoveryAudio().catch((error) => console.warn('[recovery] warmup failed:', error?.message || error));
   return channel;
 }
 
@@ -1854,9 +1706,8 @@ client.once('ready', async () => {
       await ensureTalkSysCommands(guild);
       console.log(`[discord] slash commands ready guild=${guild.name}: /talksys /logs /leave`);
     }
-    // v98: do not warm multiple System.Speech requests in parallel.
-    // Greeting is the only startup-critical sound; other clips are synthesized lazily.
-    warmConnectionGreetingAudio().catch((error) => console.warn('[greeting] gateway warmup failed:', error?.message || error));
+    warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] gateway warmup failed:', error?.message || error));
+    warmRecoveryAudio().catch((error) => console.warn('[recovery] gateway warmup failed:', error?.message || error));
     console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
     console.error('[fatal]', error?.stack || error);
