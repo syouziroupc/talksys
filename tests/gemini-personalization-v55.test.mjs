@@ -246,3 +246,76 @@ test('v87 answers common time phrasings in JST without Gemini and clarifies only
     globalThis.fetch = originalFetch;
   }
 });
+
+
+test('v96 falls back to generateContent only when Interactions rejects the current execution location', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    calls += 1;
+    const href = String(url);
+    const req = JSON.parse(options.body || '{}');
+    if (calls === 1) {
+      assert.match(href, /\/v1beta\/interactions$/);
+      return new Response(JSON.stringify({
+        error: { message: 'This API is not available in your current location. See https://ai.google.dev/gemini-api/docs/available-regions.' },
+      }), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+    assert.match(href, /\/v1beta\/models\/gemini-3\.5-flash-lite:generateContent$/);
+    assert.deepEqual(req.tools, [{ google_search: {} }]);
+    assert.match(req.systemInstruction.parts[0].text, /電話で読み上げ/);
+    assert.match(req.contents[0].parts[0].text, /Google検索を実行して事実確認/);
+    return new Response(JSON.stringify({
+      candidates: [{
+        content: { parts: [{ text: '実在ショップを確認できました。' }] },
+        groundingMetadata: {
+          webSearchQueries: ['別府 中古PC 店'],
+          groundingChunks: [{ web: { title: '実在ショップ', uri: 'https://example.com/shop' } }],
+          groundingSupports: [{ segment: { text: '実在ショップ' }, groundingChunkIndices: [0] }],
+        },
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const result = await runGeminiTurn({
+      text: '別府で中古PC店を教えて',
+      history: [{ role: 'user', content: '予算は3万円です' }],
+      previousInteractionId: 'old-interaction',
+    }, { GEMINI_API_KEY: 'test-key' });
+    assert.equal(calls, 2);
+    assert.equal(result.ok, true);
+    assert.equal(result.route, 'gemini-generate-content-region-fallback');
+    assert.equal(result.generationTransport, 'generateContent');
+    assert.equal(result.interactionsRegionFallback, true);
+    assert.equal(result.interactionReset, true);
+    assert.equal(result.interactionId, '');
+    assert.equal(result.search, true);
+    assert.equal(result.queries[0], '別府 中古PC 店');
+    assert.equal(result.sources[0].title, '実在ショップ');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('v96 does not hide unrelated Interactions HTTP 400 errors behind the regional fallback', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    error: { message: 'Bad request for another reason' },
+  }), { status: 400, headers: { 'content-type': 'application/json' } });
+  try {
+    await assert.rejects(
+      runGeminiTurn({ text: 'ファナテックって知ってる？', history: [] }, { GEMINI_API_KEY: 'test-key' }),
+      /gemini_interactions_http_400:Bad request for another reason/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('v96 clients clear stale previous interaction state after a generateContent fallback', () => {
+  const webClient = fs.readFileSync(new URL('../src/talk-client-v45.js', import.meta.url), 'utf8');
+  const discord = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
+  assert.match(webClient, /if\(j\.interactionReset\)geminiInteractionId=''/);
+  assert.match(discord, /if \(body\.interactionReset\) previousInteractionId = ''/);
+  assert.match(discord, /talksys-discord-bridge-v96-region-fallback-r1/);
+});
