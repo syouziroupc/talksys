@@ -44,8 +44,8 @@ test('v85 pre-answer cue arbiter prevents wait cue and fast reaction from speaki
 test('v87 Discord Windows TTS uses the same Japanese voice preference family as Web', () => {
   assert.match(bridge, /Nanami/);
   assert.match(bridge, /Haruka\|Sayaka\|Ichiro\|Keita/);
-  assert.match(bridge, /Google\.\*\(\?:日本語\|Japanese\)/);
-  assert.match(bridge, /voice=\'\+\$pick\.VoiceInfo\.Name/);
+  assert.match(bridge, /Google\.\*\(日本語\|Japanese\)/);
+  assert.match(bridge, /voice=' \+ \[string\]\$pick\.VoiceInfo\.Name/);
 });
 
 
