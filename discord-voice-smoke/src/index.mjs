@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v87-web-voice-align-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v87-web-voice-align-r2';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -716,8 +716,10 @@ async function synthesizeWindowsJapaneseTts(text, signal) {
     "$text=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:TALKSYS_TTS_TEXT_B64))",
     "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer",
     "$ja=@($s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -eq 'ja-JP' })",
-    "$pick=$ja | Sort-Object @{Expression={ $n=$_.VoiceInfo.Name; if($n -match 'Google.*(?:日本語|Japanese)'){1000}elseif($n -match 'Nanami'){820}elseif($n -match 'Haruka|Sayaka|Ichiro|Keita'){760}elseif($n -match 'Microsoft'){650}elseif($n -match 'Ayumi'){420}else{0} }};Descending=$true}, @{Expression={$_.VoiceInfo.Name};Ascending=$true} | Select-Object -First 1",
-    "if($pick){$s.SelectVoice($pick.VoiceInfo.Name);[Console]::Error.WriteLine('voice='+$pick.VoiceInfo.Name)}",
+    "$pick=$null",
+    "$best=-1",
+    "foreach($v in $ja){$n=[string]$v.VoiceInfo.Name;$score=0;if($n -match 'Google.*(日本語|Japanese)'){$score=1000}elseif($n -match 'Nanami'){$score=820}elseif($n -match 'Haruka|Sayaka|Ichiro|Keita'){$score=760}elseif($n -match 'Microsoft'){$score=650}elseif($n -match 'Ayumi'){$score=420};if($score -gt $best){$best=$score;$pick=$v}}",
+    "if($pick -ne $null){$s.SelectVoice([string]$pick.VoiceInfo.Name);[Console]::Error.WriteLine(('voice=' + [string]$pick.VoiceInfo.Name))}",
     "$m=New-Object IO.MemoryStream",
     "$s.SetOutputToWaveStream($m)",
     "$s.Speak($text)",
