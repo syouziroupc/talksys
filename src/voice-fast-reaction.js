@@ -1,4 +1,4 @@
-export const FAST_REACTION_REVISION = 'talksys-v61-quality-buffer-r1';
+export const FAST_REACTION_REVISION = 'talksys-v105-clock-transit-asr-r1';
 
 function clean(value, max = 800) {
   return String(value ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -7,6 +7,7 @@ function clean(value, max = 800) {
 const PURE_GREETING_RE = /^(?:もしもし|おはよう(?:ございます)?|こんにちは|こんばんは|やあ|どうも)[。！!？?…\s]*$/i;
 const PURE_THANKS_RE = /^(?:ありがとう(?:ございます)?|ありがと|助かった|どうもありがとう)[。！!？?…\s]*$/i;
 const FILLER_ONLY_RE = /^(?:えー+と?|えっと|あの+|その+|うー+ん|んー+|まあ|えー)[。！!？?…\s]*$/i;
+const CURRENT_TIME_ONLY_RE = /^(?:(?:今|現在)(?:の)?(?:時刻|時間)?(?:は)?(?:何時|なんじ)(?:ですか|なの|だ|でしょうか)?|(?:今|現在)(?:の)?(?:時刻|時間)(?:を)?(?:教えて|おしえて|知りたい)(?:ください|下さい)?|(?:時間|時刻)(?:は)?(?:何時|なんじ)(?:ですか)?|(?:時間|時刻)(?:を)?(?:教えて|おしえて)(?:ください|下さい)?)[。！!？?…\s]*$/i;
 const SEARCHISH_RE = /(?:検索|調べ|探して|見つけ|確認して|最新|現在|今日|明日|価格|値段|在庫|営業時間|時刻|電車|列車|運行|ニュース|天気|どこ|誰|いつ|何時|いくら|おすすめ|店|店舗|会社|製品|商品|型番|仕様|互換|対応)/i;
 const REQUEST_RE = /(?:して|してほしい|教えて|お願い|頼む|考えて|見て|聞きたい|知りたい|相談|どうしたら|どうすれば)/i;
 const QUESTION_RE = /[？?]|(?:ですか|ますか|なの|なのか|何|どれ|どっち|どう|なぜ|なんで|誰|どこ|いつ)$/i;
@@ -31,7 +32,7 @@ function stableVariantIndex(value = '', count = 1) {
 
 export function fastReaction(text = '') {
   const value = clean(text);
-  if (!value || FILLER_ONLY_RE.test(value)) {
+  if (!value || FILLER_ONLY_RE.test(value) || CURRENT_TIME_ONLY_RE.test(value)) {
     return { kind: 'none', text: '', shouldSpeak: false, terminal: false };
   }
   if (PURE_GREETING_RE.test(value)) {
