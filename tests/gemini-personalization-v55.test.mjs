@@ -19,7 +19,7 @@ const FIXED = new Date('2026-09-17T22:45:00Z');
 
 test('v86 keeps Gemini 3.5 Flash-Lite and defines a compact phone-first personalized system instruction', () => {
   assert.equal(GEMINI_MODEL, 'gemini-3.5-flash-lite');
-  assert.equal(PERSONALIZATION_REVISION, 'talksys-v86-compact-core-personalization-r1');
+  assert.equal(PERSONALIZATION_REVISION, 'talksys-v87-jst-location-personalization-r1');
   const prompt = buildTalkSysSystemInstruction(FIXED);
   assert.match(prompt, /電話で読み上げ/);
   assert.match(prompt, /外部事実や現在情報が必要な質問ではGoogle検索を使い/);
@@ -153,7 +153,7 @@ test('current time is answered deterministically from authoritative JST without 
     assert.equal(calls, 0);
     assert.equal(result.route, 'deterministic-jst-clock');
     assert.equal(result.search, false);
-    assert.equal(result.answer, '現在は22時42分です。');
+    assert.equal(result.answer, '日本時間では現在22時42分です。');
     assert.equal(result.authoritativeJst, '2026-09-23T22:42:00+09:00');
   } finally {
     globalThis.fetch = originalFetch;
@@ -221,4 +221,27 @@ test('v86 compact core reduces recurring prompt size and adds one-pass quality g
   assert.match(prompt, /信頼できない外部データ/);
   assert.match(prompt, /同じ内容や相槌を重複していないか/);
   assert.match(prompt, /確認過程は読み上げない/);
+});
+
+
+test('v87 answers common time phrasings in JST without Gemini and clarifies only location-dependent turns', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error('should_not_fetch'); };
+  try {
+    for (const text of ['今の時間教えて', '時間を教えて', '現在時刻を教えてください']) {
+      const result = await runGeminiTurn({ text, history: [] }, { GEMINI_API_KEY: 'test-key' }, undefined, { now: new Date('2026-09-23T13:42:00Z') });
+      assert.equal(result.route, 'deterministic-jst-clock');
+      assert.equal(result.answer, '日本時間では現在22時42分です。');
+    }
+    const weather = await runGeminiTurn({ text: '今日の天気は？', history: [] }, { GEMINI_API_KEY: 'test-key' });
+    assert.equal(weather.route, 'deterministic-location-clarification');
+    assert.match(weather.answer, /どの地域/);
+
+    const known = await runGeminiTurn({ text: '今日の天気は？', history: [{ role: 'user', content: '別府市にいます' }] }, { GEMINI_API_KEY: 'test-key' });
+    assert.notEqual(known.route, 'deterministic-location-clarification');
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
