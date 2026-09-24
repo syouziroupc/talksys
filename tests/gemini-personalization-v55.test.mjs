@@ -66,7 +66,7 @@ test('native Gemini turn keeps search, source metadata and conversational answer
     const req = JSON.parse(options.body);
     assert.equal(req.model, 'gemini-3.5-flash-lite');
     assert.deepEqual(req.tools, [{ type: 'google_search' }]);
-    assert.match(req.system_instruction, /外部事実や現在情報が必要な質問ではGoogle検索を使い/);
+    assert.match(req.system_instruction, /Google検索を一度実行し、取得できた根拠だけで答えて/);
     return new Response(JSON.stringify({
       id: 'interaction-1',
       status: 'completed',
