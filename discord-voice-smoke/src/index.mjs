@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v98-latency-error-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v99-stale-stt-drop-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -77,6 +77,8 @@ let answering = false;
 let activeUserText = '';
 let activeUserUtteranceId = '';
 let voiceEpoch = 0;
+let voiceUtteranceSerial = 0;
+const latestVoiceUtteranceByUser = new Map();
 let discordSessionId = '';
 const pendingTurns = [];
 let activeTurnAbortController = null;
@@ -132,6 +134,7 @@ function resetConversationState() {
   activeUserText = '';
   activeUserUtteranceId = '';
   pendingTurns.splice(0, pendingTurns.length);
+  latestVoiceUtteranceByUser.clear();
   discordSessionId = '';
 }
 
@@ -417,6 +420,7 @@ function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, real
   })();
 
   handle = {
+    utteranceId,
     done,
     stop(reason = 'answer-ready') {
       if (stopped) return;
@@ -581,6 +585,48 @@ function closeRealtimeHelpers() {
     try { helper.ws?.close(1000, 'voice-disconnect'); } catch {}
   }
   realtimeHelpers.clear();
+}
+
+function isCurrentVoiceUtterance(userId, sessionEpoch, utteranceId, utteranceSerial) {
+  if (sessionEpoch !== voiceEpoch) return false;
+  const latest = latestVoiceUtteranceByUser.get(userId);
+  if (!latest) return true;
+  return latest.sessionEpoch === sessionEpoch
+    && latest.utteranceId === utteranceId
+    && latest.serial === utteranceSerial;
+}
+
+function releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller = null, reason = 'drop' }) {
+  try { controller?.abort?.(reason); } catch {}
+
+  const helper = realtimeHelpers.get(userId);
+  if (helper?.active?.utteranceId === utteranceId) {
+    helper.reactionSeq += 1;
+    helper.active = null;
+    helper.finalParts = [];
+    helper.interim = '';
+  }
+
+  let cueReleased = false;
+  if (activeFastReaction?.utteranceId === utteranceId) {
+    try { activeFastReaction.stop?.(reason); } catch {}
+    activeFastReaction = null;
+    cueReleased = true;
+  }
+  if (activeWaitCue?.utteranceId === utteranceId) {
+    try { activeWaitCue.stop?.(reason); } catch {}
+    activeWaitCue = null;
+    cueReleased = true;
+  }
+  if (cueReleased) preAnswerCueSerial += 1;
+
+  if (sessionEpoch === voiceEpoch && connection && !sessions.has(userId)) {
+    queueMicrotask(() => {
+      if (sessionEpoch === voiceEpoch && connection && !sessions.has(userId)) {
+        startReceiverSession(userId, false);
+      }
+    });
+  }
 }
 
 function boundedSignal(parentSignal, timeoutMs) {
@@ -773,6 +819,7 @@ function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
   })();
 
   return {
+    utteranceId,
     done,
     stop(reason = 'answer-ready') {
       if (stopped) return;
@@ -1104,6 +1151,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
   if (policy.action === 'drop') {
     console.log(`[turn-policy] dropped reason=${policy.reason}: ${confirmedTranscript}`);
     mirrorRuntimeLog('DROP', `${policy.reason}: ${confirmedTranscript}`);
+    releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, reason: `turn-policy-${policy.reason}` });
     return;
   }
   if (policy.action === 'interrupt') {
@@ -1115,6 +1163,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
   if (shouldDropUncorroboratedBotOverlap(confirmedTranscript, captureMetrics, policy)) {
     console.warn(`[turn-policy] dropped reason=bot-overlap-unconfirmed whisper="${confirmedTranscript}" realtime="${String(captureMetrics?.realtimeTranscript || '')}"`);
     mirrorRuntimeLog('DROP', `bot-overlap-unconfirmed: ${confirmedTranscript}`);
+    releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, reason: 'bot-overlap-unconfirmed' });
     return;
   }
   if (answering) {
@@ -1243,8 +1292,8 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
   }
 }
 
-async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId, timeline, captureMetrics }) {
-  if (sessionEpoch !== voiceEpoch) return;
+async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId, utteranceSerial, timeline, captureMetrics }) {
+  if (!isCurrentVoiceUtterance(userId, sessionEpoch, utteranceId, utteranceSerial)) return;
   if (!pcm?.length) {
     console.log(`[capture] rejected empty utterance=${utteranceId}`);
     return;
@@ -1253,6 +1302,11 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
   const controller = new AbortController();
   try {
     const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal);
+    if (!isCurrentVoiceUtterance(userId, sessionEpoch, utteranceId, utteranceSerial)) {
+      mirrorRuntimeLog('STT-STALE', `ignored ${utteranceId} serial=${utteranceSerial}`);
+      releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller, reason: 'stale-stt-result' });
+      return;
+    }
     let rawTranscript = stt.confirmedTranscript;
     const correction = correctLowConfidenceTranscript(rawTranscript, captureMetrics, history);
     let correctedTranscript = correction.correctedTranscript || rawTranscript;
@@ -1298,16 +1352,29 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
       userId,
       sessionEpoch,
       utteranceId,
+      utteranceSerial,
       timeline,
       captureMetrics,
       sttMeta: stt,
     });
   } catch (error) {
     const message = String(error?.message || error || '').slice(0, 500);
+    if (!isCurrentVoiceUtterance(userId, sessionEpoch, utteranceId, utteranceSerial)) {
+      mirrorRuntimeLog('STT-STALE', `ignored error ${utteranceId} serial=${utteranceSerial}`);
+      releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller, reason: 'stale-stt-error' });
+      return;
+    }
     console.error('[stt]', message);
     mirrorRuntimeLog('ERROR', `STT: ${message}`);
-    activeFastReaction?.stop?.('stt-failed');
-    activeFastReaction = null;
+    if (activeFastReaction?.utteranceId === utteranceId) {
+      activeFastReaction.stop?.('stt-failed');
+      activeFastReaction = null;
+    }
+    if (/hallucination-guard|hallucinated transcript rejected/i.test(message)) {
+      mirrorRuntimeLog('DROP', `known hallucination: ${utteranceId}`);
+      releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller, reason: 'hallucination-guard' });
+      return;
+    }
     if (isIgnorableSttFailure(message)) {
       const realtimeRescue = String(captureMetrics?.realtimeTranscript || '').trim();
       const rescuePolicy = classifyVoiceTurn(realtimeRescue, {
@@ -1331,6 +1398,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
         return;
       }
       mirrorRuntimeLog('DROP', `ignorable STT failure without usable realtime text: ${message}`);
+      releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller, reason: 'empty-or-silent-stt' });
       timeline.pipelineCompleteAt = Date.now();
       postVoiceMetrics({
         text: '',
@@ -1438,7 +1506,16 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
   let finalizeTimer = null;
   let pcm16Bytes = 0;
   let lastPcmAt = 0;
+  let utteranceSerial = 0;
   let realtimeHelper = null;
+
+  const ensureUtteranceSerial = () => {
+    if (!utteranceSerial) {
+      utteranceSerial = ++voiceUtteranceSerial;
+      latestVoiceUtteranceByUser.set(userId, { sessionEpoch, utteranceId, serial: utteranceSerial });
+    }
+    return utteranceSerial;
+  };
   let overlappedBotPlayback = Boolean(options?.startedDuringBotPlayback);
 
   const clearTimers = () => {
@@ -1451,10 +1528,12 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
   const markSpeaking = (startedDuringBotPlayback = false) => {
     if (completed) return;
     speakingMarked = true;
+    ensureUtteranceSerial();
     if (startedDuringBotPlayback) overlappedBotPlayback = true;
     if (!realtimeHelper || realtimeHelper.active?.utteranceId !== utteranceId) {
       realtimeHelper = beginRealtimeUtterance(userId, {
         utteranceId,
+        utteranceSerial,
         sessionEpoch,
         timeline,
         startedDuringBotPlayback: overlappedBotPlayback,
@@ -1486,6 +1565,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     completed = true;
     const endedAt = Date.now();
     const pcm = pcm16Chunks.length ? Buffer.concat(pcm16Chunks) : Buffer.alloc(0);
+    if (pcm.length && !utteranceSerial) ensureUtteranceSerial();
     const durationMs = pcm.length / 2 / WEB_VOICE_CAPTURE_POLICY.targetRate * 1000;
     timeline.utteranceEndAt = endedAt;
     cleanup();
@@ -1550,9 +1630,11 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     lastPcmAt = at;
     pcm16Bytes += pcm16.length;
     pcm16Chunks.push(Buffer.from(pcm16));
+    if (!utteranceSerial) ensureUtteranceSerial();
     if (!realtimeHelper || !realtimeHelper.ws || realtimeHelper.ws.readyState >= WebSocket.CLOSING) {
       realtimeHelper = beginRealtimeUtterance(userId, {
         utteranceId,
+        utteranceSerial,
         sessionEpoch,
         timeline,
         startedDuringBotPlayback: overlappedBotPlayback,
