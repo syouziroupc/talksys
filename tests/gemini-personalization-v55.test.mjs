@@ -43,7 +43,7 @@ test('authoritative clock is JST and is injected independently from model memory
 test('search preference targets external facts and skips local or conversational work', () => {
   assert.equal(shouldStronglyPreferSearch('別府で中古パソコンのおすすめ店ある？'), true);
   assert.equal(shouldStronglyPreferSearch('QCM1250とこのACアダプタは互換性ある？'), true);
-  assert.equal(shouldStronglyPreferSearch('今のソニックの時刻を教えて'), true);
+  assert.equal(shouldStronglyPreferSearch('今のソニックの時刻を教えて'), true);\n  assert.equal(shouldStronglyPreferSearch('今何時ですか?'), false);
   assert.equal(shouldStronglyPreferSearch('12345÷15'), false);
   assert.equal(shouldStronglyPreferSearch('この文章を短くして'), false);
   assert.equal(shouldStronglyPreferSearch('ありがとう'), false);
