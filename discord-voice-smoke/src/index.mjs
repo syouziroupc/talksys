@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v90-short-utterance-safe-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v91-short-utterance-rescue-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -1308,7 +1308,28 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
     activeFastReaction?.stop?.('stt-failed');
     activeFastReaction = null;
     if (isIgnorableSttFailure(message)) {
-      mirrorRuntimeLog('DROP', `ignorable STT failure: ${message}`);
+      const realtimeRescue = String(captureMetrics?.realtimeTranscript || '').trim();
+      const rescuePolicy = classifyVoiceTurn(realtimeRescue, {
+        answerInFlight: answering || player.state.status === AudioPlayerStatus.Playing,
+      });
+      if (realtimeRescue && rescuePolicy.action === 'answer') {
+        mirrorRuntimeLog('STT-RESCUE', `Whisper failed -> realtime: ${realtimeRescue}`);
+        await processConfirmedTranscript({
+          confirmedTranscript: realtimeRescue,
+          rawTranscript: realtimeRescue,
+          correctedTranscript: realtimeRescue,
+          correctionReason: 'realtime-rescue-after-whisper-failure',
+          fastReaction: fastReaction(realtimeRescue),
+          userId,
+          sessionEpoch,
+          utteranceId,
+          timeline,
+          captureMetrics,
+          sttMeta: { model: 'realtime-rescue', whisperError: message },
+        });
+        return;
+      }
+      mirrorRuntimeLog('DROP', `ignorable STT failure without usable realtime text: ${message}`);
       return;
     }
     await speakRecoveryPrompt('stt-failed', sessionEpoch, timeline.utteranceEndAt || 0);
