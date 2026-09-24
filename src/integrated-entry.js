@@ -5,14 +5,14 @@ import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 import { persistTalkLog, listTalkLogs } from './log-v42.js';
 import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
-export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v89-outro-fragment-observability';
+export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v90-short-utterance-safe';
 export const PERSONALIZATION_REVISION = 'talksys-v87-jst-location-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
-export const DISCORD_PIPELINE_REVISION = 'talksys-v89-outro-fragment-observability-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v90-short-utterance-safe-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
