@@ -33,3 +33,10 @@ test('latest D1 view selects the newest session and collapses duplicate event ro
   assert.match(server, /latestSessionId: latest\?\.sessionId \|\| ''/);
   assert.match(server, /currentRuntimeRevision: INTEGRATED_ENTRY_REVISION/);
 });
+
+test('signed recent Discord diagnostics use the latest logical session view', () => {
+  assert.match(server, /listTalkLogs\(env, 120, \{ sessionPrefix: 'discord-', latestSessionOnly: true \}\)/);
+  assert.match(server, /const logs = collapseTalkLogs\(rawLogs\)/);
+  assert.match(server, /latestSessionId: rawLogs\[0\]\?\.sessionId \|\| ''/);
+  assert.match(server, /latestRevision: rawLogs\[0\]\?\.revision \|\| ''/);
+});

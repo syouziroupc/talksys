@@ -1638,8 +1638,17 @@ async function recentDiscordDiagnosticResponse(request, env) {
   const supplied = String(request.headers.get('x-talksys-diagnostic') || '');
   if (!supplied || supplied !== expected) return json({ ok: false, error: 'unauthorized' }, 401);
   try {
-    const logs = await listTalkLogs(env, 60, { sessionPrefix: 'discord-' });
-    return json({ ok: true, count: logs.length, logs }, 200);
+    const rawLogs = await listTalkLogs(env, 120, { sessionPrefix: 'discord-', latestSessionOnly: true });
+    const logs = collapseTalkLogs(rawLogs);
+    return json({
+      ok: true,
+      view: 'latest',
+      count: logs.length,
+      rawCount: rawLogs.length,
+      latestSessionId: rawLogs[0]?.sessionId || '',
+      latestRevision: rawLogs[0]?.revision || '',
+      logs,
+    }, 200);
   } catch (error) {
     return json({ ok: false, error: 'recent_discord_log_failed', detail: compact(error?.message || error, 500) }, 500);
   }
