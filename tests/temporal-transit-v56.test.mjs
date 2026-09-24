@@ -94,3 +94,45 @@ test('past departure triggers one targeted repair after the single grounded prim
     globalThis.fetch = originalFetch;
   }
 });
+
+
+test('v105 retries directional transit when one direction is missing or unverified', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls += 1;
+    const req = JSON.parse(options.body);
+    if (calls === 1) {
+      return new Response(JSON.stringify({
+        id: 'direction-partial',
+        status: 'completed',
+        steps: [
+          { type: 'google_search_call', arguments: { queries: ['別府駅 下り 列車'] } },
+          { type: 'google_search_result', result: [{ title: '時刻表', url: 'https://example.com/down' }] },
+          { type: 'model_output', content: [{ type: 'text', text: '下りは確認できました。上りは確認できませんでした。' }] },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    assert.match(req.input, /上り・下りの両方向をそれぞれ別々にGoogle検索/);
+    return new Response(JSON.stringify({
+      id: 'direction-fixed',
+      status: 'completed',
+      steps: [
+        { type: 'google_search_call', arguments: { queries: ['別府駅 上り 列車', '別府駅 下り 列車'] } },
+        { type: 'google_search_result', result: [
+          { title: '上り時刻表', url: 'https://example.com/up' },
+          { title: '下り時刻表', url: 'https://example.com/down2' },
+        ] },
+        { type: 'model_output', content: [{ type: 'text', text: '上りと下りの両方を確認できました。' }] },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const result = await runGeminiTurn({ text: '別府駅の上り列車と下り列車を確認して', history: [] }, { GEMINI_API_KEY: 'test-key' });
+    assert.equal(calls, 2);
+    assert.equal(result.searchRetried, true);
+    assert.match(result.answer, /上りと下り/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
