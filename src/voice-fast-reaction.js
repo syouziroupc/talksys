@@ -83,7 +83,7 @@ export function sameUtterance(a = '', b = '') {
 }
 
 
-export const VOICE_TURN_POLICY_REVISION = 'talksys-v89-fragment-hallucination-policy-r1';
+export const VOICE_TURN_POLICY_REVISION = 'talksys-v91-short-rescue-policy-r1';
 
 const EXPLICIT_STOP_RE = /^(?:止めて|とめて|停止|中止|キャンセル|黙って|だまって|もういい|待って|まって)(?:ください|下さい|くれ|よ)?[。！!？?…\s]*$/i;
 const ACK_ONLY_RE = /^(?:はい|うん|ううん|そう|そうそう|なるほど|了解|わかった|分かった|おっけー|オッケー|OK|ええ|ああ)[。！!？?…\s]*$/i;
