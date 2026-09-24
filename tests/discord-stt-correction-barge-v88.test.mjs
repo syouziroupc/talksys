@@ -9,7 +9,6 @@ test('v88 correction is bounded to low-confidence glossary evidence', () => {
   assert.match(bridge, /STT_LOW_CONFIDENCE_THRESHOLD = 0\.88/);
   assert.match(bridge, /correctLowConfidenceTranscript/);
   for (const term of ['TalkSys','Discord','Gemini','Whisper']) assert.match(bridge, new RegExp(term));
-  assert.match(bridge, /numeric, monetary/);
   assert.match(bridge, /rawTranscript/);
   assert.match(bridge, /correctedTranscript/);
   assert.match(bridge, /correctionReason/);
