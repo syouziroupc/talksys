@@ -306,10 +306,9 @@ test('v97 does not hide unrelated Interactions HTTP 400 errors behind the region
   }
 });
 
-test('v97 clients clear stale previous interaction state after a regional rescue', () => {
+test('v97 web client clears stale interaction state while Discord remains exact V92 bridge', () => {
   const webClient = fs.readFileSync(new URL('../src/talk-client-v45.js', import.meta.url), 'utf8');
   const discord = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
   assert.match(webClient, /if\(j\.interactionReset\)geminiInteractionId=''/);
-  assert.match(discord, /if \(body\.interactionReset\) previousInteractionId = ''/);
   assert.match(discord, /talksys-discord-bridge-v92-empty-transcript-entity-search-r1/);
 });
