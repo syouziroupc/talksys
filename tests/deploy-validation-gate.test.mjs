@@ -46,6 +46,8 @@ test('production deploy preserves the Cloudflare Discord secret and uploads only
   assert.match(workflow, /\/gemini-health/);
   assert.match(workflow, /generationProvider==='gemini'/);
   assert.match(workflow, /generationModel==='gemini-3\.5-flash-lite'/);
+  assert.match(workflow, /interactions\+generateContent-region-fallback/);
+  assert.match(workflow, /interactionsRegionFallback==='generateContent'/);
   assert.match(workflow, /legacyGlmExecution===false/);
 });
 
@@ -68,6 +70,7 @@ test('production deploy keeps UI, microphone, deterministic, weather, and contex
   assert.match(workflow, /\/api\/turn/);
   assert.match(workflow, /12345÷15/);
   assert.match(workflow, /別府市の今日の天気は？/);
+  assert.match(workflow, /gemini-generate-content-region-fallback/);
   assert.match(workflow, /大学のレポート用に中古ノートPCを探してる。予算は3万円。/);
 });
 
