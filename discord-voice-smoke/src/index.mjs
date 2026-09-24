@@ -28,7 +28,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v96-region-fallback-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v98-serialized-local-tts-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -105,6 +105,9 @@ let voiceRecoveryTimer = null;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
+let windowsTtsQueue = Promise.resolve();
+let windowsTtsConsecutiveFailures = 0;
+let windowsTtsDisabledUntil = 0;
 
 function resetConversationState() {
   if (voiceRecoveryTimer) {
@@ -828,7 +831,7 @@ async function talk(text, utteranceId = '', signal) {
   return body;
 }
 
-async function synthesizeWindowsJapaneseTts(text, signal) {
+async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
   if (process.platform !== 'win32') throw new Error('windows_tts_unavailable_non_windows');
   const spoken = String(text || '').trim();
   if (!spoken) throw new Error('windows_tts_empty_text');
@@ -875,9 +878,11 @@ async function synthesizeWindowsJapaneseTts(text, signal) {
   child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
   child.stderr.on('data', (chunk) => { stderr += String(chunk); });
 
+  let timedOut = false;
   const timeout = setTimeout(() => {
+    timedOut = true;
     try { child.kill(); } catch {}
-  }, 8000);
+  }, 15000);
 
   let abortHandler = null;
   if (signal) {
@@ -899,7 +904,7 @@ async function synthesizeWindowsJapaneseTts(text, signal) {
   if (signal?.aborted) throw signal.reason || new Error('aborted');
   const audio = Buffer.concat(stdout);
   if (code !== 0 || audio.length < 44) {
-    throw new Error(`windows_tts_failed code=${code} detail=${stderr.trim().slice(0, 240)}`);
+    throw new Error(`windows_tts_failed code=${code} timedOut=${timedOut} bytes=${audio.length} detail=${stderr.trim().slice(0, 240)}`);
   }
 
   return {
@@ -908,6 +913,33 @@ async function synthesizeWindowsJapaneseTts(text, signal) {
     elapsedMs: Date.now() - started,
     workerMs: 0,
   };
+}
+
+
+async function synthesizeWindowsJapaneseTts(text, signal) {
+  if (process.platform !== 'win32') throw new Error('windows_tts_unavailable_non_windows');
+  if (Date.now() < windowsTtsDisabledUntil) {
+    throw new Error('windows_tts_temporarily_disabled_after_failures');
+  }
+
+  const task = windowsTtsQueue
+    .catch(() => {})
+    .then(async () => {
+      try {
+        const result = await synthesizeWindowsJapaneseTtsUnlocked(text, signal);
+        windowsTtsConsecutiveFailures = 0;
+        return result;
+      } catch (error) {
+        windowsTtsConsecutiveFailures += 1;
+        if (windowsTtsConsecutiveFailures >= 3) {
+          windowsTtsDisabledUntil = Date.now() + 30000;
+          mirrorRuntimeLog('TTS', 'Windows local temporarily disabled for 30s after repeated failures');
+        }
+        throw error;
+      }
+    });
+  windowsTtsQueue = task.catch(() => {});
+  return task;
 }
 
 async function synthesizeCloudflareTts(text, signal, meta = {}) {
@@ -1683,8 +1715,8 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   mirrorRuntimeLog('ARCH', 'Nova helper is reaction-only; Whisper remains authoritative');
   console.log('[discord] bridge revision:', DISCORD_BRIDGE_REVISION);
   await playConnectionGreeting();
-  warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] warmup failed:', error?.message || error));
-  warmRecoveryAudio().catch((error) => console.warn('[recovery] warmup failed:', error?.message || error));
+  // Keep post-join audio generation lazy as well. Concurrent Windows System.Speech
+  // processes previously deadlocked/timeouted during connection startup.
   return channel;
 }
 
@@ -1725,8 +1757,8 @@ client.once('ready', async () => {
       await ensureTalkSysCommands(guild);
       console.log(`[discord] slash commands ready guild=${guild.name}: /talksys /logs /leave`);
     }
-    warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] gateway warmup failed:', error?.message || error));
-    warmRecoveryAudio().catch((error) => console.warn('[recovery] gateway warmup failed:', error?.message || error));
+    // v98: do not warm multiple System.Speech requests in parallel.
+    // Greeting is the only startup-critical sound; other clips are synthesized lazily.
     warmConnectionGreetingAudio().catch((error) => console.warn('[greeting] gateway warmup failed:', error?.message || error));
     console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
