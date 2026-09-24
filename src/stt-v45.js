@@ -1,5 +1,5 @@
 export const STT_MODEL = '@cf/openai/whisper-large-v3-turbo';
-export const STT_REVISION = 'talksys-v90-short-utterance-safe';
+export const STT_REVISION = 'talksys-v91-short-utterance-rescue';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -68,16 +68,13 @@ export function weakSpeechSignal(metrics) {
   const peak = Number(metrics.peak) || 0;
   const rms = Number(metrics.rms) || 0;
   const activeMs = Number(metrics.activeMs) || 0;
-  const activeRatio = Number(metrics.activeRatio) || 0;
 
-  // Do not equate a short utterance with silence. Japanese acknowledgements and
-  // greetings can be brief; accept them when the waveform has clear speech energy.
-  if (durationMs < 100) return true;
-  if (durationMs < 260) {
-    const clearShortSpeech = peak >= 0.018 && rms >= 0.0035 && activeMs >= 60 && activeRatio >= 0.10;
-    return !clearShortSpeech;
-  }
-  return peak < 0.010 || rms < 0.0018 || activeMs < 120 || activeRatio < 0.06;
+  // v91: avoid pre-Whisper rejection of normal short Japanese speech.
+  // Only reject physically tiny / effectively silent captures here. Whisper's
+  // own VAD + hallucination guard handles the remaining filtering.
+  if (durationMs < 60) return true;
+  if (peak < 0.004 && rms < 0.0008 && activeMs < 40) return true;
+  return false;
 }
 
 export function isLikelySttHallucination(text, metrics) {
