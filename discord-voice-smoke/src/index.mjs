@@ -460,8 +460,13 @@ function triggerWebFastReaction(helper, text) {
 function triggerEndOfUtteranceReaction(helper, text) {
   const active = helper?.active;
   const value = String(text || '').trim();
-  if (!active || active.reactionIssued || !value || active.sessionEpoch !== voiceEpoch) return false;
+  if (!active || !value || active.sessionEpoch !== voiceEpoch) return false;
   if (active.startedDuringBotPlayback) return false;
+
+  // If speech_final already started the HTTP classifier but it has not yet
+  // produced/played a reaction, supersede it here. Incrementing reactionSeq
+  // invalidates the pending HTTP result.
+  if (active.reactionIssued && (active.reaction || active.timeline?.fastReactionRequestedAt)) return false;
 
   // At Discord utterance finalization we already have a useful realtime
   // transcript. Do not wait for Whisper or another HTTP classifier round-trip:
