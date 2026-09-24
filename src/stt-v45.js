@@ -1,5 +1,6 @@
 export const STT_MODEL = '@cf/openai/whisper-large-v3-turbo';
-export const STT_REVISION = 'talksys-v98-latency-tune';
+export const STT_REVISION = 'talksys-v104-phonetic-first-ja';
+const JAPANESE_PHONETIC_FIRST_PROMPT = '日本語音声を発音に忠実に文字起こししてください。意味を推測して漢字を補わないでください。固有名詞、専門用語、数字を含む語、聞き慣れない語で漢字表記に確信がない場合は、ひらがなまたはカタカナのまま転写してください。音から確定できない漢字を推測しないでください。';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -131,6 +132,7 @@ export async function transcribeV45(request, env) {
       audio,
       task: 'transcribe',
       language: 'ja',
+      initial_prompt: JAPANESE_PHONETIC_FIRST_PROMPT,
       vad_filter: true,
       beam_size: 3,
       condition_on_previous_text: false,
@@ -147,6 +149,7 @@ export async function transcribeV45(request, env) {
         audio,
         task: 'transcribe',
         language: 'ja',
+        initial_prompt: JAPANESE_PHONETIC_FIRST_PROMPT,
         vad_filter: false,
         beam_size: 5,
         condition_on_previous_text: false,
