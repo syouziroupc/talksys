@@ -19,7 +19,7 @@ test('v84 quality-first prompt avoids duplicate search while keeping external fa
   assert.match(prompt, /あいさつ、礼、短い相づち、単純計算/);
   assert.match(prompt, /外部事実や現在情報が必要な質問ではGoogle検索を使い/);
   assert.match(prompt, /回答を返す直前に内部で一度だけ確認/);
-  assert.match(prompt, /根拠がない固有名詞/);
+  assert.match(prompt, /根拠のない固有名詞/);
 });
 
 test('pure greeting does not even expose Google Search to Gemini', async () => {
