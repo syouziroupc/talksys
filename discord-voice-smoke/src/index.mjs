@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v99-stale-stt-drop-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v100-resolved-stt-order-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -78,7 +78,7 @@ let activeUserText = '';
 let activeUserUtteranceId = '';
 let voiceEpoch = 0;
 let voiceUtteranceSerial = 0;
-const latestVoiceUtteranceByUser = new Map();
+const latestResolvedVoiceByUser = new Map();
 let discordSessionId = '';
 const pendingTurns = [];
 let activeTurnAbortController = null;
@@ -134,7 +134,7 @@ function resetConversationState() {
   activeUserText = '';
   activeUserUtteranceId = '';
   pendingTurns.splice(0, pendingTurns.length);
-  latestVoiceUtteranceByUser.clear();
+  latestResolvedVoiceByUser.clear();
   discordSessionId = '';
 }
 
@@ -587,13 +587,21 @@ function closeRealtimeHelpers() {
   realtimeHelpers.clear();
 }
 
-function isCurrentVoiceUtterance(userId, sessionEpoch, utteranceId, utteranceSerial) {
+function isStaleVoiceResult(userId, sessionEpoch, utteranceSerial) {
+  if (sessionEpoch !== voiceEpoch) return true;
+  const latest = latestResolvedVoiceByUser.get(userId);
+  return Boolean(latest
+    && latest.sessionEpoch === sessionEpoch
+    && Number(utteranceSerial) < Number(latest.serial));
+}
+
+function markVoiceResultResolved(userId, sessionEpoch, utteranceId, utteranceSerial) {
   if (sessionEpoch !== voiceEpoch) return false;
-  const latest = latestVoiceUtteranceByUser.get(userId);
-  if (!latest) return true;
-  return latest.sessionEpoch === sessionEpoch
-    && latest.utteranceId === utteranceId
-    && latest.serial === utteranceSerial;
+  const serial = Number(utteranceSerial) || 0;
+  const latest = latestResolvedVoiceByUser.get(userId);
+  if (latest?.sessionEpoch === sessionEpoch && serial < Number(latest.serial)) return false;
+  latestResolvedVoiceByUser.set(userId, { sessionEpoch, utteranceId, serial });
+  return true;
 }
 
 function releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller = null, reason = 'drop' }) {
@@ -1293,7 +1301,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
 }
 
 async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId, utteranceSerial, timeline, captureMetrics }) {
-  if (!isCurrentVoiceUtterance(userId, sessionEpoch, utteranceId, utteranceSerial)) return;
+  if (sessionEpoch !== voiceEpoch) return;
   if (!pcm?.length) {
     console.log(`[capture] rejected empty utterance=${utteranceId}`);
     return;
@@ -1302,11 +1310,12 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
   const controller = new AbortController();
   try {
     const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal);
-    if (!isCurrentVoiceUtterance(userId, sessionEpoch, utteranceId, utteranceSerial)) {
-      mirrorRuntimeLog('STT-STALE', `ignored ${utteranceId} serial=${utteranceSerial}`);
+    if (isStaleVoiceResult(userId, sessionEpoch, utteranceSerial)) {
+      mirrorRuntimeLog('STT-STALE', `ignored resolved-order ${utteranceId} serial=${utteranceSerial}`);
       releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller, reason: 'stale-stt-result' });
       return;
     }
+    markVoiceResultResolved(userId, sessionEpoch, utteranceId, utteranceSerial);
     let rawTranscript = stt.confirmedTranscript;
     const correction = correctLowConfidenceTranscript(rawTranscript, captureMetrics, history);
     let correctedTranscript = correction.correctedTranscript || rawTranscript;
@@ -1359,8 +1368,8 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
     });
   } catch (error) {
     const message = String(error?.message || error || '').slice(0, 500);
-    if (!isCurrentVoiceUtterance(userId, sessionEpoch, utteranceId, utteranceSerial)) {
-      mirrorRuntimeLog('STT-STALE', `ignored error ${utteranceId} serial=${utteranceSerial}`);
+    if (isStaleVoiceResult(userId, sessionEpoch, utteranceSerial)) {
+      mirrorRuntimeLog('STT-STALE', `ignored older error ${utteranceId} serial=${utteranceSerial}`);
       releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller, reason: 'stale-stt-error' });
       return;
     }
@@ -1381,6 +1390,11 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
         answerInFlight: answering || player.state.status === AudioPlayerStatus.Playing,
       });
       if (realtimeRescue && rescuePolicy.action === 'answer') {
+        if (!markVoiceResultResolved(userId, sessionEpoch, utteranceId, utteranceSerial)) {
+          mirrorRuntimeLog('STT-STALE', `realtime rescue superseded ${utteranceId} serial=${utteranceSerial}`);
+          releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller, reason: 'stale-realtime-rescue' });
+          return;
+        }
         mirrorRuntimeLog('STT-RESCUE', `Whisper failed -> realtime: ${realtimeRescue}`);
         await processConfirmedTranscript({
           confirmedTranscript: realtimeRescue,
@@ -1512,7 +1526,6 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
   const ensureUtteranceSerial = () => {
     if (!utteranceSerial) {
       utteranceSerial = ++voiceUtteranceSerial;
-      latestVoiceUtteranceByUser.set(userId, { sessionEpoch, utteranceId, serial: utteranceSerial });
     }
     return utteranceSerial;
   };
