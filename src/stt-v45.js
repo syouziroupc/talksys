@@ -1,5 +1,5 @@
 export const STT_MODEL = '@cf/openai/whisper-large-v3-turbo';
-export const STT_REVISION = 'talksys-v91-short-utterance-rescue';
+export const STT_REVISION = 'talksys-v92-empty-transcript-retry';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -77,6 +77,14 @@ export function weakSpeechSignal(metrics) {
   return false;
 }
 
+export function strongSpeechSignalForRetry(metrics) {
+  if (!metrics?.valid) return false;
+  return Number(metrics.durationMs) >= 400
+    && Number(metrics.peak) >= 0.02
+    && Number(metrics.rms) >= 0.003
+    && Number(metrics.activeMs) >= 100;
+}
+
 export function isLikelySttHallucination(text, metrics) {
   const value = clean(text, 500);
   if (!value) return true;
@@ -107,8 +115,9 @@ export async function transcribeV45(request, env) {
   if (weakSpeechSignal(metrics)) return json({ ok: false, error: 'no speech detected', rejected: 'weak-speech-signal', elapsedMs: Date.now() - started, signal }, 422);
 
   try {
+    const audio = base64FromBytes(new Uint8Array(buffer));
     const result = await env.AI.run(STT_MODEL, {
-      audio: base64FromBytes(new Uint8Array(buffer)),
+      audio,
       task: 'transcribe',
       language: 'ja',
       vad_filter: true,
@@ -119,10 +128,27 @@ export async function transcribeV45(request, env) {
       log_prob_threshold: -0.8,
       hallucination_silence_threshold: 0.5,
     });
-    const text = clean(result?.text || result?.transcription_info?.text || result?.transcript || result?.response || '', 1200);
-    if (!text) return json({ ok: false, error: 'no speech detected', rejected: 'empty-transcript', elapsedMs: Date.now() - started, signal }, 422);
-    if (isLikelySttHallucination(text, metrics)) return json({ ok: false, error: 'hallucinated transcript rejected', rejected: 'hallucination-guard', elapsedMs: Date.now() - started, signal }, 422);
-    return json({ ok: true, text, elapsedMs: Date.now() - started, bytes: buffer.byteLength, model: STT_MODEL, revision: STT_REVISION, signal, guard: 'mobile-stt-v45' });
+    let text = clean(result?.text || result?.transcription_info?.text || result?.transcript || result?.response || '', 1200);
+    let retryUsed = false;
+    if (!text && strongSpeechSignalForRetry(metrics)) {
+      retryUsed = true;
+      const retry = await env.AI.run(STT_MODEL, {
+        audio,
+        task: 'transcribe',
+        language: 'ja',
+        vad_filter: false,
+        beam_size: 5,
+        condition_on_previous_text: false,
+        no_speech_threshold: 0.72,
+        compression_ratio_threshold: 2.2,
+        log_prob_threshold: -1.0,
+        hallucination_silence_threshold: 0.8,
+      });
+      text = clean(retry?.text || retry?.transcription_info?.text || retry?.transcript || retry?.response || '', 1200);
+    }
+    if (!text) return json({ ok: false, error: 'no speech detected', rejected: retryUsed ? 'empty-transcript-after-retry' : 'empty-transcript', elapsedMs: Date.now() - started, signal, retryUsed }, 422);
+    if (isLikelySttHallucination(text, metrics)) return json({ ok: false, error: 'hallucinated transcript rejected', rejected: 'hallucination-guard', elapsedMs: Date.now() - started, signal, retryUsed }, 422);
+    return json({ ok: true, text, elapsedMs: Date.now() - started, bytes: buffer.byteLength, model: STT_MODEL, revision: STT_REVISION, signal, guard: 'mobile-stt-v45', retryUsed });
   } catch (error) {
     return json({ ok: false, error: clean(error?.message || error, 240), elapsedMs: Date.now() - started, signal }, 502);
   }
