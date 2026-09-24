@@ -85,13 +85,24 @@ export function strongSpeechSignalForRetry(metrics) {
     && Number(metrics.activeMs) >= 100;
 }
 
+const KNOWN_STT_HALLUCINATION_RE = /^(?:ご視聴ありがとうございました|ご清聴ありがとうございました|最後までご視聴ありがとうございました|ご視聴いただきありがとうございました|チャンネル登録(?:を)?(?:お願い(?:します|いたします)|よろしくお願いします)|字幕(?:をご覧いただき)?ありがとうございました)[。．.!！?？]*$/u;
+
+export function isKnownSttHallucination(text) {
+  return KNOWN_STT_HALLUCINATION_RE.test(clean(text, 500));
+}
+
 export function isLikelySttHallucination(text, metrics) {
   const value = clean(text, 500);
   if (!value) return true;
-  // Common Whisper subtitle/outro hallucinations are not valid TalkSys conversation turns.
-  // Reject these unconditionally: they are overwhelmingly generated from silence/noise
-  // and are not expected as user commands in this voice-assistant deployment.
-  if (/^(?:ご視聴ありがとうございました|ご清聴ありがとうございました|最後までご視聴ありがとうございました|ご視聴いただきありがとうございました|チャンネル登録(?:を)?(?:お願い(?:します|いたします)|よろしくお願いします)|字幕(?:をご覧いただき)?ありがとうございました)[。．.!！?？]*$/u.test(value)) return true;
+  // Only the known subtitle/outro phrases are unconditional hallucination drops.
+  if (isKnownSttHallucination(value)) return true;
+
+  // Real acoustic evidence wins over heuristic phrase filtering. Short but
+  // clearly voiced Japanese speech must reach the turn policy.
+  const realSpeech = Boolean(metrics?.valid)
+    && (Number(metrics.peak) >= 0.05 || Number(metrics.activeMs) >= 150);
+  if (realSpeech) return false;
+
   if (/^(?:ありがとうございました|どうもありがとうございました|お疲れ様でした|よろしくお願いします)[。．.!！?？]*$/u.test(value)
       && (!metrics?.valid || metrics.rms < 0.0065 || metrics.activeMs < 280 || metrics.activeRatio < 0.12)) return true;
   if (/^(?:えー|あー|うー|んー|…|\.\.\.)$/u.test(value) && weakSpeechSignal(metrics)) return true;
