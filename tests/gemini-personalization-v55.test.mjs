@@ -21,7 +21,7 @@ test('v86 keeps Gemini 3.5 Flash-Lite and defines a compact phone-first personal
   assert.equal(GEMINI_MODEL, 'gemini-3.5-flash-lite');
   assert.equal(PERSONALIZATION_REVISION, 'talksys-v86-compact-core-personalization-r1');
   const prompt = buildTalkSysSystemInstruction(FIXED);
-  assert.match(prompt, /電話で読み上げる会話/);
+  assert.match(prompt, /電話で読み上げ/);
   assert.match(prompt, /外部事実や現在情報が必要な質問ではGoogle検索を使い/);
   assert.match(prompt, /回答全体を「確認できません」で終わらせない/);
   assert.match(prompt, /正しく答えられる他の部分まで捨てない/);
@@ -103,7 +103,7 @@ test('factual question searches on a single grounded primary call', async () => 
   globalThis.fetch = async (_url, options) => {
     calls += 1;
     const req = JSON.parse(options.body);
-    assert.match(req.system_instruction, /Google検索を実行し、取得できた根拠だけで回答/);
+    assert.match(req.system_instruction, /Google検索を一度実行し、取得できた根拠だけで答えて/);
     assert.match(req.input, /Google検索を実行して事実確認/);
     return new Response(JSON.stringify({
       id: 'interaction-search',
