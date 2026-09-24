@@ -34,7 +34,7 @@ test('Discord final STT always uses the same /api/transcribe Whisper path as web
   assert.match(bridge, /content-type': 'audio\/wav'/);
   assert.match(bridge, /stt: 30000/);
   assert.match(bridge, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
-  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal\)/);
+  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
   assert.match(bridge, /\/api\/realtime-stt/);
   assert.match(bridge, /\/api\/fast-reaction/);
