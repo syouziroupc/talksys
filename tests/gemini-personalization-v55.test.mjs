@@ -306,9 +306,9 @@ test('v97 does not hide unrelated Interactions HTTP 400 errors behind the region
   }
 });
 
-test('v97 web client clears stale interaction state while Discord remains exact V92 bridge', () => {
+test('v97 web client clears stale interaction state while Discord remains current V98 bridge', () => {
   const webClient = fs.readFileSync(new URL('../src/talk-client-v45.js', import.meta.url), 'utf8');
   const discord = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
   assert.match(webClient, /if\(j\.interactionReset\)geminiInteractionId=''/);
-  assert.match(discord, /talksys-discord-bridge-v92-tts-hotfix-r1/);
+  assert.match(discord, /talksys-discord-bridge-v98-latency-error-r1/);
 });
