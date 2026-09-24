@@ -27,8 +27,8 @@ test('v85 preserves explicit stop and short correction barge-ins', () => {
   assert.match(bridge, /interruptActiveAnswer\('explicit-user-stop'\)/);
 });
 
-test('Whisper remains authoritative for the final TalkSys turn', () => {
-  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal\)/);
+test('Whisper remains authoritative primary text for the final TalkSys turn', () => {
+  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
 });
 
