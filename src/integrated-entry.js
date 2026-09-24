@@ -5,7 +5,7 @@ import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 import { persistTalkLog, listTalkLogs, collapseTalkLogs } from './log-v42.js';
 import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
-export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v95-d1-latest-view';
+export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v96-gemini-region-fallback';
 export const PERSONALIZATION_REVISION = 'talksys-v87-jst-location-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-r1';
@@ -19,6 +19,7 @@ export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
 export const GEMINI_TTS_FALLBACK_MODEL = 'gemini-3.1-flash-tts-preview';
 
 const GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
+const GEMINI_GENERATE_CONTENT_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const JST_WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -592,6 +593,11 @@ export function simplifyForSenior(value = '') {
   return out;
 }
 
+function generateContentGroundingMetadata(payload = {}) {
+  const candidate = Array.isArray(payload?.candidates) ? payload.candidates[0] : null;
+  return candidate?.groundingMetadata || candidate?.grounding_metadata || {};
+}
+
 export function interactionOutputText(payload = {}) {
   const fromSteps = (Array.isArray(payload?.steps) ? payload.steps : [])
     .filter((step) => step?.type === 'model_output')
@@ -599,7 +605,12 @@ export function interactionOutputText(payload = {}) {
     .filter((part) => part?.type === 'text' && typeof part?.text === 'string')
     .map((part) => part.text)
     .join('');
-  return compact(fromSteps || payload?.output_text || payload?.text || '', 12000);
+  const fromGenerateContent = (Array.isArray(payload?.candidates) ? payload.candidates : [])
+    .flatMap((candidate) => Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [])
+    .filter((part) => !part?.thought && typeof part?.text === 'string')
+    .map((part) => part.text)
+    .join('');
+  return compact(fromSteps || fromGenerateContent || payload?.output_text || payload?.text || '', 12000);
 }
 
 export function interactionQueries(payload = {}) {
@@ -611,6 +622,11 @@ export function interactionQueries(payload = {}) {
       const q = compact(value, 300);
       if (q && !queries.includes(q)) queries.push(q);
     }
+  }
+  const grounding = generateContentGroundingMetadata(payload);
+  for (const value of Array.isArray(grounding?.webSearchQueries) ? grounding.webSearchQueries : []) {
+    const q = compact(value, 300);
+    if (q && !queries.includes(q)) queries.push(q);
   }
   return queries.slice(0, 12);
 }
@@ -638,6 +654,11 @@ export function interactionSources(payload = {}) {
       }
     }
   }
+  const grounding = generateContentGroundingMetadata(payload);
+  for (const chunk of Array.isArray(grounding?.groundingChunks) ? grounding.groundingChunks : []) {
+    const web = chunk?.web || {};
+    push(web?.uri || web?.url, web?.title);
+  }
   return out.slice(0, 12);
 }
 
@@ -652,7 +673,9 @@ export function interactionCitationCount(payload = {}) {
       }
     }
   }
-  return count;
+  const grounding = generateContentGroundingMetadata(payload);
+  const supports = Array.isArray(grounding?.groundingSupports) ? grounding.groundingSupports : [];
+  return count + supports.length;
 }
 
 export function requiresGroundedEvidence(text = '') {
@@ -729,6 +752,77 @@ function searchedInInteraction(payload = {}) {
   return interactionQueries(payload).length > 0
     || interactionSources(payload).length > 0
     || (Array.isArray(payload?.steps) && payload.steps.some((step) => /^google_search_/.test(String(step?.type || ''))));
+}
+
+function isGeminiInteractionsRegionUnavailable(error) {
+  const message = compact(error?.message || error, 1200);
+  return /gemini_interactions_http_400/i.test(message)
+    && /not available in your current location|available regions/i.test(message);
+}
+
+async function createGeminiGenerateContentFallback(env, body = {}, signal, { forceSearch = false, verificationContinuation = false, now = new Date(), immediateTransit = false } = {}) {
+  const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
+  if (!key) throw new Error('gemini_api_key_missing');
+  const statelessBody = { ...body, previousInteractionId: '' };
+  const requestBody = {
+    contents: [{
+      role: 'user',
+      parts: [{ text: interactionInput(statelessBody, { forceSearch, immediateTransit, now }) }],
+    }],
+    systemInstruction: {
+      parts: [{ text: buildTalkSysSystemInstruction(now, { forceSearch, immediateTransit, verificationContinuation }) }],
+    },
+    ...(forceSearch ? { tools: [{ google_search: {} }] } : {}),
+  };
+  const started = Date.now();
+  const response = await fetch(GEMINI_GENERATE_CONTENT_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+    body: JSON.stringify(requestBody),
+    signal,
+  });
+  const raw = await response.text();
+  emitLatencyLog('gemini-generate-content-fallback', body, {
+    subrequest: 'Gemini generateContent',
+    phase: verificationContinuation ? 'verifier' : 'primary',
+    durationMs: Date.now() - started,
+    status: response.status,
+    model: GEMINI_MODEL,
+    searchAllowed: forceSearch,
+  });
+  let payload = {};
+  try { payload = raw ? JSON.parse(raw) : {}; } catch {}
+  if (!response.ok) {
+    const detail = compact(payload?.error?.message || raw || response.statusText, 700);
+    throw new Error(`gemini_generate_content_http_${response.status}${detail ? `:${detail}` : ''}`);
+  }
+  const answer = interactionOutputText(payload);
+  if (!answer) throw new Error('empty_gemini_generate_content_answer');
+  return {
+    payload,
+    answer,
+    transport: 'generateContent',
+    regionFallback: true,
+    fallbackReason: 'interactions-region-unavailable',
+  };
+}
+
+async function createGeminiTurnWithRegionFallback(env, body = {}, signal, options = {}) {
+  try {
+    return {
+      ...(await createGeminiInteraction(env, body, signal, options)),
+      transport: 'interactions',
+      regionFallback: false,
+      fallbackReason: '',
+    };
+  } catch (error) {
+    if (!isGeminiInteractionsRegionUnavailable(error)) throw error;
+    emitLatencyLog('gemini-interactions-region-fallback', body, {
+      model: GEMINI_MODEL,
+      error: compact(error?.message || error, 500),
+    }, 'warn');
+    return createGeminiGenerateContentFallback(env, body, signal, options);
+  }
 }
 
 async function createGeminiInteraction(env, body = {}, signal, { allowPrevious = true, forceSearch = false, verificationContinuation = false, now = new Date(), immediateTransit = false } = {}) {
@@ -836,12 +930,13 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   const primaryStarted = Date.now();
   // v84 quality fix: only external-fact turns force Google Search.
   // Casual conversation and context-dependent follow-ups stay in one conversational Gemini turn.
-  let interaction = await createGeminiInteraction(env, body, signal, {
+  let interaction = await createGeminiTurnWithRegionFallback(env, body, signal, {
     allowPrevious: true,
     forceSearch: externalFactSearch,
     now,
     immediateTransit,
   });
+  let interactionsRegionFallback = Boolean(interaction?.regionFallback);
   const primaryMs = Date.now() - primaryStarted;
   const citationCount = interactionCitationCount(interaction.payload);
   const groundingRequired = requiresGroundedEvidence(text);
@@ -887,7 +982,8 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
       temporalRepairRetried = true;
       temporalRepairAttempts += 1;
       const repair = temporalRepairBody(body, interaction.answer, now);
-      interaction = await createGeminiInteraction(env, repair, signal, { allowPrevious: false, forceSearch: true, now, immediateTransit: true });
+      interaction = await createGeminiTurnWithRegionFallback(env, repair, signal, { allowPrevious: false, forceSearch: true, now, immediateTransit: true });
+      interactionsRegionFallback = interactionsRegionFallback || Boolean(interaction?.regionFallback);
     }
   }
 
@@ -914,8 +1010,8 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   return {
     ok: true,
     answer,
-    route: 'gemini-native-interactions',
-    planner: 'gemini-native-personalized-v55',
+    route: interactionsRegionFallback ? 'gemini-generate-content-region-fallback' : 'gemini-native-interactions',
+    planner: interactionsRegionFallback ? 'gemini-generate-content-region-fallback-v96' : 'gemini-native-personalized-v55',
     search: searched,
     searchUseful: searched,
     searchPolicy: 'aggressive-native-google-search',
@@ -938,8 +1034,12 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     queries,
     sources,
     apiSources: [],
-    interactionId: compact(interaction.payload?.id, 400),
-    interactionStatus: compact(interaction.payload?.status, 80),
+    interactionId: interactionsRegionFallback ? '' : compact(interaction.payload?.id, 400),
+    interactionStatus: compact(interaction.payload?.status || (interactionsRegionFallback ? 'completed' : ''), 80),
+    interactionReset: interactionsRegionFallback,
+    interactionsRegionFallback,
+    generationTransport: interactionsRegionFallback ? 'generateContent' : 'interactions',
+    fallbackReason: interactionsRegionFallback ? 'interactions-region-unavailable' : '',
     model: GEMINI_MODEL,
     generationProvider: 'gemini',
     generationModel: GEMINI_MODEL,
@@ -1612,6 +1712,7 @@ async function voiceHealth(request, env, ctx) {
       generationModel: GEMINI_MODEL,
       nativeGeminiAnswerPath: true,
       nativeGoogleSearch: true,
+      geminiInteractionsRegionFallback: 'generateContent',
       searchDefault: 'single-pass-grounded-google-search',
       searchPrefaceRevision: SEARCH_PREFACE_REVISION,
       searchPrefaceParallel: true,
@@ -1748,8 +1849,9 @@ export default {
         configured,
         provider: 'gemini',
         model: GEMINI_MODEL,
-        api: 'interactions',
+        api: 'interactions+generateContent-region-fallback',
         nativeGoogleSearch: true,
+        interactionsRegionFallback: 'generateContent',
         searchDefault: 'single-pass-grounded-google-search',
         searchPrefaceRevision: SEARCH_PREFACE_REVISION,
         searchPrefaceParallel: true,
@@ -1822,6 +1924,9 @@ export const __test = {
   interactionQueries,
   interactionSources,
   interactionCitationCount,
+  isGeminiInteractionsRegionUnavailable,
+  createGeminiGenerateContentFallback,
+  createGeminiTurnWithRegionFallback,
   requiresGroundedEvidence,
   interactionInput,
   runGeminiTurn,
