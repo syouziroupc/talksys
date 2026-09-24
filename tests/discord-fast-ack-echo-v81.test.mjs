@@ -24,11 +24,12 @@ test('Nova realtime text is reaction-only and Whisper remains authoritative', ()
   assert.doesNotMatch(bridge, /processConfirmedTranscript\(\{[\s\S]{0,300}(?:realtimeTranscript|helper\.interim|latestRealtimeTranscript)/);
 });
 
-test('Discord fast reaction audio is prewarmed from the shared fastReaction function', () => {
+test('Discord fast reaction audio remains cacheable but v98 does not prewarm it during startup', () => {
   assert.match(bridge, /async function warmFastReactionAudio/);
   assert.match(bridge, /samples\.map\(\(sample\) => fastReaction\(sample\)\)/);
   assert.match(bridge, /fastReactionAudioCache/);
-  assert.match(bridge, /warmFastReactionAudio\(\)\.catch/);
+  const readyBlock = bridge.slice(bridge.indexOf("client.once('ready'"), bridge.indexOf("client.on('interactionCreate'"));
+  assert.doesNotMatch(readyBlock, /warmFastReactionAudio\(\)\.catch/);
 });
 
 test('speech overlapping bot playback cannot create reaction echo loops', () => {
