@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Client, GatewayIntentBits } from 'discord.js';
 import {
@@ -28,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-empty-transcript-entity-search-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-tts-hotfix-r1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -102,6 +103,7 @@ let voiceRecoveryTimer = null;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
+let windowsTtsQueue = Promise.resolve();
 
 function resetConversationState() {
   if (voiceRecoveryTimer) {
@@ -824,31 +826,31 @@ async function talk(text, utteranceId = '', signal) {
   return body;
 }
 
-async function synthesizeWindowsJapaneseTts(text, signal) {
+async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
   if (process.platform !== 'win32') throw new Error('windows_tts_unavailable_non_windows');
   const spoken = String(text || '').trim();
   if (!spoken) throw new Error('windows_tts_empty_text');
+
+  const tempFile = (process.env.TEMP || process.env.TMP || '.')
+    + '\\talksys-tts-' + randomUUID() + '.wav';
 
   const script = [
     "$ErrorActionPreference='Stop'",
     "Add-Type -AssemblyName System.Speech",
     "$text=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:TALKSYS_TTS_TEXT_B64))",
+    "$out=$env:TALKSYS_TTS_OUT",
     "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer",
     "$ja=@($s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -eq 'ja-JP' })",
     "$pick=$null",
     "$best=-1",
     "foreach($v in $ja){$n=[string]$v.VoiceInfo.Name;$score=0;if($n -match 'Google.*(日本語|Japanese)'){$score=1000}elseif($n -match 'Nanami'){$score=820}elseif($n -match 'Haruka|Sayaka|Ichiro|Keita'){$score=760}elseif($n -match 'Microsoft'){$score=650}elseif($n -match 'Ayumi'){$score=420};if($score -gt $best){$best=$score;$pick=$v}}",
     "if($pick -ne $null){$s.SelectVoice([string]$pick.VoiceInfo.Name);[Console]::Error.WriteLine(('voice=' + [string]$pick.VoiceInfo.Name))}",
-    "$m=New-Object IO.MemoryStream",
-    "$s.SetOutputToWaveStream($m)",
+    "$s.SetOutputToWaveFile($out)",
     "$s.Speak($text)",
     "$s.Dispose()",
-    "$bytes=$m.ToArray()",
-    "$m.Dispose()",
-    "if($bytes.Length -lt 44){throw 'windows_tts_empty_audio'}",
-    "$o=[Console]::OpenStandardOutput()",
-    "$o.Write($bytes,0,$bytes.Length)",
-    "$o.Flush()"
+    "if(-not (Test-Path $out)){throw 'windows_tts_missing_output'}",
+    "$len=(Get-Item $out).Length",
+    "if($len -lt 44){throw ('windows_tts_empty_audio len=' + $len)}"
   ].join('; ');
 
   const started = Date.now();
@@ -861,19 +863,20 @@ async function synthesizeWindowsJapaneseTts(text, signal) {
     env: {
       ...process.env,
       TALKSYS_TTS_TEXT_B64: Buffer.from(spoken, 'utf8').toString('base64'),
+      TALKSYS_TTS_OUT: tempFile,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
   });
 
-  const stdout = [];
   let stderr = '';
-  child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
   child.stderr.on('data', (chunk) => { stderr += String(chunk); });
 
+  let timedOut = false;
   const timeout = setTimeout(() => {
+    timedOut = true;
     try { child.kill(); } catch {}
-  }, 8000);
+  }, 15000);
 
   let abortHandler = null;
   if (signal) {
@@ -884,26 +887,42 @@ async function synthesizeWindowsJapaneseTts(text, signal) {
     else signal.addEventListener('abort', abortHandler, { once: true });
   }
 
-  const code = await new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('close', resolve);
-  }).finally(() => {
+  let code;
+  try {
+    code = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', resolve);
+    });
+    if (signal?.aborted) throw signal.reason || new Error('aborted');
+
+    let audio = Buffer.alloc(0);
+    try {
+      audio = await fs.promises.readFile(tempFile);
+    } catch {}
+
+    if (code !== 0 || audio.length < 44) {
+      throw new Error(`windows_tts_failed code=${code} timedOut=${timedOut} bytes=${audio.length} detail=${stderr.trim().slice(0, 240)}`);
+    }
+
+    return {
+      audio,
+      source: 'windows-system-speech',
+      elapsedMs: Date.now() - started,
+      workerMs: 0,
+    };
+  } finally {
     clearTimeout(timeout);
     if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
-  });
-
-  if (signal?.aborted) throw signal.reason || new Error('aborted');
-  const audio = Buffer.concat(stdout);
-  if (code !== 0 || audio.length < 44) {
-    throw new Error(`windows_tts_failed code=${code} detail=${stderr.trim().slice(0, 240)}`);
+    fs.promises.unlink(tempFile).catch(() => {});
   }
+}
 
-  return {
-    audio,
-    source: 'windows-system-speech',
-    elapsedMs: Date.now() - started,
-    workerMs: 0,
-  };
+async function synthesizeWindowsJapaneseTts(text, signal) {
+  const task = windowsTtsQueue
+    .catch(() => {})
+    .then(() => synthesizeWindowsJapaneseTtsUnlocked(text, signal));
+  windowsTtsQueue = task.catch(() => {});
+  return task;
 }
 
 async function synthesizeCloudflareTts(text, signal, meta = {}) {
