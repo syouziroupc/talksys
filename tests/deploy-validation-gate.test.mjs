@@ -93,9 +93,10 @@ test('answer smoke enforces quality-first search before the blocking realtime ST
   assert.match(workflow, /d\.search!==true/);
   assert.match(workflow, /d\.genericVerificationAttempted!==false/);
   assert.match(workflow, /d\.genericVerificationSucceeded!==false/);
-  assert.match(workflow, /d\.verifierSearched!==false/);
   assert.match(workflow, /Number\.isFinite\(d\.timings\?\.primaryMs\)/);
   assert.match(workflow, /Number\.isFinite\(d\.timings\?\.verifierMs\)/);
+  assert.match(workflow, /generationProvider!=='workers-ai'/);
+  assert.match(workflow, /startsWith\('cloudflare-region-rescue:'\)/);
 });
 
 test('production deploy archives prior D1 revisions after deploy', () => {
