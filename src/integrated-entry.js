@@ -1,18 +1,19 @@
 import talksys from './entry.js';
+import fallbackWorker from './worker-v44.js';
 import { handleTelephonyRequest } from './telephony/index.js';
 import { fastReaction, FAST_REACTION_REVISION } from './voice-fast-reaction.js';
 import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
-import { persistTalkLog, listTalkLogs, collapseTalkLogs } from './log-v42.js';
+import { persistTalkLog, listTalkLogs, listArchivedTalkLogs, archiveTalkLogs, collapseTalkLogs } from './log-v42.js';
 import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
-export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v96-gemini-region-fallback';
+export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v97-region-rescue-d1-archive';
 export const PERSONALIZATION_REVISION = 'talksys-v87-jst-location-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-r1';
 export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
-export const DISCORD_PIPELINE_REVISION = 'talksys-v96-gemini-region-fallback-r1';
+export const DISCORD_PIPELINE_REVISION = 'talksys-v97-region-rescue-d1-archive-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -807,6 +808,13 @@ async function createGeminiGenerateContentFallback(env, body = {}, signal, { for
   };
 }
 
+function isGeminiRegionUnavailable(error) {
+  const message = compact(error?.message || error, 1400);
+  return /gemini_region_unavailable/i.test(message)
+    || (/(?:gemini_interactions|gemini_generate_content)_http_400/i.test(message)
+      && /not available in your current location|user location is not supported|available regions/i.test(message));
+}
+
 async function createGeminiTurnWithRegionFallback(env, body = {}, signal, options = {}) {
   try {
     return {
@@ -820,9 +828,65 @@ async function createGeminiTurnWithRegionFallback(env, body = {}, signal, option
     emitLatencyLog('gemini-interactions-region-fallback', body, {
       model: GEMINI_MODEL,
       error: compact(error?.message || error, 500),
+      rescue: 'workers-ai-v45',
     }, 'warn');
-    return createGeminiGenerateContentFallback(env, body, signal, options);
+    throw new Error('gemini_region_unavailable:' + compact(error?.message || error, 900));
   }
+}
+
+async function runCloudflareRegionalRescue(body = {}, env = {}, signal) {
+  if (!env?.AI || typeof env.AI.run !== 'function') throw new Error('workers_ai_unavailable_for_region_rescue');
+  const rescueBody = {
+    ...body,
+    previousInteractionId: '',
+    __suppressNestedLog: true,
+  };
+  const request = new Request('https://talksys-region-rescue.invalid/api/turn', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(rescueBody),
+    signal,
+  });
+  const started = Date.now();
+  const response = await fallbackWorker.fetch(request, env, null);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok !== true || !compact(payload?.answer, 9000)) {
+    throw new Error('workers_ai_region_rescue_failed:' + compact(payload?.error || payload?.detail || response.statusText, 700));
+  }
+  const answer = simplifyForSenior(normalizeSpokenJapanese(payload.answer));
+  emitLatencyLog('workers-ai-region-rescue-complete', body, {
+    durationMs: Date.now() - started,
+    route: compact(payload?.route || '', 120),
+    model: compact(payload?.model || '', 120),
+    searched: Boolean(payload?.search),
+  });
+  return {
+    ...payload,
+    answer,
+    route: 'cloudflare-region-rescue:' + compact(payload?.route || 'unknown', 120),
+    planner: 'cloudflare-region-rescue:' + compact(payload?.planner || 'v45', 120),
+    interactionId: '',
+    interactionStatus: 'completed',
+    interactionReset: true,
+    interactionsRegionFallback: true,
+    generationTransport: 'workers-ai',
+    fallbackReason: 'gemini-region-unavailable',
+    generationProvider: 'workers-ai',
+    generationModel: compact(payload?.model || '@cf/zai-org/glm-4.7-flash', 180),
+    personalizationRevision: PERSONALIZATION_REVISION,
+    languageMode: 'ja-spoken',
+    speechOptimized: true,
+    nativeGeminiAnswerPath: false,
+    nativeGoogleSearch: false,
+    legacyGlmExecution: true,
+    timings: {
+      ...(payload?.timings || {}),
+      totalMs: Date.now() - started,
+      primaryMs: Number(payload?.timings?.glmMs) || Number(payload?.timings?.totalMs) || 0,
+      verifierMs: 0,
+      searchRetryMs: 0,
+    },
+  };
 }
 
 async function createGeminiInteraction(env, body = {}, signal, { allowPrevious = true, forceSearch = false, verificationContinuation = false, now = new Date(), immediateTransit = false } = {}) {
@@ -930,12 +994,20 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   const primaryStarted = Date.now();
   // v84 quality fix: only external-fact turns force Google Search.
   // Casual conversation and context-dependent follow-ups stay in one conversational Gemini turn.
-  let interaction = await createGeminiTurnWithRegionFallback(env, body, signal, {
-    allowPrevious: true,
-    forceSearch: externalFactSearch,
-    now,
-    immediateTransit,
-  });
+  let interaction;
+  try {
+    interaction = await createGeminiTurnWithRegionFallback(env, body, signal, {
+      allowPrevious: true,
+      forceSearch: externalFactSearch,
+      now,
+      immediateTransit,
+    });
+  } catch (error) {
+    if (isGeminiRegionUnavailable(error)) {
+      return runCloudflareRegionalRescue(body, env, signal);
+    }
+    throw error;
+  }
   let interactionsRegionFallback = Boolean(interaction?.regionFallback);
   const primaryMs = Date.now() - primaryStarted;
   const citationCount = interactionCitationCount(interaction.payload);
@@ -1220,7 +1292,8 @@ async function conversationLogsResponse(request, env) {
   try {
     const url = new URL(request.url);
     const limit = Number(url.searchParams.get('limit') || 100);
-    const view = String(url.searchParams.get('view') || 'latest').toLowerCase() === 'raw' ? 'raw' : 'latest';
+    const requestedView = String(url.searchParams.get('view') || 'latest').toLowerCase();
+    const view = requestedView === 'raw' || requestedView === 'archive' ? requestedView : 'latest';
     const filters = {
       sessionId: url.searchParams.get('sessionId') || '',
       sessionPrefix: url.searchParams.get('sessionPrefix') || '',
@@ -1229,8 +1302,10 @@ async function conversationLogsResponse(request, env) {
       q: url.searchParams.get('q') || '',
       latestSessionOnly: view === 'latest' && !url.searchParams.get('sessionId'),
     };
-    const rawLogs = await listTalkLogs(env, limit, filters);
-    const logs = view === 'raw' ? rawLogs : collapseTalkLogs(rawLogs);
+    const rawLogs = view === 'archive'
+      ? await listArchivedTalkLogs(env, limit, filters)
+      : await listTalkLogs(env, limit, filters);
+    const logs = view === 'latest' ? collapseTalkLogs(rawLogs) : rawLogs;
     const latest = rawLogs[0] || null;
     return json({
       ok: true,
@@ -1632,6 +1707,22 @@ async function ttsDiagnosticResponse(request, env) {
   return json({ ok: true, model: '@cf/myshell-ai/melotts', results }, 200);
 }
 
+async function archiveConversationLogsDiagnosticResponse(request, env) {
+  if (!env?.TALKSYS_LOG_DB || !env?.GEMINI_API_KEY) return json({ ok: false, error: 'diagnostic_unavailable' }, 503);
+  const expected = await ttsDiagnosticToken(env);
+  const supplied = String(request.headers.get('x-talksys-diagnostic') || '');
+  if (!supplied || supplied !== expected) return json({ ok: false, error: 'unauthorized' }, 401);
+  try {
+    const result = await archiveTalkLogs(env, {
+      keepRevision: INTEGRATED_ENTRY_REVISION,
+      reason: 'deploy-revision-rollover',
+    });
+    return json({ ...result, archiveView: '/api/conversation-logs?view=archive' }, 200);
+  } catch (error) {
+    return json({ ok: false, error: 'conversation_log_archive_failed', detail: compact(error?.message || error, 500) }, 500);
+  }
+}
+
 async function recentDiscordDiagnosticResponse(request, env) {
   if (!env?.TALKSYS_LOG_DB || !env?.GEMINI_API_KEY) return json({ ok: false, error: 'diagnostic_unavailable' }, 503);
   const expected = await ttsDiagnosticToken(env);
@@ -1721,7 +1812,7 @@ async function voiceHealth(request, env, ctx) {
       generationModel: GEMINI_MODEL,
       nativeGeminiAnswerPath: true,
       nativeGoogleSearch: true,
-      geminiInteractionsRegionFallback: 'generateContent',
+      geminiInteractionsRegionFallback: 'workers-ai-v45',
       searchDefault: 'single-pass-grounded-google-search',
       searchPrefaceRevision: SEARCH_PREFACE_REVISION,
       searchPrefaceParallel: true,
@@ -1764,6 +1855,7 @@ async function voiceHealth(request, env, ctx) {
       temporalTransitGuard: true,
       temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
       legacyGlmExecution: false,
+      regionRescueProvider: 'workers-ai',
     }, response.status, response.headers);
   } catch {
     return response;
@@ -1797,6 +1889,10 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/internal/recent-discord-logs') {
       return recentDiscordDiagnosticResponse(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/internal/archive-conversation-logs') {
+      return archiveConversationLogsDiagnosticResponse(request, env);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/voice/synthesize') {
@@ -1847,6 +1943,7 @@ export default {
           generationModel: GEMINI_MODEL,
           personalizationRevision: PERSONALIZATION_REVISION,
           legacyGlmExecution: false,
+        regionRescueProvider: 'workers-ai',
         }, 502);
       }
     }
@@ -1858,9 +1955,9 @@ export default {
         configured,
         provider: 'gemini',
         model: GEMINI_MODEL,
-        api: 'interactions+generateContent-region-fallback',
+        api: 'interactions+workers-ai-region-rescue',
         nativeGoogleSearch: true,
-        interactionsRegionFallback: 'generateContent',
+        interactionsRegionFallback: 'workers-ai-v45',
         searchDefault: 'single-pass-grounded-google-search',
         searchPrefaceRevision: SEARCH_PREFACE_REVISION,
         searchPrefaceParallel: true,
@@ -1934,8 +2031,10 @@ export const __test = {
   interactionSources,
   interactionCitationCount,
   isGeminiInteractionsRegionUnavailable,
+  isGeminiRegionUnavailable,
   createGeminiGenerateContentFallback,
   createGeminiTurnWithRegionFallback,
+  runCloudflareRegionalRescue,
   requiresGroundedEvidence,
   interactionInput,
   runGeminiTurn,
