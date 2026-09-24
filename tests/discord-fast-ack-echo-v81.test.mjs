@@ -27,7 +27,7 @@ test('v101 emits a local end-of-utterance reaction before Whisper final', () => 
 test('Nova realtime text is reaction-only and Whisper remains authoritative', () => {
   assert.match(bridge, /triggerWebFastReaction/);
   assert.match(bridge, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
-  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal\)/);
+  assert.match(bridge, /const turn = await talk\\(confirmedTranscript, utteranceId, controller\\.signal, speechAlternatives\\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
   assert.doesNotMatch(bridge, /talk\((?:value|transcript|realtimeTranscript|helper\.interim)/);
   assert.doesNotMatch(bridge, /processConfirmedTranscript\(\{[\s\S]{0,300}(?:realtimeTranscript|helper\.interim|latestRealtimeTranscript)/);
@@ -70,9 +70,9 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
   assert.match(integrated, /discordRuntimeLogCommand: '\/logs'/);
 });
 
-test('current V104 Discord bridge preserves authoritative Whisper while current Worker keeps its own revision', () => {
-  assert.match(bridge, /talksys-discord-bridge-v104-phonetic-first-stt-r1/);
-  assert.match(integrated, /talksys-integrated-entry-v97-region-rescue-d1-archive/);
+test('current V105 Discord bridge preserves authoritative Whisper while current Worker keeps its own revision', () => {
+  assert.match(bridge, /talksys-discord-bridge-v105-clock-transit-asr-r1/);
+  assert.match(integrated, /talksys-integrated-entry-v105-clock-transit-asr-r1/);
   assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/turn'/);
@@ -103,4 +103,13 @@ test('v84 suppresses duplicate in-flight and queued user turns', () => {
 test('v84 echo guard includes post-playback tail for partial STT echoes', () => {
   assert.match(bridge, /playbackEnd \+ 3500/);
   assert.match(bridge, /sameUtterance\(value, record\.text\)/);
+});
+
+
+test('v105 passes a disagreeing Nova transcript as an ASR alternative instead of overwriting Whisper', () => {
+  assert.match(bridge, /speechAlternatives/);
+  assert.match(bridge, /realtimeAlternative/);
+  assert.match(bridge, /!sameUtterance\(realtimeAlternative, confirmedTranscript\)/);
+  assert.match(integrated, /音声認識候補が複数あります/);
+  assert.match(integrated, /駅名・人名・専門語/);
 });
