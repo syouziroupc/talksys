@@ -15,6 +15,15 @@ test('Discord uses the same Web fast-reaction decision path', () => {
   assert.doesNotMatch(bridge, /const IMMEDIATE_ACK_PROMPT|startImmediateAck|warmImmediateAckAudio/);
 });
 
+test('v101 emits a local end-of-utterance reaction before Whisper final', () => {
+  assert.match(bridge, /function triggerEndOfUtteranceReaction/);
+  assert.match(bridge, /const reaction = fastReaction\(value\)/);
+  assert.match(bridge, /triggerEndOfUtteranceReaction\(realtimeHelper, realtimeTranscript\)/);
+  assert.match(bridge, /supersede it here/);
+  assert.match(bridge, /helper\.reactionSeq \+= 1/);
+  assert.match(bridge, /Whisper remains authoritative/);
+});
+
 test('Nova realtime text is reaction-only and Whisper remains authoritative', () => {
   assert.match(bridge, /triggerWebFastReaction/);
   assert.match(bridge, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
@@ -61,8 +70,8 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
   assert.match(integrated, /discordRuntimeLogCommand: '\/logs'/);
 });
 
-test('current V100 Discord bridge preserves authoritative Whisper while current Worker keeps its own revision', () => {
-  assert.match(bridge, /talksys-discord-bridge-v100-resolved-stt-order-r1/);
+test('current V101 Discord bridge preserves authoritative Whisper while current Worker keeps its own revision', () => {
+  assert.match(bridge, /talksys-discord-bridge-v101-eou-fast-reaction-r1/);
   assert.match(integrated, /talksys-integrated-entry-v97-region-rescue-d1-archive/);
   assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
