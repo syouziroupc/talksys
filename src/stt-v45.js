@@ -1,5 +1,5 @@
 export const STT_MODEL = '@cf/openai/whisper-large-v3-turbo';
-export const STT_REVISION = 'talksys-v45-hardened-whisper';
+export const STT_REVISION = 'talksys-v89-hardened-whisper-outro-guard';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -69,8 +69,10 @@ export function weakSpeechSignal(metrics) {
 export function isLikelySttHallucination(text, metrics) {
   const value = clean(text, 500);
   if (!value) return true;
-  if (/^(?:ご視聴ありがとうございました|ご清聴ありがとうございました|最後までご視聴ありがとうございました|チャンネル登録(?:を)?(?:お願い(?:します|いたします)|よろしくお願いします)|字幕(?:をご覧いただき)?ありがとうございました)[。．.!！?？]*$/u.test(value)
-      && (!metrics?.valid || metrics.rms < 0.010 || metrics.activeMs < 650 || metrics.activeRatio < 0.24)) return true;
+  // Common Whisper subtitle/outro hallucinations are not valid TalkSys conversation turns.
+  // Reject these unconditionally: they are overwhelmingly generated from silence/noise
+  // and are not expected as user commands in this voice-assistant deployment.
+  if (/^(?:ご視聴ありがとうございました|ご清聴ありがとうございました|最後までご視聴ありがとうございました|ご視聴いただきありがとうございました|チャンネル登録(?:を)?(?:お願い(?:します|いたします)|よろしくお願いします)|字幕(?:をご覧いただき)?ありがとうございました)[。．.!！?？]*$/u.test(value)) return true;
   if (/^(?:ありがとうございました|どうもありがとうございました|お疲れ様でした|よろしくお願いします)[。．.!！?？]*$/u.test(value)
       && (!metrics?.valid || metrics.rms < 0.0065 || metrics.activeMs < 280 || metrics.activeRatio < 0.12)) return true;
   if (/^(?:えー|あー|うー|んー|…|\.\.\.)$/u.test(value) && weakSpeechSignal(metrics)) return true;
