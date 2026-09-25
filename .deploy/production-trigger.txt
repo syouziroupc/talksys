@@ -1,1 +1,1 @@
-v106-web-adapter-20260925-r1
+v106-gateway-ready-fix-20260925-r1
