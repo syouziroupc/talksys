@@ -643,8 +643,10 @@ function releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller
     activeWaitCue = null;
     cueReleased = true;
   }
-  if (cueReleased) preAnswerCueSerial += 1;
-  waitCueSerial += 1;
+  if (cueReleased) {
+    preAnswerCueSerial += 1;
+    waitCueSerial += 1;
+  }
 
   if (sessionEpoch === voiceEpoch && connection && !sessions.has(userId)) {
     queueMicrotask(() => {
