@@ -1,1 +1,1 @@
-v106-gateway-ready-fix-20260925-r1
+v107-web-parity-20260925-r1
