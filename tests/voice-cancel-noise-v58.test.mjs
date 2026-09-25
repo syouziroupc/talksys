@@ -6,7 +6,7 @@ import { TELEPHONY_REVISION, highPassPcmFrame } from '../src/telephony/index.js'
 
 test('v58 browser client remains syntactically valid', () => {
   assert.doesNotThrow(() => new Function(TALK_CLIENT_V45));
-  assert.equal(AUDIO_REVISION, 'talksys-v58-noise-cancel-interrupt-r1');
+  assert.equal(AUDIO_REVISION, 'talksys-v58.1-no-freeze-r1');
 });
 
 test('browser mic uses native processing plus a rumble high-pass filter', () => {
