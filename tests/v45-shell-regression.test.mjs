@@ -18,7 +18,7 @@ test('v45 shell no longer delegates UI or voice to the legacy worker', () => {
 });
 
 test('v45 microphone client keeps the proven HTTP adaptive-VAD path', () => {
-  assert.equal(CLIENT_REVISION, 'talksys-v46-streaming-vad');
+  assert.equal(CLIENT_REVISION, 'talksys-v47-web-stability-freeze-r1');
   assert.equal(INTERACTION_REVISION, 'talksys-v52-native-gemini-3-5-flash-lite-r1');
   assert.match(TALK_CLIENT_V45, /getUserMedia/);
   assert.match(TALK_CLIENT_V45, /createScriptProcessor/);
@@ -29,7 +29,7 @@ test('v45 microphone client keeps the proven HTTP adaptive-VAD path', () => {
   assert.match(TALK_CLIENT_V45, /雑音候補を自動破棄/);
   assert.match(TALK_CLIENT_V45, /previousInteractionId:geminiInteractionId/);
   assert.match(TALK_CLIENT_V45, /planner:'gemini-native'/);
-  assert.match(TALK_CLIENT_V45, /__TALKSYS_CLIENT_REVISION__='talksys-v46-streaming-vad'/);
+  assert.match(TALK_CLIENT_V45, /__TALKSYS_CLIENT_REVISION__='talksys-v47-web-stability-freeze-r1'/);
   assert.match(TALK_CLIENT_V45, /__TALKSYS_INTERACTION_REVISION__='talksys-v52-native-gemini-3-5-flash-lite-r1'/);
   assert.equal(REALTIME_VOICE_REVISION, 'talksys-v59.2-realtime-stt-minimal-r1');
   assert.match(TALK_CLIENT_V45, /new\s+WebSocket/);
@@ -80,7 +80,7 @@ test('production deployment derives revision contract from source and checks cur
   assert.match(deploy, /CLIENT_REVISION/);
   assert.match(deploy, /UI_REVISION/);
   assert.match(deploy, /STT_REVISION/);
-  assert.match(deploy, /talksys-v46-streaming-vad/);
+  assert.match(deploy, /talksys-v47-web-stability-freeze-r1/);
   assert.match(deploy, /talksys-v45-ui-restored-20260911/);
   assert.match(deploy, /\/talk-v45\.js/);
   assert.match(deploy, /getUserMedia/);

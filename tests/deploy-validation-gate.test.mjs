@@ -65,7 +65,7 @@ test('post-deploy contract is derived from checked-out source instead of stale h
 test('production deploy keeps UI, microphone, deterministic, weather, and contextual smoke checks', () => {
   assert.match(workflow, /Verify live v45 UI and microphone client/);
   assert.match(workflow, /Production answer smoke/);
-  assert.match(workflow, /talksys-v46-streaming-vad/);
+  assert.match(workflow, /talksys-v47-web-stability-freeze-r1/);
   assert.match(workflow, /\/api\/transcribe/);
   assert.match(workflow, /\/api\/turn/);
   assert.match(workflow, /12345÷15/);
