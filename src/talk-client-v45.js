@@ -1,9 +1,9 @@
 import { TALK_CLIENT_V43 } from './talk-client-v43.js';
 import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
-export const CLIENT_REVISION = 'talksys-v46-streaming-vad';
+export const CLIENT_REVISION = 'talksys-v47-web-stability-freeze-r1';
 export const INTERACTION_REVISION = 'talksys-v52-native-gemini-3-5-flash-lite-r1';
-export const AUDIO_REVISION = 'talksys-v58-noise-cancel-interrupt-r1';
+export const AUDIO_REVISION = 'talksys-v58.1-no-freeze-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v59.2-realtime-stt-minimal-r1';
 export const SEARCH_PREFACE_CLIENT_REVISION = 'talksys-v63-search-preface-r1';
 
@@ -39,6 +39,27 @@ const VOICE_SAFE_HELPER = String.raw`function voiceSafeText(text){
 
 
 const VOICE_CONTROL_HELPERS = String.raw`
+const WEB_HTTP_BUDGETS=Object.freeze({fastReaction:2500,searchPreface:3000,transcribe:30000,turn:35000});
+async function fetchJsonWithDeadline(url,options={},timeoutMs=10000){
+  const timeoutController=new AbortController();let parentAbort=null;
+  const timer=setTimeout(()=>{try{timeoutController.abort(new DOMException('TalkSys request timeout','TimeoutError'));}catch{timeoutController.abort();}},timeoutMs);
+  let signal=timeoutController.signal;
+  if(options.signal){
+    if(typeof AbortSignal!=='undefined'&&typeof AbortSignal.any==='function')signal=AbortSignal.any([options.signal,timeoutController.signal]);
+    else{
+      parentAbort=()=>{try{timeoutController.abort(options.signal.reason||new DOMException('Aborted','AbortError'));}catch{timeoutController.abort();}};
+      if(options.signal.aborted)parentAbort();else options.signal.addEventListener('abort',parentAbort,{once:true});
+    }
+  }
+  try{
+    const r=await fetch(url,{...options,signal});
+    const j=await r.json();
+    return {r,j};
+  }finally{
+    clearTimeout(timer);
+    if(options.signal&&parentAbort)options.signal.removeEventListener('abort',parentAbort);
+  }
+}
 function beginVoiceCandidate(){
   const id=++voiceCandidateEpoch;voiceCandidateCount++;currentVoiceCandidateId=id;lastVoiceCandidateAt=Date.now();cancelFastReaction('new-local-speech');return id;
 }
@@ -90,8 +111,7 @@ function realtimeTranscriptFrom(payload){
 async function requestFastReaction(text,seq){
   const controller=new AbortController();realtimeReactionAbort=controller;
   try{
-    const r=await fetch('/api/fast-reaction',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text})});
-    const j=await r.json();if(seq!==realtimeReactionSeq||!r.ok||!j?.shouldSpeak||!j?.text)return;
+    const {r,j}=await fetchJsonWithDeadline('/api/fast-reaction',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text})},WEB_HTTP_BUDGETS.fastReaction);if(seq!==realtimeReactionSeq||!r.ok||!j?.shouldSpeak||!j?.text)return;
     realtimeReactionText=String(j.text);realtimeReactionSourceText=String(text);realtimeReactionAt=Date.now();
     log('高速相槌 '+j.kind+': '+realtimeReactionText);
     fastReactionPlayingPromise=speak(realtimeReactionText,{resumeable:false,fastReaction:true}).catch(()=>{});
@@ -138,11 +158,11 @@ function openRealtimeStt(){
     ws.onopen=()=>{realtimeSttReady=true;log('リアルタイムSTT接続 Nova-3 日本語');diagUpdate(true);};
     ws.onmessage=e=>handleRealtimeSttMessage(e.data);
     ws.onerror=()=>{realtimeSttReady=false;log('リアルタイムSTTエラー。Whisper確定へフォールバック');diagUpdate(true);};
-    ws.onclose=()=>{if(realtimeSttSocket===ws)realtimeSttSocket=null;realtimeSttReady=false;diagUpdate(true);};
+    ws.onclose=()=>{if(realtimeSttSocket===ws)realtimeSttSocket=null;realtimeSttReady=false;diagUpdate(true);if(micOn&&!realtimeReconnectTimer){realtimeReconnectTimer=setTimeout(()=>{realtimeReconnectTimer=0;if(micOn&&!realtimeSttSocket)openRealtimeStt();},1200);}};
   }catch(e){realtimeSttReady=false;log('リアルタイムSTT開始失敗: '+String(e?.message||e));}
 }
 function closeRealtimeStt(){
-  cancelFastReaction('mic-stop');const ws=realtimeSttSocket;realtimeSttSocket=null;realtimeSttReady=false;
+  cancelFastReaction('mic-stop');if(realtimeReconnectTimer){clearTimeout(realtimeReconnectTimer);realtimeReconnectTimer=0;}const ws=realtimeSttSocket;realtimeSttSocket=null;realtimeSttReady=false;
   if(ws){try{ws.close(1000,'mic-stop');}catch{}}
   realtimeFinalParts=[];realtimeInterim='';
 }
@@ -192,7 +212,7 @@ async function commitVoice(reason){
   utterances++;const buffer=wav(data);log('発話確定 '+reason+' / '+Math.round(ms)+'ms / '+buffer.byteLength+'B / SNR='+snr.toFixed(2));setStatus('聞き取っています…');diagUpdate(true);
   let gotText=false;
   try{
-    const t=Date.now();const r=await fetch('/api/transcribe',{method:'POST',headers:{'content-type':'audio/wav','x-talksys-session':talkSessionId},body:buffer});const j=await r.json();lastSttMs=Date.now()-t;
+    const t=Date.now();const {r,j}=await fetchJsonWithDeadline('/api/transcribe',{method:'POST',headers:{'content-type':'audio/wav','x-talksys-session':talkSessionId},body:buffer},WEB_HTTP_BUDGETS.transcribe);lastSttMs=Date.now()-t;
     if(!r.ok||!j.ok||!j.text)throw new Error(j.error||'文字起こしできませんでした');
     gotText=true;finishVoiceCandidate(candidateId);
     if(captureId<latestAcceptedVoiceSeq){log('古い音声認識結果を破棄 #'+captureId);return;}
@@ -228,11 +248,10 @@ async function ask(text,spokenBackchannelOverride=''){
   history.push({role:'user',content:text});setStatus('考えています…');lastPlanMs=0;lastSearchPlan='parallel-search-preface';
   try{
     const t=Date.now();
-    const turnPromise=fetch('/api/turn',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text,history:previous,searchTrace,sessionId:talkSessionId,previousInteractionId:geminiInteractionId,spokenBackchannel})});
+    const turnPromise=fetchJsonWithDeadline('/api/turn',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text,history:previous,searchTrace,sessionId:talkSessionId,previousInteractionId:geminiInteractionId,spokenBackchannel})},WEB_HTTP_BUDGETS.turn);
     const searchAnnouncementTask=(async()=>{
       try{
-        const pr=await fetch('/api/search-preface',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text})});
-        const p=await pr.json().catch(()=>null);
+        const prefaceResult=await fetchJsonWithDeadline('/api/search-preface',{method:'POST',headers:{'content-type':'application/json'},signal:controller.signal,body:JSON.stringify({text})},WEB_HTTP_BUDGETS.searchPreface);const pr=prefaceResult.r,p=prefaceResult.j;
         if(seq!==turnSeq||!pr.ok||!p?.shouldSpeak||!p?.text)return;
         if(spokenBackchannel&&fastReactionPlayingPromise){
           await fastReactionPlayingPromise.catch(()=>{});
@@ -247,8 +266,7 @@ async function ask(text,spokenBackchannelOverride=''){
       }
     })();
 
-    const r=await turnPromise;
-    const j=await r.json();if(seq!==turnSeq)return;
+    const turnResult=await turnPromise;const r=turnResult.r,j=turnResult.j;if(seq!==turnSeq)return;
     if(j.interactionReset)geminiInteractionId='';else if(j.interactionId)geminiInteractionId=j.interactionId;
     if(voiceCandidateCount>0){log('追加入力候補を認識中。旧回答の表示を保留');if(!await waitForVoiceCandidate(seq))return;}
     if(seq!==turnSeq)return;
@@ -285,8 +303,8 @@ async function startMic(){
     processor=ctx.createScriptProcessor(2048,1,1);silentGain=ctx.createGain();silentGain.gain.value=0;
     const convert=resampler(ctx.sampleRate);processor.onaudioprocess=e=>{const d=e.inputBuffer.getChannelData(0);for(const f of convert(d)){sendRealtimeSttFrame(f);processFrame(f);}};
     source.connect(inputFilter);inputFilter.connect(processor);processor.connect(silentGain);silentGain.connect(ctx.destination);
-    openRealtimeStt();
-    micOn=true;calibrationUntil=Date.now()+1400;startHits=0;noiseBoost=Math.max(1,noiseBoost*.96);mic.classList.add('on');mic.textContent='マイク会話を停止';
+    micOn=true;openRealtimeStt();
+    calibrationUntil=Date.now()+1400;startHits=0;noiseBoost=Math.max(1,noiseBoost*.96);mic.classList.add('on');mic.textContent='マイク会話を停止';
     setStatus(playing?'話しています…':'周囲の雑音を調整中…');log('マイク開始 '+ctx.sampleRate+'Hz → ${WEB_VOICE_CAPTURE_POLICY.targetRate}Hz / '+micProcessingSettings+' / HPF ${WEB_VOICE_CAPTURE_POLICY.highpassHz}Hz');diagUpdate(true);
   }catch(e){lastError=e.name+': '+String(e.message||e);log('マイク開始失敗: '+lastError);setStatus('マイクを開始できません');stopMic();}
 }
@@ -346,7 +364,7 @@ client = client.replace(RESUME_OLD, RESUME_NEW);
 
 client = client.replace(
   `let geminiInteractionId=null;\nconst TARGET=${WEB_VOICE_CAPTURE_POLICY.targetRate}, MAX_HISTORY=14, SILENCE_MS=${WEB_VOICE_CAPTURE_POLICY.silenceMs}, MAX_UTTERANCE_MS=${WEB_VOICE_CAPTURE_POLICY.maxUtteranceMs}, MIN_SPEECH_MS=${WEB_VOICE_CAPTURE_POLICY.minSpeechMs}, PRE_ROLL=${WEB_VOICE_CAPTURE_POLICY.preRollFrames};`,
-  `let geminiInteractionId=null,activeTurnController=null,voiceCandidateEpoch=0,voiceCandidateCount=0,currentVoiceCandidateId=0,voiceCaptureSeq=0,latestAcceptedVoiceSeq=0,inputFilter=null,micProcessingSettings='',realtimeSttSocket=null,realtimeSttReady=false,realtimeInterim='',realtimeFinalParts=[],realtimeLastBoundaryText='',realtimeLastBoundaryAt=0,realtimeSpeechStartedAt=0,realtimeReactionSeq=0,realtimeReactionTimer=0,realtimeReactionAbort=null,realtimeReactionText='',realtimeReactionSourceText='',realtimeReactionAt=0,fastReactionPlayingPromise=null,lastVoiceCandidateAt=0;\nconst TARGET=${WEB_VOICE_CAPTURE_POLICY.targetRate}, MAX_HISTORY=14, SILENCE_MS=${WEB_VOICE_CAPTURE_POLICY.silenceMs}, MAX_UTTERANCE_MS=${WEB_VOICE_CAPTURE_POLICY.maxUtteranceMs}, MIN_SPEECH_MS=${WEB_VOICE_CAPTURE_POLICY.minSpeechMs}, PRE_ROLL=${WEB_VOICE_CAPTURE_POLICY.preRollFrames};`,
+  `let geminiInteractionId=null,activeTurnController=null,voiceCandidateEpoch=0,voiceCandidateCount=0,currentVoiceCandidateId=0,voiceCaptureSeq=0,latestAcceptedVoiceSeq=0,inputFilter=null,micProcessingSettings='',realtimeSttSocket=null,realtimeSttReady=false,realtimeReconnectTimer=0,realtimeInterim='',realtimeFinalParts=[],realtimeLastBoundaryText='',realtimeLastBoundaryAt=0,realtimeSpeechStartedAt=0,realtimeReactionSeq=0,realtimeReactionTimer=0,realtimeReactionAbort=null,realtimeReactionText='',realtimeReactionSourceText='',realtimeReactionAt=0,fastReactionPlayingPromise=null,lastVoiceCandidateAt=0;\nconst TARGET=${WEB_VOICE_CAPTURE_POLICY.targetRate}, MAX_HISTORY=14, SILENCE_MS=${WEB_VOICE_CAPTURE_POLICY.silenceMs}, MAX_UTTERANCE_MS=${WEB_VOICE_CAPTURE_POLICY.maxUtteranceMs}, MIN_SPEECH_MS=${WEB_VOICE_CAPTURE_POLICY.minSpeechMs}, PRE_ROLL=${WEB_VOICE_CAPTURE_POLICY.preRollFrames};`,
 );
 client = client.replace(
   "function voiceKey(v){",
@@ -357,6 +375,22 @@ client = client.replace(/async function commitVoice\(reason\)\{[\s\S]*?\n\}\nasy
 client = client.replace(/async function ask\(text\)\{[\s\S]*?\n\}\nasync function startMic/, ASK_V58+"\nasync function startMic");
 client = client.replace(/async function startMic\(\)\{[\s\S]*?\}\nfunction stopMic/, START_MIC_V58+"\nfunction stopMic");
 client = client.replace(/function stopMic\(\)\{[\s\S]*?\}\nmic\.addEventListener/, STOP_MIC_V58+"\nmic.addEventListener");
+
+const DEVICE_TTS_CHUNK_SAFE=String.raw`
+async function playJapaneseDeviceChunk(chunk,voice,token){
+  const u=new SpeechSynthesisUtterance(chunk);if(voice)u.voice=voice;u.lang='ja-JP';u.rate=1.12;u.pitch=1;u.volume=1;
+  const timeoutMs=Math.max(7000,Math.min(30000,5000+String(chunk||'').length*300));
+  await new Promise((resolve,reject)=>{
+    let settled=false;
+    const finish=(fn,value)=>{if(settled)return;settled=true;clearTimeout(timer);fn(value);};
+    const timer=setTimeout(()=>{try{window.speechSynthesis&&window.speechSynthesis.cancel();}catch{}finish(reject,new Error('端末日本語TTSタイムアウト'));},timeoutMs);
+    u.onend=()=>finish(resolve);
+    u.onerror=e=>{const code=String(e?.error||'unknown');if(token!==ttsToken||/canceled|cancelled|interrupted/i.test(code))finish(resolve);else finish(reject,new Error('端末日本語TTS再生エラー: '+code));};
+    try{window.speechSynthesis.speak(u);}catch(e){finish(reject,e);}
+  });
+}
+`;
+client=client.replace(/async function playJapaneseDeviceChunk\(chunk,voice,token\)\{[\s\S]*?\n\}/,DEVICE_TTS_CHUNK_SAFE);
 
 client = "window.__TALKSYS_REALTIME_VOICE_REVISION__='" + REALTIME_VOICE_REVISION + "';\n" + client;
 client = "window.__TALKSYS_AUDIO_REVISION__='" + AUDIO_REVISION + "';\n" + client;
@@ -378,6 +412,9 @@ if (!client.includes('/api/realtime-stt') || !client.includes('sendRealtimeSttFr
 if (!client.includes('/api/fast-reaction') || !client.includes('spokenBackchannel')) throw new Error('TalkSys fast-reaction handoff patch did not apply');
 if (!client.includes('高速相槌 batch:') || !client.includes('j?.fastReaction?.shouldSpeak')) throw new Error('TalkSys batch fast-reaction fallback patch did not apply');
 if (!client.includes('/api/search-preface') || !client.includes('searchAnnouncement:true') || !client.includes('検索案内:')) throw new Error('TalkSys parallel search preface patch did not apply');
+if (!client.includes('fetchJsonWithDeadline') || !client.includes('WEB_HTTP_BUDGETS.turn')) throw new Error('TalkSys HTTP deadline patch did not apply');
+if (!client.includes('端末日本語TTSタイムアウト')) throw new Error('TalkSys device TTS watchdog patch did not apply');
+if (!client.includes('realtimeReconnectTimer=setTimeout')) throw new Error('TalkSys realtime STT reconnect patch did not apply');
 
 export const TALK_CLIENT_V45 = client;
 export const __test = {
@@ -404,5 +441,8 @@ export const __test = {
   resumeAfterInterruptedChunk: client.includes('停止位置の次から読み上げ再開'),
   spokenAnswerCompaction: client.includes('voiceSafeText(spokenText(text))') && client.includes('sentences.slice(0,4)'),
   nativeGeminiInteractions: client.includes('previousInteractionId:geminiInteractionId') && client.includes("planner:'gemini-native'"),
+  boundedHttp: client.includes('fetchJsonWithDeadline') && client.includes('WEB_HTTP_BUDGETS.turn'),
+  deviceTtsWatchdog: client.includes('端末日本語TTSタイムアウト'),
+  realtimeSttReconnect: client.includes('realtimeReconnectTimer=setTimeout'),
   legacyWebSocket: client.includes('new WebSocket') || client.includes('/agents/'),
 };
