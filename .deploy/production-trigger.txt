@@ -1,1 +1,1 @@
-v105-clock-transit-asr-20260925-r3
+v106-web-adapter-20260925-r1
