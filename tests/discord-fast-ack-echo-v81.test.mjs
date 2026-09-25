@@ -6,7 +6,7 @@ const bridge = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', i
 const integrated = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
 
 test('Discord uses the same Web fast-reaction decision path', () => {
-  assert.match(bridge, /import \{ fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure \} from '\.\.\/\.\.\/src\/voice-fast-reaction\.js'/);
+  assert.match(bridge, /import \{ sameUtterance, classifyVoiceTurn, isIgnorableSttFailure \} from '\.\.\/\.\.\/src\/voice-fast-reaction\.js'/);
   assert.match(bridge, /\/api\/realtime-stt/);
   assert.match(bridge, /\/api\/fast-reaction/);
   assert.match(bridge, /setTimeout\(async \(\) => \{[\s\S]*fetchFastReaction\(value\)[\s\S]*\}, 90\)/);
@@ -15,13 +15,12 @@ test('Discord uses the same Web fast-reaction decision path', () => {
   assert.doesNotMatch(bridge, /const IMMEDIATE_ACK_PROMPT|startImmediateAck|warmImmediateAckAudio/);
 });
 
-test('v101 emits a local end-of-utterance reaction before Whisper final', () => {
+test('v107 end-of-utterance reaction delegates to shared Worker classifier', () => {
   assert.match(bridge, /function triggerEndOfUtteranceReaction/);
-  assert.match(bridge, /const reaction = fastReaction\(value\)/);
+  assert.match(bridge, /triggerWebFastReaction\(helper, value\)/);
   assert.match(bridge, /triggerEndOfUtteranceReaction\(realtimeHelper, realtimeTranscript\)/);
-  assert.match(bridge, /supersede it here/);
-  assert.match(bridge, /helper\.reactionSeq \+= 1/);
-  assert.match(bridge, /Whisper remains authoritative/);
+  assert.doesNotMatch(bridge, /const reaction = fastReaction\(value\)/);
+  assert.doesNotMatch(bridge, /eou-local/);
 });
 
 test('Nova realtime text is reaction-only and Whisper remains authoritative', () => {
@@ -33,11 +32,11 @@ test('Nova realtime text is reaction-only and Whisper remains authoritative', ()
   assert.doesNotMatch(bridge, /processConfirmedTranscript\(\{[\s\S]{0,300}(?:realtimeTranscript|helper\.interim|latestRealtimeTranscript)/);
 });
 
-test('Discord fast reaction audio is prewarmed from the shared fastReaction function', () => {
+test('Discord fast reaction cache never makes a local semantic decision', () => {
   assert.match(bridge, /async function warmFastReactionAudio/);
-  assert.match(bridge, /samples\.map\(\(sample\) => fastReaction\(sample\)\)/);
+  assert.match(bridge, /worker-authoritative/);
   assert.match(bridge, /fastReactionAudioCache/);
-  assert.match(bridge, /warmFastReactionAudio\(\)\.catch/);
+  assert.doesNotMatch(bridge, /samples\.map\(\(sample\) => fastReaction\(sample\)\)/);
 });
 
 test('speech overlapping bot playback cannot create reaction echo loops', () => {
@@ -70,8 +69,8 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
   assert.match(integrated, /discordRuntimeLogCommand: '\/logs'/);
 });
 
-test('current V106 Discord web adapter preserves authoritative Web Whisper while current Worker keeps its own revision', () => {
-  assert.match(bridge, /talksys-discord-bridge-v106-web-adapter-r1/);
+test('current V107 Discord web parity adapter preserves authoritative Web Whisper while current Worker keeps its own revision', () => {
+  assert.match(bridge, /talksys-discord-bridge-v107-web-parity-r1/);
   assert.match(integrated, /talksys-integrated-entry-v105-clock-transit-asr-r1/);
   assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
