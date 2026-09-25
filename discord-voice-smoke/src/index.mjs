@@ -34,7 +34,7 @@ const WEB_UNIFIED_MODE = process.env.TALKSYS_WEB_UNIFIED !== '0';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
-const DISCORD_READY_TIMEOUT_MS = 20000;
+const DISCORD_READY_TIMEOUT_MS = 60000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
@@ -1976,6 +1976,7 @@ client.on('interactionCreate', async (interaction) => {
 
 client.on('error', (error) => console.error('[discord]', error));
 client.on('warn', (info) => console.warn('[discord] warning:', info));
+client.on('shardReady', (shardId, unavailableGuilds) => console.log(`[discord] shard ready id=${shardId} unavailableGuilds=${unavailableGuilds?.size ?? 0}`));
 client.on('shardError', (error, shardId) => console.error(`[discord] shard error id=${shardId}:`, error?.stack || error));
 client.on('shardDisconnect', (event, shardId) => console.error(`[discord] shard disconnected id=${shardId} code=${event?.code ?? 'unknown'}`));
 client.on('shardReconnecting', (shardId) => console.warn(`[discord] shard reconnecting id=${shardId}`));
@@ -1997,7 +1998,7 @@ process.on('SIGINT', () => {
 
 discordReadyWatchdog = setTimeout(() => {
   if (client.isReady()) return;
-  console.error(`[fatal] Discord Gateway did not reach Ready within ${DISCORD_READY_TIMEOUT_MS}ms`);
+  console.error(`[fatal] Discord Gateway did not reach Ready within ${DISCORD_READY_TIMEOUT_MS}ms status=${client.ws.status} ping=${client.ws.ping} guilds=${client.guilds.cache.size}`);
   client.destroy();
   process.exit(2);
 }, DISCORD_READY_TIMEOUT_MS);
