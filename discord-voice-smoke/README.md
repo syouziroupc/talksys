@@ -1,6 +1,6 @@
 # TalkSys Discord Voice Adapter
 
-`v106-web-adapter` では `TALKSYS_WEB_UNIFIED=1`（既定）として、確定STT後のDiscord側意味補正を行わず、Web/Workerが返した確定transcriptをそのまま共通 `/api/turn` に渡します。Discord側に残すのは音声transport、再生、barge-in、echo guard、観測のみです。従来v105は `archive/discord-v105` ブランチに固定しています。
+`v107-web-parity` では `TALKSYS_WEB_UNIFIED=1`（既定）として、確定STTだけでなく高速相槌と検索案内の判定もWeb/Worker側へ統一します。Discord側では意味判断を行わず、音声transport、再生、barge-in、echo guard、観測のみを担当します。従来v105は `archive/discord-v105` ブランチに固定しています。
 
 Discord音声をWeb版TalkSysへ接続するための薄い入出力アダプターです。
 
@@ -22,6 +22,14 @@ Discord VC
 ```
 
 Discord固有処理は、Discordのspeaking gateで受けた音声の受信・48kHz stereo→16kHz mono変換・90Hz HPFと、TalkSys音声のDiscord再生だけです。ブラウザ用RMS/SNR VADはDiscord側では再適用しません。
+
+## Web版との一致方針
+
+- 高速相槌の可否・文言はDiscordローカルで決めず、共通 `/api/fast-reaction` を使用します。
+- 検索案内は高速相槌とは独立して共通 `/api/search-preface` を並列実行します。
+- 確定STTは共通 `/api/transcribe`、回答は共通 `/api/turn` を使用します。
+- Discord固有の意味補正、検索判断、回答生成は行いません。
+- freeze対策としてHTTP予算、AbortController、再生開始/完了タイムアウト、Gateway/Voice再接続監視は残します。これらはtransport安全策であり、回答内容には介入しません。
 
 ## 音声認識
 
@@ -63,7 +71,7 @@ Whisperのタイムアウトは30秒です。数百msの短縮より認識品質
 - Discord再生開始
 - pipeline完了
 
-`realtimeTranscript`、`confirmedTranscript`、`geminiInputText`も保存できる契約です。現在DiscordではNovaを使わないため、`realtimeTranscript`は空で、`confirmedTranscript`と`geminiInputText`が一致します。
+`realtimeTranscript`、`confirmedTranscript`、`geminiInputText`も保存できる契約です。DiscordでもWeb版と同じくNova-3は高速相槌の補助にだけ使います。回答本文は常にWhisper確定transcriptを基準にし、Novaの文字列で上書きしません。
 
 ## 必要なDiscord Bot権限
 
