@@ -16,7 +16,7 @@ import {
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY, pcm16Level } from '../../src/voice-capture-policy.js';
-import { fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure } from '../../src/voice-fast-reaction.js';
+import { sameUtterance, classifyVoiceTurn, isIgnorableSttFailure } from '../../src/voice-fast-reaction.js';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v106-web-adapter-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v107-web-parity-r1';
 const WEB_UNIFIED_MODE = process.env.TALKSYS_WEB_UNIFIED !== '0';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
@@ -376,10 +376,9 @@ async function cachedReactionAudio(text, signal) {
 }
 
 async function warmFastReactionAudio() {
-  const samples = ['こんにちは', 'ありがとう', '今日の天気を教えて', 'これを調べて', '何時？', 'この内容について詳しく相談したいです'];
-  const texts = [...new Set(samples.map((sample) => fastReaction(sample)).filter((r) => r?.shouldSpeak && r?.text).map((r) => r.text))];
-  await Promise.allSettled(texts.map((text) => cachedReactionAudio(text)));
-  mirrorRuntimeLog('READY', `fast-reaction cache=${fastReactionAudioCache.size}`);
+  // Keep warmup transport-only: reaction wording/eligibility remains authoritative on /api/fast-reaction.
+  // Known audio may be cached only after the Worker has actually returned that reaction.
+  mirrorRuntimeLog('READY', `fast-reaction cache=${fastReactionAudioCache.size} worker-authoritative`);
 }
 
 function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, realtimeTranscript = '') {
@@ -465,24 +464,11 @@ function triggerEndOfUtteranceReaction(helper, text) {
   const value = String(text || '').trim();
   if (!active || !value || active.sessionEpoch !== voiceEpoch) return false;
   if (active.startedDuringBotPlayback) return false;
+  if (active.reactionIssued) return false;
 
-  // If speech_final already started the HTTP classifier but it has not yet
-  // produced/played a reaction, supersede it here. Incrementing reactionSeq
-  // invalidates the pending HTTP result.
-  if (active.reactionIssued && (active.reaction || active.timeline?.fastReactionRequestedAt)) return false;
-
-  // At Discord utterance finalization we already have a useful realtime
-  // transcript. Do not wait for Whisper or another HTTP classifier round-trip:
-  // use the same local fastReaction policy that prewarms the audio cache.
-  active.latestRealtimeTranscript = value;
-  active.reactionIssued = true;
-  helper.reactionSeq += 1;
-  const reaction = fastReaction(value);
-  active.reaction = reaction;
-  if (!reaction?.shouldSpeak || !String(reaction?.text || '').trim()) return false;
-
-  mirrorRuntimeLog('REACTION', `eou-local ${reaction.kind || 'unknown'}: ${reaction.text}`);
-  playWebFastReaction(reaction, active.utteranceId, active.sessionEpoch, active.timeline, value);
+  // Web parity: Discord never makes a local semantic decision about backchannels.
+  // The shared Worker /api/fast-reaction endpoint is authoritative.
+  triggerWebFastReaction(helper, value);
   return true;
 }
 
@@ -826,7 +812,7 @@ async function fetchSearchPreface(text, signal) {
   return '';
 }
 
-function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
+function startWaitCue(text, utteranceId, parentSignal) {
   const controller = new AbortController();
   const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
   const cueSerial = ++preAnswerCueSerial;
@@ -835,17 +821,17 @@ function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
 
   const done = (async () => {
     try {
-      let cue = '';
-      if (fastReaction?.shouldSpeak && String(fastReaction?.text || '').trim()) {
-        cue = String(fastReaction.text).trim();
-      } else {
-        cue = await fetchSearchPreface(text, signal);
-      }
+      // Web parity: search preface is always an independent shared Worker decision.
+      const cue = await fetchSearchPreface(text, signal);
       if (!cue || signal.aborted || stopped || cueSerial !== preAnswerCueSerial) return false;
-      const synthesized = await synthesize(cue, signal, { utteranceId, purpose: 'wait-cue' });
+      if (activeFastReaction?.done) {
+        await activeFastReaction.done.catch(() => {});
+        if (signal.aborted || stopped || cueSerial !== preAnswerCueSerial) return false;
+      }
+      const synthesized = await synthesize(cue, signal, { utteranceId, purpose: 'search-preface' });
       if (signal.aborted || stopped || cueSerial !== preAnswerCueSerial) return false;
       playing = true;
-      await playMp3(synthesized.audio, { spokenText: cue, purpose: 'wait-cue' });
+      await playMp3(synthesized.audio, { spokenText: cue, purpose: 'search-preface' });
       return true;
     } catch (error) {
       if (!signal.aborted && !stopped) console.warn('[wait-cue] failed:', error?.message || error);
@@ -1247,9 +1233,10 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     timeline.turnStartAt = Date.now();
     timings.answerStartMs = Math.max(0, timeline.turnStartAt - (timeline.utteranceEndAt || timeline.turnStartAt));
 
-    if (!timeline.fastReactionRequestedAt) {
-      activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, fastReaction);
+    if (!timeline.fastReactionRequestedAt && fastReaction?.shouldSpeak && String(fastReaction?.text || '').trim()) {
+      playWebFastReaction(fastReaction, utteranceId, sessionEpoch, timeline, confirmedTranscript);
     }
+    activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal);
     const realtimeAlternative = String(captureMetrics?.realtimeTranscript || '').trim();
     const speechAlternatives = realtimeAlternative && !sameUtterance(realtimeAlternative, confirmedTranscript)
       ? [realtimeAlternative]
@@ -2005,17 +1992,9 @@ discordReadyWatchdog = setTimeout(() => {
 
 mirrorRuntimeLog('BOOT', `process start node=${process.version}`);
 mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
-// Prepare only the small, fixed backchannel set before the bot becomes
-// available. This moves System.Speech cost to process startup and keeps the
-// runtime answer queue clear. Recovery TTS remains lazy on Windows.
-if (process.platform === 'win32') {
-  try {
-    await warmFastReactionAudio();
-    console.log(`[boot] fast-reaction cache ready=${fastReactionAudioCache.size}`);
-  } catch (error) {
-    console.warn('[boot] fast-reaction warmup failed:', error?.message || error);
-  }
-}
+// Keep startup free of semantic warmup. The shared Worker decides reactions.
+// This also avoids blocking Gateway login on local TTS work.
+await warmFastReactionAudio();
 
 client.login(DISCORD_TOKEN).catch((error) => {
   if (discordReadyWatchdog) clearTimeout(discordReadyWatchdog);
