@@ -88,6 +88,7 @@ let activeTurnSerial = 0;
 let activeWaitCue = null;
 let activeFastReaction = null;
 let preAnswerCueSerial = 0;
+let waitCueSerial = 0;
 const fastReactionAudioCache = new Map();
 const realtimeHelpers = new Map();
 const recentBotSpeech = [];
@@ -122,6 +123,7 @@ function resetConversationState() {
   activeWaitCue = null;
   activeFastReaction = null;
   preAnswerCueSerial += 1;
+  waitCueSerial += 1;
   recentBotSpeech.splice(0, recentBotSpeech.length);
   recentAcceptedUserTurns.splice(0, recentAcceptedUserTurns.length);
   activeBotPlaybackRecord = null;
@@ -642,6 +644,7 @@ function releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller
     cueReleased = true;
   }
   if (cueReleased) preAnswerCueSerial += 1;
+  waitCueSerial += 1;
 
   if (sessionEpoch === voiceEpoch && connection && !sessions.has(userId)) {
     queueMicrotask(() => {
@@ -815,7 +818,7 @@ async function fetchSearchPreface(text, signal) {
 function startWaitCue(text, utteranceId, parentSignal) {
   const controller = new AbortController();
   const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
-  const cueSerial = ++preAnswerCueSerial;
+  const cueSerial = ++waitCueSerial;
   let playing = false;
   let stopped = false;
 
@@ -823,13 +826,13 @@ function startWaitCue(text, utteranceId, parentSignal) {
     try {
       // Web parity: search preface is always an independent shared Worker decision.
       const cue = await fetchSearchPreface(text, signal);
-      if (!cue || signal.aborted || stopped || cueSerial !== preAnswerCueSerial) return false;
+      if (!cue || signal.aborted || stopped || cueSerial !== waitCueSerial) return false;
       if (activeFastReaction?.done) {
         await activeFastReaction.done.catch(() => {});
-        if (signal.aborted || stopped || cueSerial !== preAnswerCueSerial) return false;
+        if (signal.aborted || stopped || cueSerial !== waitCueSerial) return false;
       }
       const synthesized = await synthesize(cue, signal, { utteranceId, purpose: 'search-preface' });
-      if (signal.aborted || stopped || cueSerial !== preAnswerCueSerial) return false;
+      if (signal.aborted || stopped || cueSerial !== waitCueSerial) return false;
       playing = true;
       await playMp3(synthesized.audio, { spokenText: cue, purpose: 'search-preface' });
       return true;
@@ -1252,6 +1255,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
 
     // Waiting audio is never part of the answer dependency chain.
     preAnswerCueSerial += 1;
+  waitCueSerial += 1;
     activeWaitCue?.stop('final-answer-ready');
     activeWaitCue = null;
     activeFastReaction?.stop?.('final-answer-ready');
@@ -1496,6 +1500,7 @@ function interruptActiveAnswer(reason = 'user-speech') {
   const interruptedUtteranceId = activeUserUtteranceId || activeWaitCue?.utteranceId || activeFastReaction?.utteranceId || '';
   activeTurnSerial += 1;
   preAnswerCueSerial += 1;
+  waitCueSerial += 1;
 
   const controller = activeTurnAbortController;
   activeTurnAbortController = null;
