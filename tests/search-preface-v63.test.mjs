@@ -33,8 +33,8 @@ test('search preface names the topic for non-greeting search turns', () => {
 test('browser client starts the real turn and parallel search preface path', () => {
   assert.equal(SEARCH_PREFACE_CLIENT_REVISION, 'talksys-v63-search-preface-r1');
   assert.equal(clientTest.parallelSearchPreface, true);
-  assert.match(TALK_CLIENT_V45, /const turnPromise=fetch\('\/api\/turn'/);
-  assert.match(TALK_CLIENT_V45, /fetch\('\/api\/search-preface'/);
+  assert.match(TALK_CLIENT_V45, /const turnPromise=fetchJsonWithDeadline\('\/api\/turn'/);
+  assert.match(TALK_CLIENT_V45, /fetchJsonWithDeadline\('\/api\/search-preface'/);
   assert.match(TALK_CLIENT_V45, /searchAnnouncement:true/);
   assert.match(TALK_CLIENT_V45, /await searchAnnouncementTask/);
 });
