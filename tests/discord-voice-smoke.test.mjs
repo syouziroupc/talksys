@@ -127,7 +127,7 @@ test('Discord voice connection retries transient disconnects', () => {
 });
 
 test('Discord gateway startup fails loudly instead of leaving a dead command surface', () => {
-  assert.match(source, /DISCORD_READY_TIMEOUT_MS = 20000/);
+  assert.match(source, /DISCORD_READY_TIMEOUT_MS = 60000/);
   assert.match(source, /Discord Gateway did not reach Ready/);
   assert.match(source, /Discord login failed/);
   assert.match(source, /gateway health ready=/);
