@@ -29,7 +29,8 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v105-clock-transit-asr-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v106-web-adapter-r1';
+const WEB_UNIFIED_MODE = process.env.TALKSYS_WEB_UNIFIED !== '0';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -336,6 +337,7 @@ async function attachRuntimeLogChannel(channel) {
   runtimeLogMessage = null;
   mirrorRuntimeLog('LOG', 'Discord live log attached');
   mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
+  mirrorRuntimeLog('BOOT', `webUnified=${WEB_UNIFIED_MODE}`);
   mirrorRuntimeLog('BOOT', `TalkSys=${TALKSYS_BASE_URL}`);
   mirrorRuntimeLog('BOOT', `ttsPrimary=${process.platform === 'win32' ? 'windows-system-speech' : 'cloudflare-melotts'}`);
   scheduleRuntimeLogFlush();
@@ -876,7 +878,7 @@ async function talk(text, utteranceId = '', signal, speechAlternatives = []) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       text,
-      speechAlternatives: Array.isArray(speechAlternatives) ? speechAlternatives.slice(0, 3) : [],
+      speechAlternatives: WEB_UNIFIED_MODE ? [] : (Array.isArray(speechAlternatives) ? speechAlternatives.slice(0, 3) : []),
       history: previous,
       searchTrace,
       sessionId: discordSessionId || `discord-${randomUUID()}`,
@@ -1357,10 +1359,16 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
     }
     markVoiceResultResolved(userId, sessionEpoch, utteranceId, utteranceSerial);
     let rawTranscript = stt.confirmedTranscript;
-    const correction = correctLowConfidenceTranscript(rawTranscript, captureMetrics, history);
-    let correctedTranscript = correction.correctedTranscript || rawTranscript;
-    let correctionReason = correction.correctionReason || '';
-    if (correctionReason) mirrorRuntimeLog('STT-CORRECT', correctionReason + ': "' + rawTranscript + '" -> "' + correctedTranscript + '"');
+    let correctedTranscript = rawTranscript;
+    let correctionReason = '';
+    if (!WEB_UNIFIED_MODE) {
+      const correction = correctLowConfidenceTranscript(rawTranscript, captureMetrics, history);
+      correctedTranscript = correction.correctedTranscript || rawTranscript;
+      correctionReason = correction.correctionReason || '';
+      if (correctionReason) mirrorRuntimeLog('STT-CORRECT', correctionReason + ': "' + rawTranscript + '" -> "' + correctedTranscript + '"');
+    } else {
+      mirrorRuntimeLog('STT-AUTH', 'web transcript accepted without Discord-side semantic rewrite');
+    }
     const echoRecord = looksLikeRecentBotEcho(rawTranscript, timeline);
     if (echoRecord) {
       console.warn(`[echo-guard] suppressed bot echo utterance=${utteranceId} purpose=${echoRecord.purpose}: ${stt.confirmedTranscript}`);

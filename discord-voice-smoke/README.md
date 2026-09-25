@@ -1,5 +1,7 @@
 # TalkSys Discord Voice Adapter
 
+`v106-web-adapter` では `TALKSYS_WEB_UNIFIED=1`（既定）として、確定STT後のDiscord側意味補正を行わず、Web/Workerが返した確定transcriptをそのまま共通 `/api/turn` に渡します。Discord側に残すのは音声transport、再生、barge-in、echo guard、観測のみです。従来v105は `archive/discord-v105` ブランチに固定しています。
+
 Discord音声をWeb版TalkSysへ接続するための薄い入出力アダプターです。
 
 ## 現在の経路
