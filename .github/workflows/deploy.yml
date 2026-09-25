@@ -297,7 +297,7 @@ jobs:
           grep -F '非常用の文字入力' <<< "$page"
 
           client="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v45.js")"
-          grep -F 'talksys-v46-streaming-vad' <<< "$client"
+          grep -F 'talksys-v47-web-stability-freeze-r1' <<< "$client"
           grep -F 'getUserMedia' <<< "$client"
           grep -F '/api/transcribe' <<< "$client"
           grep -F '/api/turn' <<< "$client"
