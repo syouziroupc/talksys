@@ -29,12 +29,12 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v107-web-parity-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v108-stability-r1';
 const WEB_UNIFIED_MODE = process.env.TALKSYS_WEB_UNIFIED !== '0';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
-const DISCORD_READY_TIMEOUT_MS = 60000;
+const DISCORD_READY_TIMEOUT_MS = 120000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
@@ -858,7 +858,7 @@ function startWaitCue(text, utteranceId, parentSignal) {
   };
 }
 
-async function talk(text, utteranceId = '', signal, speechAlternatives = []) {
+async function talk(text, utteranceId = '', signal, speechAlternatives = [], spokenBackchannel = '') {
   const started = Date.now();
   console.log('[turn] user:', text);
   mirrorRuntimeLog('TURN', `user: ${text}`);
@@ -870,6 +870,7 @@ async function talk(text, utteranceId = '', signal, speechAlternatives = []) {
     body: JSON.stringify({
       text,
       speechAlternatives: WEB_UNIFIED_MODE ? [] : (Array.isArray(speechAlternatives) ? speechAlternatives.slice(0, 3) : []),
+      spokenBackchannel: String(spokenBackchannel || '').trim(),
       history: previous,
       searchTrace,
       sessionId: discordSessionId || `discord-${randomUUID()}`,
@@ -904,6 +905,7 @@ async function talk(text, utteranceId = '', signal, speechAlternatives = []) {
 
 async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
   if (process.platform !== 'win32') throw new Error('windows_tts_unavailable_non_windows');
+  if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
   const spoken = String(text || '').trim();
   if (!spoken) throw new Error('windows_tts_empty_text');
 
@@ -994,9 +996,13 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
 }
 
 async function synthesizeWindowsJapaneseTts(text, signal) {
+  if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
   const task = windowsTtsQueue
     .catch(() => {})
-    .then(() => synthesizeWindowsJapaneseTtsUnlocked(text, signal));
+    .then(() => {
+      if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+      return synthesizeWindowsJapaneseTtsUnlocked(text, signal);
+    });
   windowsTtsQueue = task.catch(() => {});
   return task;
 }
@@ -1042,6 +1048,7 @@ async function synthesize(text, signal, meta = {}) {
       return local;
     } catch (localError) {
       const detail = String(localError?.message || localError || '');
+      if (signal?.aborted || localError?.name === 'AbortError') throw localError;
       console.warn('[tts] Windows System.Speech failed; trying Cloudflare MeloTTS:', detail);
       mirrorRuntimeLog('TTS-ERROR', `Windows local failed: ${detail.slice(0, 180)}`);
       mirrorRuntimeLog('TTS', 'Windows local failed -> Cloudflare recovery');
@@ -1196,12 +1203,10 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     return;
   }
   if (answering) {
-    const nextTurn = { confirmedTranscript, rawTranscript, correctedTranscript, correctionReason, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta };
-    if (pendingTurns.length === 0) pendingTurns.push(nextTurn);
-    else pendingTurns[0] = nextTurn;
-    console.log(`[queue] buffered latest user=${userId}: ${confirmedTranscript}`);
-    mirrorRuntimeLog('QUEUE', `latest only: ${confirmedTranscript}`);
-    return;
+    // Web parity: once Whisper has confirmed a real new user turn, the old
+    // answer is stale. Abort it instead of making the confirmed user wait.
+    interruptActiveAnswer('confirmed-new-user-turn');
+    mirrorRuntimeLog('TURN-SWITCH', `confirmed new turn: ${confirmedTranscript}`);
   }
 
   answering = true;
@@ -1246,7 +1251,8 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     const speechAlternatives = realtimeAlternative && !sameUtterance(realtimeAlternative, confirmedTranscript)
       ? [realtimeAlternative]
       : [];
-    const turn = await talk(confirmedTranscript, utteranceId, controller.signal, speechAlternatives);
+    const spokenBackchannel = fastReaction?.shouldSpeak ? String(fastReaction?.text || '').trim() : '';
+    const turn = await talk(confirmedTranscript, utteranceId, controller.signal, speechAlternatives, spokenBackchannel);
     timeline.finalAnswerAt = Date.now();
     timings.primaryMs = Number(turn?.timings?.primaryMs) || 0;
     timings.verifierMs = Number(turn?.timings?.verifierMs) || 0;
@@ -1437,12 +1443,13 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
           return;
         }
         mirrorRuntimeLog('STT-RESCUE', `Whisper failed -> realtime: ${realtimeRescue}`);
+        const rescueFastReaction = await fetchFastReaction(realtimeRescue, controller.signal).catch(() => null);
         await processConfirmedTranscript({
           confirmedTranscript: realtimeRescue,
           rawTranscript: realtimeRescue,
           correctedTranscript: realtimeRescue,
           correctionReason: 'realtime-rescue-after-whisper-failure',
-          fastReaction: fastReaction(realtimeRescue),
+          fastReaction: rescueFastReaction,
           userId,
           sessionEpoch,
           utteranceId,
@@ -1774,6 +1781,30 @@ async function playConnectionGreeting() {
 
 async function connectToVoiceChannel(channel, initialUserId = '') {
   if (!channel || !channel.isVoiceBased()) throw new Error('target channel is not voice based');
+
+  const existing = connection;
+  const sameTarget = existing
+    && existing.state.status !== VoiceConnectionStatus.Destroyed
+    && String(existing.joinConfig?.guildId || '') === String(channel.guild.id)
+    && String(existing.joinConfig?.channelId || '') === String(channel.id);
+  if (sameTarget) {
+    if (existing.state.status === VoiceConnectionStatus.Ready) {
+      existing.subscribe(player);
+      if (initialUserId && initialUserId !== client.user.id) {
+        ensureRealtimeHelper(initialUserId);
+        startReceiverSession(initialUserId, false);
+      }
+      mirrorRuntimeLog('VOICE', `reuse ready channel=${channel.name}`);
+      return channel;
+    }
+    if ([VoiceConnectionStatus.Signalling, VoiceConnectionStatus.Connecting].includes(existing.state.status)) {
+      await entersState(existing, VoiceConnectionStatus.Ready, 15000);
+      existing.subscribe(player);
+      mirrorRuntimeLog('VOICE', `reuse recovered channel=${channel.name}`);
+      return channel;
+    }
+  }
+
   destroyVoiceConnection();
 
   connection = joinVoiceChannel({
@@ -1809,9 +1840,12 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   }
 
   const boundConnection = connection;
-  boundConnection.on('stateChange', (_oldState, newState) => {
+  boundConnection.on('stateChange', (oldState, newState) => {
     if (boundConnection !== connection) return;
-    console.log(`[discord] voice state=${newState.status}`);
+    const reason = String(newState?.reason || '');
+    const closeCode = Number.isFinite(Number(newState?.closeCode)) ? Number(newState.closeCode) : '';
+    console.log(`[discord] voice state=${oldState?.status || '?'}->${newState.status} reason=${reason || '-'} closeCode=${closeCode || '-'}`);
+    mirrorRuntimeLog('VOICE-STATE', `${oldState?.status || '?'}->${newState.status} reason=${reason || '-'} close=${closeCode || '-'}`);
     if (newState.status === VoiceConnectionStatus.Ready) {
       voiceRecoveryAttempts = 0;
       if (voiceRecoveryTimer) {
@@ -1823,13 +1857,36 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
     }
     if (newState.status !== VoiceConnectionStatus.Disconnected || voiceRecoveryTimer) return;
 
-    const scheduleRecovery = () => {
+    // @discordjs/voice already handles resumable/reconnectable disconnects.
+    // Give that state machine a short window to enter Signalling/Connecting
+    // before attempting any manual rejoin.
+    voiceRecoveryTimer = setTimeout(async () => {
+      voiceRecoveryTimer = null;
       if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
-      const delayMs = Math.min(8000, 500 * (2 ** Math.min(voiceRecoveryAttempts, 4)));
-      voiceRecoveryTimer = setTimeout(async () => {
-        voiceRecoveryTimer = null;
+      if (boundConnection.state.status === VoiceConnectionStatus.Ready) {
+        boundConnection.subscribe(player);
+        voiceRecoveryAttempts = 0;
+        return;
+      }
+      try {
+        await Promise.race([
+          entersState(boundConnection, VoiceConnectionStatus.Signalling, 5000),
+          entersState(boundConnection, VoiceConnectionStatus.Connecting, 5000),
+        ]);
+        console.warn('[discord] voice auto-recovery in progress; manual rejoin skipped');
+        mirrorRuntimeLog('VOICE-RECOVER', 'library auto-recovery detected');
+        return;
+      } catch {
+        if (boundConnection.state.status === VoiceConnectionStatus.Ready) {
+          boundConnection.subscribe(player);
+          voiceRecoveryAttempts = 0;
+          return;
+        }
+      }
+
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
         if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
-        voiceRecoveryAttempts += 1;
+        voiceRecoveryAttempts = attempt;
         try {
           const accepted = boundConnection.rejoin();
           if (!accepted) throw new Error('voice_rejoin_rejected');
@@ -1837,16 +1894,26 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
           if (boundConnection === connection) {
             boundConnection.subscribe(player);
             voiceRecoveryAttempts = 0;
-            console.log('[discord] voice rejoin recovered');
+            console.log(`[discord] voice manual rejoin recovered attempt=${attempt}`);
+            mirrorRuntimeLog('VOICE-RECOVER', `manual rejoin recovered attempt=${attempt}`);
           }
+          return;
         } catch (error) {
-          console.error(`[discord] voice rejoin failed attempt=${voiceRecoveryAttempts}:`, error?.message || error);
-          if (voiceRecoveryAttempts < 5) scheduleRecovery();
+          console.error(`[discord] voice manual rejoin failed attempt=${attempt}:`, error?.message || error);
+          mirrorRuntimeLog('VOICE-RECOVER', `manual rejoin failed attempt=${attempt}: ${String(error?.message || error).slice(0, 160)}`);
+          if (attempt < 3) {
+            const delayMs = 500 * (2 ** (attempt - 1));
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
         }
-      }, delayMs);
-    };
-    console.warn('[discord] voice disconnected; scheduling rejoin');
-    scheduleRecovery();
+      }
+      if (boundConnection === connection) {
+        console.error('[discord] voice recovery exhausted; destroying stale voice connection');
+        mirrorRuntimeLog('VOICE-RECOVER', 'exhausted; stale voice connection destroyed');
+        destroyVoiceConnection();
+      }
+    }, 250);
+    console.warn('[discord] voice disconnected; waiting for library auto-recovery');
   });
   boundConnection.on('error', (error) => console.error('[discord] voice connection error:', error?.message || error));
 
@@ -1970,11 +2037,26 @@ client.on('interactionCreate', async (interaction) => {
 
 client.on('error', (error) => console.error('[discord]', error));
 client.on('warn', (info) => console.warn('[discord] warning:', info));
-client.on('shardReady', (shardId, unavailableGuilds) => console.log(`[discord] shard ready id=${shardId} unavailableGuilds=${unavailableGuilds?.size ?? 0}`));
-client.on('shardError', (error, shardId) => console.error(`[discord] shard error id=${shardId}:`, error?.stack || error));
-client.on('shardDisconnect', (event, shardId) => console.error(`[discord] shard disconnected id=${shardId} code=${event?.code ?? 'unknown'}`));
-client.on('shardReconnecting', (shardId) => console.warn(`[discord] shard reconnecting id=${shardId}`));
-client.on('shardResume', (shardId, replayedEvents) => console.log(`[discord] shard resumed id=${shardId} replayed=${replayedEvents}`));
+client.on('shardReady', (shardId, unavailableGuilds) => {
+  console.log(`[discord] shard ready id=${shardId} unavailableGuilds=${unavailableGuilds?.size ?? 0}`);
+  mirrorRuntimeLog('GATEWAY', `shard ready id=${shardId} unavailable=${unavailableGuilds?.size ?? 0}`);
+});
+client.on('shardError', (error, shardId) => {
+  console.error(`[discord] shard error id=${shardId}:`, error?.stack || error);
+  mirrorRuntimeLog('GATEWAY', `shard error id=${shardId}: ${String(error?.message || error).slice(0, 180)}`);
+});
+client.on('shardDisconnect', (event, shardId) => {
+  console.error(`[discord] shard disconnected id=${shardId} code=${event?.code ?? 'unknown'}`);
+  mirrorRuntimeLog('GATEWAY', `shard disconnected id=${shardId} code=${event?.code ?? 'unknown'}`);
+});
+client.on('shardReconnecting', (shardId) => {
+  console.warn(`[discord] shard reconnecting id=${shardId}`);
+  mirrorRuntimeLog('GATEWAY', `shard reconnecting id=${shardId}`);
+});
+client.on('shardResume', (shardId, replayedEvents) => {
+  console.log(`[discord] shard resumed id=${shardId} replayed=${replayedEvents}`);
+  mirrorRuntimeLog('GATEWAY', `shard resumed id=${shardId} replayed=${replayedEvents}`);
+});
 player.on('error', (error) => { console.error('[player]', error.message); mirrorRuntimeLog('ERROR', `player: ${error.message}`); });
 
 process.on('unhandledRejection', (reason) => {

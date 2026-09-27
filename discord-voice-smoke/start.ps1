@@ -80,10 +80,11 @@ while ($true) {
   }
   $rapidFailures += 1
 
-  Write-Warning "[supervisor] Discord bridge exited code=$exitCode uptime=$([math]::Round($uptimeSeconds, 1))s. Restarting in 2 seconds..."
-  if ($rapidFailures -ge 5) {
-    throw "Discord bridgeが短時間に5回連続で異常終了しました。上の[fatal]ログを確認してください。"
+  $delaySeconds = [math]::Min(60, [math]::Pow(2, [math]::Min($rapidFailures, 5)))
+  Write-Warning "[supervisor] Discord bridge exited code=$exitCode uptime=$([math]::Round($uptimeSeconds, 1))s. Restarting in $delaySeconds seconds..."
+  if ($rapidFailures -ge 12) {
+    throw "Discord bridgeが短時間に12回連続で異常終了しました。上の[fatal]ログを確認してください。"
   }
 
-  Start-Sleep -Seconds 2
+  Start-Sleep -Seconds $delaySeconds
 }

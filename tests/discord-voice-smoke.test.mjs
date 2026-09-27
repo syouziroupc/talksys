@@ -43,7 +43,7 @@ test('Discord trusts its speaking transport gate and normalizes audio to the Web
 
 test('confirmed Whisper remains the primary text sent to common TalkSys turn', () => {
   assert.match(source, /await processConfirmedTranscript\(\{/);
-  assert.match(source, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives\)/);
+  assert.match(source, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives, spokenBackchannel\)/);
   assert.match(source, /geminiInputText: confirmedTranscript/);
   assert.match(source, /history: previous/);
   assert.match(source, /previousInteractionId/);
@@ -108,26 +108,28 @@ test('Discord slash commands are updated without bulk-overwriting unrelated comm
   assert.match(source, /name: 'leave'/);
 });
 
-test('Discord only interrupts on explicit transcript intent in v84', () => {
+test('Discord waits for transcript confirmation before preempting an in-flight answer', () => {
   assert.match(source, /function interruptActiveAnswer\(reason = 'user-speech'\)/);
   assert.match(source, /activeTurnAbortController/);
-  assert.match(source, /activeWaitCue\?\.stop/);
-  assert.match(source, /player\.stop\(true\)/);
   assert.match(source, /classifyVoiceTurn\(confirmedTranscript/);
   assert.match(source, /interruptActiveAnswer\('explicit-user-stop'\)/);
+  assert.match(source, /interruptActiveAnswer\('confirmed-new-user-turn'\)/);
   assert.doesNotMatch(source, /interruptActiveAnswer\('user-barge-in'\)/);
-  assert.doesNotMatch(source, /stale answer suppressed/);
 });
 
-test('Discord voice connection retries transient disconnects', () => {
+test('Discord voice recovery lets the library resume first, then bounds manual rejoin', () => {
   assert.match(source, /VoiceConnectionStatus\.Disconnected/);
+  assert.match(source, /VoiceConnectionStatus\.Signalling/);
+  assert.match(source, /VoiceConnectionStatus\.Connecting/);
+  assert.match(source, /library auto-recovery detected/);
   assert.match(source, /boundConnection\.rejoin\(\)/);
   assert.match(source, /VOICE_REJOIN_TIMEOUT_MS = 10000/);
-  assert.match(source, /voiceRecoveryAttempts < 5/);
+  assert.match(source, /for \(let attempt = 1; attempt <= 3; attempt \+= 1\)/);
+  assert.match(source, /voice recovery exhausted/);
 });
 
 test('Discord gateway startup fails loudly instead of leaving a dead command surface', () => {
-  assert.match(source, /DISCORD_READY_TIMEOUT_MS = 60000/);
+  assert.match(source, /DISCORD_READY_TIMEOUT_MS = 120000/);
   assert.match(source, /Discord Gateway did not reach Ready/);
   assert.match(source, /Discord login failed/);
   assert.match(source, /gateway health ready=/);
@@ -141,6 +143,12 @@ test('Discord launcher persists bridge secret and avoids reinstalling unchanged 
   assert.match(launcher, /Discord dependencies unchanged; skipping npm install/);
   assert.match(setupSecret, /wrangler secret put DISCORD_BRIDGE_TOKEN/);
   assert.match(secretStore, /ConvertFrom-SecureString/);
+});
+
+test('Discord supervisor backs off repeated transient process failures instead of stopping after five', () => {
+  assert.match(launcher, /\[math\]::Min\(60, \[math\]::Pow\(2, \[math\]::Min\(\$rapidFailures, 5\)\)\)/);
+  assert.match(launcher, /\$rapidFailures -ge 12/);
+  assert.match(launcher, /Start-Sleep -Seconds \$delaySeconds/);
 });
 
 test('Discord uses Node native WebSocket and carries no extra websocket dependency', () => {
@@ -166,7 +174,7 @@ test('VC connection survives greeting TTS failure', () => {
   assert.match(source, /return false/);
 });
 
-test('V92 TTS hotfix serializes local System.Speech and uses a temp WAV file', () => {
+test('V108 TTS serializes local System.Speech while dropping aborted queued work', () => {
   assert.match(source, /import fs from 'node:fs'/);
   assert.match(source, /let windowsTtsQueue = Promise\.resolve\(\)/);
   assert.match(source, /SetOutputToWaveFile\(\$out\)/);
@@ -174,4 +182,6 @@ test('V92 TTS hotfix serializes local System.Speech and uses a temp WAV file', (
   assert.match(source, /fs\.promises\.readFile\(tempFile\)/);
   assert.match(source, /fs\.promises\.unlink\(tempFile\)/);
   assert.match(source, /windowsTtsQueue[\s\S]*synthesizeWindowsJapaneseTtsUnlocked/);
+  assert.match(source, /if \(signal\?\.aborted\) throw signal\.reason/);
+  assert.match(source, /if \(signal\?\.aborted \|\| localError\?\.name === 'AbortError'\) throw localError/);
 });

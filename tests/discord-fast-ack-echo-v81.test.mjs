@@ -26,7 +26,7 @@ test('v107 end-of-utterance reaction delegates to shared Worker classifier', () 
 test('Nova realtime text is reaction-only and Whisper remains authoritative', () => {
   assert.match(bridge, /triggerWebFastReaction/);
   assert.match(bridge, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
-  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives\)/);
+  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives, spokenBackchannel\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
   assert.doesNotMatch(bridge, /talk\((?:value|transcript|realtimeTranscript|helper\.interim)/);
   assert.doesNotMatch(bridge, /processConfirmedTranscript\(\{[\s\S]{0,300}(?:realtimeTranscript|helper\.interim|latestRealtimeTranscript)/);
@@ -69,8 +69,8 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
   assert.match(integrated, /discordRuntimeLogCommand: '\/logs'/);
 });
 
-test('current V107 Discord web parity adapter preserves authoritative Web Whisper while current Worker keeps its own revision', () => {
-  assert.match(bridge, /talksys-discord-bridge-v107-web-parity-r1/);
+test('current V108 Discord stability adapter preserves authoritative Web Whisper while current Worker keeps its own revision', () => {
+  assert.match(bridge, /talksys-discord-bridge-v108-stability-r1/);
   assert.match(integrated, /talksys-integrated-entry-v105-clock-transit-asr-r1/);
   assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
@@ -92,11 +92,12 @@ test('v84 Discord startup exposes the active bridge revision', () => {
 });
 
 
-test('v84 suppresses duplicate in-flight and queued user turns', () => {
+test('v108 suppresses duplicate in-flight turns and preempts a confirmed new user turn', () => {
   assert.match(bridge, /sameUtterance\(confirmedTranscript, activeUserText\)/);
   assert.match(bridge, /suppressed duplicate in-flight/);
-  assert.match(bridge, /pendingTurns\.some\(\(item\) => sameUtterance/);
-  assert.match(bridge, /pendingTurns\[0\] = nextTurn/);
+  assert.match(bridge, /interruptActiveAnswer\('confirmed-new-user-turn'\)/);
+  assert.match(bridge, /TURN-SWITCH/);
+  assert.doesNotMatch(bridge, /pendingTurns\[0\] = nextTurn/);
 });
 
 test('v84 echo guard includes post-playback tail for partial STT echoes', () => {

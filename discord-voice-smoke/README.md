@@ -1,6 +1,6 @@
 # TalkSys Discord Voice Adapter
 
-`v107-web-parity` では `TALKSYS_WEB_UNIFIED=1`（既定）として、確定STTだけでなく高速相槌と検索案内の判定もWeb/Worker側へ統一します。Discord側では意味判断を行わず、音声transport、再生、barge-in、echo guard、観測のみを担当します。従来v105は `archive/discord-v105` ブランチに固定しています。
+`v108-stability` では `TALKSYS_WEB_UNIFIED=1`（既定）として、確定STTだけでなく高速相槌と検索案内の判定もWeb/Worker側へ統一します。Discord側では意味判断を行わず、音声transport、再生、barge-in、echo guard、観測のみを担当します。従来v105は `archive/discord-v105` ブランチに固定しています。
 
 Discord音声をWeb版TalkSysへ接続するための薄い入出力アダプターです。
 
@@ -29,7 +29,7 @@ Discord固有処理は、Discordのspeaking gateで受けた音声の受信・48
 - 検索案内は高速相槌とは独立して共通 `/api/search-preface` を並列実行します。
 - 確定STTは共通 `/api/transcribe`、回答は共通 `/api/turn` を使用します。
 - Discord固有の意味補正、検索判断、回答生成は行いません。
-- freeze対策としてHTTP予算、AbortController、再生開始/完了タイムアウト、Gateway/Voice再接続監視は残します。これらはtransport安全策であり、回答内容には介入しません。
+- freeze対策としてHTTP予算、AbortController、再生開始/完了タイムアウト、Gateway/Voice再接続監視は残します。Whisperで新しい利用者発話が確定した時点で古い回答を中断し、Web版と同じターン切替に寄せます。これらはtransport安全策であり、回答内容には介入しません。
 
 ## 音声認識
 
@@ -38,13 +38,13 @@ Discord固有処理は、Discordのspeaking gateで受けた音声の受信・48
 発話区間はWeb版と同じ基準へ合わせています。
 
 - 16 kHz mono
-- 650 ms 無音で発話終了
+- 900 ms 無音で発話終了
 - 260 ms 最短発話
 - 8フレーム pre-roll
 - adaptive noise floor
 - RMS / peak / SNR 開始判定
 - 90 Hz high-pass
-- 発話区間はDiscord transport側を基準にし、最後のPCMから650 msで確定します。1600 ms Discord無音判定はtransport safetyのみです。
+- 発話区間はDiscord transport側を基準にし、最後のPCMから900 msで確定します。1600 ms Discord無音判定はtransport safetyのみです。
 
 Whisperのタイムアウトは30秒です。数百msの短縮より認識品質を優先します。
 
