@@ -145,6 +145,12 @@ test('Discord launcher persists bridge secret and avoids reinstalling unchanged 
   assert.match(secretStore, /ConvertFrom-SecureString/);
 });
 
+test('Discord supervisor backs off repeated transient process failures instead of stopping after five', () => {
+  assert.match(launcher, /\[math\]::Min\(60, \[math\]::Pow\(2, \[math\]::Min\(\$rapidFailures, 5\)\)\)/);
+  assert.match(launcher, /\$rapidFailures -ge 12/);
+  assert.match(launcher, /Start-Sleep -Seconds \$delaySeconds/);
+});
+
 test('Discord uses Node native WebSocket and carries no extra websocket dependency', () => {
   assert.match(packageJson.dependencies['@discordjs/voice'], /^\^0\.19\./);
   assert.match(packageJson.dependencies['discord.js'], /^\^14\./);
