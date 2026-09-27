@@ -124,7 +124,8 @@ test('Discord voice recovery lets the library resume first, then bounds manual r
   assert.match(source, /library auto-recovery detected/);
   assert.match(source, /boundConnection\.rejoin\(\)/);
   assert.match(source, /VOICE_REJOIN_TIMEOUT_MS = 10000/);
-  assert.match(source, /voiceRecoveryAttempts >= 3/);
+  assert.match(source, /for \(let attempt = 1; attempt <= 3; attempt \+= 1\)/);
+  assert.match(source, /voice recovery exhausted/);
 });
 
 test('Discord gateway startup fails loudly instead of leaving a dead command surface', () => {
