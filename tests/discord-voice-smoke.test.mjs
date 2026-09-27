@@ -43,7 +43,7 @@ test('Discord trusts its speaking transport gate and normalizes audio to the Web
 
 test('confirmed Whisper remains the primary text sent to common TalkSys turn', () => {
   assert.match(source, /await processConfirmedTranscript\(\{/);
-  assert.match(source, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives\)/);
+  assert.match(source, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives, spokenBackchannel\)/);
   assert.match(source, /geminiInputText: confirmedTranscript/);
   assert.match(source, /history: previous/);
   assert.match(source, /previousInteractionId/);
