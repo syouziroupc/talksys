@@ -16,7 +16,7 @@ test('v84 common Gemini path is single-pass grounded without serial verification
 
 test('Discord confirmed Whisper remains the primary text while Nova is side-channel evidence', () => {
   assert.match(bridge, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
-  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives\)/);
+  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives, spokenBackchannel\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
   assert.match(bridge, /\/api\/realtime-stt/);
   assert.match(bridge, /\/api\/fast-reaction/);
