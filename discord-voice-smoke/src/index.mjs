@@ -1873,25 +1873,33 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
         return;
       } catch {}
 
-      voiceRecoveryAttempts += 1;
-      try {
-        const accepted = boundConnection.rejoin();
-        if (!accepted) throw new Error('voice_rejoin_rejected');
-        await entersState(boundConnection, VoiceConnectionStatus.Ready, VOICE_REJOIN_TIMEOUT_MS);
-        if (boundConnection === connection) {
-          boundConnection.subscribe(player);
-          voiceRecoveryAttempts = 0;
-          console.log('[discord] voice manual rejoin recovered');
-          mirrorRuntimeLog('VOICE-RECOVER', 'manual rejoin recovered');
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
+        voiceRecoveryAttempts = attempt;
+        try {
+          const accepted = boundConnection.rejoin();
+          if (!accepted) throw new Error('voice_rejoin_rejected');
+          await entersState(boundConnection, VoiceConnectionStatus.Ready, VOICE_REJOIN_TIMEOUT_MS);
+          if (boundConnection === connection) {
+            boundConnection.subscribe(player);
+            voiceRecoveryAttempts = 0;
+            console.log(`[discord] voice manual rejoin recovered attempt=${attempt}`);
+            mirrorRuntimeLog('VOICE-RECOVER', `manual rejoin recovered attempt=${attempt}`);
+          }
+          return;
+        } catch (error) {
+          console.error(`[discord] voice manual rejoin failed attempt=${attempt}:`, error?.message || error);
+          mirrorRuntimeLog('VOICE-RECOVER', `manual rejoin failed attempt=${attempt}: ${String(error?.message || error).slice(0, 160)}`);
+          if (attempt < 3) {
+            const delayMs = 500 * (2 ** (attempt - 1));
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
         }
-      } catch (error) {
-        console.error(`[discord] voice manual rejoin failed attempt=${voiceRecoveryAttempts}:`, error?.message || error);
-        mirrorRuntimeLog('VOICE-RECOVER', `manual rejoin failed attempt=${voiceRecoveryAttempts}: ${String(error?.message || error).slice(0, 160)}`);
-        if (voiceRecoveryAttempts >= 3 && boundConnection === connection) {
-          console.error('[discord] voice recovery exhausted; destroying stale voice connection');
-          mirrorRuntimeLog('VOICE-RECOVER', 'exhausted; stale voice connection destroyed');
-          destroyVoiceConnection();
-        }
+      }
+      if (boundConnection === connection) {
+        console.error('[discord] voice recovery exhausted; destroying stale voice connection');
+        mirrorRuntimeLog('VOICE-RECOVER', 'exhausted; stale voice connection destroyed');
+        destroyVoiceConnection();
       }
     }, 250);
     console.warn('[discord] voice disconnected; waiting for library auto-recovery');
