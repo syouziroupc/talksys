@@ -1863,6 +1863,11 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
     voiceRecoveryTimer = setTimeout(async () => {
       voiceRecoveryTimer = null;
       if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
+      if (boundConnection.state.status === VoiceConnectionStatus.Ready) {
+        boundConnection.subscribe(player);
+        voiceRecoveryAttempts = 0;
+        return;
+      }
       try {
         await Promise.race([
           entersState(boundConnection, VoiceConnectionStatus.Signalling, 5000),
@@ -1871,7 +1876,13 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
         console.warn('[discord] voice auto-recovery in progress; manual rejoin skipped');
         mirrorRuntimeLog('VOICE-RECOVER', 'library auto-recovery detected');
         return;
-      } catch {}
+      } catch {
+        if (boundConnection.state.status === VoiceConnectionStatus.Ready) {
+          boundConnection.subscribe(player);
+          voiceRecoveryAttempts = 0;
+          return;
+        }
+      }
 
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
