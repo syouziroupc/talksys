@@ -14,6 +14,7 @@ export const SPLIT_CONTEXT_REVISION = 'talksys-v62-split-utterance-context-r1';
 export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
 export const DISCORD_PIPELINE_REVISION = 'talksys-v97-region-rescue-d1-archive-r1';
+export const FALLBACK_CHANNEL_REVISION = 'talksys-v109-fallback-voice-entry-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -1898,6 +1899,58 @@ async function voiceHealth(request, env, ctx) {
   }
 }
 
+function envEnabled(value) {
+  return /^(?:1|true|yes|on)$/i.test(String(value ?? '').trim());
+}
+
+function fallbackChannelHealth(env) {
+  const telephonyEnabled = envEnabled(env?.TELEPHONY_ENABLED);
+  const telephonyTokenConfigured = Boolean(String(env?.TELEPHONY_SHARED_TOKEN || '').trim());
+  return {
+    ok: true,
+    revision: FALLBACK_CHANNEL_REVISION,
+    recommendedDemoEntry: '/call',
+    channels: {
+      webVoice: {
+        mode: 'browser-voice',
+        entry: '/call',
+        entryConfigured: true,
+        requires: 'browser microphone permission',
+      },
+      lineWebVoice: {
+        mode: 'web-voice-link',
+        entry: '/line-voice',
+        entryConfigured: true,
+        nativeLineCallMedia: false,
+        note: 'LINEからリンクを開き、既存TalkSys Web音声経路を使用',
+      },
+      pstn: {
+        provider: 'telnyx',
+        entry: '/telnyx/voice',
+        enabled: telephonyEnabled,
+        sharedTokenConfigured: telephonyTokenConfigured,
+        configured: telephonyEnabled && telephonyTokenConfigured,
+      },
+      discord: {
+        mode: 'external-voice-bridge',
+        entry: '/talksys command in Discord',
+        repositoryAdapter: 'discord-voice-smoke',
+        runtimeDependent: true,
+      },
+    },
+  };
+}
+
+function webVoiceAliasRequest(request, channel) {
+  const target = new URL(request.url);
+  target.pathname = '/';
+  target.searchParams.set('channel', channel);
+  return new Request(target.toString(), {
+    method: 'GET',
+    headers: request.headers,
+  });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -1906,6 +1959,15 @@ export default {
       turn: (body, signal) => runTalkSysTurn(request, env, body, signal || request.signal, ctx),
     });
     if (telephonyResponse) return telephonyResponse;
+
+    if (request.method === 'GET' && url.pathname === '/channel-health') {
+      return json(fallbackChannelHealth(env));
+    }
+
+    if (request.method === 'GET' && (url.pathname === '/call' || url.pathname === '/line-voice')) {
+      const channel = url.pathname === '/line-voice' ? 'line-web-voice' : 'web-voice';
+      return talksys.fetch(webVoiceAliasRequest(request, channel), env, ctx);
+    }
 
     if (request.method === 'GET' && url.pathname === '/api/conversation-logs') {
       return conversationLogsResponse(request, env);
