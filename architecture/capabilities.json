@@ -11,11 +11,11 @@
     "runtime.entry": {
       "canonical": "src/integrated-entry.js",
       "status": "production",
-      "responsibility": "Unified production HTTP entry point that routes Telnyx phone traffic before delegating all normal TalkSys traffic to the existing terminal response boundary",
+      "responsibility": "Unified production HTTP entry point that routes Telnyx phone traffic, exposes stable /call and /line-voice Web voice fallbacks, and delegates all answer generation to the existing TalkSys answer boundary",
       "companions": [
         "src/entry.js"
       ],
-      "migrationNote": "The wrapper contains no answer model of its own. Normal TalkSys requests continue through src/entry.js unchanged; phone turns are delegated back into that same existing TalkSys answer path."
+      "migrationNote": "The wrapper contains no answer model of its own. Web fallback aliases rewrite to the canonical Web UI, and phone turns are delegated back into the same TalkSys answer path."
     },
     "telephony.intake": {
       "canonical": "src/telephony/index.js",
@@ -92,7 +92,7 @@
     "ui.web": {
       "canonical": "src/ui-v45.js",
       "status": "production",
-      "responsibility": "Current web UI imported by the production worker",
+      "responsibility": "Current Web UI imported by the production worker and reused by the stable /call and /line-voice fallback entrypoints",
       "migrationNote": "Legacy versioned filename; future replacement requires registry update."
     },
     "speech.turntaking": {
