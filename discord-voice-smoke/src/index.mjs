@@ -36,6 +36,8 @@ const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
 const DISCORD_READY_TIMEOUT_MS = 120000;
 const DISCORD_HEALTH_LOG_MS = 60000;
+const BRIDGE_HEARTBEAT_MS = 5000;
+const BRIDGE_HEARTBEAT_FILE = process.env.TALKSYS_BRIDGE_HEARTBEAT_FILE || '';
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
 const RECENT_USER_TURN_WINDOW_MS = 2500;
@@ -108,6 +110,7 @@ let voiceRecoveryTimer = null;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
+let bridgeHeartbeatTimer = null;
 let activePipelineStage = 'idle';
 let activePipelineStageAt = 0;
 let activePipelineUtteranceId = '';
@@ -136,6 +139,23 @@ function setPipelineStage(stage, utteranceId = '') {
     mirrorRuntimeLog('STALL', `u=${shortUtteranceId(activePipelineUtteranceId)} stage=${activePipelineStage} age=${age}ms player=${player.state.status}`);
     console.warn(`[stall] utterance=${activePipelineUtteranceId || '-'} stage=${activePipelineStage} age=${age}ms player=${player.state.status}`);
   }, 8000);
+}
+
+function writeBridgeHeartbeat() {
+  if (!BRIDGE_HEARTBEAT_FILE) return;
+  try {
+    fs.writeFileSync(BRIDGE_HEARTBEAT_FILE, JSON.stringify({
+      pid: process.pid,
+      at: Date.now(),
+      revision: DISCORD_BRIDGE_REVISION,
+      stage: activePipelineStage,
+      utteranceId: activePipelineUtteranceId,
+      player: player.state.status,
+      answering,
+    }));
+  } catch (error) {
+    console.warn('[heartbeat] write failed:', error?.message || error);
+  }
 }
 
 function installedPackageVersion(relativePath) {
@@ -841,6 +861,35 @@ async function transcribeCapturedUtterance(pcm, utteranceId, timeline, signal) {
   };
 }
 
+async function postVoiceCheckpoint(stage, utteranceId, extra = {}) {
+  try {
+    const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice-stage', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer ' + BRIDGE_TOKEN,
+      },
+      body: JSON.stringify({
+        sessionId: discordSessionId || `discord-${randomUUID()}`,
+        utteranceId,
+        channel: 'discord',
+        stage,
+        bridgeRevision: DISCORD_BRIDGE_REVISION,
+        at: Date.now(),
+        ...extra,
+      }),
+    }, {
+      timeoutMs: 1800,
+      label: 'voice-stage',
+    });
+    await response.arrayBuffer().catch(() => {});
+    return response.ok;
+  } catch (error) {
+    console.warn('[checkpoint] voice stage failed:', error?.message || error);
+    return false;
+  }
+}
+
 async function postVoiceMetrics({ text, utteranceId, timings, timeline, realtimeTranscript = '', confirmedTranscript = '', rawTranscript = '', correctedTranscript = '', correctionReason = '', bargeInTriggerMs = 0, geminiInputText = '', error = '' }) {
   try {
     const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice-metrics', {
@@ -1328,6 +1377,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     timeline.turnStartAt = Date.now();
     timings.answerStartMs = Math.max(0, timeline.turnStartAt - (timeline.utteranceEndAt || timeline.turnStartAt));
     setPipelineStage('turn', utteranceId);
+    postVoiceCheckpoint('turn-start', utteranceId, { text: confirmedTranscript }).catch(() => {});
 
     if (!timeline.fastReactionRequestedAt && fastReaction?.shouldSpeak && String(fastReaction?.text || '').trim()) {
       playWebFastReaction(fastReaction, utteranceId, sessionEpoch, timeline, confirmedTranscript);
@@ -1359,6 +1409,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
 
     timeline.ttsStartAt = Date.now();
     setPipelineStage('tts', utteranceId);
+    postVoiceCheckpoint('tts-start', utteranceId).catch(() => {});
     const tts = await synthesize(turn.answer, controller.signal, { utteranceId, purpose: 'answer' });
     timeline.ttsEndAt = Date.now();
     setPipelineStage('tts-complete', utteranceId);
@@ -1368,6 +1419,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
 
     const playbackWallStarted = Date.now();
     setPipelineStage('playback', utteranceId);
+    postVoiceCheckpoint('playback-start', utteranceId).catch(() => {});
     await playMp3(tts.audio, {
       spokenText: turn.answer,
       purpose: 'answer',
@@ -1380,6 +1432,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     });
     timings.playbackMs = Date.now() - playbackWallStarted;
     setPipelineStage('playback-complete', utteranceId);
+    postVoiceCheckpoint('pipeline-complete', utteranceId).catch(() => {});
   } catch (error) {
     pipelineError = String(error?.message || error || '').slice(0, 500);
     if (controller.signal.aborted || turnSerial !== activeTurnSerial) {
@@ -1444,6 +1497,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
   const controller = new AbortController();
   try {
     setPipelineStage('stt', utteranceId);
+    postVoiceCheckpoint('stt-start', utteranceId).catch(() => {});
     const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal);
     if (isStaleVoiceResult(userId, sessionEpoch, utteranceSerial)) {
       mirrorRuntimeLog('STT-STALE', `ignored resolved-order ${utteranceId} serial=${utteranceSerial}`);
@@ -2151,6 +2205,9 @@ client.once('ready', async () => {
     discordReadyWatchdog = null;
   }
   if (discordHealthTimer) clearInterval(discordHealthTimer);
+  if (bridgeHeartbeatTimer) clearInterval(bridgeHeartbeatTimer);
+  writeBridgeHeartbeat();
+  bridgeHeartbeatTimer = setInterval(writeBridgeHeartbeat, BRIDGE_HEARTBEAT_MS);
   discordHealthTimer = setInterval(() => {
     console.log(`[discord] gateway health ready=${client.isReady()} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
     const stageAge = activePipelineStageAt ? Date.now() - activePipelineStageAt : 0;
