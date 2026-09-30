@@ -61,7 +61,7 @@ test('transcript provenance can show realtime versus confirmed text without maki
 test('wait cue is independent from the final answer dependency chain', () => {
   assert.match(bridge, /activeWaitCue = startWaitCue/);
   assert.match(bridge, /const turn = await talk/);
-  assert.match(bridge, /activeWaitCue\?\.stop\('final-answer-ready'\)/);
+  assert.match(bridge, /activeWaitCue\?\.utteranceId === utteranceId[\s\S]*activeWaitCue\.stop\?\.\('final-answer-ready'\)/);
   assert.doesNotMatch(bridge, /await activeWaitCue\.done/);
 });
 
