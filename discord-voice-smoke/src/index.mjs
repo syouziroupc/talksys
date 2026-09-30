@@ -149,6 +149,7 @@ function writeBridgeHeartbeat() {
       at: Date.now(),
       revision: DISCORD_BRIDGE_REVISION,
       stage: activePipelineStage,
+      stageAt: activePipelineStageAt,
       utteranceId: activePipelineUtteranceId,
       player: player.state.status,
       answering,
