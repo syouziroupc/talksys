@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v113-hard-lifecycle-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v114-no-stale-owner-r1';
 const WEB_UNIFIED_MODE = process.env.TALKSYS_WEB_UNIFIED !== '0';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
@@ -38,6 +38,9 @@ const DISCORD_READY_TIMEOUT_MS = 120000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const BRIDGE_HEARTBEAT_MS = 5000;
 const BRIDGE_HEARTBEAT_FILE = process.env.TALKSYS_BRIDGE_HEARTBEAT_FILE || '';
+const BRIDGE_SHUTDOWN_FILE = process.env.TALKSYS_BRIDGE_SHUTDOWN_FILE || '';
+const BRIDGE_SHUTDOWN_POLL_MS = 500;
+const DISCORD_REST_DEADLINE_MS = 8000;
 const REALTIME_WS_MAX_BUFFERED_BYTES = 256 * 1024;
 const REALTIME_PREOPEN_MAX_BYTES = 96 * 1024;
 const REALTIME_WS_CONNECT_TIMEOUT_MS = 5000;
@@ -95,6 +98,7 @@ let voiceUtteranceSerial = 0;
 const latestResolvedVoiceByUser = new Map();
 let discordSessionId = '';
 const pendingTurns = [];
+const managedChildProcesses = new Map();
 let activeTurnAbortController = null;
 let activeTurnSerial = 0;
 let activeWaitCue = null;
@@ -123,6 +127,9 @@ let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
 let bridgeHeartbeatTimer = null;
+let bridgeShutdownPollTimer = null;
+let bridgeShutdownPollInFlight = false;
+let bridgeShuttingDown = false;
 const pipelineStages = new Map();
 let activePipelineStage = 'idle';
 let activePipelineStageAt = 0;
@@ -946,6 +953,20 @@ function boundedSignal(parentSignal, timeoutMs) {
   return parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
 }
 
+async function withPromiseDeadline(promise, timeoutMs = DISCORD_REST_DEADLINE_MS, label = 'operation') {
+  let timer = null;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label}_timeout`)), Math.max(1, Number(timeoutMs) || 1));
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function fetchWithBudget(url, init = {}, { timeoutMs = 15000, label = 'request' } = {}) {
   const response = await fetch(url, {
     ...init,
@@ -983,7 +1004,7 @@ function pcm16MonoToWav16k(pcm) {
 
 function createWebCompatibleResampler() {
   if (!ffmpegPath) throw new Error('ffmpeg_static_missing');
-  const ffmpeg = spawn(ffmpegPath, [
+  const ffmpeg = trackManagedChild(spawn(ffmpegPath, [
     '-hide_banner', '-loglevel', 'error',
     '-f', 's16le',
     '-ar', '48000',
@@ -994,7 +1015,7 @@ function createWebCompatibleResampler() {
     '-ar', String(WEB_VOICE_CAPTURE_POLICY.targetRate),
     '-ac', '1',
     'pipe:1',
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  ], { stdio: ['pipe', 'pipe', 'pipe'] }), 'resampler');
   let stderr = '';
   ffmpeg.stderr.on('data', (d) => { stderr += String(d); });
   ffmpeg.on('error', (error) => console.error('[resample]', error.message));
@@ -1218,6 +1239,24 @@ async function talk(text, utteranceId = '', signal, speechAlternatives = [], spo
   return body;
 }
 
+function trackManagedChild(child, label = 'child') {
+  if (!child) return child;
+  const record = { child, label, startedAt: Date.now() };
+  managedChildProcesses.set(child, record);
+  const release = () => managedChildProcesses.delete(child);
+  child.once('close', release);
+  child.once('error', () => {
+    if (child.exitCode !== null || child.signalCode !== null || child.killed) release();
+  });
+  return child;
+}
+
+function terminateAllManagedChildren(reason = 'bridge-shutdown') {
+  for (const record of [...managedChildProcesses.values()]) {
+    terminateChildProcessTree(record.child, `${reason}:${record.label}`);
+  }
+}
+
 function terminateChildProcessTree(child, reason = 'terminate') {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   mirrorRuntimeLog('CHILD', `terminate pid=${child.pid || '?'} reason=${reason}`);
@@ -1312,7 +1351,7 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
   ].join('; ');
 
   const started = Date.now();
-  const child = spawn('powershell.exe', [
+  const child = trackManagedChild(spawn('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',
     '-ExecutionPolicy', 'Bypass',
@@ -1325,7 +1364,7 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
     },
     stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
-  });
+  }), 'windows-tts');
 
   let stderr = '';
   child.stderr.on('data', (chunk) => { stderr += String(chunk); });
@@ -1454,12 +1493,18 @@ async function speakRecoveryPrompt(reason = 'pipeline-failure', sessionEpoch = v
     let audio = recoveryAudio;
     if (!audio?.length) audio = await warmRecoveryAudio();
     if (!audio?.length || sessionEpoch !== voiceEpoch) return false;
-    if (failedUtteranceEndAt > 0 && (lastUserSpeechAt > failedUtteranceEndAt || lastUserPcmAt > failedUtteranceEndAt)) {
+    const canStartRecovery = () => sessionEpoch === voiceEpoch
+      && !(failedUtteranceEndAt > 0
+        && (lastUserSpeechAt > failedUtteranceEndAt || lastUserPcmAt > failedUtteranceEndAt));
+    if (!canStartRecovery()) {
       console.warn(`[recovery] suppressed after synthesis because a newer user utterance started reason=${reason}`);
       return false;
     }
-    player.stop(true);
-    await playMp3(audio, { spokenText: RECOVERY_PROMPT, purpose: 'recovery' });
+    await playMp3(audio, {
+      spokenText: RECOVERY_PROMPT,
+      purpose: 'recovery',
+      canStart: canStartRecovery,
+    });
     console.warn(`[recovery] spoken reason=${reason}`);
     return true;
   } catch (error) {
@@ -1487,14 +1532,14 @@ async function playMp3(mp3, options = {}) {
 
   const playbackId = ++audioPlaybackSerial;
   const ffmpegStarted = Date.now();
-  const ffmpeg = spawn(ffmpegPath, [
+  const ffmpeg = trackManagedChild(spawn(ffmpegPath, [
     '-hide_banner', '-loglevel', 'error',
     '-i', 'pipe:0',
     '-f', 's16le',
     '-ar', '48000',
     '-ac', '2',
     'pipe:1',
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  ], { stdio: ['pipe', 'pipe', 'pipe'] }), 'playback-ffmpeg');
 
   let ffmpegError = '';
   let ffmpegSpawnMs = 0;
@@ -1650,6 +1695,10 @@ async function playMp3(mp3, options = {}) {
     }, 500);
 
     try {
+      if (typeof options?.canStart === 'function' && !options.canStart()) {
+        fail(new Error('playback_start_guard_rejected'), 'start-guard');
+        return;
+      }
       ffmpeg.stdin.end(mp3);
       player.play(resource);
     } catch (error) {
@@ -1766,6 +1815,9 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
       : [];
     const spokenBackchannel = fastReaction?.shouldSpeak ? String(fastReaction?.text || '').trim() : '';
     const turn = await talk(confirmedTranscript, utteranceId, controller.signal, speechAlternatives, spokenBackchannel);
+    if (controller.signal.aborted || turnSerial !== activeTurnSerial || sessionEpoch !== voiceEpoch) {
+      throw controller.signal.reason || new Error('stale_turn_after_response');
+    }
     timeline.finalAnswerAt = Date.now();
     setPipelineStage('turn-complete', utteranceId);
     timings.primaryMs = Number(turn?.timings?.primaryMs) || 0;
@@ -1777,12 +1829,15 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
 
     // Waiting audio is never part of the answer dependency chain.
     preAnswerCueSerial += 1;
-  waitCueSerial += 1;
-    activeWaitCue?.stop('final-answer-ready');
-    activeWaitCue = null;
-    activeFastReaction?.stop?.('final-answer-ready');
-    activeFastReaction = null;
-    player.stop(true);
+    waitCueSerial += 1;
+    if (activeWaitCue?.utteranceId === utteranceId) {
+      activeWaitCue.stop?.('final-answer-ready');
+      activeWaitCue = null;
+    }
+    if (activeFastReaction?.utteranceId === utteranceId) {
+      activeFastReaction.stop?.('final-answer-ready');
+      activeFastReaction = null;
+    }
 
     timeline.ttsStartAt = Date.now();
     setPipelineStage('tts', utteranceId);
@@ -2211,10 +2266,12 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
 
   const markSpeaking = (startedDuringBotPlayback = false) => {
     if (completed) return;
+    if (startedDuringBotPlayback) overlappedBotPlayback = true;
+    lastUserSpeechAt = Date.now();
+    if (speakingMarked) return;
     speakingMarked = true;
     speakingMarkedAt = Date.now();
     ensureUtteranceSerial();
-    if (startedDuringBotPlayback) overlappedBotPlayback = true;
     if (!realtimeHelper || realtimeHelper.active?.utteranceId !== utteranceId) {
       realtimeHelper = beginRealtimeUtterance(userId, {
         utteranceId,
@@ -2224,7 +2281,6 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
         startedDuringBotPlayback: overlappedBotPlayback,
       });
     }
-    lastUserSpeechAt = Date.now();
     if (!timeline.discordReceiveStartAt) timeline.discordReceiveStartAt = lastUserSpeechAt;
     mirrorRuntimeLog('RX', `u=${shortUtteranceId(utteranceId)} speaking.start overlap=${overlappedBotPlayback ? 1 : 0}`);
     if (packetStartWatchdog) clearTimeout(packetStartWatchdog);
@@ -2416,6 +2472,12 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
 
   opus.on('data', (opusChunk) => {
     const at = Date.now();
+    if (!speakingMarked) {
+      const botAudiblySpeaking = Boolean(activeBotPlaybackRecord) || player.state.status === AudioPlayerStatus.Playing;
+      const inferredOverlap = botAudiblySpeaking || (Date.now() - lastBotPlaybackEndedAt < 1200);
+      mirrorRuntimeLog('RX', `u=${shortUtteranceId(utteranceId)} speaking inferred from first Opus packet`);
+      markSpeaking(inferredOverlap);
+    }
     if (!firstOpusAt) firstOpusAt = at;
     if (lastOpusAt) maxOpusGapMs = Math.max(maxOpusGapMs, at - lastOpusAt);
     lastOpusAt = at;
@@ -2461,6 +2523,7 @@ function destroyVoiceConnection() {
   sessions.clear();
   closeRealtimeHelpers();
   player.stop(true);
+  terminateAllManagedChildren('voice-destroy');
   try { connection?.destroy(); } catch {}
   connection = undefined;
 }
@@ -2646,11 +2709,11 @@ const TALKSYS_COMMANDS = [
 ];
 
 async function ensureTalkSysCommands(guild) {
-  const existing = await guild.commands.fetch();
+  const existing = await withPromiseDeadline(guild.commands.fetch(), DISCORD_REST_DEADLINE_MS, 'guild-commands-fetch');
   for (const data of TALKSYS_COMMANDS) {
     const command = existing.find((item) => item.name === data.name);
-    if (command) await guild.commands.edit(command.id, data);
-    else await guild.commands.create(data);
+    if (command) await withPromiseDeadline(guild.commands.edit(command.id, data), DISCORD_REST_DEADLINE_MS, 'guild-command-edit');
+    else await withPromiseDeadline(guild.commands.create(data), DISCORD_REST_DEADLINE_MS, 'guild-command-create');
   }
 }
 
@@ -2699,7 +2762,7 @@ client.on('interactionCreate', async (interaction) => {
 
   console.log(`[interaction] received command=/${interaction.commandName} guild=${interaction.guild.id} user=${interaction.user.id}`);
   try {
-    await interaction.deferReply({ ephemeral: true });
+    await withPromiseDeadline(interaction.deferReply({ ephemeral: true }), 2500, 'interaction-defer');
     console.log(`[interaction] acked command=/${interaction.commandName}`);
   } catch (error) {
     console.error(`[interaction] ack failed command=/${interaction.commandName}:`, error?.stack || error);
@@ -2709,9 +2772,9 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.commandName === 'logs') {
       const attached = await attachRuntimeLogChannel(interaction.channel);
-      await interaction.editReply(attached
+      await withPromiseDeadline(interaction.editReply(attached
         ? 'TalkSysのライブログをこのチャンネルに表示します。'
-        : 'このチャンネルにはライブログを表示できません。');
+        : 'このチャンネルにはライブログを表示できません。'), DISCORD_REST_DEADLINE_MS, 'interaction-edit');
       return;
     }
 
@@ -2721,22 +2784,22 @@ client.on('interactionCreate', async (interaction) => {
       const voiceState = interaction.guild.voiceStates.cache.get(interaction.user.id);
       const channelId = voiceState?.channelId;
       if (!channelId) {
-        await interaction.editReply('先にボイスチャンネルへ参加してから /talksys を実行してください。');
+        await withPromiseDeadline(interaction.editReply('先にボイスチャンネルへ参加してから /talksys を実行してください。'), DISCORD_REST_DEADLINE_MS, 'interaction-edit');
         return;
       }
-      const channel = await interaction.guild.channels.fetch(channelId);
+      const channel = await withPromiseDeadline(interaction.guild.channels.fetch(channelId), DISCORD_REST_DEADLINE_MS, 'voice-channel-fetch');
       await connectToVoiceChannel(channel, interaction.user.id);
-      await interaction.editReply(`TalkSysを「${channel.name}」へ接続しました。`);
+      await withPromiseDeadline(interaction.editReply(`TalkSysを「${channel.name}」へ接続しました。`), DISCORD_REST_DEADLINE_MS, 'interaction-edit');
       return;
     }
 
     mirrorRuntimeLog('CMD', '/leave');
     destroyVoiceConnection();
-    await interaction.editReply('TalkSysをボイスチャンネルから退出させました。');
+    await withPromiseDeadline(interaction.editReply('TalkSysをボイスチャンネルから退出させました。'), DISCORD_REST_DEADLINE_MS, 'interaction-edit');
   } catch (error) {
     console.error('[command]', error?.stack || error);
     try {
-      await interaction.editReply(`TalkSysのVC操作に失敗しました: ${String(error?.message || error).slice(0, 180)}`);
+      await withPromiseDeadline(interaction.editReply(`TalkSysのVC操作に失敗しました: ${String(error?.message || error).slice(0, 180)}`), DISCORD_REST_DEADLINE_MS, 'interaction-edit');
     } catch (replyError) {
       console.error('[command] failure reply failed:', replyError?.message || replyError);
     }
@@ -2787,6 +2850,40 @@ client.on('shardResume', (shardId, replayedEvents) => {
 });
 player.on('error', (error) => { console.error('[player]', error.message); mirrorRuntimeLog('ERROR', `player: ${error.message}`); });
 
+function requestBridgeShutdown(reason = 'requested', exitCode = 124) {
+  if (bridgeShuttingDown) return;
+  bridgeShuttingDown = true;
+  mirrorRuntimeLog('SHUTDOWN', `reason=${reason} code=${exitCode}`);
+  if (discordReadyWatchdog) clearTimeout(discordReadyWatchdog);
+  if (discordHealthTimer) clearInterval(discordHealthTimer);
+  if (bridgeHeartbeatTimer) clearInterval(bridgeHeartbeatTimer);
+  if (bridgeShutdownPollTimer) clearInterval(bridgeShutdownPollTimer);
+  try { destroyVoiceConnection(); } catch {}
+  try { terminateAllManagedChildren(`shutdown-${reason}`); } catch {}
+  try { client.destroy(); } catch {}
+  if (BRIDGE_SHUTDOWN_FILE) fs.promises.unlink(BRIDGE_SHUTDOWN_FILE).catch(() => {});
+  setTimeout(() => process.exit(exitCode), 100).unref();
+}
+
+function pollBridgeShutdownRequest() {
+  if (!BRIDGE_SHUTDOWN_FILE || bridgeShutdownPollInFlight || bridgeShuttingDown) return;
+  bridgeShutdownPollInFlight = true;
+  fs.promises.readFile(BRIDGE_SHUTDOWN_FILE, {
+    encoding: 'utf8',
+    signal: AbortSignal.timeout(400),
+  })
+    .then((value) => {
+      const reason = String(value || 'supervisor-request').trim().slice(0, 120) || 'supervisor-request';
+      requestBridgeShutdown(reason, 124);
+    })
+    .catch((error) => {
+      if (error?.code !== 'ENOENT' && error?.name !== 'AbortError' && error?.name !== 'TimeoutError') {
+        console.warn('[shutdown] poll failed:', error?.message || error);
+      }
+    })
+    .finally(() => { bridgeShutdownPollInFlight = false; });
+}
+
 process.on('unhandledRejection', (reason) => {
   console.error('[process] unhandled rejection:', reason?.stack || reason);
   mirrorRuntimeLog('ERROR', `unhandled: ${reason?.message || reason}`);
@@ -2795,17 +2892,11 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (error) => {
   console.error('[process] uncaught exception:', error?.stack || error);
   mirrorRuntimeLog('ERROR', `uncaught: ${error?.message || error}`);
-  process.exitCode = 3;
-  setTimeout(() => process.exit(3), 100).unref();
+  requestBridgeShutdown('uncaught-exception', 3);
 });
 
-process.on('SIGINT', () => {
-  if (discordReadyWatchdog) clearTimeout(discordReadyWatchdog);
-  if (discordHealthTimer) clearInterval(discordHealthTimer);
-  destroyVoiceConnection();
-  client.destroy();
-  process.exit(0);
-});
+process.on('SIGINT', () => requestBridgeShutdown('sigint', 0));
+process.on('SIGTERM', () => requestBridgeShutdown('sigterm', 0));
 
 discordReadyWatchdog = setTimeout(() => {
   if (client.isReady()) return;
@@ -2816,6 +2907,10 @@ discordReadyWatchdog = setTimeout(() => {
 
 mirrorRuntimeLog('BOOT', `process start node=${process.version}`);
 mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
+if (BRIDGE_SHUTDOWN_FILE) {
+  bridgeShutdownPollTimer = setInterval(pollBridgeShutdownRequest, BRIDGE_SHUTDOWN_POLL_MS);
+  pollBridgeShutdownRequest();
+}
 // Keep startup free of semantic warmup. The shared Worker decides reactions.
 // This also avoids blocking Gateway login on local TTS work.
 await warmFastReactionAudio();
