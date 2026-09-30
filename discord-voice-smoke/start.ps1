@@ -89,9 +89,14 @@ while ($true) {
           $stageAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$heartbeat.stageAt).LocalDateTime
           $stageAgeSeconds = ((Get-Date) - $stageAt).TotalSeconds
         }
-        if ($stage -and $stage -ne 'idle' -and $stageAgeSeconds -gt 30) {
+        $blockingProp = $heartbeat.PSObject.Properties['stageBlocking']
+        $deadlineProp = $heartbeat.PSObject.Properties['stageDeadlineMs']
+        $stageBlocking = if ($blockingProp) { [bool]$blockingProp.Value } else { $stage -and $stage -ne 'idle' }
+        $deadlineMs = if ($deadlineProp -and [double]$deadlineProp.Value -gt 0) { [double]$deadlineProp.Value } else { 30000 }
+        $deadlineSeconds = [math]::Max(5, ($deadlineMs / 1000.0) + 5)
+        if ($stageBlocking -and $stage -and $stage -ne 'idle' -and $stageAgeSeconds -gt $deadlineSeconds) {
           $hung = $true
-          Write-Warning "[supervisor] pipeline stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s; killing Discord bridge pid=$($proc.Id)"
+          Write-Warning "[supervisor] blocking pipeline stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s deadline=$([math]::Round($deadlineSeconds,1))s; killing Discord bridge pid=$($proc.Id)"
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           break
         }
