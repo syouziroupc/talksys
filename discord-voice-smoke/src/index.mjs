@@ -47,6 +47,7 @@ const PLAYBACK_START_TIMEOUT_MS = 5000;
 const PLAYBACK_STALL_TIMEOUT_MS = 10000;
 const HEARTBEAT_WRITE_TIMEOUT_MS = 1500;
 const RUNTIME_LOG_WRITE_TIMEOUT_MS = 4000;
+const TTS_FILE_READ_TIMEOUT_MS = 2000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
 const RECENT_USER_TURN_WINDOW_MS = 2500;
@@ -777,7 +778,8 @@ function ensureRealtimeHelper(userId) {
     ws.onerror = () => {
       helper.ready = false;
       helper.errorCount = Number(helper.errorCount || 0) + 1;
-      mirrorRuntimeLog('RT-STT', `error user=${userId} count=${helper.errorCount} readyFor=${helper.connectedAt ? Date.now() - helper.connectedAt : 0}ms; Whisper continues`);
+      mirrorRuntimeLog('RT-STT', `error user=${userId} count=${helper.errorCount} readyFor=${helper.connectedAt ? Date.now() - helper.connectedAt : 0}ms; resetting helper`);
+      try { ws.close(); } catch {}
     };
     ws.onclose = (event) => {
       if (helper.connectTimer) {
@@ -1338,7 +1340,9 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
 
     let audio = Buffer.alloc(0);
     try {
-      audio = await fs.promises.readFile(tempFile);
+      audio = await fs.promises.readFile(tempFile, {
+        signal: boundedSignal(signal, TTS_FILE_READ_TIMEOUT_MS),
+      });
     } catch {}
 
     if (result.code !== 0 || audio.length < 44) {
@@ -1450,6 +1454,10 @@ async function speakRecoveryPrompt(reason = 'pipeline-failure', sessionEpoch = v
     let audio = recoveryAudio;
     if (!audio?.length) audio = await warmRecoveryAudio();
     if (!audio?.length || sessionEpoch !== voiceEpoch) return false;
+    if (failedUtteranceEndAt > 0 && (lastUserSpeechAt > failedUtteranceEndAt || lastUserPcmAt > failedUtteranceEndAt)) {
+      console.warn(`[recovery] suppressed after synthesis because a newer user utterance started reason=${reason}`);
+      return false;
+    }
     player.stop(true);
     await playMp3(audio, { spokenText: RECOVERY_PROMPT, purpose: 'recovery' });
     console.warn(`[recovery] spoken reason=${reason}`);
