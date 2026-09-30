@@ -17,8 +17,10 @@ test('Web capture policy remains canonical for browser capture and Discord audio
   assert.match(bridge, /highpass=f=\$\{WEB_VOICE_CAPTURE_POLICY\.highpassHz\},aresample=\$\{WEB_VOICE_CAPTURE_POLICY\.targetRate\}/);
 });
 
-test('Discord transport speaking gate is authoritative and browser VAD cannot discard speech', () => {
-  assert.match(bridge, /Discord already gates outgoing voice by speaking state/);
+test('Discord transport speaking gate remains primary while only clear silence is rejected locally', () => {
+  assert.match(bridge, /Discord speaking state is the primary transport gate/);
+  assert.match(bridge, /function isClearlySilentCapture/);
+  assert.match(bridge, /realtimeTranscript/);
   assert.match(bridge, /const pcm16Chunks = \[\]/);
   assert.match(bridge, /pcm16Chunks\.push\(Buffer\.from\(pcm16\)\)/);
   assert.match(bridge, /browserVadBypassed: true/);
