@@ -2752,7 +2752,8 @@ client.once('ready', async () => {
     console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
     console.error('[fatal]', error?.stack || error);
-    process.exitCode = 1;
+    mirrorRuntimeLog('ERROR', `command registration failed: ${String(error?.message || error).slice(0, 180)}`);
+    requestBridgeShutdown('command-registration-failed', 4);
   }
 });
 
