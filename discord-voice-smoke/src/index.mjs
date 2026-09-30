@@ -40,6 +40,7 @@ const BRIDGE_HEARTBEAT_MS = 5000;
 const BRIDGE_HEARTBEAT_FILE = process.env.TALKSYS_BRIDGE_HEARTBEAT_FILE || '';
 const REALTIME_WS_MAX_BUFFERED_BYTES = 256 * 1024;
 const REALTIME_PREOPEN_MAX_BYTES = 96 * 1024;
+const REALTIME_WS_CONNECT_TIMEOUT_MS = 5000;
 const WINDOWS_TTS_HARD_TIMEOUT_MS = 15000;
 const WINDOWS_TTS_QUEUE_WAIT_MS = 1500;
 const PLAYBACK_START_TIMEOUT_MS = 5000;
@@ -720,6 +721,7 @@ function ensureRealtimeHelper(userId) {
     reactionSeq: 0,
     active: null,
     reconnectTimer: null,
+    connectTimer: null,
     connectedAt: 0,
     errorCount: 0,
     closeCount: 0,
@@ -730,7 +732,22 @@ function ensureRealtimeHelper(userId) {
     const ws = new WebSocket(realtimeSttUrl());
     helper.ws = ws;
     ws.binaryType = 'arraybuffer';
+    helper.connectTimer = setTimeout(() => {
+      helper.connectTimer = null;
+      if (helper.ws !== ws || ws.readyState !== WebSocket.CONNECTING) return;
+      helper.ready = false;
+      helper.ws = null;
+      helper.buffered = [];
+      helper.bufferedBytes = 0;
+      mirrorRuntimeLog('RT-STT', `connect timeout user=${userId}; helper reset`);
+      if (realtimeHelpers.get(userId) === helper) realtimeHelpers.delete(userId);
+      try { ws.close(); } catch {}
+    }, REALTIME_WS_CONNECT_TIMEOUT_MS);
     ws.onopen = () => {
+      if (helper.connectTimer) {
+        clearTimeout(helper.connectTimer);
+        helper.connectTimer = null;
+      }
       helper.ready = true;
       helper.connectedAt = Date.now();
       if (helper.reconnectTimer) {
@@ -763,6 +780,10 @@ function ensureRealtimeHelper(userId) {
       mirrorRuntimeLog('RT-STT', `error user=${userId} count=${helper.errorCount} readyFor=${helper.connectedAt ? Date.now() - helper.connectedAt : 0}ms; Whisper continues`);
     };
     ws.onclose = (event) => {
+      if (helper.connectTimer) {
+        clearTimeout(helper.connectTimer);
+        helper.connectTimer = null;
+      }
       helper.ready = false;
       helper.ws = null;
       helper.closeCount = Number(helper.closeCount || 0) + 1;
@@ -854,6 +875,10 @@ function closeRealtimeHelpers() {
     if (helper.reconnectTimer) {
       clearTimeout(helper.reconnectTimer);
       helper.reconnectTimer = null;
+    }
+    if (helper.connectTimer) {
+      clearTimeout(helper.connectTimer);
+      helper.connectTimer = null;
     }
     try { helper.ws?.close(1000, 'voice-disconnect'); } catch {}
   }
@@ -2079,6 +2104,9 @@ function stopReceiverSession(userId, reason = 'voice-state-left') {
     helper.reactionSeq += 1;
     helper.active = null;
     if (helper.reconnectTimer) clearTimeout(helper.reconnectTimer);
+    if (helper.connectTimer) clearTimeout(helper.connectTimer);
+    helper.reconnectTimer = null;
+    helper.connectTimer = null;
     try { helper.ws?.close(1000, reason); } catch {}
     realtimeHelpers.delete(userId);
   }
