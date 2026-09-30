@@ -34,7 +34,8 @@ test('Discord launcher supervises exits and hung bridge heartbeat/stage states',
   assert.match(launcher, /Start-Process -FilePath 'node\.exe'/);
   assert.match(launcher, /heartbeat stale/);
   assert.match(launcher, /pipeline stage stuck/);
-  assert.match(launcher, /\$stageAgeSeconds -gt 30/);
+  assert.match(launcher, /\$stageBlocking/);
+  assert.match(launcher, /\$deadlineSeconds/);
   assert.match(launcher, /\$ageSeconds -gt 20/);
   assert.match(launcher, /Restarting in \$delaySeconds seconds/);
   assert.match(launcher, /\[math\]::Min\(60, \[math\]::Pow\(2, \[math\]::Min\(\$rapidFailures, 5\)\)\)/);

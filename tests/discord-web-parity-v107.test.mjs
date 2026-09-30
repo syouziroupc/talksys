@@ -5,7 +5,7 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
 test('Discord v108 preserves shared Worker semantic decisions', () => {
-  assert.match(source, /talksys-discord-bridge-v111-freeze-stage-r1/);
+  assert.match(source, /talksys-discord-bridge-v112-stall-lifecycle-r1/);
   assert.match(source, /TALKSYS_BASE_URL \+ '\/api\/fast-reaction'/);
   assert.match(source, /TALKSYS_BASE_URL \+ '\/api\/search-preface'/);
   assert.doesNotMatch(source, /eou-local/);
@@ -24,6 +24,6 @@ test('Discord v108 keeps freeze guards around shared services', () => {
   assert.match(source, /tts: 12000/);
   assert.match(source, /waitCue: 1800/);
   assert.match(source, /playback_start_timeout/);
-  assert.match(source, /playback_timeout/);
+  assert.match(source, /playback_stall_timeout/);
   assert.match(source, /AbortSignal\.any/);
 });

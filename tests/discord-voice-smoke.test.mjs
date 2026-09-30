@@ -31,7 +31,7 @@ test('Discord Whisper transcription is the normal path, not a fallback', () => {
 
 test('Discord trusts its speaking transport gate and normalizes audio to the Web STT format', () => {
   assert.match(source, /WEB_VOICE_CAPTURE_POLICY/);
-  assert.match(source, /Discord already gates outgoing voice by speaking state/);
+  assert.match(source, /Discord speaking state is the primary transport gate/);
   assert.match(source, /EndBehaviorType\.AfterSilence, duration: 1600/);
   assert.match(source, /const DISCORD_SEGMENT_SILENCE_MS = WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
   assert.match(source, /Date\.now\(\) - lastPcmAt >= DISCORD_SEGMENT_SILENCE_MS/);
@@ -86,7 +86,7 @@ test('Discord pre-caches recovery voice and speaks it on STT or answer failure',
 
 test('Discord playback watchdog kills stuck ffmpeg and detects silent start failures', () => {
   assert.match(source, /ffmpeg\.kill\('SIGKILL'\)/);
-  assert.match(source, /playback_timeout/);
+  assert.match(source, /playback_stall_timeout/);
   assert.match(source, /playback_start_timeout/);
 });
 
@@ -233,17 +233,42 @@ test('V110 bounds Discord live-log payload size while retaining recent diagnosti
 });
 
 
-test('V111 exposes freeze stage and bridge revision without changing answer semantics', () => {
-  assert.match(source, /talksys-discord-bridge-v111-freeze-stage-r1/);
-  assert.match(source, /function setPipelineStage/);
-  assert.match(source, /mirrorRuntimeLog\('STALL'/);
-  assert.match(source, /stage=\$\{activePipelineStage\}/);
-  assert.match(source, /bridgeRevision: DISCORD_BRIDGE_REVISION/);
-  assert.match(source, /METRICS-ERROR/);
+test('V112 tracks pipeline stages per utterance and always releases terminal STT state', () => {
+  assert.match(source, /talksys-discord-bridge-v112-stall-lifecycle-r1/);
+  assert.match(source, /const pipelineStages = new Map\(\)/);
+  assert.match(source, /function clearPipelineStage\(utteranceId = '', reason = 'idle'\)/);
+  assert.match(source, /pipelineStages\.delete\(key\)/);
+  assert.match(source, /finally \{[\s\S]*clearPipelineStage\(utteranceId, 'idle'\)/);
+  assert.match(source, /releaseDroppedUtterance[\s\S]*clearPipelineStage\(utteranceId, 'idle'\)/);
+  assert.match(source, /stageBlocking: activePipelineStageBlocking/);
+  assert.match(source, /stageDeadlineMs: activePipelineStageDeadlineMs/);
 });
 
+test('V112 drops only clearly silent Discord captures before Whisper', () => {
+  assert.match(source, /function isClearlySilentCapture/);
+  assert.match(source, /WEB_VOICE_CAPTURE_POLICY\.startRmsMin \* 0\.55/);
+  assert.match(source, /WEB_VOICE_CAPTURE_POLICY\.peakGateMin \* 0\.65/);
+  assert.match(source, /local-silence-gate/);
+  assert.match(source, /Whisper skipped/);
+});
 
-test('V111 persists stage checkpoints and exposes heartbeat supervisor contract', () => {
+test('V112 uses stream backpressure and progress-based playback stall detection', () => {
+  assert.match(source, /decoder\.pipe\(resampler\.stdin\)/);
+  assert.doesNotMatch(source, /resampler\.stdin\.write\(pcm48\)/);
+  assert.match(source, /player\.state\.playbackDuration/);
+  assert.match(source, /playback_stall_timeout/);
+  assert.doesNotMatch(source, /reject\(new Error\('playback_timeout'\)\)/);
+  assert.match(source, /setPipelineStage\('playback-active', utteranceId\)/);
+});
+
+test('V112 supervisor respects per-stage blocking deadlines', () => {
+  assert.match(launcher, /stageBlocking/);
+  assert.match(launcher, /stageDeadlineMs/);
+  assert.match(launcher, /blocking pipeline stage stuck/);
+  assert.match(launcher, /\$deadlineSeconds/);
+});
+
+test('V112 persists stage checkpoints and exposes heartbeat supervisor contract', () => {
   assert.match(source, /BRIDGE_HEARTBEAT_MS = 5000/);
   assert.match(source, /function writeBridgeHeartbeat/);
   assert.match(source, /postVoiceCheckpoint\('stt-start'/);
