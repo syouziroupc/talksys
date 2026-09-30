@@ -66,6 +66,7 @@ $shutdownFile = Join-Path $env:TEMP 'talksys-discord-shutdown.txt'
 $env:TALKSYS_BRIDGE_HEARTBEAT_FILE = $heartbeatFile
 $env:TALKSYS_BRIDGE_SHUTDOWN_FILE = $shutdownFile
 $rapidFailures = 0
+$externalShutdownExitCode = 73
 
 function Stop-TalkSysBridgeGracefully {
   param(
@@ -153,8 +154,12 @@ while ($true) {
   $exitCode = if ($hung) { 124 } else { $proc.ExitCode }
   $uptimeSeconds = ((Get-Date) - $startedAt).TotalSeconds
 
-  if ($exitCode -eq 0 -and -not $hung) {
-    Write-Host "[supervisor] Discord bridge stopped normally."
+  if (-not $hung -and ($exitCode -eq 0 -or $exitCode -eq $externalShutdownExitCode)) {
+    if ($exitCode -eq $externalShutdownExitCode) {
+      Write-Host "[supervisor] external maintenance shutdown completed; supervisor exiting."
+    } else {
+      Write-Host "[supervisor] Discord bridge stopped normally."
+    }
     exit 0
   }
 
