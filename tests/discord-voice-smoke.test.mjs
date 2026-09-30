@@ -224,3 +224,10 @@ test('V110 correlates transport and pipeline logs by utterance and records Opus-
   assert.match(source, /mirrorRuntimeLog\('LATENCY'/);
   assert.match(source, /vc=.*rx=.*rt=.*answering=.*player=/);
 });
+
+
+test('V110 bounds Discord live-log payload size while retaining recent diagnostics', () => {
+  assert.match(source, /runtimeLogLines\.slice\(-18\)/);
+  assert.match(source, /body\.slice\(-1750\)/);
+  assert.match(source, /runtimeLogLines\.length > 60/);
+});
