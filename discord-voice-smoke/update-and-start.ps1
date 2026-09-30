@@ -61,6 +61,10 @@ Write-Host "[ok] TalkSys revision: $revision"
 if (-not $env:DISCORD_TOKEN) {
   $env:DISCORD_TOKEN = Get-TalkSysPersistedSecret 'discord-bot-token'
 }
+if (-not $env:DISCORD_TOKEN) {
+  Write-Host "[setup] Discord Bot Token is not saved yet. Enter it once; it will be protected with Windows DPAPI." -ForegroundColor Yellow
+  $env:DISCORD_TOKEN = Read-TalkSysSecret 'discord-bot-token' 'Discord Bot Token'
+}
 if (-not $env:DISCORD_BRIDGE_TOKEN) {
   $env:DISCORD_BRIDGE_TOKEN = Get-TalkSysPersistedSecret 'discord-bridge-token'
 }
