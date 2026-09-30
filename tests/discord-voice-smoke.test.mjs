@@ -185,3 +185,49 @@ test('V108 TTS serializes local System.Speech while dropping aborted queued work
   assert.match(source, /if \(signal\?\.aborted\) throw signal\.reason/);
   assert.match(source, /if \(signal\?\.aborted \|\| localError\?\.name === 'AbortError'\) throw localError/);
 });
+
+
+test('V110 pre-arms all human members and releases receivers on voice-state leave', () => {
+  assert.match(source, /function prearmVoiceChannelMembers\(channel\)/);
+  assert.match(source, /for \(const \[userId, member\] of channel\.members\)/);
+  assert.match(source, /startReceiverSession\(userId, false\)/);
+  assert.match(source, /client\.on\('voiceStateUpdate'/);
+  assert.match(source, /stopReceiverSession\(userId, 'voice-state-left'\)/);
+  assert.match(source, /isUserInConnectedVoiceChannel\(userId\)/);
+});
+
+test('V110 actively reconnects realtime STT for users still in the connected VC', () => {
+  assert.match(source, /reconnectTimer/);
+  assert.match(source, /mirrorRuntimeLog\('RT-STT', `reconnect user=/);
+  assert.match(source, /setTimeout\(\(\) => \{[\s\S]*ensureRealtimeHelper\(userId\)[\s\S]*\}, 1200\)/);
+});
+
+test('V110 exposes input transport quality metrics before Whisper', () => {
+  for (const key of ['pcmChunkCount', 'maxPcmGapMs', 'maxRms', 'maxPeak', 'avgRms']) {
+    assert.match(source, new RegExp(key));
+  }
+  assert.match(source, /const level = pcm16Level\(pcm16\)/);
+  assert.match(source, /runtime node=.*discord\.js=.*voice=/);
+});
+
+
+test('V110 correlates transport and pipeline logs by utterance and records Opus-to-PCM health', () => {
+  assert.match(source, /function shortUtteranceId/);
+  for (const key of ['opusChunkCount', 'maxOpusGapMs', 'speakingToFirstOpusMs', 'speakingToFirstPcmMs', 'opusToFirstPcmMs']) {
+    assert.match(source, new RegExp(key));
+  }
+  assert.match(source, /mirrorRuntimeLog\('RX'/);
+  assert.match(source, /mirrorRuntimeLog\('STT'/);
+  assert.match(source, /mirrorRuntimeLog\('TURN'/);
+  assert.match(source, /mirrorRuntimeLog\('TTS'/);
+  assert.match(source, /mirrorRuntimeLog\('TX'/);
+  assert.match(source, /mirrorRuntimeLog\('LATENCY'/);
+  assert.match(source, /vc=.*rx=.*rt=.*answering=.*player=/);
+});
+
+
+test('V110 bounds Discord live-log payload size while retaining recent diagnostics', () => {
+  assert.match(source, /runtimeLogLines\.slice\(-18\)/);
+  assert.match(source, /body\.slice\(-1750\)/);
+  assert.match(source, /runtimeLogLines\.length > 60/);
+});

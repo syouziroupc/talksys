@@ -135,3 +135,34 @@ powershell -ExecutionPolicy Bypass -File .\update-and-start.ps1
 [latency-summary] ...
 [metrics] voice latency persisted
 ```
+
+
+## v110 音声診断ログの読み方
+
+v110では、各発話を短縮した `utteranceId`（ログ上の `u=xxxxxxxx`）で追跡します。主要な順序は次です。
+
+```text
+RX speaking.start
+RX firstPCM
+CAPTURE
+STT
+TURN
+TTS
+TX
+LATENCY
+```
+
+切り分けの目安：
+
+- `speaking.start` が出るのに `firstPCM` が出ない: Discord voice receive / Opus受信側を確認。
+- `op=` が極端に少ない、または `opusGap` が大きい: transport側の途切れを疑い、VC state / Gateway / DAVE関連ログと照合。
+- Opusは来ているが `firstPCM` が遅い: Opus decode / resample経路を確認。
+- `rms` / `peak` が継続的に低い: 入力レベルまたはDiscord側音声処理を確認。
+- PCMは十分だがRealtime STTだけ空: `RT-STT` のclose code / reconnect / error countを確認。Whisper確定STTは独立して継続する。
+- `STT` が遅い: `Whisper=` と `server=` を比較し、ネットワーク待ちとサーバー処理を分離。
+- `TURN` が遅い: `http / server / primary / verify / search` を確認。
+- `TTS` が遅い: provider / worker / bytesを確認。
+- `TX` が遅い: ffmpeg開始時間とAudioPlayer状態を確認。
+- `LATENCY` は capture / STT / turn / TTS / speech-end-to-playback / total の最終要約。
+
+Discordのライブ表示は直近18行、本文1750文字に制限し、詳細な全ログはコンソールおよび既存のvoice metrics側に残します。ログ追加によってDiscordメッセージ上限を超えない設計です。
