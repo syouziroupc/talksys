@@ -209,3 +209,18 @@ test('V110 exposes input transport quality metrics before Whisper', () => {
   assert.match(source, /const level = pcm16Level\(pcm16\)/);
   assert.match(source, /runtime node=.*discord\.js=.*voice=/);
 });
+
+
+test('V110 correlates transport and pipeline logs by utterance and records Opus-to-PCM health', () => {
+  assert.match(source, /function shortUtteranceId/);
+  for (const key of ['opusChunkCount', 'maxOpusGapMs', 'speakingToFirstOpusMs', 'speakingToFirstPcmMs', 'opusToFirstPcmMs']) {
+    assert.match(source, new RegExp(key));
+  }
+  assert.match(source, /mirrorRuntimeLog\('RX'/);
+  assert.match(source, /mirrorRuntimeLog\('STT'/);
+  assert.match(source, /mirrorRuntimeLog\('TURN'/);
+  assert.match(source, /mirrorRuntimeLog\('TTS'/);
+  assert.match(source, /mirrorRuntimeLog\('TX'/);
+  assert.match(source, /mirrorRuntimeLog\('LATENCY'/);
+  assert.match(source, /vc=.*rx=.*rt=.*answering=.*player=/);
+});
