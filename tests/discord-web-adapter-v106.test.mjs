@@ -5,7 +5,7 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
 test('Discord v108 remains web-authoritative by default', () => {
-  assert.match(source, /talksys-discord-bridge-v113-hard-lifecycle-r1/);
+  assert.match(source, /talksys-discord-bridge-v114-no-stale-owner-r1/);
   assert.match(source, /const WEB_UNIFIED_MODE = process\.env\.TALKSYS_WEB_UNIFIED !== '0'/);
   assert.match(source, /speechAlternatives: WEB_UNIFIED_MODE \? \[\]/);
   assert.match(source, /if \(!WEB_UNIFIED_MODE\) \{\s*const correction = correctLowConfidenceTranscript/);
