@@ -138,7 +138,7 @@ function setPipelineStage(stage, utteranceId = '') {
     const age = Date.now() - activePipelineStageAt;
     mirrorRuntimeLog('STALL', `u=${shortUtteranceId(activePipelineUtteranceId)} stage=${activePipelineStage} age=${age}ms player=${player.state.status}`);
     console.warn(`[stall] utterance=${activePipelineUtteranceId || '-'} stage=${activePipelineStage} age=${age}ms player=${player.state.status}`);
-  }, 8000);
+  }, 5000);
 }
 
 function writeBridgeHeartbeat() {
@@ -1371,7 +1371,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     try { activeWaitCue?.stop?.('pipeline-hard-timeout'); } catch {}
     try { activeFastReaction?.stop?.('pipeline-hard-timeout'); } catch {}
     try { player.stop(true); } catch {}
-  }, 45000);
+  }, 30000);
 
   const timings = {
     sttMode: 'web-whisper',
