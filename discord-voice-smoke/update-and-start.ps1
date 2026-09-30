@@ -55,6 +55,23 @@ if ($current -ne $remote) {
 $revision = (& git rev-parse --short HEAD).Trim()
 Write-Host "[ok] TalkSys revision: $revision"
 
+# Validate restart-critical secrets before stopping the currently running bridge.
+# A failed interactive secret prompt must never turn an update into an outage.
+. "$PSScriptRoot\secret-store.ps1"
+if (-not $env:DISCORD_TOKEN) {
+  $env:DISCORD_TOKEN = Get-TalkSysPersistedSecret 'discord-bot-token'
+}
+if (-not $env:DISCORD_BRIDGE_TOKEN) {
+  $env:DISCORD_BRIDGE_TOKEN = Get-TalkSysPersistedSecret 'discord-bridge-token'
+}
+if (-not $env:DISCORD_TOKEN) {
+  throw "DISCORD_TOKEN が未設定です。現在のBotは停止していません。先に discord-voice-smoke\start.ps1 を対話実行してDiscord Bot TokenをDPAPI保存してください。"
+}
+if (-not $env:DISCORD_BRIDGE_TOKEN) {
+  throw "DISCORD_BRIDGE_TOKEN が未設定です。現在のBotは停止していません。先に setup-bridge-secret.ps1 を実行してください。"
+}
+Write-Host "[ok] restart preflight: Discord secrets available"
+
 # Stop only an older TalkSys Discord bridge process from this checkout.
 $entry = Join-Path $PSScriptRoot 'src\index.mjs'
 $entryPattern = [regex]::Escape($entry)
