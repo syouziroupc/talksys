@@ -293,7 +293,7 @@ test('V113 Windows TTS child lifecycle always settles even if PowerShell ignores
   assert.match(source, /function terminateChildProcessTree/);
   assert.match(source, /taskkill\.exe/);
   assert.match(source, /function waitForChildProcess/);
-  assert.match(source, /windows_tts_timeout/);
+  assert.match(source, /new Error\(`\\$\{label\}_timeout`\)/);
   assert.match(source, /terminateChildProcessTree\(child, 'windows-tts-finally'\)/);
   assert.match(source, /WINDOWS_TTS_QUEUE_WAIT_MS = 1500/);
 });
