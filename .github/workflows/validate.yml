@@ -70,3 +70,36 @@ jobs:
         run: npm test
       - name: Check Wrangler bundle
         run: npx wrangler deploy --dry-run
+
+  validate-windows-supervisor:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check PowerShell launcher syntax on Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(
+            'discord-voice-smoke/start.ps1',
+            'discord-voice-smoke/update-and-start.ps1',
+            'discord-voice-smoke/secret-store.ps1',
+            'discord-voice-smoke/setup-bridge-secret.ps1',
+            'tests/supervisor-mutex-contention.ps1'
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "${file}: $($_.Message)" }
+              throw "PowerShell syntax validation failed: $file"
+            }
+          }
+      - name: Test supervisor mutex contention
+        shell: pwsh
+        run: ./tests/supervisor-mutex-contention.ps1
