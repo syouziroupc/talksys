@@ -2162,8 +2162,9 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
   const opus = connection.receiver.subscribe(userId, {
     end: { behavior: EndBehaviorType.AfterSilence, duration: 1600 },
   });
-  const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
-  const resampler = createWebCompatibleResampler();
+  let decoder = null;
+  let resampler = null;
+  let session = null;
   const pcm16Chunks = [];
 
   let completed = false;
@@ -2230,10 +2231,11 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     clearTimers();
     sessions.delete(userId);
     try { opus.destroy(); } catch {}
-    try { decoder.destroy(); } catch {}
-    try { resampler.stdin.end(); } catch {}
+    try { decoder?.destroy(); } catch {}
+    try { resampler?.stdin?.end(); } catch {}
+    const processToKill = resampler;
     setTimeout(() => {
-      try { if (!resampler.killed) resampler.kill('SIGKILL'); } catch {}
+      try { if (processToKill && !processToKill.killed) processToKill.kill('SIGKILL'); } catch {}
     }, 250);
   };
 
@@ -2316,7 +2318,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     mirrorRuntimeLog('CAPTURE', `cancelled utterance=${utteranceId} user=${userId} reason=${reason}`);
   };
 
-  const session = { opus, decoder, resampler, markSpeaking, finalize, cancel };
+  session = { opus, decoder: null, resampler: null, markSpeaking, finalize, cancel };
   sessions.set(userId, session);
   if (speakingNow) markSpeaking(Boolean(options?.startedDuringBotPlayback));
 
@@ -2327,17 +2329,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     }
   }, 25);
 
-  opus.on('data', () => {
-    const at = Date.now();
-    if (!firstOpusAt) firstOpusAt = at;
-    if (lastOpusAt) maxOpusGapMs = Math.max(maxOpusGapMs, at - lastOpusAt);
-    lastOpusAt = at;
-    opusChunkCount += 1;
-  });
-
-  decoder.pipe(resampler.stdin);
-
-  resampler.stdout.on('data', (pcm16) => {
+  const handlePcm16 = (pcm16) => {
     if (!pcm16?.length || completed) return;
     const at = Date.now();
     const previousPcmAt = lastPcmAt;
@@ -2368,36 +2360,83 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     }
     sendRealtimePcm(realtimeHelper, pcm16);
     if (realtimeHelper?.active?.utteranceId === utteranceId) updateBargeInVoiceGate(realtimeHelper.active, pcm16);
+  };
+
+  const ensureDecodePipeline = () => {
+    if (decoder && resampler) return true;
+    if (completed) return false;
+    try {
+      decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
+      resampler = createWebCompatibleResampler();
+      if (session) {
+        session.decoder = decoder;
+        session.resampler = resampler;
+      }
+
+      decoder.pipe(resampler.stdin);
+      resampler.stdout.on('data', handlePcm16);
+
+      resampler.stdout.on('error', (error) => {
+        console.error('[resample]', error.message);
+        mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-output ${error.message}`);
+        finalize('resampler-output-error').catch(() => {});
+      });
+      resampler.stdin.on('error', (error) => {
+        if (completed) return;
+        console.error('[resample]', error.message);
+        mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-input ${error.message}`);
+        finalize('resampler-input-error').catch(() => {});
+      });
+      resampler.on('error', (error) => {
+        console.error('[resample]', error.message);
+        mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-process ${error.message}`);
+        finalize('resampler-process-error').catch(() => {});
+      });
+      decoder.on('error', (error) => {
+        console.error('[decode]', error.message);
+        mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} decoder ${error.message}`);
+        finalize('decoder-error').catch(() => {});
+      });
+      mirrorRuntimeLog('CAPTURE', `u=${shortUtteranceId(utteranceId)} decode pipeline activated`);
+      return true;
+    } catch (error) {
+      mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} pipeline-create ${String(error?.message || error).slice(0, 160)}`);
+      finalize('decode-pipeline-create-error').catch(() => {});
+      return false;
+    }
+  };
+
+  opus.on('data', (opusChunk) => {
+    const at = Date.now();
+    if (!firstOpusAt) firstOpusAt = at;
+    if (lastOpusAt) maxOpusGapMs = Math.max(maxOpusGapMs, at - lastOpusAt);
+    lastOpusAt = at;
+    opusChunkCount += 1;
+
+    if (!ensureDecodePipeline() || completed || !decoder || decoder.destroyed) return;
+    try {
+      const writable = decoder.write(opusChunk);
+      if (!writable) {
+        opus.pause();
+        decoder.once('drain', () => {
+          if (!completed && !opus.destroyed) opus.resume();
+        });
+      }
+    } catch (error) {
+      mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} decoder-write ${String(error?.message || error).slice(0, 160)}`);
+      finalize('decoder-write-error').catch(() => {});
+    }
   });
 
-  resampler.stdout.on('error', (error) => {
-    console.error('[resample]', error.message);
-    mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-output ${error.message}`);
-    finalize('resampler-output-error').catch(() => {});
-  });
-  resampler.stdin.on('error', (error) => {
-    if (completed) return;
-    console.error('[resample]', error.message);
-    mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-input ${error.message}`);
-    finalize('resampler-input-error').catch(() => {});
-  });
-  resampler.on('error', (error) => {
-    console.error('[resample]', error.message);
-    mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-process ${error.message}`);
-    finalize('resampler-process-error').catch(() => {});
-  });
-  decoder.on('error', (error) => {
-    console.error('[decode]', error.message);
-    mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} decoder ${error.message}`);
-    finalize('decoder-error').catch(() => {});
-  });
   opus.on('error', (error) => {
     console.error('[opus]', error.message);
     mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} opus ${error.message}`);
     finalize('opus-error').catch(() => {});
   });
-  opus.on('end', () => finalize('discord-transport-end').catch(() => {}));
-  opus.pipe(decoder);
+  opus.on('end', () => {
+    try { if (decoder && !decoder.writableEnded) decoder.end(); } catch {}
+    finalize('discord-transport-end').catch(() => {});
+  });
 
   if (!speakingMarked) console.log(`[capture] prearmed user=${userId}`);
 }
