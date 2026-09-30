@@ -19,6 +19,8 @@ test('Discord update launcher only fast-forwards a clean local checkout', () => 
 
 test('Discord update launcher starts the existing secret-aware launcher after update', () => {
   assert.match(updater, /start\.ps1/);
+  assert.match(updater, /Start-Process -FilePath 'powershell\.exe'/);
+  assert.match(updater, /updater is exiting normally/);
   assert.match(updater, /git rev-parse --short HEAD/);
   assert.match(readme, /update-and-start\.ps1/);
   assert.match(readme, /\[capture\] finalized/);
@@ -49,4 +51,12 @@ test('Discord updater stops only the old bridge process from the same checkout b
   assert.match(updater, /\[regex\]::Escape\(\$entry\)/);
   assert.match(updater, /Stop-Process -Id \$proc\.ProcessId -Force/);
   assert.match(updater, /src\\index\.mjs/);
+});
+
+
+test('Discord updater does not synchronously block on the long-running supervisor', () => {
+  assert.doesNotMatch(updater, /& powershell -ExecutionPolicy Bypass -File/);
+  assert.match(updater, /Start-Process -FilePath 'powershell\.exe'/);
+  assert.match(updater, /-PassThru/);
+  assert.match(updater, /exit 0/);
 });
