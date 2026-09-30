@@ -41,6 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           find src archive -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+          node --check discord-voice-smoke/src/index.mjs
       - name: Run full regression suite
         run: npm test
       - name: Check Wrangler bundle
