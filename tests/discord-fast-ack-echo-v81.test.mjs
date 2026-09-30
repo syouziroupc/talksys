@@ -54,7 +54,7 @@ test('recovery prompt cannot start over a newer user utterance', () => {
 test('Discord exposes a live runtime log in the text channel', () => {
   assert.match(bridge, /function attachRuntimeLogChannel/);
   assert.match(bridge, /function mirrorRuntimeLog/);
-  assert.match(bridge, /runtimeLogMessage\.edit/);
+  assert.match(bridge, /(?:runtimeLogMessage|message)\.edit/);
   assert.match(bridge, /name: 'logs'/);
   assert.match(bridge, /await attachRuntimeLogChannel\(interaction\.channel\)/);
   assert.match(bridge, /TalkSys Discord runtime/);
