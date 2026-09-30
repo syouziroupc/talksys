@@ -83,12 +83,24 @@ while ($true) {
         $heartbeat = Get-Content -LiteralPath $heartbeatFile -Raw | ConvertFrom-Json
         $heartbeatAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$heartbeat.at).LocalDateTime
         $ageSeconds = ((Get-Date) - $heartbeatAt).TotalSeconds
+        $stage = [string]$heartbeat.stage
+        $stageAgeSeconds = 0
+        if ($heartbeat.stageAt -and [int64]$heartbeat.stageAt -gt 0) {
+          $stageAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$heartbeat.stageAt).LocalDateTime
+          $stageAgeSeconds = ((Get-Date) - $stageAt).TotalSeconds
+        }
+        if ($stage -and $stage -ne 'idle' -and $stageAgeSeconds -gt 50) {
+          $hung = $true
+          Write-Warning "[supervisor] pipeline stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s; killing Discord bridge pid=$($proc.Id)"
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          break
+        }
       } catch {}
     } elseif (((Get-Date) - $startedAt).TotalSeconds -gt 30) {
       $ageSeconds = 999
     }
 
-    if ($null -ne $ageSeconds -and $ageSeconds -gt 30) {
+    if (-not $hung -and $null -ne $ageSeconds -and $ageSeconds -gt 30) {
       $hung = $true
       Write-Warning "[supervisor] heartbeat stale $([math]::Round($ageSeconds,1))s; killing hung Discord bridge pid=$($proc.Id)"
       Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
