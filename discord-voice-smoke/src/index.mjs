@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v112-stall-lifecycle-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v113-hard-lifecycle-r1';
 const WEB_UNIFIED_MODE = process.env.TALKSYS_WEB_UNIFIED !== '0';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
@@ -38,6 +38,15 @@ const DISCORD_READY_TIMEOUT_MS = 120000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const BRIDGE_HEARTBEAT_MS = 5000;
 const BRIDGE_HEARTBEAT_FILE = process.env.TALKSYS_BRIDGE_HEARTBEAT_FILE || '';
+const REALTIME_WS_MAX_BUFFERED_BYTES = 256 * 1024;
+const REALTIME_PREOPEN_MAX_BYTES = 96 * 1024;
+const REALTIME_WS_CONNECT_TIMEOUT_MS = 5000;
+const WINDOWS_TTS_HARD_TIMEOUT_MS = 15000;
+const WINDOWS_TTS_QUEUE_WAIT_MS = 1500;
+const PLAYBACK_START_TIMEOUT_MS = 5000;
+const PLAYBACK_STALL_TIMEOUT_MS = 10000;
+const HEARTBEAT_WRITE_TIMEOUT_MS = 1500;
+const RUNTIME_LOG_WRITE_TIMEOUT_MS = 4000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
 const RECENT_USER_TURN_WINDOW_MS = 2500;
@@ -98,6 +107,8 @@ const recentAcceptedUserTurns = [];
 let runtimeLogChannel = null;
 let runtimeLogMessage = null;
 let runtimeLogFlushTimer = null;
+let runtimeLogFlushInFlight = false;
+let runtimeLogDirty = false;
 const runtimeLogLines = [];
 let activeBotPlaybackRecord = null;
 let lastBotPlaybackEndedAt = 0;
@@ -119,6 +130,7 @@ let activePipelineStageBlocking = false;
 let activePipelineStageDeadlineMs = 0;
 let heartbeatWriteInFlight = false;
 let windowsTtsQueue = Promise.resolve();
+let audioPlaybackSerial = 0;
 
 const PIPELINE_STAGE_POLICY = Object.freeze({
   stt: { blocking: true, stallMs: 5000, deadlineMs: REQUEST_BUDGET_MS.stt + 5000 },
@@ -215,7 +227,9 @@ function writeBridgeHeartbeat() {
     answering,
   });
   heartbeatWriteInFlight = true;
-  fs.promises.writeFile(BRIDGE_HEARTBEAT_FILE, payload)
+  fs.promises.writeFile(BRIDGE_HEARTBEAT_FILE, payload, {
+    signal: AbortSignal.timeout(HEARTBEAT_WRITE_TIMEOUT_MS),
+  })
     .catch((error) => {
       console.warn('[heartbeat] write failed:', error?.message || error);
     })
@@ -452,15 +466,43 @@ function runtimeLogText() {
 }
 
 function scheduleRuntimeLogFlush() {
-  if (!runtimeLogChannel || runtimeLogFlushTimer) return;
+  if (!runtimeLogChannel) return;
+  runtimeLogDirty = true;
+  if (runtimeLogFlushTimer || runtimeLogFlushInFlight) return;
+
   runtimeLogFlushTimer = setTimeout(async () => {
     runtimeLogFlushTimer = null;
-    if (!runtimeLogChannel) return;
+    if (!runtimeLogChannel || runtimeLogFlushInFlight) return;
+
+    runtimeLogFlushInFlight = true;
+    runtimeLogDirty = false;
+    const channel = runtimeLogChannel;
+    const message = runtimeLogMessage;
+    let timeout = null;
     try {
-      if (runtimeLogMessage) await runtimeLogMessage.edit(runtimeLogText());
-      else runtimeLogMessage = await runtimeLogChannel.send(runtimeLogText());
+      const operation = message
+        ? message.edit(runtimeLogText())
+        : channel.send(runtimeLogText());
+      const result = await Promise.race([
+        operation,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('runtime_log_write_timeout')), RUNTIME_LOG_WRITE_TIMEOUT_MS);
+        }),
+      ]);
+      if (!message && result) runtimeLogMessage = result;
     } catch (error) {
       console.warn('[discord-log] mirror failed:', error?.message || error);
+      if (String(error?.message || '').includes('runtime_log_write_timeout')) {
+        // Diagnostics must never accumulate unresolved Discord REST writes
+        // or compete with the voice pipeline.
+        runtimeLogChannel = null;
+        runtimeLogMessage = null;
+        runtimeLogDirty = false;
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      runtimeLogFlushInFlight = false;
+      if (runtimeLogChannel && runtimeLogDirty) scheduleRuntimeLogFlush();
     }
   }, 700);
 }
@@ -554,6 +596,7 @@ function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, real
       await playMp3(audio, {
         spokenText: text,
         purpose: 'fast-reaction',
+        signal: controller.signal,
         onPlaybackStart: ({ playbackStartedAt }) => {
           timeline.fastReactionPlaybackAt = playbackStartedAt;
           const reactionMs = Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt));
@@ -578,7 +621,6 @@ function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, real
       if (stopped) return;
       stopped = true;
       try { controller.abort(reason); } catch {}
-      if (playing) player.stop(true);
     },
   };
   activeFastReaction = handle;
@@ -679,16 +721,33 @@ function ensureRealtimeHelper(userId) {
     reactionSeq: 0,
     active: null,
     reconnectTimer: null,
+    connectTimer: null,
     connectedAt: 0,
     errorCount: 0,
     closeCount: 0,
+    backpressureDrops: 0,
   };
   realtimeHelpers.set(userId, helper);
   try {
     const ws = new WebSocket(realtimeSttUrl());
     helper.ws = ws;
     ws.binaryType = 'arraybuffer';
+    helper.connectTimer = setTimeout(() => {
+      helper.connectTimer = null;
+      if (helper.ws !== ws || ws.readyState !== WebSocket.CONNECTING) return;
+      helper.ready = false;
+      helper.ws = null;
+      helper.buffered = [];
+      helper.bufferedBytes = 0;
+      mirrorRuntimeLog('RT-STT', `connect timeout user=${userId}; helper reset`);
+      if (realtimeHelpers.get(userId) === helper) realtimeHelpers.delete(userId);
+      try { ws.close(); } catch {}
+    }, REALTIME_WS_CONNECT_TIMEOUT_MS);
     ws.onopen = () => {
+      if (helper.connectTimer) {
+        clearTimeout(helper.connectTimer);
+        helper.connectTimer = null;
+      }
       helper.ready = true;
       helper.connectedAt = Date.now();
       if (helper.reconnectTimer) {
@@ -696,11 +755,23 @@ function ensureRealtimeHelper(userId) {
         helper.reconnectTimer = null;
       }
       mirrorRuntimeLog('RT-STT', `ready user=${userId} buffered=${helper.bufferedBytes}B`);
+      let flushedBytes = 0;
       for (const chunk of helper.buffered) {
-        try { ws.send(chunk); } catch {}
+        if (Number(ws.bufferedAmount || 0) >= REALTIME_WS_MAX_BUFFERED_BYTES) {
+          helper.backpressureDrops += 1;
+          mirrorRuntimeLog('RT-STT', `preopen flush stopped user=${userId} queued=${Number(ws.bufferedAmount || 0)}B`);
+          break;
+        }
+        try {
+          ws.send(chunk);
+          flushedBytes += chunk.length;
+        } catch {
+          break;
+        }
       }
       helper.buffered = [];
       helper.bufferedBytes = 0;
+      if (flushedBytes) mirrorRuntimeLog('RT-STT', `flushed user=${userId} bytes=${flushedBytes}`);
     };
     ws.onmessage = (event) => handleRealtimeMessage(helper, event.data);
     ws.onerror = () => {
@@ -709,6 +780,10 @@ function ensureRealtimeHelper(userId) {
       mirrorRuntimeLog('RT-STT', `error user=${userId} count=${helper.errorCount} readyFor=${helper.connectedAt ? Date.now() - helper.connectedAt : 0}ms; Whisper continues`);
     };
     ws.onclose = (event) => {
+      if (helper.connectTimer) {
+        clearTimeout(helper.connectTimer);
+        helper.connectTimer = null;
+      }
       helper.ready = false;
       helper.ws = null;
       helper.closeCount = Number(helper.closeCount || 0) + 1;
@@ -757,13 +832,39 @@ function beginRealtimeUtterance(userId, meta) {
 function sendRealtimePcm(helper, pcm16) {
   if (!helper || !pcm16?.length) return;
   const chunk = Buffer.from(pcm16);
-  if (helper.ws?.readyState === WebSocket.OPEN) {
-    try { helper.ws.send(chunk); } catch {}
+  const ws = helper.ws;
+
+  if (ws?.readyState === WebSocket.OPEN) {
+    const queued = Number(ws.bufferedAmount || 0);
+    if (queued >= REALTIME_WS_MAX_BUFFERED_BYTES) {
+      helper.backpressureDrops = Number(helper.backpressureDrops || 0) + 1;
+      if (helper.backpressureDrops === 1 || helper.backpressureDrops % 25 === 0) {
+        mirrorRuntimeLog('RT-STT', `backpressure user=${helper.userId} queued=${queued}B drops=${helper.backpressureDrops}; reconnecting helper`);
+      }
+      helper.ready = false;
+      try { ws.close(4001, 'realtime-backpressure'); } catch {}
+      return;
+    }
+    try {
+      ws.send(chunk);
+    } catch (error) {
+      helper.ready = false;
+      mirrorRuntimeLog('RT-STT', `send failed user=${helper.userId}: ${String(error?.message || error).slice(0, 120)}`);
+      try { ws.close(); } catch {}
+    }
     return;
   }
-  if (helper.bufferedBytes < 96000) {
-    helper.buffered.push(chunk);
-    helper.bufferedBytes += chunk.length;
+
+  if (ws?.readyState === WebSocket.CONNECTING) {
+    if (helper.bufferedBytes + chunk.length <= REALTIME_PREOPEN_MAX_BYTES) {
+      helper.buffered.push(chunk);
+      helper.bufferedBytes += chunk.length;
+    } else {
+      helper.backpressureDrops = Number(helper.backpressureDrops || 0) + 1;
+      if (helper.backpressureDrops === 1) {
+        mirrorRuntimeLog('RT-STT', `preopen buffer capped user=${helper.userId} limit=${REALTIME_PREOPEN_MAX_BYTES}B`);
+      }
+    }
   }
 }
 
@@ -774,6 +875,10 @@ function closeRealtimeHelpers() {
     if (helper.reconnectTimer) {
       clearTimeout(helper.reconnectTimer);
       helper.reconnectTimer = null;
+    }
+    if (helper.connectTimer) {
+      clearTimeout(helper.connectTimer);
+      helper.connectTimer = null;
     }
     try { helper.ws?.close(1000, 'voice-disconnect'); } catch {}
   }
@@ -1044,7 +1149,7 @@ function startWaitCue(text, utteranceId, parentSignal) {
       const synthesized = await synthesize(cue, signal, { utteranceId, purpose: 'search-preface' });
       if (signal.aborted || stopped || cueSerial !== waitCueSerial) return false;
       playing = true;
-      await playMp3(synthesized.audio, { spokenText: cue, purpose: 'search-preface' });
+      await playMp3(synthesized.audio, { spokenText: cue, purpose: 'search-preface', signal });
       return true;
     } catch (error) {
       if (!signal.aborted && !stopped) console.warn('[wait-cue] failed:', error?.message || error);
@@ -1061,7 +1166,6 @@ function startWaitCue(text, utteranceId, parentSignal) {
       if (stopped) return;
       stopped = true;
       try { controller.abort(reason); } catch {}
-      if (playing) player.stop(true);
     },
   };
 }
@@ -1112,6 +1216,71 @@ async function talk(text, utteranceId = '', signal, speechAlternatives = [], spo
   return body;
 }
 
+function terminateChildProcessTree(child, reason = 'terminate') {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  mirrorRuntimeLog('CHILD', `terminate pid=${child.pid || '?'} reason=${reason}`);
+  try { child.kill('SIGKILL'); } catch {}
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      killer.on('error', () => {});
+      killer.unref();
+    } catch {}
+  }
+}
+
+function waitForChildProcess(child, { timeoutMs, signal, label = 'child' } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    let abortHandler = null;
+
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      child.off('close', onClose);
+      child.off('error', onError);
+      if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+    };
+    const finishResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onClose = (code, childSignal) => finishResolve({ code, signal: childSignal });
+    const onError = (error) => finishReject(error);
+
+    child.once('close', onClose);
+    child.once('error', onError);
+
+    timer = setTimeout(() => {
+      terminateChildProcessTree(child, `${label}-timeout`);
+      finishReject(new Error(`${label}_timeout`));
+    }, Math.max(1, Number(timeoutMs) || 1));
+
+    if (signal) {
+      abortHandler = () => {
+        terminateChildProcessTree(child, `${label}-aborted`);
+        const reason = signal.reason instanceof Error
+          ? signal.reason
+          : new DOMException('Aborted', 'AbortError');
+        finishReject(reason);
+      };
+      if (signal.aborted) abortHandler();
+      else signal.addEventListener('abort', abortHandler, { once: true });
+    }
+  });
+}
+
 async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
   if (process.platform !== 'win32') throw new Error('windows_tts_unavailable_non_windows');
   if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
@@ -1159,36 +1328,21 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
   let stderr = '';
   child.stderr.on('data', (chunk) => { stderr += String(chunk); });
 
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    try { child.kill(); } catch {}
-  }, 15000);
-
-  let abortHandler = null;
-  if (signal) {
-    abortHandler = () => {
-      try { child.kill(); } catch {}
-    };
-    if (signal.aborted) abortHandler();
-    else signal.addEventListener('abort', abortHandler, { once: true });
-  }
-
-  let code;
   try {
-    code = await new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('close', resolve);
+    const result = await waitForChildProcess(child, {
+      timeoutMs: WINDOWS_TTS_HARD_TIMEOUT_MS,
+      signal,
+      label: 'windows_tts',
     });
-    if (signal?.aborted) throw signal.reason || new Error('aborted');
+    if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
 
     let audio = Buffer.alloc(0);
     try {
       audio = await fs.promises.readFile(tempFile);
     } catch {}
 
-    if (code !== 0 || audio.length < 44) {
-      throw new Error(`windows_tts_failed code=${code} timedOut=${timedOut} bytes=${audio.length} detail=${stderr.trim().slice(0, 240)}`);
+    if (result.code !== 0 || audio.length < 44) {
+      throw new Error(`windows_tts_failed code=${result.code} signal=${result.signal || ''} bytes=${audio.length} detail=${stderr.trim().slice(0, 240)}`);
     }
 
     return {
@@ -1198,8 +1352,7 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
       workerMs: 0,
     };
   } finally {
-    clearTimeout(timeout);
-    if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+    terminateChildProcessTree(child, 'windows-tts-finally');
     fs.promises.unlink(tempFile).catch(() => {});
   }
 }
@@ -1210,16 +1363,16 @@ async function synthesizeWindowsJapaneseTts(text, signal) {
   const prior = windowsTtsQueue.catch(() => {});
   const acquired = await Promise.race([
     prior.then(() => true),
-    new Promise((resolve) => setTimeout(() => resolve(false), 4000)),
+    new Promise((resolve) => setTimeout(() => resolve(false), WINDOWS_TTS_QUEUE_WAIT_MS)),
   ]);
   if (!acquired) {
-    mirrorRuntimeLog('TTS-QUEUE', 'Windows TTS queue wait exceeded 4000ms; bypassing local TTS');
+    mirrorRuntimeLog('TTS-QUEUE', `Windows TTS queue wait exceeded ${WINDOWS_TTS_QUEUE_WAIT_MS}ms`);
     throw new Error('windows_tts_queue_wait_timeout');
   }
 
   if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
   const task = synthesizeWindowsJapaneseTtsUnlocked(text, signal);
-  windowsTtsQueue = task.catch(() => {});
+  windowsTtsQueue = task.then(() => undefined, () => undefined);
   return task;
 }
 
@@ -1309,8 +1462,22 @@ async function speakRecoveryPrompt(reason = 'pipeline-failure', sessionEpoch = v
   }
 }
 
+function playerOwnsResource(resource) {
+  return Boolean(resource && player.state?.resource === resource);
+}
+
+function stopOwnedPlayback(resource) {
+  if (!playerOwnsResource(resource)) return false;
+  try { return player.stop(true); } catch { return false; }
+}
+
 async function playMp3(mp3, options = {}) {
   if (!ffmpegPath) throw new Error('ffmpeg_static_missing');
+  if (options?.signal?.aborted) {
+    throw options.signal.reason || new DOMException('Aborted', 'AbortError');
+  }
+
+  const playbackId = ++audioPlaybackSerial;
   const ffmpegStarted = Date.now();
   const ffmpeg = spawn(ffmpegPath, [
     '-hide_banner', '-loglevel', 'error',
@@ -1324,94 +1491,166 @@ async function playMp3(mp3, options = {}) {
   let ffmpegError = '';
   let ffmpegSpawnMs = 0;
   let botSpeechRecord = null;
+  let started = false;
+  let lastProgressAt = Date.now();
+  let lastPlaybackDuration = 0;
+  const resource = createAudioResource(ffmpeg.stdout, {
+    inputType: StreamType.Raw,
+    metadata: { playbackId },
+  });
+
+  const terminateFfmpeg = (reason = 'complete') => {
+    if (ffmpeg.exitCode !== null || ffmpeg.signalCode !== null) return;
+    if (reason !== 'complete') {
+      mirrorRuntimeLog('FFMPEG', `u=${shortUtteranceId(options?.utteranceId)} terminate id=${playbackId} reason=${reason}`);
+    }
+    try { ffmpeg.kill('SIGKILL'); } catch {}
+  };
+
   ffmpeg.stderr.on('data', (d) => { ffmpegError += String(d); });
   ffmpeg.stdout.once('data', () => {
     ffmpegSpawnMs = Date.now() - ffmpegStarted;
     console.log(`[latency] ffmpeg-first-output=${ffmpegSpawnMs}ms`);
   });
-  ffmpeg.on('error', (error) => console.error('[ffmpeg]', error.message));
-  ffmpeg.stdin.end(mp3);
 
-  const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
-  const playbackStartedPromise = new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      player.off(AudioPlayerStatus.Playing, onPlaying);
-      try { ffmpeg.kill('SIGKILL'); } catch {}
-      reject(new Error('playback_start_timeout'));
-    }, 5000);
-    const onPlaying = () => {
-      clearTimeout(timeout);
-      const playbackStartedAt = Date.now();
-      if (options?.spokenText) {
-        botSpeechRecord = rememberBotSpeech(options.spokenText, options?.purpose || '', playbackStartedAt);
-        activeBotPlaybackRecord = botSpeechRecord;
-      }
-      const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
-      console.log('[tx] playback started');
-      mirrorRuntimeLog('TX', `u=${shortUtteranceId(options?.utteranceId)} start ffmpeg=${measuredFfmpegMs}ms purpose=${options?.purpose || 'audio'}`);
-      try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
-      resolve({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs });
-    };
-    player.once(AudioPlayerStatus.Playing, onPlaying);
-  });
-
-  player.play(resource);
-
-  const completionPromise = new Promise((resolve, reject) => {
-    let lastProgressAt = Date.now();
-    let lastPlaybackDuration = 0;
+  const result = await new Promise((resolve, reject) => {
     let settled = false;
+    let startTimer = null;
     let watchdog = null;
+    let abortHandler = null;
 
+    const finishBotRecord = () => {
+      finishBotSpeech(botSpeechRecord);
+      if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now();
+      if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null;
+    };
     const cleanup = () => {
+      if (startTimer) clearTimeout(startTimer);
       if (watchdog) clearInterval(watchdog);
-      player.off(AudioPlayerStatus.Idle, done);
-      player.off('error', fail);
+      player.off('stateChange', onStateChange);
+      player.off('error', onPlayerError);
+      ffmpeg.off('error', onFfmpegError);
+      ffmpeg.off('close', onFfmpegClose);
+      if (options?.signal && abortHandler) options.signal.removeEventListener('abort', abortHandler);
     };
-    const done = () => {
+    const succeed = () => {
       if (settled) return;
       settled = true;
-      finishBotSpeech(botSpeechRecord);
-      if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now();
-      if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null;
       cleanup();
-      resolve();
+      finishBotRecord();
+      terminateFfmpeg('complete');
+      resolve({
+        playbackStartedAt: Number(resource.metadata?.playbackStartedAt) || 0,
+        ffmpegSpawnMs: Number(resource.metadata?.ffmpegSpawnMs) || ffmpegSpawnMs || 0,
+      });
     };
-    const fail = (error) => {
+    const fail = (error, reason = 'failed') => {
       if (settled) return;
       settled = true;
-      finishBotSpeech(botSpeechRecord);
-      if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now();
-      if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null;
       cleanup();
-      reject(error);
+      finishBotRecord();
+      stopOwnedPlayback(resource);
+      terminateFfmpeg(reason);
+      reject(error instanceof Error ? error : new Error(String(error || reason)));
     };
+
+    const onStateChange = (oldState, newState) => {
+      const oldOwn = oldState?.resource === resource;
+      const newOwn = newState?.resource === resource;
+
+      if (!started && newOwn && newState.status === AudioPlayerStatus.Playing) {
+        started = true;
+        if (startTimer) {
+          clearTimeout(startTimer);
+          startTimer = null;
+        }
+        const playbackStartedAt = Date.now();
+        const measuredFfmpegMs = ffmpegSpawnMs || Math.max(0, playbackStartedAt - ffmpegStarted);
+        resource.metadata.playbackStartedAt = playbackStartedAt;
+        resource.metadata.ffmpegSpawnMs = measuredFfmpegMs;
+        lastProgressAt = playbackStartedAt;
+        lastPlaybackDuration = Number(newState.playbackDuration) || 0;
+        if (options?.spokenText) {
+          botSpeechRecord = rememberBotSpeech(options.spokenText, options?.purpose || '', playbackStartedAt);
+          activeBotPlaybackRecord = botSpeechRecord;
+        }
+        console.log('[tx] playback started');
+        mirrorRuntimeLog('TX', `u=${shortUtteranceId(options?.utteranceId)} start id=${playbackId} ffmpeg=${measuredFfmpegMs}ms purpose=${options?.purpose || 'audio'}`);
+        try { options?.onPlaybackStart?.({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs }); } catch {}
+        return;
+      }
+
+      if (oldOwn && newState.status === AudioPlayerStatus.Idle) {
+        if (!started) fail(new Error('playback_ended_before_start'), 'ended-before-start');
+        else succeed();
+        return;
+      }
+
+      if (oldOwn && !newOwn && newState.status !== AudioPlayerStatus.Idle) {
+        fail(new Error('playback_replaced'), 'replaced');
+      }
+    };
+
+    const onPlayerError = (error) => {
+      if (error?.resource && error.resource !== resource) return;
+      if (!playerOwnsResource(resource) && !started) return;
+      fail(error, 'player-error');
+    };
+
+    const onFfmpegError = (error) => fail(error, 'ffmpeg-error');
+    const onFfmpegClose = (code) => {
+      if (!settled && code && code !== 0) {
+        fail(new Error(`ffmpeg_exit_${code}: ${ffmpegError.trim().slice(0, 240)}`), 'ffmpeg-exit');
+      }
+    };
+
+    player.on('stateChange', onStateChange);
+    player.on('error', onPlayerError);
+    ffmpeg.once('error', onFfmpegError);
+    ffmpeg.once('close', onFfmpegClose);
+
+    if (options?.signal) {
+      abortHandler = () => {
+        const reason = options.signal.reason instanceof Error
+          ? options.signal.reason
+          : new DOMException('Aborted', 'AbortError');
+        fail(reason, 'aborted');
+      };
+      options.signal.addEventListener('abort', abortHandler, { once: true });
+    }
+
+    startTimer = setTimeout(() => {
+      fail(new Error('playback_start_timeout'), 'start-timeout');
+    }, PLAYBACK_START_TIMEOUT_MS);
 
     watchdog = setInterval(() => {
-      if (player.state.status === AudioPlayerStatus.Playing) {
-        const duration = Number(player.state.playbackDuration) || 0;
-        if (duration > lastPlaybackDuration + 20) {
-          lastPlaybackDuration = duration;
-          lastProgressAt = Date.now();
-          return;
-        }
+      if (settled || !started) return;
+      if (!playerOwnsResource(resource)) {
+        fail(new Error('playback_resource_lost'), 'resource-lost');
+        return;
       }
-      if (Date.now() - lastProgressAt >= 10000) {
-        const error = new Error('playback_stall_timeout');
-        fail(error);
-        try { ffmpeg.kill('SIGKILL'); } catch {}
-        try { player.stop(true); } catch {}
+      const state = player.state;
+      const duration = Number(state?.playbackDuration ?? resource.playbackDuration) || 0;
+      if (duration > lastPlaybackDuration + 20) {
+        lastPlaybackDuration = duration;
+        lastProgressAt = Date.now();
+        return;
       }
-    }, 1000);
+      if (Date.now() - lastProgressAt >= PLAYBACK_STALL_TIMEOUT_MS) {
+        fail(new Error('playback_stall_timeout'), 'stall-timeout');
+      }
+    }, 500);
 
-    player.once(AudioPlayerStatus.Idle, done);
-    player.once('error', fail);
+    try {
+      ffmpeg.stdin.end(mp3);
+      player.play(resource);
+    } catch (error) {
+      fail(error, 'play-start-error');
+    }
   });
 
-  const startedInfo = await playbackStartedPromise;
-  await completionPromise;
   if (ffmpegError.trim()) console.log('[ffmpeg]', ffmpegError.trim());
-  return startedInfo;
+  return result;
 }
 
 async function processConfirmedTranscript({ confirmedTranscript, rawTranscript = '', correctedTranscript = '', correctionReason = '', fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
@@ -1554,6 +1793,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
       spokenText: turn.answer,
       purpose: 'answer',
       utteranceId,
+      signal: controller.signal,
       onPlaybackStart: ({ playbackStartedAt, ffmpegSpawnMs }) => {
         clearTimeout(pipelineHardTimeout);
         setPipelineStage('playback-active', utteranceId);
@@ -1864,6 +2104,9 @@ function stopReceiverSession(userId, reason = 'voice-state-left') {
     helper.reactionSeq += 1;
     helper.active = null;
     if (helper.reconnectTimer) clearTimeout(helper.reconnectTimer);
+    if (helper.connectTimer) clearTimeout(helper.connectTimer);
+    helper.reconnectTimer = null;
+    helper.connectTimer = null;
     try { helper.ws?.close(1000, reason); } catch {}
     realtimeHelpers.delete(userId);
   }
@@ -1919,8 +2162,9 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
   const opus = connection.receiver.subscribe(userId, {
     end: { behavior: EndBehaviorType.AfterSilence, duration: 1600 },
   });
-  const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
-  const resampler = createWebCompatibleResampler();
+  let decoder = null;
+  let resampler = null;
+  let session = null;
   const pcm16Chunks = [];
 
   let completed = false;
@@ -1987,10 +2231,11 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     clearTimers();
     sessions.delete(userId);
     try { opus.destroy(); } catch {}
-    try { decoder.destroy(); } catch {}
-    try { resampler.stdin.end(); } catch {}
+    try { decoder?.destroy(); } catch {}
+    try { resampler?.stdin?.end(); } catch {}
+    const processToKill = resampler;
     setTimeout(() => {
-      try { if (!resampler.killed) resampler.kill('SIGKILL'); } catch {}
+      try { if (processToKill && !processToKill.killed) processToKill.kill('SIGKILL'); } catch {}
     }, 250);
   };
 
@@ -2073,7 +2318,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     mirrorRuntimeLog('CAPTURE', `cancelled utterance=${utteranceId} user=${userId} reason=${reason}`);
   };
 
-  const session = { opus, decoder, resampler, markSpeaking, finalize, cancel };
+  session = { opus, decoder: null, resampler: null, markSpeaking, finalize, cancel };
   sessions.set(userId, session);
   if (speakingNow) markSpeaking(Boolean(options?.startedDuringBotPlayback));
 
@@ -2084,17 +2329,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     }
   }, 25);
 
-  opus.on('data', () => {
-    const at = Date.now();
-    if (!firstOpusAt) firstOpusAt = at;
-    if (lastOpusAt) maxOpusGapMs = Math.max(maxOpusGapMs, at - lastOpusAt);
-    lastOpusAt = at;
-    opusChunkCount += 1;
-  });
-
-  decoder.pipe(resampler.stdin);
-
-  resampler.stdout.on('data', (pcm16) => {
+  const handlePcm16 = (pcm16) => {
     if (!pcm16?.length || completed) return;
     const at = Date.now();
     const previousPcmAt = lastPcmAt;
@@ -2125,36 +2360,83 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     }
     sendRealtimePcm(realtimeHelper, pcm16);
     if (realtimeHelper?.active?.utteranceId === utteranceId) updateBargeInVoiceGate(realtimeHelper.active, pcm16);
+  };
+
+  const ensureDecodePipeline = () => {
+    if (decoder && resampler) return true;
+    if (completed) return false;
+    try {
+      decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
+      resampler = createWebCompatibleResampler();
+      if (session) {
+        session.decoder = decoder;
+        session.resampler = resampler;
+      }
+
+      decoder.pipe(resampler.stdin);
+      resampler.stdout.on('data', handlePcm16);
+
+      resampler.stdout.on('error', (error) => {
+        console.error('[resample]', error.message);
+        mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-output ${error.message}`);
+        finalize('resampler-output-error').catch(() => {});
+      });
+      resampler.stdin.on('error', (error) => {
+        if (completed) return;
+        console.error('[resample]', error.message);
+        mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-input ${error.message}`);
+        finalize('resampler-input-error').catch(() => {});
+      });
+      resampler.on('error', (error) => {
+        console.error('[resample]', error.message);
+        mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-process ${error.message}`);
+        finalize('resampler-process-error').catch(() => {});
+      });
+      decoder.on('error', (error) => {
+        console.error('[decode]', error.message);
+        mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} decoder ${error.message}`);
+        finalize('decoder-error').catch(() => {});
+      });
+      mirrorRuntimeLog('CAPTURE', `u=${shortUtteranceId(utteranceId)} decode pipeline activated`);
+      return true;
+    } catch (error) {
+      mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} pipeline-create ${String(error?.message || error).slice(0, 160)}`);
+      finalize('decode-pipeline-create-error').catch(() => {});
+      return false;
+    }
+  };
+
+  opus.on('data', (opusChunk) => {
+    const at = Date.now();
+    if (!firstOpusAt) firstOpusAt = at;
+    if (lastOpusAt) maxOpusGapMs = Math.max(maxOpusGapMs, at - lastOpusAt);
+    lastOpusAt = at;
+    opusChunkCount += 1;
+
+    if (!ensureDecodePipeline() || completed || !decoder || decoder.destroyed) return;
+    try {
+      const writable = decoder.write(opusChunk);
+      if (!writable) {
+        opus.pause();
+        decoder.once('drain', () => {
+          if (!completed && !opus.destroyed) opus.resume();
+        });
+      }
+    } catch (error) {
+      mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} decoder-write ${String(error?.message || error).slice(0, 160)}`);
+      finalize('decoder-write-error').catch(() => {});
+    }
   });
 
-  resampler.stdout.on('error', (error) => {
-    console.error('[resample]', error.message);
-    mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-output ${error.message}`);
-    finalize('resampler-output-error').catch(() => {});
-  });
-  resampler.stdin.on('error', (error) => {
-    if (completed) return;
-    console.error('[resample]', error.message);
-    mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-input ${error.message}`);
-    finalize('resampler-input-error').catch(() => {});
-  });
-  resampler.on('error', (error) => {
-    console.error('[resample]', error.message);
-    mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-process ${error.message}`);
-    finalize('resampler-process-error').catch(() => {});
-  });
-  decoder.on('error', (error) => {
-    console.error('[decode]', error.message);
-    mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} decoder ${error.message}`);
-    finalize('decoder-error').catch(() => {});
-  });
   opus.on('error', (error) => {
     console.error('[opus]', error.message);
     mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} opus ${error.message}`);
     finalize('opus-error').catch(() => {});
   });
-  opus.on('end', () => finalize('discord-transport-end').catch(() => {}));
-  opus.pipe(decoder);
+  opus.on('end', () => {
+    try { if (decoder && !decoder.writableEnded) decoder.end(); } catch {}
+    finalize('discord-transport-end').catch(() => {});
+  });
 
   if (!speakingMarked) console.log(`[capture] prearmed user=${userId}`);
 }
@@ -2391,7 +2673,11 @@ client.once('ready', async () => {
       console.log(`[discord] slash commands ready guild=${guild.name}: /talksys /logs /leave`);
     }
     warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] gateway warmup failed:', error?.message || error));
-    warmRecoveryAudio().catch((error) => console.warn('[recovery] gateway warmup failed:', error?.message || error));
+    if (process.platform !== 'win32') {
+      warmRecoveryAudio().catch((error) => console.warn('[recovery] gateway warmup failed:', error?.message || error));
+    } else {
+      mirrorRuntimeLog('READY', 'Windows recovery TTS warmup deferred to avoid foreground queue contention');
+    }
     console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
     console.error('[fatal]', error?.stack || error);
@@ -2496,6 +2782,13 @@ player.on('error', (error) => { console.error('[player]', error.message); mirror
 process.on('unhandledRejection', (reason) => {
   console.error('[process] unhandled rejection:', reason?.stack || reason);
   mirrorRuntimeLog('ERROR', `unhandled: ${reason?.message || reason}`);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('[process] uncaught exception:', error?.stack || error);
+  mirrorRuntimeLog('ERROR', `uncaught: ${error?.message || error}`);
+  process.exitCode = 3;
+  setTimeout(() => process.exit(3), 100).unref();
 });
 
 process.on('SIGINT', () => {

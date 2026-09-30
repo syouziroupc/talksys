@@ -233,8 +233,8 @@ test('V110 bounds Discord live-log payload size while retaining recent diagnosti
 });
 
 
-test('V112 tracks pipeline stages per utterance and always releases terminal STT state', () => {
-  assert.match(source, /talksys-discord-bridge-v112-stall-lifecycle-r1/);
+test('V113 tracks pipeline stages per utterance and always releases terminal STT state', () => {
+  assert.match(source, /talksys-discord-bridge-v113-hard-lifecycle-r1/);
   assert.match(source, /const pipelineStages = new Map\(\)/);
   assert.match(source, /function clearPipelineStage\(utteranceId = '', reason = 'idle'\)/);
   assert.match(source, /pipelineStages\.delete\(key\)/);
@@ -244,7 +244,7 @@ test('V112 tracks pipeline stages per utterance and always releases terminal STT
   assert.match(source, /stageDeadlineMs: activePipelineStageDeadlineMs/);
 });
 
-test('V112 drops only clearly silent Discord captures before Whisper', () => {
+test('V113 drops only clearly silent Discord captures before Whisper', () => {
   assert.match(source, /function isClearlySilentCapture/);
   assert.match(source, /WEB_VOICE_CAPTURE_POLICY\.startRmsMin \* 0\.55/);
   assert.match(source, /WEB_VOICE_CAPTURE_POLICY\.peakGateMin \* 0\.65/);
@@ -252,23 +252,23 @@ test('V112 drops only clearly silent Discord captures before Whisper', () => {
   assert.match(source, /Whisper skipped/);
 });
 
-test('V112 uses stream backpressure and progress-based playback stall detection', () => {
+test('V113 uses stream backpressure and progress-based playback stall detection', () => {
   assert.match(source, /decoder\.pipe\(resampler\.stdin\)/);
   assert.doesNotMatch(source, /resampler\.stdin\.write\(pcm48\)/);
-  assert.match(source, /player\.state\.playbackDuration/);
+  assert.match(source, /state\?\.playbackDuration \?\? resource\.playbackDuration/);
   assert.match(source, /playback_stall_timeout/);
   assert.doesNotMatch(source, /reject\(new Error\('playback_timeout'\)\)/);
   assert.match(source, /setPipelineStage\('playback-active', utteranceId\)/);
 });
 
-test('V112 supervisor respects per-stage blocking deadlines', () => {
+test('V113 supervisor respects per-stage blocking deadlines', () => {
   assert.match(launcher, /stageBlocking/);
   assert.match(launcher, /stageDeadlineMs/);
   assert.match(launcher, /blocking pipeline stage stuck/);
   assert.match(launcher, /\$deadlineSeconds/);
 });
 
-test('V112 persists stage checkpoints and exposes heartbeat supervisor contract', () => {
+test('V113 persists stage checkpoints and exposes heartbeat supervisor contract', () => {
   assert.match(source, /BRIDGE_HEARTBEAT_MS = 5000/);
   assert.match(source, /function writeBridgeHeartbeat/);
   assert.match(source, /postVoiceCheckpoint\('stt-start'/);
@@ -276,4 +276,93 @@ test('V112 persists stage checkpoints and exposes heartbeat supervisor contract'
   assert.match(source, /postVoiceCheckpoint\('tts-start'/);
   assert.match(source, /postVoiceCheckpoint\('playback-start'/);
   assert.match(source, /\/api\/voice-stage/);
+});
+
+
+test('V113 caps realtime WebSocket queues so the optional helper cannot stall the primary pipeline', () => {
+  assert.match(source, /REALTIME_WS_MAX_BUFFERED_BYTES = 256 \* 1024/);
+  assert.match(source, /REALTIME_PREOPEN_MAX_BYTES = 96 \* 1024/);
+  assert.match(source, /ws\.bufferedAmount/);
+  assert.match(source, /realtime-backpressure/);
+  assert.match(source, /preopen buffer capped/);
+  assert.match(source, /backpressureDrops/);
+});
+
+test('V113 Windows TTS child lifecycle always settles even if PowerShell ignores normal termination', () => {
+  assert.match(source, /WINDOWS_TTS_HARD_TIMEOUT_MS = 15000/);
+  assert.match(source, /function terminateChildProcessTree/);
+  assert.match(source, /taskkill\.exe/);
+  assert.match(source, /function waitForChildProcess/);
+  assert.match(source, /new Error\(`\$\{label\}_timeout`\)/);
+  assert.match(source, /terminateChildProcessTree\(child, 'windows-tts-finally'\)/);
+  assert.match(source, /WINDOWS_TTS_QUEUE_WAIT_MS = 1500/);
+});
+
+test('V113 playback lifecycle is resource-owned and old cues cannot stop a replacement answer', () => {
+  assert.match(source, /let audioPlaybackSerial = 0/);
+  assert.match(source, /metadata: \{ playbackId \}/);
+  assert.match(source, /function playerOwnsResource/);
+  assert.match(source, /function stopOwnedPlayback/);
+  assert.match(source, /oldState\?\.resource === resource/);
+  assert.match(source, /newState\?\.resource === resource/);
+  assert.match(source, /playback_replaced/);
+  assert.match(source, /playback_resource_lost/);
+  assert.match(source, /signal: controller\.signal/);
+  assert.match(source, /purpose: 'search-preface', signal/);
+  assert.doesNotMatch(source, /if \(playing\) player\.stop\(true\)/);
+});
+
+test('V113 heartbeat filesystem write has its own abortable deadline', () => {
+  assert.match(source, /HEARTBEAT_WRITE_TIMEOUT_MS = 1500/);
+  assert.match(source, /fs\.promises\.writeFile\(BRIDGE_HEARTBEAT_FILE, payload, \{/);
+  assert.match(source, /AbortSignal\.timeout\(HEARTBEAT_WRITE_TIMEOUT_MS\)/);
+});
+
+test('V113 fails fast on uncaught synchronous corruption instead of remaining half-alive', () => {
+  assert.match(source, /process\.on\('uncaughtException'/);
+  assert.match(source, /process\.exitCode = 3/);
+  assert.match(source, /setTimeout\(\(\) => process\.exit\(3\), 100\)\.unref\(\)/);
+});
+
+
+test('V113 diagnostic logging is serialized and disables itself after a bounded write timeout', () => {
+  assert.match(source, /RUNTIME_LOG_WRITE_TIMEOUT_MS = 4000/);
+  assert.match(source, /let runtimeLogFlushInFlight = false/);
+  assert.match(source, /let runtimeLogDirty = false/);
+  assert.match(source, /runtime_log_write_timeout/);
+  assert.match(source, /runtimeLogChannel = null/);
+});
+
+test('V113 uses a valid application WebSocket close code for helper backpressure reset', () => {
+  assert.match(source, /ws\.close\(4001, 'realtime-backpressure'\)/);
+});
+
+test('V113 does not enqueue Windows recovery TTS in the background at gateway ready', () => {
+  assert.match(source, /Windows recovery TTS warmup deferred to avoid foreground queue contention/);
+  assert.match(source, /if \(process\.platform !== 'win32'\) \{[\s\S]*warmRecoveryAudio/);
+});
+
+
+test('V113 realtime helper CONNECTING state has a hard timeout and releases all timers', () => {
+  assert.match(source, /REALTIME_WS_CONNECT_TIMEOUT_MS = 5000/);
+  assert.match(source, /connectTimer: null/);
+  assert.match(source, /connect timeout user=/);
+  assert.match(source, /ws\.readyState !== WebSocket\.CONNECTING/);
+  assert.match(source, /clearTimeout\(helper\.connectTimer\)/);
+});
+
+test('V113 receiver prearm does not spawn decoder or ffmpeg until the first Opus packet', () => {
+  assert.match(source, /let decoder = null/);
+  assert.match(source, /let resampler = null/);
+  assert.match(source, /const ensureDecodePipeline = \(\) => \{/);
+  assert.match(source, /opus\.on\('data', \(opusChunk\) => \{/);
+  assert.match(source, /if \(!ensureDecodePipeline\(\)/);
+  assert.match(source, /decoder = new prism\.opus\.Decoder/);
+  assert.match(source, /resampler = createWebCompatibleResampler\(\)/);
+  assert.match(source, /decoder\.pipe\(resampler\.stdin\)/);
+  assert.match(source, /const writable = decoder\.write\(opusChunk\)/);
+  assert.match(source, /opus\.pause\(\)/);
+  assert.match(source, /decoder\.once\('drain'/);
+  assert.doesNotMatch(source, /const decoder = new prism\.opus\.Decoder/);
+  assert.doesNotMatch(source, /const resampler = createWebCompatibleResampler/);
 });

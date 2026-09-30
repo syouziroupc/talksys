@@ -54,7 +54,7 @@ test('recovery prompt cannot start over a newer user utterance', () => {
 test('Discord exposes a live runtime log in the text channel', () => {
   assert.match(bridge, /function attachRuntimeLogChannel/);
   assert.match(bridge, /function mirrorRuntimeLog/);
-  assert.match(bridge, /runtimeLogMessage\.edit/);
+  assert.match(bridge, /(?:runtimeLogMessage|message)\.edit/);
   assert.match(bridge, /name: 'logs'/);
   assert.match(bridge, /await attachRuntimeLogChannel\(interaction\.channel\)/);
   assert.match(bridge, /TalkSys Discord runtime/);
@@ -70,7 +70,7 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
 });
 
 test('current V108 Discord stability adapter preserves authoritative Web Whisper while current Worker keeps its own revision', () => {
-  assert.match(bridge, /talksys-discord-bridge-v112-stall-lifecycle-r1/);
+  assert.match(bridge, /talksys-discord-bridge-v113-hard-lifecycle-r1/);
   assert.match(integrated, /talksys-integrated-entry-v105-clock-transit-asr-r1/);
   assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
