@@ -341,3 +341,28 @@ test('V113 does not enqueue Windows recovery TTS in the background at gateway re
   assert.match(source, /Windows recovery TTS warmup deferred to avoid foreground queue contention/);
   assert.match(source, /if \(process\.platform !== 'win32'\) \{[\s\S]*warmRecoveryAudio/);
 });
+
+
+test('V113 realtime helper CONNECTING state has a hard timeout and releases all timers', () => {
+  assert.match(source, /REALTIME_WS_CONNECT_TIMEOUT_MS = 5000/);
+  assert.match(source, /connectTimer: null/);
+  assert.match(source, /connect timeout user=/);
+  assert.match(source, /ws\.readyState !== WebSocket\.CONNECTING/);
+  assert.match(source, /clearTimeout\(helper\.connectTimer\)/);
+});
+
+test('V113 receiver prearm does not spawn decoder or ffmpeg until the first Opus packet', () => {
+  assert.match(source, /let decoder = null/);
+  assert.match(source, /let resampler = null/);
+  assert.match(source, /const ensureDecodePipeline = \(\) => \{/);
+  assert.match(source, /opus\.on\('data', \(opusChunk\) => \{/);
+  assert.match(source, /if \(!ensureDecodePipeline\(\)/);
+  assert.match(source, /decoder = new prism\.opus\.Decoder/);
+  assert.match(source, /resampler = createWebCompatibleResampler\(\)/);
+  assert.match(source, /decoder\.pipe\(resampler\.stdin\)/);
+  assert.match(source, /const writable = decoder\.write\(opusChunk\)/);
+  assert.match(source, /opus\.pause\(\)/);
+  assert.match(source, /decoder\.once\('drain'/);
+  assert.doesNotMatch(source, /const decoder = new prism\.opus\.Decoder/);
+  assert.doesNotMatch(source, /const resampler = createWebCompatibleResampler/);
+});
