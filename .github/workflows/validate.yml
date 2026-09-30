@@ -42,6 +42,30 @@ jobs:
           set -euo pipefail
           find src archive -type f -name '*.js' -print0 | xargs -0 -n1 node --check
           node --check discord-voice-smoke/src/index.mjs
+      - name: Check PowerShell launcher syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(
+            'discord-voice-smoke/start.ps1',
+            'discord-voice-smoke/update-and-start.ps1',
+            'discord-voice-smoke/secret-store.ps1',
+            'discord-voice-smoke/setup-bridge-secret.ps1'
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "${file}: $($_.Message)" }
+              throw "PowerShell syntax validation failed: $file"
+            }
+            Write-Host "[ok] PowerShell syntax: $file"
+          }
       - name: Run full regression suite
         run: npm test
       - name: Check Wrangler bundle
