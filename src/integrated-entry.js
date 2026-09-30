@@ -1270,7 +1270,10 @@ async function runTalkSysTurn(request, env, body, signal = request.signal, ctx =
   const commonBody = body || {};
   emitLatencyLog('answer-start', commonBody, { route: new URL(request.url).pathname, answerStartMs: 0 });
   try {
-    const result = await commonTalkSysTurn(commonBody, env, signal);
+    const baseResult = await commonTalkSysTurn(commonBody, env, signal);
+    const result = commonBody?.channel === 'discord'
+      ? { ...baseResult, bridgeRevision: compact(commonBody?.bridgeRevision || '', 160) }
+      : baseResult;
     scheduleConversationLog(ctx, env, request, commonBody, result, 'turn', 200);
     const timings = {
       ...(result?.timings || {}),
