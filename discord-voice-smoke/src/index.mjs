@@ -1130,12 +1130,19 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
 
 async function synthesizeWindowsJapaneseTts(text, signal) {
   if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
-  const task = windowsTtsQueue
-    .catch(() => {})
-    .then(() => {
-      if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
-      return synthesizeWindowsJapaneseTtsUnlocked(text, signal);
-    });
+
+  const prior = windowsTtsQueue.catch(() => {});
+  const acquired = await Promise.race([
+    prior.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 4000)),
+  ]);
+  if (!acquired) {
+    mirrorRuntimeLog('TTS-QUEUE', 'Windows TTS queue wait exceeded 4000ms; bypassing local TTS');
+    throw new Error('windows_tts_queue_wait_timeout');
+  }
+
+  if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+  const task = synthesizeWindowsJapaneseTtsUnlocked(text, signal);
   windowsTtsQueue = task.catch(() => {});
   return task;
 }
@@ -1440,6 +1447,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     } else {
       console.error('[pipeline]', error?.stack || error);
       mirrorRuntimeLog('ERROR', `pipeline: ${pipelineError}`);
+      postVoiceCheckpoint('pipeline-error', utteranceId, { error: pipelineError }).catch(() => {});
       await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch, timeline.utteranceEndAt || 0);
     }
   } finally {
