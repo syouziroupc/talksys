@@ -115,7 +115,7 @@ function Stop-VerifiedProcessTree {
   }
 
   $verifiedSupervisor = $parent -and
-    $parent.Name -match '^powershell(?:\.exe)? -and
+    $parent.Name -match '^powershell(?:\.exe)?$' -and
     $parent.CommandLine -and
     $parent.CommandLine -match $supervisorPattern
 
