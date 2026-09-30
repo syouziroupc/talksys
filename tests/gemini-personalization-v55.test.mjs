@@ -311,5 +311,5 @@ test('v97 web client clears stale interaction state while Discord uses current V
   const webClient = fs.readFileSync(new URL('../src/talk-client-v45.js', import.meta.url), 'utf8');
   const discord = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
   assert.match(webClient, /if\(j\.interactionReset\)geminiInteractionId=''/);
-  assert.match(discord, /talksys-discord-bridge-v113-hard-lifecycle-r1/);
+  assert.match(discord, /talksys-discord-bridge-v114-no-stale-owner-r1/);
 });
