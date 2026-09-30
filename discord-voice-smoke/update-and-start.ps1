@@ -97,6 +97,11 @@ function Get-TalkSysBridgeProcesses {
     Where-Object { $_.CommandLine -and $_.CommandLine -match $entryPattern })
 }
 
+function Get-TalkSysSupervisorProcesses {
+  return @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match $supervisorPattern })
+}
+
 function Stop-VerifiedProcessTree {
   param(
     [Parameter(Mandatory=$true)]$BridgeProcess
@@ -119,17 +124,20 @@ function Stop-VerifiedProcessTree {
     try {
       & taskkill.exe /PID $parentPid /T /F 2>$null | Out-Null
     } catch {}
-  } else {
-    Write-Warning "[restart] supervisor parent could not be verified for bridge pid=$targetPid; terminating bridge tree only."
+  } elseif ($null -eq $parent) {
+    Write-Warning "[restart] bridge pid=$targetPid has no live parent; terminating orphaned bridge tree."
     try {
       & taskkill.exe /PID $targetPid /T /F 2>$null | Out-Null
     } catch {}
+  } else {
+    throw "旧TalkSys bridge pid=$targetPid の親プロセス pid=$parentPid を安全にSupervisorと確認できません。旧SupervisorがBotを再生成する可能性があるため、新Botは起動しません。旧TalkSysのPowerShell画面を閉じてから再実行してください。"
   }
 }
 
 $oldBridges = Get-TalkSysBridgeProcesses
-if ($oldBridges.Count -gt 0) {
-  Write-Host "[restart] requesting graceful shutdown of $($oldBridges.Count) old Discord bridge process(es)..."
+$oldSupervisors = Get-TalkSysSupervisorProcesses
+if ($oldBridges.Count -gt 0 -or $oldSupervisors.Count -gt 0) {
+  Write-Host "[restart] requesting graceful shutdown of old Discord bridge/supervisor..."
   try {
     Set-Content -LiteralPath $shutdownFile -Value 'update-and-start' -NoNewline -Force
   } catch {
@@ -138,7 +146,7 @@ if ($oldBridges.Count -gt 0) {
 
   $graceDeadline = (Get-Date).AddSeconds(3)
   while ((Get-Date) -lt $graceDeadline) {
-    if ((Get-TalkSysBridgeProcesses).Count -eq 0) { break }
+    if ((Get-TalkSysBridgeProcesses).Count -eq 0 -and (Get-TalkSysSupervisorProcesses).Count -eq 0) { break }
     Start-Sleep -Milliseconds 200
   }
 
@@ -147,15 +155,26 @@ if ($oldBridges.Count -gt 0) {
   # its child once before its own verified process tree is terminated.
   for ($attempt = 1; $attempt -le 3; $attempt++) {
     $remaining = Get-TalkSysBridgeProcesses
-    if ($remaining.Count -eq 0) { break }
+    $remainingSupervisors = Get-TalkSysSupervisorProcesses
+    if ($remaining.Count -eq 0 -and $remainingSupervisors.Count -eq 0) { break }
+
     foreach ($proc in $remaining) {
       Stop-VerifiedProcessTree -BridgeProcess $proc
+    }
+
+    # A verified supervisor can be between child restarts with no node.exe.
+    # Kill only an explicitly matched same-checkout start.ps1 process.
+    foreach ($supervisor in (Get-TalkSysSupervisorProcesses)) {
+      Write-Warning "[restart] terminating surviving verified Supervisor pid=$($supervisor.ProcessId)"
+      try {
+        & taskkill.exe /PID $supervisor.ProcessId /T /F 2>$null | Out-Null
+      } catch {}
     }
     Start-Sleep -Milliseconds 500
   }
 
-  if ((Get-TalkSysBridgeProcesses).Count -ne 0) {
-    throw "旧TalkSys Discord Botの完全停止を確認できないため、新Botの起動を中止します。二重起動防止のため手動確認してください。"
+  if ((Get-TalkSysBridgeProcesses).Count -ne 0 -or (Get-TalkSysSupervisorProcesses).Count -ne 0) {
+    throw "旧TalkSys Discord Bot/Supervisorの完全停止を確認できないため、新Botの起動を中止します。二重起動防止のため手動確認してください。"
   }
 
   if (Test-Path $shutdownFile) {
