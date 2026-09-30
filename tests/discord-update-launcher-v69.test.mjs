@@ -44,15 +44,15 @@ test('Discord launcher supervises exits and hung bridge heartbeat/stage states',
 });
 
 
-test('Discord updater shuts down the old bridge and verified supervisor before restart', () => {
+test('Discord updater shuts down old bridge and verified supervisor before restart', () => {
   assert.match(updater, /Get-CimInstance Win32_Process/);
   assert.match(updater, /Name = 'node\.exe'/);
   assert.match(updater, /\[regex\]::Escape\(\$entry\)/);
   assert.match(updater, /talksys-discord-shutdown\.txt/);
   assert.match(updater, /Set-Content -LiteralPath \$shutdownFile -Value 'update-and-start'/);
   assert.match(updater, /ParentProcessId/);
+  assert.match(updater, /\$parent\.Name -match '\^\(\?:powershell\|pwsh\)\(\?:\\\.exe\)\?\$'/);
   assert.match(updater, /\$parent\.CommandLine -match \$supervisorPattern/);
-  assert.match(updater, /\$parent\.Name -match '\^powershell\(\?:\\\\\.exe\)\?\
   assert.match(updater, /taskkill\.exe \/PID \$parentPid \/T \/F/);
   assert.match(updater, /taskkill\.exe \/PID \$targetPid \/T \/F/);
   assert.match(updater, /for \(\$attempt = 1; \$attempt -le 3; \$attempt\+\+\)/);
@@ -68,7 +68,7 @@ test('Discord supervisor treats updater-requested exit code as intentional stop,
   assert.match(launcher, /external maintenance shutdown completed; supervisor exiting/);
 });
 
-test('Discord supervisor is process-level singleton even if the updater misses a restart gap', () => {
+test('Discord supervisor is process-level singleton even if updater misses a restart gap', () => {
   const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
   assert.match(launcher, /System\.Threading\.Mutex/);
   assert.match(launcher, /Local\\TalkSysDiscordSupervisor/);
@@ -77,81 +77,9 @@ test('Discord supervisor is process-level singleton even if the updater misses a
   assert.match(launcher, /ReleaseMutex/);
 });
 
-test('Discord updater also detects a same-checkout supervisor while node.exe is between restarts', () => {
+test('Discord updater detects same-checkout PowerShell or pwsh supervisor between node restarts', () => {
   assert.match(updater, /function Get-TalkSysSupervisorProcesses/);
-  assert.match(updater, /\$_\.Name -match '\^\(\?:powershell\|pwsh\)\(\?:\\\\\.exe\)\?\
-  assert.match(updater, /\$oldSupervisors = Get-TalkSysSupervisorProcesses/);
-  assert.match(updater, /Get-TalkSysBridgeProcesses\)\.Count -eq 0 -and \(Get-TalkSysSupervisorProcesses\)\.Count -eq 0/);
-  assert.match(updater, /terminating surviving verified Supervisor/);
-  assert.match(updater, /親プロセス pid=\$parentPid を安全にSupervisorと確認できません/);
-});
-/);
-  assert.match(updater, /taskkill\.exe \/PID \$parentPid \/T \/F/);
-  assert.match(updater, /taskkill\.exe \/PID \$targetPid \/T \/F/);
-  assert.match(updater, /for \(\$attempt = 1; \$attempt -le 3; \$attempt\+\+\)/);
-  assert.match(updater, /旧TalkSys Discord Bot\/Supervisorの完全停止を確認できないため、新Botの起動を中止します/);
-  assert.match(updater, /src\\index\.mjs/);
-  assert.doesNotMatch(updater, /Stop-Process -Id \$proc\.ProcessId -Force/);
-});
-
-test('Discord supervisor treats updater-requested exit code as intentional stop, not crash restart', () => {
-  const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
-  assert.match(launcher, /\$externalShutdownExitCode = 73/);
-  assert.match(launcher, /\$exitCode -eq \$externalShutdownExitCode/);
-  assert.match(launcher, /external maintenance shutdown completed; supervisor exiting/);
-});
-
-test('Discord supervisor is process-level singleton even if the updater misses a restart gap', () => {
-  const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
-  assert.match(launcher, /System\.Threading\.Mutex/);
-  assert.match(launcher, /Local\\TalkSysDiscordSupervisor/);
-  assert.match(launcher, /if \(-not \$mutexCreated\)/);
-  assert.match(launcher, /Supervisorは既に起動しています/);
-  assert.match(launcher, /ReleaseMutex/);
-});
-
-test('Discord updater also detects a same-checkout supervisor while node.exe is between restarts', () => {
-  assert.match(updater, /function Get-TalkSysSupervisorProcesses/);
-  assert.match(updater, /Name = 'powershell\.exe'/);
-  assert.match(updater, /\$oldSupervisors = Get-TalkSysSupervisorProcesses/);
-  assert.match(updater, /Get-TalkSysBridgeProcesses\)\.Count -eq 0 -and \(Get-TalkSysSupervisorProcesses\)\.Count -eq 0/);
-  assert.match(updater, /terminating surviving verified Supervisor/);
-  assert.match(updater, /親プロセス pid=\$parentPid を安全にSupervisorと確認できません/);
-});
-/);
-  assert.match(updater, /\$oldSupervisors = Get-TalkSysSupervisorProcesses/);
-  assert.match(updater, /Get-TalkSysBridgeProcesses\)\.Count -eq 0 -and \(Get-TalkSysSupervisorProcesses\)\.Count -eq 0/);
-  assert.match(updater, /terminating surviving verified Supervisor/);
-  assert.match(updater, /親プロセス pid=\$parentPid を安全にSupervisorと確認できません/);
-});
-/);
-  assert.match(updater, /taskkill\.exe \/PID \$parentPid \/T \/F/);
-  assert.match(updater, /taskkill\.exe \/PID \$targetPid \/T \/F/);
-  assert.match(updater, /for \(\$attempt = 1; \$attempt -le 3; \$attempt\+\+\)/);
-  assert.match(updater, /旧TalkSys Discord Bot\/Supervisorの完全停止を確認できないため、新Botの起動を中止します/);
-  assert.match(updater, /src\\index\.mjs/);
-  assert.doesNotMatch(updater, /Stop-Process -Id \$proc\.ProcessId -Force/);
-});
-
-test('Discord supervisor treats updater-requested exit code as intentional stop, not crash restart', () => {
-  const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
-  assert.match(launcher, /\$externalShutdownExitCode = 73/);
-  assert.match(launcher, /\$exitCode -eq \$externalShutdownExitCode/);
-  assert.match(launcher, /external maintenance shutdown completed; supervisor exiting/);
-});
-
-test('Discord supervisor is process-level singleton even if the updater misses a restart gap', () => {
-  const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
-  assert.match(launcher, /System\.Threading\.Mutex/);
-  assert.match(launcher, /Local\\TalkSysDiscordSupervisor/);
-  assert.match(launcher, /if \(-not \$mutexCreated\)/);
-  assert.match(launcher, /Supervisorは既に起動しています/);
-  assert.match(launcher, /ReleaseMutex/);
-});
-
-test('Discord updater also detects a same-checkout supervisor while node.exe is between restarts', () => {
-  assert.match(updater, /function Get-TalkSysSupervisorProcesses/);
-  assert.match(updater, /Name = 'powershell\.exe'/);
+  assert.match(updater, /\$_\.Name -match '\^\(\?:powershell\|pwsh\)\(\?:\\\.exe\)\?\$'/);
   assert.match(updater, /\$oldSupervisors = Get-TalkSysSupervisorProcesses/);
   assert.match(updater, /Get-TalkSysBridgeProcesses\)\.Count -eq 0 -and \(Get-TalkSysSupervisorProcesses\)\.Count -eq 0/);
   assert.match(updater, /terminating surviving verified Supervisor/);
