@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v111-freeze-stage-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v112-stall-lifecycle-r1';
 const WEB_UNIFIED_MODE = process.env.TALKSYS_WEB_UNIFIED !== '0';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
@@ -111,52 +111,117 @@ let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
 let bridgeHeartbeatTimer = null;
+const pipelineStages = new Map();
 let activePipelineStage = 'idle';
 let activePipelineStageAt = 0;
 let activePipelineUtteranceId = '';
-let activePipelineStallTimer = null;
+let activePipelineStageBlocking = false;
+let activePipelineStageDeadlineMs = 0;
+let heartbeatWriteInFlight = false;
 let windowsTtsQueue = Promise.resolve();
 
-function clearPipelineStage(reason = 'idle') {
-  if (activePipelineStallTimer) {
-    clearTimeout(activePipelineStallTimer);
-    activePipelineStallTimer = null;
+const PIPELINE_STAGE_POLICY = Object.freeze({
+  stt: { blocking: true, stallMs: 5000, deadlineMs: REQUEST_BUDGET_MS.stt + 5000 },
+  'stt-complete': { blocking: true, stallMs: 5000, deadlineMs: 10000 },
+  turn: { blocking: true, stallMs: 5000, deadlineMs: REQUEST_BUDGET_MS.turn + 5000 },
+  'turn-complete': { blocking: true, stallMs: 5000, deadlineMs: 10000 },
+  tts: { blocking: true, stallMs: 5000, deadlineMs: REQUEST_BUDGET_MS.tts + 5000 },
+  'tts-complete': { blocking: true, stallMs: 5000, deadlineMs: 10000 },
+  'playback-starting': { blocking: true, stallMs: 5000, deadlineMs: 10000 },
+  'playback-active': { blocking: false, stallMs: 0, deadlineMs: 0 },
+  'playback-complete': { blocking: false, stallMs: 0, deadlineMs: 0 },
+});
+
+function refreshPipelineStageSummary(reason = 'idle') {
+  if (!pipelineStages.size) {
+    activePipelineStage = reason;
+    activePipelineStageAt = 0;
+    activePipelineUtteranceId = '';
+    activePipelineStageBlocking = false;
+    activePipelineStageDeadlineMs = 0;
+    return;
   }
-  activePipelineStage = reason;
-  activePipelineStageAt = 0;
-  activePipelineUtteranceId = '';
+
+  const records = [...pipelineStages.values()];
+  const blocking = records.filter((item) => item.blocking).sort((a, b) => a.at - b.at);
+  const selected = blocking[0] || records.sort((a, b) => b.at - a.at)[0];
+  activePipelineStage = selected.stage;
+  activePipelineStageAt = selected.at;
+  activePipelineUtteranceId = selected.utteranceId;
+  activePipelineStageBlocking = selected.blocking;
+  activePipelineStageDeadlineMs = selected.deadlineMs;
 }
 
-function setPipelineStage(stage, utteranceId = '') {
-  if (activePipelineStallTimer) clearTimeout(activePipelineStallTimer);
-  activePipelineStage = String(stage || 'unknown');
-  activePipelineStageAt = Date.now();
-  activePipelineUtteranceId = String(utteranceId || '');
-  mirrorRuntimeLog('STAGE', `u=${shortUtteranceId(activePipelineUtteranceId)} ${activePipelineStage}`);
-  activePipelineStallTimer = setTimeout(() => {
-    if (!activePipelineStageAt || activePipelineStage !== stage || activePipelineUtteranceId !== String(utteranceId || '')) return;
-    const age = Date.now() - activePipelineStageAt;
-    mirrorRuntimeLog('STALL', `u=${shortUtteranceId(activePipelineUtteranceId)} stage=${activePipelineStage} age=${age}ms player=${player.state.status}`);
-    console.warn(`[stall] utterance=${activePipelineUtteranceId || '-'} stage=${activePipelineStage} age=${age}ms player=${player.state.status}`);
-  }, 5000);
+function clearPipelineStage(utteranceId = '', reason = 'idle') {
+  const key = String(utteranceId || '');
+  if (!key) {
+    for (const record of pipelineStages.values()) {
+      if (record.stallTimer) clearTimeout(record.stallTimer);
+    }
+    pipelineStages.clear();
+    refreshPipelineStageSummary(reason);
+    return;
+  }
+
+  const record = pipelineStages.get(key);
+  if (record?.stallTimer) clearTimeout(record.stallTimer);
+  pipelineStages.delete(key);
+  refreshPipelineStageSummary(reason);
+}
+
+function setPipelineStage(stage, utteranceId = '', overrides = {}) {
+  const key = String(utteranceId || '__bridge__');
+  const prior = pipelineStages.get(key);
+  if (prior?.stallTimer) clearTimeout(prior.stallTimer);
+
+  const policy = PIPELINE_STAGE_POLICY[String(stage || '')] || {};
+  const record = {
+    utteranceId: String(utteranceId || ''),
+    stage: String(stage || 'unknown'),
+    at: Date.now(),
+    blocking: overrides.blocking ?? policy.blocking ?? true,
+    stallMs: Number(overrides.stallMs ?? policy.stallMs ?? 5000),
+    deadlineMs: Number(overrides.deadlineMs ?? policy.deadlineMs ?? 30000),
+    stallTimer: null,
+  };
+
+  if (record.stallMs > 0) {
+    record.stallTimer = setTimeout(() => {
+      if (pipelineStages.get(key) !== record) return;
+      const age = Date.now() - record.at;
+      mirrorRuntimeLog('STALL', `u=${shortUtteranceId(record.utteranceId)} stage=${record.stage} age=${age}ms player=${player.state.status}`);
+      console.warn(`[stall] utterance=${record.utteranceId || '-'} stage=${record.stage} age=${age}ms player=${player.state.status}`);
+    }, record.stallMs);
+  }
+
+  pipelineStages.set(key, record);
+  refreshPipelineStageSummary();
+  mirrorRuntimeLog('STAGE', `u=${shortUtteranceId(record.utteranceId)} ${record.stage} blocking=${record.blocking ? 1 : 0}`);
 }
 
 function writeBridgeHeartbeat() {
-  if (!BRIDGE_HEARTBEAT_FILE) return;
-  try {
-    fs.writeFileSync(BRIDGE_HEARTBEAT_FILE, JSON.stringify({
-      pid: process.pid,
-      at: Date.now(),
-      revision: DISCORD_BRIDGE_REVISION,
-      stage: activePipelineStage,
-      stageAt: activePipelineStageAt,
-      utteranceId: activePipelineUtteranceId,
-      player: player.state.status,
-      answering,
-    }));
-  } catch (error) {
-    console.warn('[heartbeat] write failed:', error?.message || error);
-  }
+  if (!BRIDGE_HEARTBEAT_FILE || heartbeatWriteInFlight) return;
+  const payload = JSON.stringify({
+    pid: process.pid,
+    at: Date.now(),
+    revision: DISCORD_BRIDGE_REVISION,
+    stage: activePipelineStage,
+    stageAt: activePipelineStageAt,
+    stageBlocking: activePipelineStageBlocking,
+    stageDeadlineMs: activePipelineStageDeadlineMs,
+    stageCount: pipelineStages.size,
+    utteranceId: activePipelineUtteranceId,
+    player: player.state.status,
+    answering,
+  });
+  heartbeatWriteInFlight = true;
+  fs.promises.writeFile(BRIDGE_HEARTBEAT_FILE, payload)
+    .catch((error) => {
+      console.warn('[heartbeat] write failed:', error?.message || error);
+    })
+    .finally(() => {
+      heartbeatWriteInFlight = false;
+    });
 }
 
 function installedPackageVersion(relativePath) {
@@ -205,7 +270,7 @@ function resetConversationState() {
   activeUserUtteranceId = '';
   pendingTurns.splice(0, pendingTurns.length);
   latestResolvedVoiceByUser.clear();
-  clearPipelineStage('idle');
+  clearPipelineStage('', 'idle');
   discordSessionId = '';
 }
 
@@ -370,6 +435,15 @@ function shouldDropUncorroboratedBotOverlap(text, captureMetrics = {}, policy = 
   if (/^(?:違う|ちがう|いや|そうじゃない|それ違う|訂正)/.test(confirmed)) return false;
   const realtime = String(captureMetrics?.realtimeTranscript || '').trim();
   return Boolean(realtime) && !sameUtterance(confirmed, realtime);
+}
+
+function isClearlySilentCapture(captureMetrics = {}) {
+  if (String(captureMetrics?.realtimeTranscript || '').trim()) return false;
+  const maxRms = Number(captureMetrics?.maxRms) || 0;
+  const maxPeak = Number(captureMetrics?.maxPeak) || 0;
+  const rmsFloor = WEB_VOICE_CAPTURE_POLICY.startRmsMin * 0.55;
+  const peakFloor = WEB_VOICE_CAPTURE_POLICY.peakGateMin * 0.65;
+  return maxRms > 0 && maxPeak > 0 && maxRms < rmsFloor && maxPeak < peakFloor;
 }
 
 function runtimeLogText() {
@@ -725,6 +799,7 @@ function markVoiceResultResolved(userId, sessionEpoch, utteranceId, utteranceSer
 
 function releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller = null, reason = 'drop' }) {
   try { controller?.abort?.(reason); } catch {}
+  clearPipelineStage(utteranceId, 'idle');
 
   const helper = realtimeHelpers.get(userId);
   if (helper?.active?.utteranceId === utteranceId) {
@@ -1283,17 +1358,51 @@ async function playMp3(mp3, options = {}) {
   player.play(resource);
 
   const completionPromise = new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      try { ffmpeg.kill('SIGKILL'); } catch {}
-      player.stop(true);
-      reject(new Error('playback_timeout'));
-    }, 30000);
-    const done = () => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now(); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); resolve(); };
-    const fail = (error) => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now(); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); reject(error); };
+    let lastProgressAt = Date.now();
+    let lastPlaybackDuration = 0;
+    let settled = false;
+    let watchdog = null;
+
     const cleanup = () => {
+      if (watchdog) clearInterval(watchdog);
       player.off(AudioPlayerStatus.Idle, done);
       player.off('error', fail);
     };
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      finishBotSpeech(botSpeechRecord);
+      if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now();
+      if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null;
+      cleanup();
+      resolve();
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      finishBotSpeech(botSpeechRecord);
+      if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now();
+      if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null;
+      cleanup();
+      reject(error);
+    };
+
+    watchdog = setInterval(() => {
+      if (player.state.status === AudioPlayerStatus.Playing) {
+        const duration = Number(player.state.playbackDuration) || 0;
+        if (duration > lastPlaybackDuration + 20) {
+          lastPlaybackDuration = duration;
+          lastProgressAt = Date.now();
+          return;
+        }
+      }
+      if (Date.now() - lastProgressAt >= 10000) {
+        try { ffmpeg.kill('SIGKILL'); } catch {}
+        try { player.stop(true); } catch {}
+        fail(new Error('playback_stall_timeout'));
+      }
+    }, 1000);
+
     player.once(AudioPlayerStatus.Idle, done);
     player.once('error', fail);
   });
@@ -1371,7 +1480,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     try { activeWaitCue?.stop?.('pipeline-hard-timeout'); } catch {}
     try { activeFastReaction?.stop?.('pipeline-hard-timeout'); } catch {}
     try { player.stop(true); } catch {}
-  }, 30000);
+  }, 55000);
 
   const timings = {
     sttMode: 'web-whisper',
@@ -1438,13 +1547,15 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     timings.ttsProvider = tts.source;
 
     const playbackWallStarted = Date.now();
-    setPipelineStage('playback', utteranceId);
+    setPipelineStage('playback-starting', utteranceId);
     postVoiceCheckpoint('playback-start', utteranceId).catch(() => {});
     await playMp3(tts.audio, {
       spokenText: turn.answer,
       purpose: 'answer',
       utteranceId,
       onPlaybackStart: ({ playbackStartedAt, ffmpegSpawnMs }) => {
+        clearTimeout(pipelineHardTimeout);
+        setPipelineStage('playback-active', utteranceId);
         timeline.playbackStartAt = playbackStartedAt;
         timings.ffmpegSpawnMs = ffmpegSpawnMs;
         timings.speechEndToPlaybackStartMs = Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt));
@@ -1496,7 +1607,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
       error: pipelineError,
     }).catch(() => {});
     if (activeTurnAbortController === controller) activeTurnAbortController = null;
-    if (activePipelineUtteranceId === utteranceId) clearPipelineStage('idle');
+    clearPipelineStage(utteranceId, 'idle');
     if (turnSerial === activeTurnSerial && sessionEpoch === voiceEpoch) {
       answering = false;
       activeUserText = '';
@@ -1517,6 +1628,31 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
   }
 
   const controller = new AbortController();
+  if (isClearlySilentCapture(captureMetrics)) {
+    const detail = `local-silence rms=${captureMetrics?.maxRms ?? 0} peak=${captureMetrics?.maxPeak ?? 0} duration=${captureMetrics?.durationMs ?? 0}ms`;
+    mirrorRuntimeLog('DROP', `u=${shortUtteranceId(utteranceId)} ${detail}`);
+    console.log(`[capture] ${detail} utterance=${utteranceId}; Whisper skipped`);
+    releaseDroppedUtterance({ userId, sessionEpoch, utteranceId, controller, reason: 'local-silence-gate' });
+    timeline.pipelineCompleteAt = Date.now();
+    postVoiceMetrics({
+      text: '',
+      utteranceId,
+      timings: {
+        sttMode: 'local-silence-gate',
+        captureMs: Math.max(0, (timeline.utteranceEndAt || 0) - (timeline.discordReceiveStartAt || timeline.firstPcmAt || 0)),
+        sttMs: 0,
+        speechEndToSttFinalMs: 0,
+        pipelineCompleteMs: Math.max(0, timeline.pipelineCompleteAt - (timeline.discordReceiveStartAt || timeline.pipelineCompleteAt)),
+      },
+      timeline,
+      realtimeTranscript: '',
+      confirmedTranscript: '',
+      geminiInputText: '',
+      error: 'local-silence-gate',
+    }).catch(() => {});
+    return;
+  }
+
   try {
     setPipelineStage('stt', utteranceId);
     postVoiceCheckpoint('stt-start', utteranceId).catch(() => {});
@@ -1671,6 +1807,8 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
       error: message,
     }).catch(() => {});
     await speakRecoveryPrompt('stt-failed', sessionEpoch, timeline.utteranceEndAt || 0);
+  } finally {
+    clearPipelineStage(utteranceId, 'idle');
   }
 }
 
@@ -1953,9 +2091,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     opusChunkCount += 1;
   });
 
-  decoder.on('data', (pcm48) => {
-    if (!resampler.stdin.destroyed && !resampler.stdin.writableEnded) resampler.stdin.write(pcm48);
-  });
+  decoder.pipe(resampler.stdin);
 
   resampler.stdout.on('data', (pcm16) => {
     if (!pcm16?.length || completed) return;
@@ -1994,6 +2130,12 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     console.error('[resample]', error.message);
     mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-output ${error.message}`);
     finalize('resampler-output-error').catch(() => {});
+  });
+  resampler.stdin.on('error', (error) => {
+    if (completed) return;
+    console.error('[resample]', error.message);
+    mirrorRuntimeLog('RX-ERROR', `u=${shortUtteranceId(utteranceId)} resampler-input ${error.message}`);
+    finalize('resampler-input-error').catch(() => {});
   });
   resampler.on('error', (error) => {
     console.error('[resample]', error.message);
