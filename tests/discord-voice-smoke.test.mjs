@@ -427,7 +427,8 @@ test('V114 bridge polls supervisor shutdown requests without an unbounded filesy
   assert.match(source, /BRIDGE_SHUTDOWN_POLL_MS = 500/);
   assert.match(source, /function pollBridgeShutdownRequest/);
   assert.match(source, /AbortSignal\.timeout\(400\)/);
-  assert.match(source, /BRIDGE_EXTERNAL_SHUTDOWN_EXIT_CODE = 73/);\n  assert.match(source, /requestBridgeShutdown\(reason, BRIDGE_EXTERNAL_SHUTDOWN_EXIT_CODE\)/);
+  assert.match(source, /BRIDGE_EXTERNAL_SHUTDOWN_EXIT_CODE = 73/);
+  assert.match(source, /requestBridgeShutdown\(reason, BRIDGE_EXTERNAL_SHUTDOWN_EXIT_CODE\)/);
 });
 
 test('V114 bounds Discord REST calls used by slash-command control flow', () => {
