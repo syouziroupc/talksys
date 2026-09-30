@@ -81,19 +81,87 @@ try {
 }
 Write-Host "[ok] restart preflight: Discord secrets available"
 
-# Stop only an older TalkSys Discord bridge process from this checkout.
+# Stop the old TalkSys bridge and its supervisor from this checkout.
+# v114+ bridges understand the shutdown-file protocol and exit with code 73,
+# which tells start.ps1 to stop the supervisor instead of restarting the bot.
+# Older bridges do not understand that protocol, so after a grace period we
+# terminate only a verified same-checkout supervisor process tree.
 $entry = Join-Path $PSScriptRoot 'src\index.mjs'
+$supervisorScript = Join-Path $PSScriptRoot 'start.ps1'
+$shutdownFile = Join-Path $env:TEMP 'talksys-discord-shutdown.txt'
 $entryPattern = [regex]::Escape($entry)
-$oldBridges = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
-  Where-Object { $_.CommandLine -and $_.CommandLine -match $entryPattern })
+$supervisorPattern = [regex]::Escape($supervisorScript)
 
-foreach ($proc in $oldBridges) {
-  Write-Host "[restart] stopping old Discord bridge pid=$($proc.ProcessId)..."
-  Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+function Get-TalkSysBridgeProcesses {
+  return @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match $entryPattern })
 }
 
+function Stop-VerifiedProcessTree {
+  param(
+    [Parameter(Mandatory=$true)]$BridgeProcess
+  )
+
+  $targetPid = [int]$BridgeProcess.ProcessId
+  $parentPid = [int]$BridgeProcess.ParentProcessId
+  $parent = $null
+  if ($parentPid -gt 0) {
+    $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $parentPid" -ErrorAction SilentlyContinue
+  }
+
+  $verifiedSupervisor = $parent -and
+    $parent.Name -match '^powershell(?:\.exe)? -and
+    $parent.CommandLine -and
+    $parent.CommandLine -match $supervisorPattern
+
+  if ($verifiedSupervisor) {
+    Write-Warning "[restart] legacy/surviving supervisor detected pid=$parentPid; terminating verified TalkSys process tree."
+    try {
+      & taskkill.exe /PID $parentPid /T /F 2>$null | Out-Null
+    } catch {}
+  } else {
+    Write-Warning "[restart] supervisor parent could not be verified for bridge pid=$targetPid; terminating bridge tree only."
+    try {
+      & taskkill.exe /PID $targetPid /T /F 2>$null | Out-Null
+    } catch {}
+  }
+}
+
+$oldBridges = Get-TalkSysBridgeProcesses
 if ($oldBridges.Count -gt 0) {
-  Start-Sleep -Milliseconds 600
+  Write-Host "[restart] requesting graceful shutdown of $($oldBridges.Count) old Discord bridge process(es)..."
+  try {
+    Set-Content -LiteralPath $shutdownFile -Value 'update-and-start' -NoNewline -Force
+  } catch {
+    Write-Warning "[restart] failed to write shutdown request: $($_.Exception.Message)"
+  }
+
+  $graceDeadline = (Get-Date).AddSeconds(3)
+  while ((Get-Date) -lt $graceDeadline) {
+    if ((Get-TalkSysBridgeProcesses).Count -eq 0) { break }
+    Start-Sleep -Milliseconds 200
+  }
+
+  # Compatibility cleanup for pre-v114 supervisors, or any bridge that failed
+  # to honor graceful shutdown. Repeat because an old supervisor can respawn
+  # its child once before its own verified process tree is terminated.
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    $remaining = Get-TalkSysBridgeProcesses
+    if ($remaining.Count -eq 0) { break }
+    foreach ($proc in $remaining) {
+      Stop-VerifiedProcessTree -BridgeProcess $proc
+    }
+    Start-Sleep -Milliseconds 500
+  }
+
+  if ((Get-TalkSysBridgeProcesses).Count -ne 0) {
+    throw "旧TalkSys Discord Botの完全停止を確認できないため、新Botの起動を中止します。二重起動防止のため手動確認してください。"
+  }
+
+  if (Test-Path $shutdownFile) {
+    Remove-Item $shutdownFile -Force -ErrorAction SilentlyContinue
+  }
+  Write-Host "[ok] old Discord bridge and supervisor are fully stopped."
 }
 
 Write-Host "[start] launching Discord voice bridge..."
