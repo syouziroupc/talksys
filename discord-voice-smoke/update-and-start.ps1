@@ -96,6 +96,13 @@ if ($oldBridges.Count -gt 0) {
   Start-Sleep -Milliseconds 600
 }
 
-Write-Host "[start] launching Discord voice bridge..."
-& powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\start.ps1"
-exit $LASTEXITCODE
+Write-Host "[start] launching Discord voice bridge supervisor..."
+$launcher = Join-Path $PSScriptRoot 'start.ps1'
+$child = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+  '-NoProfile',
+  '-ExecutionPolicy', 'Bypass',
+  '-File', $launcher
+) -PassThru
+Write-Host "[ok] Discord voice bridge supervisor started pid=$($child.Id)"
+Write-Host "[ok] updater is exiting normally; the bridge continues in the child process."
+exit 0
