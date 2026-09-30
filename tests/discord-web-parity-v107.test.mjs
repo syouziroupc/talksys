@@ -5,7 +5,7 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 
 test('Discord v108 preserves shared Worker semantic decisions', () => {
-  assert.match(source, /talksys-discord-bridge-v108-stability-r1/);
+  assert.match(source, /talksys-discord-bridge-v110-input-observability-r1/);
   assert.match(source, /TALKSYS_BASE_URL \+ '\/api\/fast-reaction'/);
   assert.match(source, /TALKSYS_BASE_URL \+ '\/api\/search-preface'/);
   assert.doesNotMatch(source, /eou-local/);
