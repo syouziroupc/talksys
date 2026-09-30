@@ -179,7 +179,7 @@ test('V108 TTS serializes local System.Speech while dropping aborted queued work
   assert.match(source, /let windowsTtsQueue = Promise\.resolve\(\)/);
   assert.match(source, /SetOutputToWaveFile\(\$out\)/);
   assert.match(source, /TALKSYS_TTS_OUT/);
-  assert.match(source, /fs\.promises\.readFile\(tempFile\)/);
+  assert.match(source, /fs\.promises\.readFile\(tempFile(?:, \{)?/);
   assert.match(source, /fs\.promises\.unlink\(tempFile\)/);
   assert.match(source, /windowsTtsQueue[\s\S]*synthesizeWindowsJapaneseTtsUnlocked/);
   assert.match(source, /if \(signal\?\.aborted\) throw signal\.reason/);
