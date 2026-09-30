@@ -31,7 +31,7 @@ test('Discord Whisper transcription is the normal path, not a fallback', () => {
 
 test('Discord trusts its speaking transport gate and normalizes audio to the Web STT format', () => {
   assert.match(source, /WEB_VOICE_CAPTURE_POLICY/);
-  assert.match(source, /Discord already gates outgoing voice by speaking state/);
+  assert.match(source, /Discord speaking state is the primary transport gate/);
   assert.match(source, /EndBehaviorType\.AfterSilence, duration: 1600/);
   assert.match(source, /const DISCORD_SEGMENT_SILENCE_MS = WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
   assert.match(source, /Date\.now\(\) - lastPcmAt >= DISCORD_SEGMENT_SILENCE_MS/);
