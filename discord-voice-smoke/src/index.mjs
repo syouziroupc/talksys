@@ -1359,6 +1359,18 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
   const controller = new AbortController();
   try { activeTurnAbortController?.abort(); } catch {}
   activeTurnAbortController = controller;
+  const pipelineHardTimeout = setTimeout(() => {
+    if (turnSerial !== activeTurnSerial || controller.signal.aborted) return;
+    const age = Date.now() - pipelineStarted;
+    const stage = activePipelineStage || 'unknown';
+    mirrorRuntimeLog('PIPELINE-TIMEOUT', `u=${shortUtteranceId(utteranceId)} stage=${stage} age=${age}ms`);
+    console.warn(`[pipeline-timeout] utterance=${utteranceId} stage=${stage} age=${age}ms`);
+    postVoiceCheckpoint('pipeline-timeout', utteranceId, { stage, ageMs: age }).catch(() => {});
+    try { controller.abort(new Error('answer_pipeline_hard_timeout')); } catch {}
+    try { activeWaitCue?.stop?.('pipeline-hard-timeout'); } catch {}
+    try { activeFastReaction?.stop?.('pipeline-hard-timeout'); } catch {}
+    try { player.stop(true); } catch {}
+  }, 45000);
 
   const timings = {
     sttMode: 'web-whisper',
@@ -1451,6 +1463,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
       await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch, timeline.utteranceEndAt || 0);
     }
   } finally {
+    clearTimeout(pipelineHardTimeout);
     // An interrupted pipeline may finish after the replacement turn has
     // already created its own cue/reaction. Only clean up handles that still
     // belong to this utterance; otherwise the old finally block can kill the
