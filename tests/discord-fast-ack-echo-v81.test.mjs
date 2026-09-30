@@ -70,7 +70,7 @@ test('Cloudflare telemetry accepts fast-reaction timing and transcript provenanc
 });
 
 test('current V108 Discord stability adapter preserves authoritative Web Whisper while current Worker keeps its own revision', () => {
-  assert.match(bridge, /talksys-discord-bridge-v110-input-observability-r1/);
+  assert.match(bridge, /talksys-discord-bridge-v111-freeze-stage-r1/);
   assert.match(integrated, /talksys-integrated-entry-v105-clock-transit-asr-r1/);
   assert.match(bridge, /voice-fast-reaction\.js/);
   assert.match(bridge, /TALKSYS_BASE_URL \+ '\/api\/transcribe'/);
