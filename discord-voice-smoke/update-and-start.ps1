@@ -70,6 +70,15 @@ if (-not $env:DISCORD_TOKEN) {
 if (-not $env:DISCORD_BRIDGE_TOKEN) {
   throw "DISCORD_BRIDGE_TOKEN が未設定です。現在のBotは停止していません。先に setup-bridge-secret.ps1 を実行してください。"
 }
+
+try {
+  $headers = @{ Authorization = "Bot $env:DISCORD_TOKEN" }
+  $me = Invoke-RestMethod -Method Get -Uri 'https://discord.com/api/v10/users/@me' -Headers $headers -TimeoutSec 10
+  if (-not $me.id) { throw "Discord token validation returned no bot id." }
+  Write-Host "[ok] restart preflight: Discord Bot Token valid for bot id=$($me.id)"
+} catch {
+  throw "DISCORD_TOKEN の事前検証に失敗しました。現在のBotは停止していません。$($_.Exception.Message)"
+}
 Write-Host "[ok] restart preflight: Discord secrets available"
 
 # Stop only an older TalkSys Discord bridge process from this checkout.
