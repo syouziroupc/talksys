@@ -44,10 +44,25 @@ test('Discord launcher supervises exits and hung bridge heartbeat/stage states',
 });
 
 
-test('Discord updater stops only the old bridge process from the same checkout before restart', () => {
+test('Discord updater shuts down the old bridge and verified supervisor before restart', () => {
   assert.match(updater, /Get-CimInstance Win32_Process/);
   assert.match(updater, /Name = 'node\.exe'/);
   assert.match(updater, /\[regex\]::Escape\(\$entry\)/);
-  assert.match(updater, /Stop-Process -Id \$proc\.ProcessId -Force/);
+  assert.match(updater, /talksys-discord-shutdown\.txt/);
+  assert.match(updater, /Set-Content -LiteralPath \$shutdownFile -Value 'update-and-start'/);
+  assert.match(updater, /ParentProcessId/);
+  assert.match(updater, /\$parent\.CommandLine -match \$supervisorPattern/);
+  assert.match(updater, /taskkill\.exe \/PID \$parentPid \/T \/F/);
+  assert.match(updater, /taskkill\.exe \/PID \$targetPid \/T \/F/);
+  assert.match(updater, /for \(\$attempt = 1; \$attempt -le 3; \$attempt\+\+\)/);
+  assert.match(updater, /旧TalkSys Discord Botの完全停止を確認できないため、新Botの起動を中止します/);
   assert.match(updater, /src\\index\.mjs/);
+  assert.doesNotMatch(updater, /Stop-Process -Id \$proc\.ProcessId -Force/);
+});
+
+test('Discord supervisor treats updater-requested exit code as intentional stop, not crash restart', () => {
+  const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
+  assert.match(launcher, /\$externalShutdownExitCode = 73/);
+  assert.match(launcher, /\$exitCode -eq \$externalShutdownExitCode/);
+  assert.match(launcher, /external maintenance shutdown completed; supervisor exiting/);
 });
