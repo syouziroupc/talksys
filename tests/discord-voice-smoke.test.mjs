@@ -86,7 +86,7 @@ test('Discord pre-caches recovery voice and speaks it on STT or answer failure',
 
 test('Discord playback watchdog kills stuck ffmpeg and detects silent start failures', () => {
   assert.match(source, /ffmpeg\.kill\('SIGKILL'\)/);
-  assert.match(source, /playback_timeout/);
+  assert.match(source, /playback_stall_timeout/);
   assert.match(source, /playback_start_timeout/);
 });
 
