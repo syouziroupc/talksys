@@ -366,3 +366,24 @@ test('V113 receiver prearm does not spawn decoder or ffmpeg until the first Opus
   assert.doesNotMatch(source, /const decoder = new prism\.opus\.Decoder/);
   assert.doesNotMatch(source, /const resampler = createWebCompatibleResampler/);
 });
+
+
+test('V113 recovery rechecks for newer user speech after any synthesis wait', () => {
+  assert.match(source, /suppressed after synthesis because a newer user utterance started/);
+  const warmIndex = source.indexOf("if (!audio?.length) audio = await warmRecoveryAudio()");
+  const recheckIndex = source.indexOf("suppressed after synthesis because a newer user utterance started");
+  const stopIndex = source.indexOf("player.stop(true)", recheckIndex);
+  assert.ok(warmIndex >= 0 && recheckIndex > warmIndex && stopIndex > recheckIndex);
+});
+
+test('V113 realtime helper closes errored sockets instead of retaining a half-open helper', () => {
+  assert.match(source, /ws\.onerror = \(\) => \{/);
+  assert.match(source, /resetting helper/);
+  assert.match(source, /try \{ ws\.close\(\); \} catch \{\}/);
+});
+
+test('V113 Windows TTS temp-file read has a hard deadline', () => {
+  assert.match(source, /TTS_FILE_READ_TIMEOUT_MS = 2000/);
+  assert.match(source, /fs\.promises\.readFile\(tempFile, \{/);
+  assert.match(source, /signal: boundedSignal\(signal, TTS_FILE_READ_TIMEOUT_MS\)/);
+});
