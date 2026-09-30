@@ -443,7 +443,7 @@ function isClearlySilentCapture(captureMetrics = {}) {
   const maxPeak = Number(captureMetrics?.maxPeak) || 0;
   const rmsFloor = WEB_VOICE_CAPTURE_POLICY.startRmsMin * 0.55;
   const peakFloor = WEB_VOICE_CAPTURE_POLICY.peakGateMin * 0.65;
-  return maxRms > 0 && maxPeak > 0 && maxRms < rmsFloor && maxPeak < peakFloor;
+  return maxRms < rmsFloor && maxPeak < peakFloor;
 }
 
 function runtimeLogText() {
@@ -1397,9 +1397,10 @@ async function playMp3(mp3, options = {}) {
         }
       }
       if (Date.now() - lastProgressAt >= 10000) {
+        const error = new Error('playback_stall_timeout');
+        fail(error);
         try { ffmpeg.kill('SIGKILL'); } catch {}
         try { player.stop(true); } catch {}
-        fail(new Error('playback_stall_timeout'));
       }
     }, 1000);
 
@@ -1472,7 +1473,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
   const pipelineHardTimeout = setTimeout(() => {
     if (turnSerial !== activeTurnSerial || controller.signal.aborted) return;
     const age = Date.now() - pipelineStarted;
-    const stage = activePipelineStage || 'unknown';
+    const stage = pipelineStages.get(utteranceId)?.stage || activePipelineStage || 'unknown';
     mirrorRuntimeLog('PIPELINE-TIMEOUT', `u=${shortUtteranceId(utteranceId)} stage=${stage} age=${age}ms`);
     console.warn(`[pipeline-timeout] utterance=${utteranceId} stage=${stage} age=${age}ms`);
     postVoiceCheckpoint('pipeline-timeout', utteranceId, { stage, ageMs: age }).catch(() => {});
@@ -1912,9 +1913,9 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     bargeInTriggerMs: 0,
   };
 
-  // Discord already gates outgoing voice by speaking state. Do not apply the
-  // browser RMS/SNR rejection gate again or normal Discord speech can be lost.
-  // We only normalize the transport audio to the same Web STT input format.
+  // Discord speaking state is the primary transport gate. Do not run the full
+  // browser VAD here; after capture we only reject clearly sub-threshold silence
+  // with no realtime transcript before paying the Whisper round trip.
   const opus = connection.receiver.subscribe(userId, {
     end: { behavior: EndBehaviorType.AfterSilence, duration: 1600 },
   });
