@@ -54,7 +54,7 @@ test('wait cue is non-answer audio and cannot remain playing when final answer i
   assert.match(source, /function startWaitCue/);
   assert.match(source, /\/api\/search-preface/);
   assert.match(source, /activeWaitCue = startWaitCue\(confirmedTranscript/);
-  assert.match(source, /activeWaitCue\?\.stop\('final-answer-ready'\)/);
+  assert.match(source, /activeWaitCue\?\.utteranceId === utteranceId[\s\S]*activeWaitCue\.stop\?\.\('final-answer-ready'\)/);
   assert.match(source, /player\.stop\(true\)/);
   assert.doesNotMatch(source, /waitCuePromise|await activeWaitCue\.done/);
 });
