@@ -66,6 +66,15 @@ $shutdownFile = Join-Path $env:TEMP 'talksys-discord-shutdown.txt'
 $env:TALKSYS_BRIDGE_HEARTBEAT_FILE = $heartbeatFile
 $env:TALKSYS_BRIDGE_SHUTDOWN_FILE = $shutdownFile
 $rapidFailures = 0
+$externalShutdownExitCode = 73
+
+$mutexCreated = $false
+$supervisorMutex = [System.Threading.Mutex]::new($true, 'Local\TalkSysDiscordSupervisor', [ref]$mutexCreated)
+if (-not $mutexCreated) {
+  try { $supervisorMutex.Dispose() } catch {}
+  throw "TalkSys Discord Supervisorは既に起動しています。二重起動を防ぐため、このSupervisorは開始しません。"
+}
+Write-Host "[ok] acquired single-supervisor mutex"
 
 function Stop-TalkSysBridgeGracefully {
   param(
@@ -99,6 +108,7 @@ function Stop-TalkSysBridgeGracefully {
   }
 }
 
+try {
 while ($true) {
   if (Test-Path $heartbeatFile) { Remove-Item $heartbeatFile -Force -ErrorAction SilentlyContinue }
   if (Test-Path $shutdownFile) { Remove-Item $shutdownFile -Force -ErrorAction SilentlyContinue }
@@ -153,8 +163,12 @@ while ($true) {
   $exitCode = if ($hung) { 124 } else { $proc.ExitCode }
   $uptimeSeconds = ((Get-Date) - $startedAt).TotalSeconds
 
-  if ($exitCode -eq 0 -and -not $hung) {
-    Write-Host "[supervisor] Discord bridge stopped normally."
+  if (-not $hung -and ($exitCode -eq 0 -or $exitCode -eq $externalShutdownExitCode)) {
+    if ($exitCode -eq $externalShutdownExitCode) {
+      Write-Host "[supervisor] external maintenance shutdown completed; supervisor exiting."
+    } else {
+      Write-Host "[supervisor] Discord bridge stopped normally."
+    }
     exit 0
   }
 
@@ -166,4 +180,8 @@ while ($true) {
     throw "Discord bridgeが短時間に12回連続で異常終了しました。上のログを確認してください。"
   }
   Start-Sleep -Seconds $delaySeconds
+}
+} finally {
+  try { $supervisorMutex.ReleaseMutex() } catch {}
+  try { $supervisorMutex.Dispose() } catch {}
 }

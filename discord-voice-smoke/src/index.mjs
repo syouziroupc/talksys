@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v114-no-stale-owner-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v114-supervisor-singleton-r2';
 const WEB_UNIFIED_MODE = process.env.TALKSYS_WEB_UNIFIED !== '0';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
@@ -40,6 +40,7 @@ const BRIDGE_HEARTBEAT_MS = 5000;
 const BRIDGE_HEARTBEAT_FILE = process.env.TALKSYS_BRIDGE_HEARTBEAT_FILE || '';
 const BRIDGE_SHUTDOWN_FILE = process.env.TALKSYS_BRIDGE_SHUTDOWN_FILE || '';
 const BRIDGE_SHUTDOWN_POLL_MS = 500;
+const BRIDGE_EXTERNAL_SHUTDOWN_EXIT_CODE = 73;
 const DISCORD_REST_DEADLINE_MS = 8000;
 const REALTIME_WS_MAX_BUFFERED_BYTES = 256 * 1024;
 const REALTIME_PREOPEN_MAX_BYTES = 96 * 1024;
@@ -2875,7 +2876,7 @@ function pollBridgeShutdownRequest() {
   })
     .then((value) => {
       const reason = String(value || 'supervisor-request').trim().slice(0, 120) || 'supervisor-request';
-      requestBridgeShutdown(reason, 124);
+      requestBridgeShutdown(reason, BRIDGE_EXTERNAL_SHUTDOWN_EXIT_CODE);
     })
     .catch((error) => {
       if (error?.code !== 'ENOENT' && error?.name !== 'AbortError' && error?.name !== 'TimeoutError') {
