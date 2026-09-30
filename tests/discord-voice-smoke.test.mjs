@@ -439,3 +439,10 @@ test('V114 bounds Discord REST calls used by slash-command control flow', () => 
   assert.match(source, /voice-channel-fetch/);
   assert.match(source, /interaction-edit/);
 });
+
+
+test('V114 command registration failure cannot leave a half-alive bridge', () => {
+  assert.match(source, /command registration failed/);
+  assert.match(source, /requestBridgeShutdown\('command-registration-failed', 4\)/);
+  assert.doesNotMatch(source, /process\.exitCode = 1/);
+});
