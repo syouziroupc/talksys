@@ -231,3 +231,24 @@ test('V110 bounds Discord live-log payload size while retaining recent diagnosti
   assert.match(source, /body\.slice\(-1750\)/);
   assert.match(source, /runtimeLogLines\.length > 60/);
 });
+
+
+test('V111 exposes freeze stage and bridge revision without changing answer semantics', () => {
+  assert.match(source, /talksys-discord-bridge-v111-freeze-stage-r1/);
+  assert.match(source, /function setPipelineStage/);
+  assert.match(source, /mirrorRuntimeLog\('STALL'/);
+  assert.match(source, /stage=\$\{activePipelineStage\}/);
+  assert.match(source, /bridgeRevision: DISCORD_BRIDGE_REVISION/);
+  assert.match(source, /METRICS-ERROR/);
+});
+
+
+test('V111 persists stage checkpoints and exposes heartbeat supervisor contract', () => {
+  assert.match(source, /BRIDGE_HEARTBEAT_MS = 5000/);
+  assert.match(source, /function writeBridgeHeartbeat/);
+  assert.match(source, /postVoiceCheckpoint\('stt-start'/);
+  assert.match(source, /postVoiceCheckpoint\('turn-start'/);
+  assert.match(source, /postVoiceCheckpoint\('tts-start'/);
+  assert.match(source, /postVoiceCheckpoint\('playback-start'/);
+  assert.match(source, /\/api\/voice-stage/);
+});

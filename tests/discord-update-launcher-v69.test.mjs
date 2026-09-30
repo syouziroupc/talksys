@@ -28,10 +28,14 @@ test('Discord update launcher starts the existing secret-aware launcher after up
 });
 
 
-test('Discord launcher supervises the bridge process and backs off unexpected exits', () => {
+test('Discord launcher supervises exits and hung bridge heartbeat/stage states', () => {
   const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
   assert.match(launcher, /\[supervisor\] starting Discord bridge process/);
-  assert.match(launcher, /& node \$entry/);
+  assert.match(launcher, /Start-Process -FilePath 'node\.exe'/);
+  assert.match(launcher, /heartbeat stale/);
+  assert.match(launcher, /pipeline stage stuck/);
+  assert.match(launcher, /\$stageAgeSeconds -gt 30/);
+  assert.match(launcher, /\$ageSeconds -gt 20/);
   assert.match(launcher, /Restarting in \$delaySeconds seconds/);
   assert.match(launcher, /\[math\]::Min\(60, \[math\]::Pow\(2, \[math\]::Min\(\$rapidFailures, 5\)\)\)/);
   assert.match(launcher, /\$rapidFailures -ge 12/);

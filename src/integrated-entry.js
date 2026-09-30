@@ -1271,6 +1271,9 @@ async function runTalkSysTurn(request, env, body, signal = request.signal, ctx =
   emitLatencyLog('answer-start', commonBody, { route: new URL(request.url).pathname, answerStartMs: 0 });
   try {
     const result = await commonTalkSysTurn(commonBody, env, signal);
+    if (commonBody?.channel === 'discord' && result && typeof result === 'object') {
+      result.bridgeRevision = compact(commonBody?.bridgeRevision || '', 160);
+    }
     scheduleConversationLog(ctx, env, request, commonBody, result, 'turn', 200);
     const timings = {
       ...(result?.timings || {}),
@@ -1610,6 +1613,35 @@ function compactVoiceTimeline(value = {}) {
     if (Number.isFinite(n) && n > 0) out[key] = Math.round(n);
   }
   return out;
+}
+
+function discordVoiceStageResponse(request, env, ctx) {
+  if (!discordVoiceTtsAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+  return (async () => {
+    let body = {};
+    try { body = await request.json(); }
+    catch { return json({ ok: false, error: 'invalid_json' }, 400); }
+    const stage = compact(body?.stage || 'unknown', 100);
+    const bridgeRevision = compact(body?.bridgeRevision || '', 160);
+    const logBody = {
+      text: compact(body?.text || '', 1600),
+      sessionId: compact(body?.sessionId, 180),
+      utteranceId: compact(body?.utteranceId, 180),
+      channel: 'discord',
+      history: [],
+    };
+    const result = {
+      ok: true,
+      route: 'discord-voice-stage',
+      stage,
+      bridgeRevision,
+      stageAt: Number(body?.at) || Date.now(),
+      timings: null,
+      search: false,
+    };
+    scheduleConversationLog(ctx, env, request, logBody, result, 'voice-stage', 202);
+    return json({ ok: true, stored: true, stage }, 202);
+  })();
 }
 
 function discordVoiceMetricsResponse(request, env, ctx) {
@@ -1995,6 +2027,10 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/api/voice/synthesize') {
       return discordVoiceSynthesize(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/voice-stage') {
+      return discordVoiceStageResponse(request, env, ctx);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/voice-metrics') {

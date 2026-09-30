@@ -29,13 +29,15 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v110-input-observability-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v111-freeze-stage-r1';
 const WEB_UNIFIED_MODE = process.env.TALKSYS_WEB_UNIFIED !== '0';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
 const DISCORD_READY_TIMEOUT_MS = 120000;
 const DISCORD_HEALTH_LOG_MS = 60000;
+const BRIDGE_HEARTBEAT_MS = 5000;
+const BRIDGE_HEARTBEAT_FILE = process.env.TALKSYS_BRIDGE_HEARTBEAT_FILE || '';
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
 const RECENT_USER_TURN_WINDOW_MS = 2500;
@@ -108,7 +110,54 @@ let voiceRecoveryTimer = null;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
+let bridgeHeartbeatTimer = null;
+let activePipelineStage = 'idle';
+let activePipelineStageAt = 0;
+let activePipelineUtteranceId = '';
+let activePipelineStallTimer = null;
 let windowsTtsQueue = Promise.resolve();
+
+function clearPipelineStage(reason = 'idle') {
+  if (activePipelineStallTimer) {
+    clearTimeout(activePipelineStallTimer);
+    activePipelineStallTimer = null;
+  }
+  activePipelineStage = reason;
+  activePipelineStageAt = 0;
+  activePipelineUtteranceId = '';
+}
+
+function setPipelineStage(stage, utteranceId = '') {
+  if (activePipelineStallTimer) clearTimeout(activePipelineStallTimer);
+  activePipelineStage = String(stage || 'unknown');
+  activePipelineStageAt = Date.now();
+  activePipelineUtteranceId = String(utteranceId || '');
+  mirrorRuntimeLog('STAGE', `u=${shortUtteranceId(activePipelineUtteranceId)} ${activePipelineStage}`);
+  activePipelineStallTimer = setTimeout(() => {
+    if (!activePipelineStageAt || activePipelineStage !== stage || activePipelineUtteranceId !== String(utteranceId || '')) return;
+    const age = Date.now() - activePipelineStageAt;
+    mirrorRuntimeLog('STALL', `u=${shortUtteranceId(activePipelineUtteranceId)} stage=${activePipelineStage} age=${age}ms player=${player.state.status}`);
+    console.warn(`[stall] utterance=${activePipelineUtteranceId || '-'} stage=${activePipelineStage} age=${age}ms player=${player.state.status}`);
+  }, 5000);
+}
+
+function writeBridgeHeartbeat() {
+  if (!BRIDGE_HEARTBEAT_FILE) return;
+  try {
+    fs.writeFileSync(BRIDGE_HEARTBEAT_FILE, JSON.stringify({
+      pid: process.pid,
+      at: Date.now(),
+      revision: DISCORD_BRIDGE_REVISION,
+      stage: activePipelineStage,
+      stageAt: activePipelineStageAt,
+      utteranceId: activePipelineUtteranceId,
+      player: player.state.status,
+      answering,
+    }));
+  } catch (error) {
+    console.warn('[heartbeat] write failed:', error?.message || error);
+  }
+}
 
 function installedPackageVersion(relativePath) {
   try {
@@ -156,6 +205,7 @@ function resetConversationState() {
   activeUserUtteranceId = '';
   pendingTurns.splice(0, pendingTurns.length);
   latestResolvedVoiceByUser.clear();
+  clearPipelineStage('idle');
   discordSessionId = '';
 }
 
@@ -812,6 +862,35 @@ async function transcribeCapturedUtterance(pcm, utteranceId, timeline, signal) {
   };
 }
 
+async function postVoiceCheckpoint(stage, utteranceId, extra = {}) {
+  try {
+    const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice-stage', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer ' + BRIDGE_TOKEN,
+      },
+      body: JSON.stringify({
+        sessionId: discordSessionId || `discord-${randomUUID()}`,
+        utteranceId,
+        channel: 'discord',
+        stage,
+        bridgeRevision: DISCORD_BRIDGE_REVISION,
+        at: Date.now(),
+        ...extra,
+      }),
+    }, {
+      timeoutMs: 1800,
+      label: 'voice-stage',
+    });
+    await response.arrayBuffer().catch(() => {});
+    return response.ok;
+  } catch (error) {
+    console.warn('[checkpoint] voice stage failed:', error?.message || error);
+    return false;
+  }
+}
+
 async function postVoiceMetrics({ text, utteranceId, timings, timeline, realtimeTranscript = '', confirmedTranscript = '', rawTranscript = '', correctedTranscript = '', correctionReason = '', bargeInTriggerMs = 0, geminiInputText = '', error = '' }) {
   try {
     const response = await fetchWithBudget(TALKSYS_BASE_URL + '/api/voice-metrics', {
@@ -845,7 +924,9 @@ async function postVoiceMetrics({ text, utteranceId, timings, timeline, realtime
     console.log('[metrics] voice latency persisted');
     return true;
   } catch (errorValue) {
-    console.warn('[metrics] voice metrics failed:', errorValue?.message || errorValue);
+    const detail = String(errorValue?.message || errorValue || '').slice(0, 220);
+    console.warn('[metrics] voice metrics failed:', detail);
+    mirrorRuntimeLog('METRICS-ERROR', `u=${shortUtteranceId(utteranceId)} ${detail}`);
     return false;
   }
 }
@@ -929,6 +1010,7 @@ async function talk(text, utteranceId = '', signal, speechAlternatives = [], spo
       utteranceId,
       previousInteractionId,
       channel: 'discord',
+      bridgeRevision: DISCORD_BRIDGE_REVISION,
     }),
   }, {
     timeoutMs: REQUEST_BUDGET_MS.turn,
@@ -1049,12 +1131,19 @@ async function synthesizeWindowsJapaneseTtsUnlocked(text, signal) {
 
 async function synthesizeWindowsJapaneseTts(text, signal) {
   if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
-  const task = windowsTtsQueue
-    .catch(() => {})
-    .then(() => {
-      if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
-      return synthesizeWindowsJapaneseTtsUnlocked(text, signal);
-    });
+
+  const prior = windowsTtsQueue.catch(() => {});
+  const acquired = await Promise.race([
+    prior.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 4000)),
+  ]);
+  if (!acquired) {
+    mirrorRuntimeLog('TTS-QUEUE', 'Windows TTS queue wait exceeded 4000ms; bypassing local TTS');
+    throw new Error('windows_tts_queue_wait_timeout');
+  }
+
+  if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+  const task = synthesizeWindowsJapaneseTtsUnlocked(text, signal);
   windowsTtsQueue = task.catch(() => {});
   return task;
 }
@@ -1271,6 +1360,18 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
   const controller = new AbortController();
   try { activeTurnAbortController?.abort(); } catch {}
   activeTurnAbortController = controller;
+  const pipelineHardTimeout = setTimeout(() => {
+    if (turnSerial !== activeTurnSerial || controller.signal.aborted) return;
+    const age = Date.now() - pipelineStarted;
+    const stage = activePipelineStage || 'unknown';
+    mirrorRuntimeLog('PIPELINE-TIMEOUT', `u=${shortUtteranceId(utteranceId)} stage=${stage} age=${age}ms`);
+    console.warn(`[pipeline-timeout] utterance=${utteranceId} stage=${stage} age=${age}ms`);
+    postVoiceCheckpoint('pipeline-timeout', utteranceId, { stage, ageMs: age }).catch(() => {});
+    try { controller.abort(new Error('answer_pipeline_hard_timeout')); } catch {}
+    try { activeWaitCue?.stop?.('pipeline-hard-timeout'); } catch {}
+    try { activeFastReaction?.stop?.('pipeline-hard-timeout'); } catch {}
+    try { player.stop(true); } catch {}
+  }, 30000);
 
   const timings = {
     sttMode: 'web-whisper',
@@ -1295,6 +1396,8 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
   try {
     timeline.turnStartAt = Date.now();
     timings.answerStartMs = Math.max(0, timeline.turnStartAt - (timeline.utteranceEndAt || timeline.turnStartAt));
+    setPipelineStage('turn', utteranceId);
+    postVoiceCheckpoint('turn-start', utteranceId, { text: confirmedTranscript }).catch(() => {});
 
     if (!timeline.fastReactionRequestedAt && fastReaction?.shouldSpeak && String(fastReaction?.text || '').trim()) {
       playWebFastReaction(fastReaction, utteranceId, sessionEpoch, timeline, confirmedTranscript);
@@ -1307,6 +1410,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     const spokenBackchannel = fastReaction?.shouldSpeak ? String(fastReaction?.text || '').trim() : '';
     const turn = await talk(confirmedTranscript, utteranceId, controller.signal, speechAlternatives, spokenBackchannel);
     timeline.finalAnswerAt = Date.now();
+    setPipelineStage('turn-complete', utteranceId);
     timings.primaryMs = Number(turn?.timings?.primaryMs) || 0;
     timings.verifierMs = Number(turn?.timings?.verifierMs) || 0;
     timings.answerGenerationTotalMs = Number(turn?.timings?.totalMs) || Math.max(0, timeline.finalAnswerAt - timeline.turnStartAt);
@@ -1324,13 +1428,18 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     player.stop(true);
 
     timeline.ttsStartAt = Date.now();
+    setPipelineStage('tts', utteranceId);
+    postVoiceCheckpoint('tts-start', utteranceId).catch(() => {});
     const tts = await synthesize(turn.answer, controller.signal, { utteranceId, purpose: 'answer' });
     timeline.ttsEndAt = Date.now();
+    setPipelineStage('tts-complete', utteranceId);
     timings.firstTtsMs = tts.elapsedMs;
     timings.firstAudioReadyMs = Math.max(0, timeline.ttsEndAt - pipelineStarted);
     timings.ttsProvider = tts.source;
 
     const playbackWallStarted = Date.now();
+    setPipelineStage('playback', utteranceId);
+    postVoiceCheckpoint('playback-start', utteranceId).catch(() => {});
     await playMp3(tts.audio, {
       spokenText: turn.answer,
       purpose: 'answer',
@@ -1342,6 +1451,8 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
       },
     });
     timings.playbackMs = Date.now() - playbackWallStarted;
+    setPipelineStage('playback-complete', utteranceId);
+    postVoiceCheckpoint('pipeline-complete', utteranceId).catch(() => {});
   } catch (error) {
     pipelineError = String(error?.message || error || '').slice(0, 500);
     if (controller.signal.aborted || turnSerial !== activeTurnSerial) {
@@ -1349,9 +1460,11 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     } else {
       console.error('[pipeline]', error?.stack || error);
       mirrorRuntimeLog('ERROR', `pipeline: ${pipelineError}`);
+      postVoiceCheckpoint('pipeline-error', utteranceId, { error: pipelineError }).catch(() => {});
       await speakRecoveryPrompt('answer-pipeline-failed', sessionEpoch, timeline.utteranceEndAt || 0);
     }
   } finally {
+    clearTimeout(pipelineHardTimeout);
     // An interrupted pipeline may finish after the replacement turn has
     // already created its own cue/reaction. Only clean up handles that still
     // belong to this utterance; otherwise the old finally block can kill the
@@ -1383,6 +1496,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
       error: pipelineError,
     }).catch(() => {});
     if (activeTurnAbortController === controller) activeTurnAbortController = null;
+    if (activePipelineUtteranceId === utteranceId) clearPipelineStage('idle');
     if (turnSerial === activeTurnSerial && sessionEpoch === voiceEpoch) {
       answering = false;
       activeUserText = '';
@@ -1404,6 +1518,8 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
 
   const controller = new AbortController();
   try {
+    setPipelineStage('stt', utteranceId);
+    postVoiceCheckpoint('stt-start', utteranceId).catch(() => {});
     const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal);
     if (isStaleVoiceResult(userId, sessionEpoch, utteranceSerial)) {
       mirrorRuntimeLog('STT-STALE', `ignored resolved-order ${utteranceId} serial=${utteranceSerial}`);
@@ -1411,6 +1527,7 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
       return;
     }
     markVoiceResultResolved(userId, sessionEpoch, utteranceId, utteranceSerial);
+    setPipelineStage('stt-complete', utteranceId);
     let rawTranscript = stt.confirmedTranscript;
     let correctedTranscript = rawTranscript;
     let correctionReason = '';
@@ -2110,9 +2227,13 @@ client.once('ready', async () => {
     discordReadyWatchdog = null;
   }
   if (discordHealthTimer) clearInterval(discordHealthTimer);
+  if (bridgeHeartbeatTimer) clearInterval(bridgeHeartbeatTimer);
+  writeBridgeHeartbeat();
+  bridgeHeartbeatTimer = setInterval(writeBridgeHeartbeat, BRIDGE_HEARTBEAT_MS);
   discordHealthTimer = setInterval(() => {
     console.log(`[discord] gateway health ready=${client.isReady()} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
-    if (runtimeLogChannel) mirrorRuntimeLog('HEALTH', `gateway=${client.isReady()} ping=${client.ws.ping}ms vc=${connection?.state?.status || '-'} rx=${sessions.size} rt=${realtimeHelpers.size} answering=${answering ? 1 : 0} player=${player.state.status}`);
+    const stageAge = activePipelineStageAt ? Date.now() - activePipelineStageAt : 0;
+    if (runtimeLogChannel) mirrorRuntimeLog('HEALTH', `gateway=${client.isReady()} ping=${client.ws.ping}ms vc=${connection?.state?.status || '-'} rx=${sessions.size} rt=${realtimeHelpers.size} answering=${answering ? 1 : 0} player=${player.state.status} stage=${activePipelineStage} age=${stageAge}ms u=${shortUtteranceId(activePipelineUtteranceId)}`);
   }, DISCORD_HEALTH_LOG_MS);
 
   console.log(`[discord] bridge revision=${DISCORD_BRIDGE_REVISION}`);

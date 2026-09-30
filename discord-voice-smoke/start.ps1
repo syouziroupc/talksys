@@ -61,30 +61,68 @@ Write-Host "[start] TalkSys: $env:TALKSYS_BASE_URL"
 Write-Host "[start] mode: /talksys joins caller VC; /leave disconnects; TalkSys STT/turn/TTS permanent bridge auth"
 
 $entry = Join-Path $PSScriptRoot 'src\index.mjs'
+$heartbeatFile = Join-Path $env:TEMP 'talksys-discord-heartbeat.json'
+$env:TALKSYS_BRIDGE_HEARTBEAT_FILE = $heartbeatFile
 $rapidFailures = 0
 
 while ($true) {
+  if (Test-Path $heartbeatFile) { Remove-Item $heartbeatFile -Force -ErrorAction SilentlyContinue }
   $startedAt = Get-Date
   Write-Host "[supervisor] starting Discord bridge process..."
-  & node $entry
-  $exitCode = $LASTEXITCODE
+  $proc = Start-Process -FilePath 'node.exe' -ArgumentList @($entry) -PassThru -NoNewWindow
+  $hung = $false
+
+  while (-not $proc.HasExited) {
+    Start-Sleep -Seconds 5
+    $proc.Refresh()
+    if ($proc.HasExited) { break }
+
+    $ageSeconds = $null
+    if (Test-Path $heartbeatFile) {
+      try {
+        $heartbeat = Get-Content -LiteralPath $heartbeatFile -Raw | ConvertFrom-Json
+        $heartbeatAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$heartbeat.at).LocalDateTime
+        $ageSeconds = ((Get-Date) - $heartbeatAt).TotalSeconds
+        $stage = [string]$heartbeat.stage
+        $stageAgeSeconds = 0
+        if ($heartbeat.stageAt -and [int64]$heartbeat.stageAt -gt 0) {
+          $stageAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$heartbeat.stageAt).LocalDateTime
+          $stageAgeSeconds = ((Get-Date) - $stageAt).TotalSeconds
+        }
+        if ($stage -and $stage -ne 'idle' -and $stageAgeSeconds -gt 30) {
+          $hung = $true
+          Write-Warning "[supervisor] pipeline stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s; killing Discord bridge pid=$($proc.Id)"
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          break
+        }
+      } catch {}
+    } elseif (((Get-Date) - $startedAt).TotalSeconds -gt 20) {
+      $ageSeconds = 999
+    }
+
+    if (-not $hung -and $null -ne $ageSeconds -and $ageSeconds -gt 20) {
+      $hung = $true
+      Write-Warning "[supervisor] heartbeat stale $([math]::Round($ageSeconds,1))s; killing hung Discord bridge pid=$($proc.Id)"
+      Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+      break
+    }
+  }
+
+  $proc.WaitForExit()
+  $exitCode = if ($hung) { 124 } else { $proc.ExitCode }
   $uptimeSeconds = ((Get-Date) - $startedAt).TotalSeconds
 
-  if ($exitCode -eq 0) {
+  if ($exitCode -eq 0 -and -not $hung) {
     Write-Host "[supervisor] Discord bridge stopped normally."
     exit 0
   }
 
-  if ($uptimeSeconds -ge 60) {
-    $rapidFailures = 0
-  }
+  if ($uptimeSeconds -ge 60) { $rapidFailures = 0 }
   $rapidFailures += 1
-
-  $delaySeconds = [math]::Min(60, [math]::Pow(2, [math]::Min($rapidFailures, 5)))
-  Write-Warning "[supervisor] Discord bridge exited code=$exitCode uptime=$([math]::Round($uptimeSeconds, 1))s. Restarting in $delaySeconds seconds..."
+  $delaySeconds = if ($hung) { 2 } else { [math]::Min(60, [math]::Pow(2, [math]::Min($rapidFailures, 5))) }
+  Write-Warning "[supervisor] Discord bridge stopped code=$exitCode hung=$hung uptime=$([math]::Round($uptimeSeconds, 1))s. Restarting in $delaySeconds seconds..."
   if ($rapidFailures -ge 12) {
-    throw "Discord bridgeが短時間に12回連続で異常終了しました。上の[fatal]ログを確認してください。"
+    throw "Discord bridgeが短時間に12回連続で異常終了しました。上のログを確認してください。"
   }
-
   Start-Sleep -Seconds $delaySeconds
 }
