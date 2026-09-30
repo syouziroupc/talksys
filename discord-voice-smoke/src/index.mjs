@@ -29,7 +29,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v108-stability-r1';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v110-input-observability-r1';
 const WEB_UNIFIED_MODE = process.env.TALKSYS_WEB_UNIFIED !== '0';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
@@ -109,6 +109,23 @@ let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
 let windowsTtsQueue = Promise.resolve();
+
+function installedPackageVersion(relativePath) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
+    return String(pkg?.version || 'unknown');
+  } catch {
+    return 'unknown';
+  }
+}
+
+const RUNTIME_VERSIONS = Object.freeze({
+  node: process.version,
+  discordJs: installedPackageVersion('../node_modules/discord.js/package.json'),
+  discordVoice: installedPackageVersion('../node_modules/@discordjs/voice/package.json'),
+  prismMedia: installedPackageVersion('../node_modules/prism-media/package.json'),
+  opusScript: installedPackageVersion('../node_modules/opusscript/package.json'),
+});
 
 function resetConversationState() {
   if (voiceRecoveryTimer) {
@@ -341,6 +358,7 @@ async function attachRuntimeLogChannel(channel) {
   mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
   mirrorRuntimeLog('BOOT', `webUnified=${WEB_UNIFIED_MODE}`);
   mirrorRuntimeLog('BOOT', `TalkSys=${TALKSYS_BASE_URL}`);
+  mirrorRuntimeLog('BOOT', `runtime node=${RUNTIME_VERSIONS.node} discord.js=${RUNTIME_VERSIONS.discordJs} voice=${RUNTIME_VERSIONS.discordVoice} prism=${RUNTIME_VERSIONS.prismMedia} opus=${RUNTIME_VERSIONS.opusScript}`);
   mirrorRuntimeLog('BOOT', `ttsPrimary=${process.platform === 'win32' ? 'windows-system-speech' : 'cloudflare-melotts'}`);
   scheduleRuntimeLogFlush();
   return true;
@@ -530,6 +548,7 @@ function ensureRealtimeHelper(userId) {
     interim: '',
     reactionSeq: 0,
     active: null,
+    reconnectTimer: null,
   };
   realtimeHelpers.set(userId, helper);
   try {
@@ -538,6 +557,10 @@ function ensureRealtimeHelper(userId) {
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       helper.ready = true;
+      if (helper.reconnectTimer) {
+        clearTimeout(helper.reconnectTimer);
+        helper.reconnectTimer = null;
+      }
       mirrorRuntimeLog('RT-STT', `ready user=${userId}`);
       for (const chunk of helper.buffered) {
         try { ws.send(chunk); } catch {}
@@ -554,6 +577,18 @@ function ensureRealtimeHelper(userId) {
       helper.ready = false;
       helper.ws = null;
       if (realtimeHelpers.get(userId) === helper) realtimeHelpers.delete(userId);
+      if (connection && !helper.reconnectTimer) {
+        helper.reconnectTimer = setTimeout(() => {
+          helper.reconnectTimer = null;
+          if (!connection || realtimeHelpers.has(userId)) return;
+          const voiceState = client.guilds.cache
+            .get(String(connection?.joinConfig?.guildId || ''))
+            ?.voiceStates?.cache?.get(userId);
+          if (String(voiceState?.channelId || '') !== String(connection?.joinConfig?.channelId || '')) return;
+          mirrorRuntimeLog('RT-STT', `reconnect user=${userId}`);
+          ensureRealtimeHelper(userId);
+        }, 1200);
+      }
     };
   } catch (error) {
     mirrorRuntimeLog('RT-STT', `open failed: ${error?.message || error}`);
@@ -599,6 +634,10 @@ function closeRealtimeHelpers() {
   for (const helper of realtimeHelpers.values()) {
     helper.reactionSeq += 1;
     helper.active = null;
+    if (helper.reconnectTimer) {
+      clearTimeout(helper.reconnectTimer);
+      helper.reconnectTimer = null;
+    }
     try { helper.ws?.close(1000, 'voice-disconnect'); } catch {}
   }
   realtimeHelpers.clear();
@@ -1537,6 +1576,42 @@ function interruptActiveAnswer(reason = 'user-speech') {
   return true;
 }
 
+function isUserInConnectedVoiceChannel(userId) {
+  if (!connection) return false;
+  const guildId = String(connection?.joinConfig?.guildId || '');
+  const channelId = String(connection?.joinConfig?.channelId || '');
+  if (!guildId || !channelId) return false;
+  const voiceState = client.guilds.cache.get(guildId)?.voiceStates?.cache?.get(userId);
+  return String(voiceState?.channelId || '') === channelId;
+}
+
+function stopReceiverSession(userId, reason = 'voice-state-left') {
+  const session = sessions.get(userId);
+  if (session?.cancel) session.cancel(reason);
+  const helper = realtimeHelpers.get(userId);
+  if (helper) {
+    helper.reactionSeq += 1;
+    helper.active = null;
+    if (helper.reconnectTimer) clearTimeout(helper.reconnectTimer);
+    try { helper.ws?.close(1000, reason); } catch {}
+    realtimeHelpers.delete(userId);
+  }
+  mirrorRuntimeLog('CAPTURE', `receiver released user=${userId} reason=${reason}`);
+}
+
+function prearmVoiceChannelMembers(channel) {
+  if (!channel?.members) return 0;
+  let armed = 0;
+  for (const [userId, member] of channel.members) {
+    if (userId === client.user?.id || member?.user?.bot) continue;
+    ensureRealtimeHelper(userId);
+    startReceiverSession(userId, false);
+    armed += 1;
+  }
+  mirrorRuntimeLog('CAPTURE', `prearmed members=${armed} channel=${channel.name || channel.id}`);
+  return armed;
+}
+
 function startReceiverSession(userId, speakingNow = false, options = {}) {
   if (!connection) return;
   const existing = sessions.get(userId);
@@ -1585,6 +1660,11 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
   let lastPcmAt = 0;
   let utteranceSerial = 0;
   let realtimeHelper = null;
+  let pcmChunkCount = 0;
+  let maxPcmGapMs = 0;
+  let maxRms = 0;
+  let maxPeak = 0;
+  let rmsSum = 0;
 
   const ensureUtteranceSerial = () => {
     if (!utteranceSerial) {
@@ -1647,7 +1727,9 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     cleanup();
 
     queueMicrotask(() => {
-      if (sessionEpoch === voiceEpoch && connection) startReceiverSession(userId, false);
+      if (sessionEpoch === voiceEpoch && connection && isUserInConnectedVoiceChannel(userId)) {
+        startReceiverSession(userId, false);
+      }
     });
 
     const realtimeActive = realtimeHelper?.active?.utteranceId === utteranceId ? realtimeHelper.active : null;
@@ -1677,9 +1759,14 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
       realtimeConfidence,
       realtimeWords,
       bargeInTriggerMs: Number(timeline.bargeInTriggerMs) || 0,
+      pcmChunkCount,
+      maxPcmGapMs,
+      maxRms: Number(maxRms.toFixed(5)),
+      maxPeak: Number(maxPeak.toFixed(5)),
+      avgRms: Number((pcmChunkCount ? rmsSum / pcmChunkCount : 0).toFixed(5)),
     };
-    console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captureMetrics.durationMs}ms pcm=${pcm.length}B transport-gated=true botOverlap=${overlappedBotPlayback}`);
-    mirrorRuntimeLog('CAPTURE', `${captureMetrics.durationMs}ms ${reason} realtime="${realtimeTranscript || '-'}"`);
+    console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captureMetrics.durationMs}ms pcm=${pcm.length}B chunks=${pcmChunkCount} maxGap=${maxPcmGapMs}ms rmsMax=${captureMetrics.maxRms} peakMax=${captureMetrics.maxPeak} transport-gated=true botOverlap=${overlappedBotPlayback}`);
+    mirrorRuntimeLog('CAPTURE', `${captureMetrics.durationMs}ms ${reason} chunks=${pcmChunkCount} gap=${maxPcmGapMs}ms rms=${captureMetrics.maxRms} peak=${captureMetrics.maxPeak} realtime="${realtimeTranscript || '-'}"`);
     await handleCapturedUtterance({
       pcm,
       userId,
@@ -1690,7 +1777,20 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     });
   };
 
-  const session = { opus, decoder, resampler, markSpeaking, finalize };
+  const cancel = (reason = 'cancelled') => {
+    if (completed) return;
+    completed = true;
+    cleanup();
+    if (realtimeHelper?.active?.utteranceId === utteranceId) {
+      realtimeHelper.reactionSeq += 1;
+      realtimeHelper.active = null;
+      realtimeHelper.finalParts = [];
+      realtimeHelper.interim = '';
+    }
+    mirrorRuntimeLog('CAPTURE', `cancelled utterance=${utteranceId} user=${userId} reason=${reason}`);
+  };
+
+  const session = { opus, decoder, resampler, markSpeaking, finalize, cancel };
   sessions.set(userId, session);
   if (speakingNow) markSpeaking(Boolean(options?.startedDuringBotPlayback));
 
@@ -1708,6 +1808,13 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
   resampler.stdout.on('data', (pcm16) => {
     if (!pcm16?.length || completed) return;
     const at = Date.now();
+    const previousPcmAt = lastPcmAt;
+    if (previousPcmAt) maxPcmGapMs = Math.max(maxPcmGapMs, at - previousPcmAt);
+    const level = pcm16Level(pcm16);
+    pcmChunkCount += 1;
+    maxRms = Math.max(maxRms, level.rms);
+    maxPeak = Math.max(maxPeak, level.peak);
+    rmsSum += level.rms;
     lastUserPcmAt = at;
     if (!timeline.firstPcmAt) timeline.firstPcmAt = at;
     if (!timeline.discordReceiveStartAt) timeline.discordReceiveStartAt = at;
@@ -1834,6 +1941,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
     startReceiverSession(userId, true, { startedDuringBotPlayback });
   });
 
+  prearmVoiceChannelMembers(channel);
   if (initialUserId && initialUserId !== client.user.id) {
     ensureRealtimeHelper(initialUserId);
     startReceiverSession(initialUserId, false);
@@ -2032,6 +2140,26 @@ client.on('interactionCreate', async (interaction) => {
     } catch (replyError) {
       console.error('[command] failure reply failed:', replyError?.message || replyError);
     }
+  }
+});
+
+client.on('voiceStateUpdate', (oldState, newState) => {
+  if (!connection) return;
+  const targetGuildId = String(connection?.joinConfig?.guildId || '');
+  const targetChannelId = String(connection?.joinConfig?.channelId || '');
+  const userId = String(newState?.id || oldState?.id || '');
+  if (!userId || userId === client.user?.id) return;
+  if (String(newState?.guild?.id || oldState?.guild?.id || '') !== targetGuildId) return;
+
+  const wasTarget = String(oldState?.channelId || '') === targetChannelId;
+  const isTarget = String(newState?.channelId || '') === targetChannelId;
+  if (!wasTarget && isTarget && !newState?.member?.user?.bot) {
+    ensureRealtimeHelper(userId);
+    startReceiverSession(userId, false);
+    mirrorRuntimeLog('VOICE-MEMBER', `joined/prearmed user=${userId}`);
+  } else if (wasTarget && !isTarget) {
+    stopReceiverSession(userId, 'voice-state-left');
+    mirrorRuntimeLog('VOICE-MEMBER', `left/released user=${userId}`);
   }
 });
 
