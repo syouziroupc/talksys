@@ -323,3 +323,21 @@ test('V113 fails fast on uncaught synchronous corruption instead of remaining ha
   assert.match(source, /process\.exitCode = 3/);
   assert.match(source, /setTimeout\(\(\) => process\.exit\(3\), 100\)\.unref\(\)/);
 });
+
+
+test('V113 diagnostic logging is serialized and disables itself after a bounded write timeout', () => {
+  assert.match(source, /RUNTIME_LOG_WRITE_TIMEOUT_MS = 4000/);
+  assert.match(source, /let runtimeLogFlushInFlight = false/);
+  assert.match(source, /let runtimeLogDirty = false/);
+  assert.match(source, /runtime_log_write_timeout/);
+  assert.match(source, /runtimeLogChannel = null/);
+});
+
+test('V113 uses a valid application WebSocket close code for helper backpressure reset', () => {
+  assert.match(source, /ws\.close\(4001, 'realtime-backpressure'\)/);
+});
+
+test('V113 does not enqueue Windows recovery TTS in the background at gateway ready', () => {
+  assert.match(source, /Windows recovery TTS warmup deferred to avoid foreground queue contention/);
+  assert.match(source, /if \(process\.platform !== 'win32'\) \{[\s\S]*warmRecoveryAudio/);
+});
