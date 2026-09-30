@@ -1,1 +1,1 @@
-v111-discord-freeze-containment-20260930-r1
+v113-discord-hard-lifecycle-20260930-r1
