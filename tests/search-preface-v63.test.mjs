@@ -44,7 +44,7 @@ test('Discord uses search preface only as independent wait audio', () => {
   assert.match(discord, /function startWaitCue/);
   assert.match(discord, /activeWaitCue = startWaitCue\(confirmedTranscript/);
   assert.match(discord, /const turn = await talk\(confirmedTranscript/);
-  assert.match(discord, /activeWaitCue\?\.stop\('final-answer-ready'\)/);
+  assert.match(discord, /activeWaitCue\?\.utteranceId === utteranceId[\s\S]*activeWaitCue\.stop\?\.\('final-answer-ready'\)/);
   assert.doesNotMatch(discord, /waitCuePromise|talkStream|\/api\/turn-stream/);
 });
 

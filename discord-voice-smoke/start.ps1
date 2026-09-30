@@ -62,11 +62,46 @@ Write-Host "[start] mode: /talksys joins caller VC; /leave disconnects; TalkSys 
 
 $entry = Join-Path $PSScriptRoot 'src\index.mjs'
 $heartbeatFile = Join-Path $env:TEMP 'talksys-discord-heartbeat.json'
+$shutdownFile = Join-Path $env:TEMP 'talksys-discord-shutdown.txt'
 $env:TALKSYS_BRIDGE_HEARTBEAT_FILE = $heartbeatFile
+$env:TALKSYS_BRIDGE_SHUTDOWN_FILE = $shutdownFile
 $rapidFailures = 0
+
+function Stop-TalkSysBridgeGracefully {
+  param(
+    [Parameter(Mandatory=$true)]$Process,
+    [Parameter(Mandatory=$true)][string]$Reason
+  )
+
+  try {
+    Set-Content -LiteralPath $shutdownFile -Value $Reason -NoNewline -Force
+  } catch {
+    Write-Warning "[supervisor] failed to write graceful shutdown request: $($_.Exception.Message)"
+  }
+
+  $graceDeadline = (Get-Date).AddSeconds(2)
+  while (-not $Process.HasExited -and (Get-Date) -lt $graceDeadline) {
+    Start-Sleep -Milliseconds 200
+    $Process.Refresh()
+  }
+
+  if (-not $Process.HasExited) {
+    Write-Warning "[supervisor] graceful shutdown timed out; terminating process tree pid=$($Process.Id)"
+    try {
+      & taskkill.exe /PID $Process.Id /T /F 2>$null | Out-Null
+    } catch {}
+    Start-Sleep -Milliseconds 200
+    $Process.Refresh()
+  }
+
+  if (-not $Process.HasExited) {
+    Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+  }
+}
 
 while ($true) {
   if (Test-Path $heartbeatFile) { Remove-Item $heartbeatFile -Force -ErrorAction SilentlyContinue }
+  if (Test-Path $shutdownFile) { Remove-Item $shutdownFile -Force -ErrorAction SilentlyContinue }
   $startedAt = Get-Date
   Write-Host "[supervisor] starting Discord bridge process..."
   $proc = Start-Process -FilePath 'node.exe' -ArgumentList @($entry) -PassThru -NoNewWindow
@@ -96,8 +131,8 @@ while ($true) {
         $deadlineSeconds = [math]::Max(5, ($deadlineMs / 1000.0) + 5)
         if ($stageBlocking -and $stage -and $stage -ne 'idle' -and $stageAgeSeconds -gt $deadlineSeconds) {
           $hung = $true
-          Write-Warning "[supervisor] blocking pipeline stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s deadline=$([math]::Round($deadlineSeconds,1))s; killing Discord bridge pid=$($proc.Id)"
-          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          Write-Warning "[supervisor] blocking pipeline stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s deadline=$([math]::Round($deadlineSeconds,1))s; requesting Discord bridge shutdown pid=$($proc.Id)"
+          Stop-TalkSysBridgeGracefully -Process $proc -Reason "pipeline-stage-stuck:$stage"
           break
         }
       } catch {}
@@ -107,13 +142,14 @@ while ($true) {
 
     if (-not $hung -and $null -ne $ageSeconds -and $ageSeconds -gt 20) {
       $hung = $true
-      Write-Warning "[supervisor] heartbeat stale $([math]::Round($ageSeconds,1))s; killing hung Discord bridge pid=$($proc.Id)"
-      Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+      Write-Warning "[supervisor] heartbeat stale $([math]::Round($ageSeconds,1))s; requesting hung Discord bridge shutdown pid=$($proc.Id)"
+      Stop-TalkSysBridgeGracefully -Process $proc -Reason "heartbeat-stale"
       break
     }
   }
 
   $proc.WaitForExit()
+  if (Test-Path $shutdownFile) { Remove-Item $shutdownFile -Force -ErrorAction SilentlyContinue }
   $exitCode = if ($hung) { 124 } else { $proc.ExitCode }
   $uptimeSeconds = ((Get-Date) - $startedAt).TotalSeconds
 
