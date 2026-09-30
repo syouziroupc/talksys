@@ -234,7 +234,7 @@ test('V110 bounds Discord live-log payload size while retaining recent diagnosti
 
 
 test('V114 tracks pipeline stages per utterance and always releases terminal STT state', () => {
-  assert.match(source, /talksys-discord-bridge-v114-no-stale-owner-r1/);
+  assert.match(source, /talksys-discord-bridge-v114-supervisor-singleton-r2/);
   assert.match(source, /const pipelineStages = new Map\(\)/);
   assert.match(source, /function clearPipelineStage\(utteranceId = '', reason = 'idle'\)/);
   assert.match(source, /pipelineStages\.delete\(key\)/);
@@ -427,7 +427,7 @@ test('V114 bridge polls supervisor shutdown requests without an unbounded filesy
   assert.match(source, /BRIDGE_SHUTDOWN_POLL_MS = 500/);
   assert.match(source, /function pollBridgeShutdownRequest/);
   assert.match(source, /AbortSignal\.timeout\(400\)/);
-  assert.match(source, /requestBridgeShutdown\(reason, 124\)/);
+  assert.match(source, /BRIDGE_EXTERNAL_SHUTDOWN_EXIT_CODE = 73/);\n  assert.match(source, /requestBridgeShutdown\(reason, BRIDGE_EXTERNAL_SHUTDOWN_EXIT_CODE\)/);
 });
 
 test('V114 bounds Discord REST calls used by slash-command control flow', () => {
