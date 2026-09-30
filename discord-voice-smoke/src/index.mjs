@@ -45,6 +45,7 @@ const WINDOWS_TTS_QUEUE_WAIT_MS = 1500;
 const PLAYBACK_START_TIMEOUT_MS = 5000;
 const PLAYBACK_STALL_TIMEOUT_MS = 10000;
 const HEARTBEAT_WRITE_TIMEOUT_MS = 1500;
+const RUNTIME_LOG_WRITE_TIMEOUT_MS = 4000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
 const RECENT_USER_TURN_WINDOW_MS = 2500;
@@ -105,6 +106,8 @@ const recentAcceptedUserTurns = [];
 let runtimeLogChannel = null;
 let runtimeLogMessage = null;
 let runtimeLogFlushTimer = null;
+let runtimeLogFlushInFlight = false;
+let runtimeLogDirty = false;
 const runtimeLogLines = [];
 let activeBotPlaybackRecord = null;
 let lastBotPlaybackEndedAt = 0;
@@ -462,15 +465,43 @@ function runtimeLogText() {
 }
 
 function scheduleRuntimeLogFlush() {
-  if (!runtimeLogChannel || runtimeLogFlushTimer) return;
+  if (!runtimeLogChannel) return;
+  runtimeLogDirty = true;
+  if (runtimeLogFlushTimer || runtimeLogFlushInFlight) return;
+
   runtimeLogFlushTimer = setTimeout(async () => {
     runtimeLogFlushTimer = null;
-    if (!runtimeLogChannel) return;
+    if (!runtimeLogChannel || runtimeLogFlushInFlight) return;
+
+    runtimeLogFlushInFlight = true;
+    runtimeLogDirty = false;
+    const channel = runtimeLogChannel;
+    const message = runtimeLogMessage;
+    let timeout = null;
     try {
-      if (runtimeLogMessage) await runtimeLogMessage.edit(runtimeLogText());
-      else runtimeLogMessage = await runtimeLogChannel.send(runtimeLogText());
+      const operation = message
+        ? message.edit(runtimeLogText())
+        : channel.send(runtimeLogText());
+      const result = await Promise.race([
+        operation,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('runtime_log_write_timeout')), RUNTIME_LOG_WRITE_TIMEOUT_MS);
+        }),
+      ]);
+      if (!message && result) runtimeLogMessage = result;
     } catch (error) {
       console.warn('[discord-log] mirror failed:', error?.message || error);
+      if (String(error?.message || '').includes('runtime_log_write_timeout')) {
+        // Diagnostics must never accumulate unresolved Discord REST writes
+        // or compete with the voice pipeline.
+        runtimeLogChannel = null;
+        runtimeLogMessage = null;
+        runtimeLogDirty = false;
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      runtimeLogFlushInFlight = false;
+      if (runtimeLogChannel && runtimeLogDirty) scheduleRuntimeLogFlush();
     }
   }, 700);
 }
@@ -790,7 +821,7 @@ function sendRealtimePcm(helper, pcm16) {
         mirrorRuntimeLog('RT-STT', `backpressure user=${helper.userId} queued=${queued}B drops=${helper.backpressureDrops}; reconnecting helper`);
       }
       helper.ready = false;
-      try { ws.close(1011, 'realtime-backpressure'); } catch {}
+      try { ws.close(4001, 'realtime-backpressure'); } catch {}
       return;
     }
     try {
@@ -2575,7 +2606,11 @@ client.once('ready', async () => {
       console.log(`[discord] slash commands ready guild=${guild.name}: /talksys /logs /leave`);
     }
     warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] gateway warmup failed:', error?.message || error));
-    warmRecoveryAudio().catch((error) => console.warn('[recovery] gateway warmup failed:', error?.message || error));
+    if (process.platform !== 'win32') {
+      warmRecoveryAudio().catch((error) => console.warn('[recovery] gateway warmup failed:', error?.message || error));
+    } else {
+      mirrorRuntimeLog('READY', 'Windows recovery TTS warmup deferred to avoid foreground queue contention');
+    }
     console.log('[discord] waiting for /talksys from a user in a voice channel');
   } catch (error) {
     console.error('[fatal]', error?.stack || error);
