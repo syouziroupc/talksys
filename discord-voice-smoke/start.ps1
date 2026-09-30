@@ -89,18 +89,18 @@ while ($true) {
           $stageAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$heartbeat.stageAt).LocalDateTime
           $stageAgeSeconds = ((Get-Date) - $stageAt).TotalSeconds
         }
-        if ($stage -and $stage -ne 'idle' -and $stageAgeSeconds -gt 50) {
+        if ($stage -and $stage -ne 'idle' -and $stageAgeSeconds -gt 30) {
           $hung = $true
           Write-Warning "[supervisor] pipeline stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s; killing Discord bridge pid=$($proc.Id)"
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           break
         }
       } catch {}
-    } elseif (((Get-Date) - $startedAt).TotalSeconds -gt 30) {
+    } elseif (((Get-Date) - $startedAt).TotalSeconds -gt 20) {
       $ageSeconds = 999
     }
 
-    if (-not $hung -and $null -ne $ageSeconds -and $ageSeconds -gt 30) {
+    if (-not $hung -and $null -ne $ageSeconds -and $ageSeconds -gt 20) {
       $hung = $true
       Write-Warning "[supervisor] heartbeat stale $([math]::Round($ageSeconds,1))s; killing hung Discord bridge pid=$($proc.Id)"
       Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
