@@ -1347,14 +1347,16 @@ async function playMp3(mp3, options = {}) {
   }
 }
 
-async function processConfirmedTranscript({ confirmedTranscript, rawTranscript = '', correctedTranscript = '', correctionReason = '', fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
+async function processConfirmedTranscript({ confirmedTranscript, rawTranscript = '', correctedTranscript = '', correctionReason = '', fastReaction: providedFastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
   if (!confirmedTranscript || sessionEpoch !== voiceEpoch) return;
+  let reaction = providedFastReaction;
 
   const realtimeRescue = rescueBargeInTranscriptFromRealtime(confirmedTranscript, captureMetrics, timeline);
   if (realtimeRescue) {
     mirrorRuntimeLog('STT-RESCUE', `barge-in realtime replaced short Whisper: "${confirmedTranscript}" -> "${realtimeRescue}"`);
     correctedTranscript = realtimeRescue;
     confirmedTranscript = realtimeRescue;
+    reaction = fastReaction(realtimeRescue);
     correctionReason = [correctionReason, 'barge-in-realtime-rescue'].filter(Boolean).join(';');
   }
 
@@ -1388,12 +1390,12 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     mirrorRuntimeLog('INTERRUPT', `explicit stop: ${confirmedTranscript}`);
     return;
   }
-  if (fastReaction?.terminal && fastReaction?.shouldSpeak) {
+  if (reaction?.terminal && reaction?.shouldSpeak) {
     if (!timeline.fastReactionRequestedAt) {
-      playWebFastReaction(fastReaction, utteranceId, sessionEpoch, timeline, confirmedTranscript);
+      playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, confirmedTranscript);
     }
     rememberAcceptedUserTurn(confirmedTranscript, userId, timeline);
-    mirrorRuntimeLog('TERMINAL', `${fastReaction.kind}: ${confirmedTranscript}`);
+    mirrorRuntimeLog('TERMINAL', `${reaction.kind}: ${confirmedTranscript}`);
     return;
   }
   if (shouldDropUncorroboratedBotOverlap(confirmedTranscript, captureMetrics, policy)) {
@@ -1402,7 +1404,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     return;
   }
   if (answering) {
-    const nextTurn = { confirmedTranscript, rawTranscript, correctedTranscript, correctionReason, fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta };
+    const nextTurn = { confirmedTranscript, rawTranscript, correctedTranscript, correctionReason, fastReaction: reaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta };
     if (pendingTurns.length === 0) pendingTurns.push(nextTurn);
     else pendingTurns[0] = nextTurn;
     console.log(`[queue] buffered latest user=${userId}: ${confirmedTranscript}`);
@@ -1445,7 +1447,7 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     timings.answerStartMs = Math.max(0, timeline.turnStartAt - (timeline.utteranceEndAt || timeline.turnStartAt));
 
     if (!timeline.fastReactionRequestedAt) {
-      activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, fastReaction);
+      activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, reaction);
     }
     beginWatchStage(`turn:${utteranceId}`, 'turn', 50_000);
     const turn = await talk(confirmedTranscript, utteranceId, controller.signal)
