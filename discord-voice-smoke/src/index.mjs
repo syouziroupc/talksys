@@ -779,13 +779,17 @@ async function transcribeCapturedUtterance(pcm, utteranceId, timeline, signal) {
     throw new Error(body?.error || body?.rejected || 'stt_empty_transcript');
   }
   const confirmedTranscript = String(body.text).trim();
-  console.log(`[stt] confirmed model=${body.model || 'unknown'} elapsed=${timeline.whisperCompleteAt - timeline.transcribeStartAt}ms: ${confirmedTranscript}`);
-  mirrorRuntimeLog('STT', `Whisper ${timeline.whisperCompleteAt - timeline.transcribeStartAt}ms: ${confirmedTranscript}`);
+  const clientElapsedMs = timeline.whisperCompleteAt - timeline.transcribeStartAt;
+  const serverElapsedMs = Number(body?.elapsedMs) || 0;
+  const retryUsed = Boolean(body?.retryUsed);
+  console.log(`[stt] confirmed model=${body.model || 'unknown'} elapsed=${clientElapsedMs}ms server=${serverElapsedMs}ms retry=${retryUsed}: ${confirmedTranscript}`);
+  mirrorRuntimeLog('STT', `Whisper ${clientElapsedMs}ms server=${serverElapsedMs}ms retry=${retryUsed}: ${confirmedTranscript}`);
   return {
     confirmedTranscript,
     fastReaction: body?.fastReaction || null,
     model: body?.model || '',
-    serverElapsedMs: Number(body?.elapsedMs) || 0,
+    serverElapsedMs,
+    retryUsed,
     signal: body?.signal || null,
   };
 }
@@ -1749,6 +1753,12 @@ async function createReadyVoiceConnection(channel) {
 
 async function connectToVoiceChannel(channel, initialUserId = '') {
   if (!channel || !channel.isVoiceBased()) throw new Error('target channel is not voice based');
+  if (connection
+      && connection.joinConfig?.channelId === channel.id
+      && connection.state?.status === VoiceConnectionStatus.Ready) {
+    mirrorRuntimeLog('VOICE', `already connected channel=${channel.name}; duplicate greeting skipped`);
+    return channel;
+  }
   destroyVoiceConnection();
 
   connection = await createReadyVoiceConnection(channel);
