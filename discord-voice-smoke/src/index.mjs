@@ -103,6 +103,7 @@ const DISK_LOG_MAX_BYTES = 5 * 1024 * 1024;
 const diskLogQueue = [];
 let diskLogFlushTimer = null;
 let diskLogFlushBusy = false;
+let diskLogWriteFailures = 0;
 let discordLogSendFailCount = 0;
 let consoleMirrorInstalled = false;
 let activeBotPlaybackRecord = null;
@@ -450,22 +451,30 @@ async function flushRuntimeLogsToDisk() {
       await fs.promises.rename(discordLogFile, discordLogPreviousFile);
     }
     await fs.promises.appendFile(discordLogFile, lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o600 });
+    diskLogWriteFailures = 0;
   } catch (error) {
+    diskLogWriteFailures += 1;
     diskLogQueue.unshift(...lines);
-    // Use the original stderr writer: logging this through the mirror would recurse.
-    process.stderr.write('[discord-log] disk write failed: ' + String(error?.message || error) + '\n');
+    if (diskLogWriteFailures <= 3 || diskLogWriteFailures % 25 === 0) {
+      process.stderr.write('[discord-log] disk write failed: ' + String(error?.message || error) + '\n');
+    }
   } finally {
     diskLogFlushBusy = false;
-    if (diskLogQueue.length) scheduleDiskLogFlush();
+    if (diskLogQueue.length) {
+      const backoff = diskLogWriteFailures
+        ? Math.min(60_000, 300 * (2 ** Math.min(diskLogWriteFailures, 8)))
+        : 300;
+      scheduleDiskLogFlush(backoff);
+    }
   }
 }
 
-function scheduleDiskLogFlush() {
+function scheduleDiskLogFlush(delayMs = 300) {
   if (diskLogFlushTimer || diskLogFlushBusy || !diskLogQueue.length) return;
   diskLogFlushTimer = setTimeout(() => {
     diskLogFlushTimer = null;
     flushRuntimeLogsToDisk().catch(() => {});
-  }, 300);
+  }, delayMs);
 }
 
 async function exportRuntimeLogs() {
