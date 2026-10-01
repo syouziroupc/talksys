@@ -118,6 +118,65 @@ let voiceRecoveryInFlight = false;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
+const bridgeHeartbeatFile = process.env.TALKSYS_BRIDGE_HEARTBEAT_FILE || '';
+const bridgeShutdownFile = process.env.TALKSYS_BRIDGE_SHUTDOWN_FILE || '';
+const activeWatchStages = new Map();
+let bridgeHeartbeatTimer = null;
+let bridgeShutdownTimer = null;
+let bridgeShuttingDown = false;
+
+function beginWatchStage(id, stage, deadlineMs) {
+  activeWatchStages.set(String(id), { stage, at: Date.now(), deadlineMs });
+}
+function endWatchStage(id) {
+  activeWatchStages.delete(String(id));
+}
+function writeBridgeHeartbeat() {
+  if (!bridgeHeartbeatFile) return;
+  const pending = [...activeWatchStages.values()].sort((a, b) => a.at - b.at);
+  const stage = pending[0];
+  try {
+    fs.writeFileSync(bridgeHeartbeatFile, JSON.stringify({
+      at: Date.now(),
+      stage: stage?.stage || 'idle',
+      stageAt: stage?.at || Date.now(),
+      stageBlocking: Boolean(stage),
+      stageDeadlineMs: stage?.deadlineMs || 0,
+      voice: connection?.state?.status || 'none',
+      captures: sessions.size,
+      revision: DISCORD_BRIDGE_REVISION,
+    }));
+  } catch (error) {
+    process.stderr.write('[heartbeat] write failed: ' + String(error?.message || error) + '\n');
+  }
+}
+function flushPendingLogsOnExit() {
+  if (!diskLogQueue.length) return;
+  try {
+    fs.mkdirSync(discordLogStateDir, { recursive: true });
+    fs.appendFileSync(discordLogFile, diskLogQueue.splice(0).join('\n') + '\n');
+  } catch {}
+}
+function startBridgeMonitors() {
+  writeBridgeHeartbeat();
+  bridgeHeartbeatTimer = setInterval(writeBridgeHeartbeat, 2500);
+  bridgeHeartbeatTimer.unref?.();
+  if (!bridgeShutdownFile) return;
+  bridgeShutdownTimer = setInterval(() => {
+    if (bridgeShuttingDown || !fs.existsSync(bridgeShutdownFile)) return;
+    bridgeShuttingDown = true;
+    let reason = 'supervisor-request';
+    try { reason = fs.readFileSync(bridgeShutdownFile, 'utf8').trim() || reason; } catch {}
+    mirrorRuntimeLog('SUPERVISOR', 'graceful shutdown: ' + reason);
+    if (bridgeHeartbeatTimer) clearInterval(bridgeHeartbeatTimer);
+    if (bridgeShutdownTimer) clearInterval(bridgeShutdownTimer);
+    destroyVoiceConnection();
+    client.destroy();
+    flushPendingLogsOnExit();
+    process.exit(0);
+  }, 250);
+  bridgeShutdownTimer.unref?.();
+}
 
 function resetConversationState() {
   if (voiceRecoveryTimer) {
@@ -2137,6 +2196,8 @@ process.on('unhandledRejection', (reason) => {
 });
 
 process.on('SIGINT', () => {
+  if (bridgeHeartbeatTimer) clearInterval(bridgeHeartbeatTimer);
+  if (bridgeShutdownTimer) clearInterval(bridgeShutdownTimer);
   if (discordReadyWatchdog) clearTimeout(discordReadyWatchdog);
   if (discordHealthTimer) clearInterval(discordHealthTimer);
   destroyVoiceConnection();
@@ -2151,6 +2212,8 @@ discordReadyWatchdog = setTimeout(() => {
   process.exit(2);
 }, DISCORD_READY_TIMEOUT_MS);
 
+process.on('exit', flushPendingLogsOnExit);
+startBridgeMonitors();
 mirrorRuntimeLog('BOOT', `process start node=${process.version}`);
 mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
 client.login(DISCORD_TOKEN).catch((error) => {
