@@ -65,17 +65,31 @@ test('dynamic factual turn uses one grounded Gemini interaction', async () => {
   }
 });
 
-test('dynamic fact without any search evidence fails closed in one pass', async () => {
+test('dynamic fact retries through generateContent when Interactions skips required search', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (_url, options) => {
     calls += 1;
+    if (calls === 1) {
+      return new Response(JSON.stringify({
+        id: 'primary-ungrounded',
+        status: 'completed',
+        steps: [
+          { type: 'model_output', content: [{ type: 'text', text: '製品Xの最新バージョンは5.2です。' }] },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    const retry = JSON.parse(options.body);
+    assert.deepEqual(retry.tools, [{ google_search: {} }]);
     return new Response(JSON.stringify({
-      id: 'primary-ungrounded',
-      status: 'completed',
-      steps: [
-        { type: 'model_output', content: [{ type: 'text', text: '製品Xの最新バージョンは5.2です。' }] },
-      ],
+      candidates: [{
+        content: { parts: [{ text: '公式情報では製品Xの最新バージョンは5.3です。' }] },
+        groundingMetadata: {
+          webSearchQueries: ['製品X 最新バージョン'],
+          groundingChunks: [{ web: { uri: 'https://example.com/product-x', title: '製品X公式' } }],
+          groundingSupports: [{ segment: { startIndex: 0, endIndex: 4 }, groundingChunkIndices: [0] }],
+        },
+      }],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   try {
@@ -85,10 +99,54 @@ test('dynamic fact without any search evidence fails closed in one pass', async 
       undefined,
       { now: FIXED },
     );
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
+    assert.equal(result.groundingRequired, true);
+    assert.equal(result.groundingFailClosed, false);
+    assert.equal(result.groundingRecoveryUsed, true);
+    assert.equal(result.searchRetried, true);
+    assert.equal(result.search, true);
+    assert.equal(result.generationTransport, 'generateContent');
+    assert.match(result.answer, /5点3/);
+    assert.doesNotMatch(result.answer, /5点2/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('dynamic fact fails closed only after both grounding attempts return no search evidence', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(JSON.stringify({
+        id: 'primary-ungrounded',
+        status: 'completed',
+        steps: [
+          { type: 'model_output', content: [{ type: 'text', text: '製品Xの最新バージョンは5.2です。' }] },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({
+      candidates: [{
+        content: { parts: [{ text: '製品Xの最新バージョンは5.4です。' }] },
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const result = await runGeminiTurn(
+      { text: '製品Xの最新バージョンは？', history: [] },
+      { GEMINI_API_KEY: 'test-key' },
+      undefined,
+      { now: FIXED },
+    );
+    assert.equal(calls, 2);
     assert.equal(result.groundingRequired, true);
     assert.equal(result.groundingFailClosed, true);
-    assert.doesNotMatch(result.answer, /5点2/);
+    assert.equal(result.groundingRecoveryUsed, false);
+    assert.equal(result.searchRetried, true);
+    assert.doesNotMatch(result.answer, /5点2|5点4/);
+    assert.match(result.answer, /再試行/);
   } finally {
     globalThis.fetch = originalFetch;
   }
