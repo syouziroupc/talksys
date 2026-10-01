@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Client, GatewayIntentBits } from 'discord.js';
 import {
   AudioPlayerStatus,
@@ -88,9 +90,13 @@ const realtimeHelpers = new Map();
 const recentBotSpeech = [];
 const recentAcceptedUserTurns = [];
 let runtimeLogChannel = null;
-let runtimeLogMessage = null;
 let runtimeLogFlushTimer = null;
+let runtimeLogFlushBusy = false;
 const runtimeLogLines = [];
+const discordLogQueue = [];
+const discordLogStateDir = path.join(process.env.LOCALAPPDATA || process.env.HOME || process.cwd(), 'TalkSys');
+const discordLogChannelFile = path.join(discordLogStateDir, 'discord-log-channel.txt');
+let consoleMirrorInstalled = false;
 let activeBotPlaybackRecord = null;
 let lastBotPlaybackEndedAt = 0;
 let lastUserSpeechAt = 0;
@@ -296,45 +302,135 @@ function shouldDropUncorroboratedBotOverlap(text, captureMetrics = {}, policy = 
   return Boolean(realtime) && !sameUtterance(confirmed, realtime);
 }
 
-function runtimeLogText() {
-  const body = runtimeLogLines.slice(-18).join('\n');
-  return `**TalkSys Discord runtime** · ${DISCORD_BRIDGE_REVISION}\n\`\`\`text\n${body.slice(-1750)}\n\`\`\``;
+function sanitizeLogText(value = '') {
+  return String(value || '')
+    .replace(/("?(?:token|authorization|discord_token|discord_bridge_token)"?\s*[:=]\s*")([^"]+)(")/gi, '$1[redacted]$3')
+    .replace(/(Bot\s+)[A-Za-z0-9._-]{20,}/g, '$1[redacted]')
+    .replace(/([?&](?:token|key|secret)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/`/g, 'ˋ')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function persistRuntimeLogChannelId(channelId = '') {
+  const value = String(channelId || '').trim();
+  if (!value) return false;
+  try {
+    fs.mkdirSync(discordLogStateDir, { recursive: true });
+    fs.writeFileSync(discordLogChannelFile, value, 'utf8');
+    return true;
+  } catch (error) {
+    console.warn('[discord-log] failed to persist log channel:', error?.message || error);
+    return false;
+  }
+}
+
+function readPersistedRuntimeLogChannelId() {
+  try {
+    return fs.existsSync(discordLogChannelFile) ? fs.readFileSync(discordLogChannelFile, 'utf8').trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function nextDiscordLogBatch() {
+  if (!discordLogQueue.length) return '';
+  const picked = [];
+  let chars = 0;
+  while (discordLogQueue.length) {
+    const line = discordLogQueue[0];
+    if (picked.length && chars + line.length + 1 > 1650) break;
+    discordLogQueue.shift();
+    picked.push(line);
+    chars += line.length + 1;
+    if (picked.length >= 12) break;
+  }
+  return picked.join('\n');
+}
+
+async function flushRuntimeLogQueue() {
+  if (!runtimeLogChannel || runtimeLogFlushBusy || !discordLogQueue.length) return;
+  runtimeLogFlushBusy = true;
+  try {
+    while (runtimeLogChannel && discordLogQueue.length) {
+      const body = nextDiscordLogBatch();
+      if (!body) break;
+      await runtimeLogChannel.send(`**TalkSys Discord runtime** · ${DISCORD_BRIDGE_REVISION}\n\`\`\`text\n${body}\n\`\`\``);
+    }
+  } catch (error) {
+    const originalWarn = console.warn;
+    originalWarn.call(console, '[discord-log] mirror failed:', error?.message || error);
+  } finally {
+    runtimeLogFlushBusy = false;
+    if (runtimeLogChannel && discordLogQueue.length) scheduleRuntimeLogFlush();
+  }
 }
 
 function scheduleRuntimeLogFlush() {
-  if (!runtimeLogChannel || runtimeLogFlushTimer) return;
-  runtimeLogFlushTimer = setTimeout(async () => {
+  if (!runtimeLogChannel || runtimeLogFlushTimer || runtimeLogFlushBusy || !discordLogQueue.length) return;
+  runtimeLogFlushTimer = setTimeout(() => {
     runtimeLogFlushTimer = null;
-    if (!runtimeLogChannel) return;
-    try {
-      if (runtimeLogMessage) await runtimeLogMessage.edit(runtimeLogText());
-      else runtimeLogMessage = await runtimeLogChannel.send(runtimeLogText());
-    } catch (error) {
-      console.warn('[discord-log] mirror failed:', error?.message || error);
-    }
-  }, 700);
+    flushRuntimeLogQueue().catch(() => {});
+  }, 550);
 }
 
 function mirrorRuntimeLog(kind, message) {
-  const value = String(message || '').replace(/`/g, 'ˋ').replace(/\s+/g, ' ').trim().slice(0, 260);
+  const value = sanitizeLogText(message).slice(0, 1200);
   if (!value) return;
   const stamp = new Date().toISOString().slice(11, 19);
-  runtimeLogLines.push(`${stamp} [${kind}] ${value}`);
-  if (runtimeLogLines.length > 60) runtimeLogLines.splice(0, runtimeLogLines.length - 60);
+  const line = `${stamp} [${kind}] ${value}`;
+  runtimeLogLines.push(line);
+  if (runtimeLogLines.length > 300) runtimeLogLines.splice(0, runtimeLogLines.length - 300);
+  discordLogQueue.push(line);
+  if (discordLogQueue.length > 1000) discordLogQueue.splice(0, discordLogQueue.length - 1000);
   scheduleRuntimeLogFlush();
 }
 
-async function attachRuntimeLogChannel(channel) {
+function installConsoleMirror() {
+  if (consoleMirrorInstalled) return;
+  consoleMirrorInstalled = true;
+  const format = (args) => sanitizeLogText(args.map((item) => {
+    if (item instanceof Error) return item.stack || item.message;
+    if (typeof item === 'string') return item;
+    try { return JSON.stringify(item); } catch { return String(item); }
+  }).join(' '));
+  for (const [method, kind] of [['log', 'RAW'], ['info', 'RAW'], ['warn', 'WARN'], ['error', 'ERROR']]) {
+    const original = console[method].bind(console);
+    console[method] = (...args) => {
+      original(...args);
+      const value = format(args);
+      if (!value || value.startsWith('[discord-log]')) return;
+      mirrorRuntimeLog(kind, value);
+    };
+  }
+}
+
+async function attachRuntimeLogChannel(channel, { persist = true } = {}) {
   if (!channel?.isTextBased?.() || typeof channel.send !== 'function') return false;
   runtimeLogChannel = channel;
-  runtimeLogMessage = null;
-  mirrorRuntimeLog('LOG', 'Discord live log attached');
+  if (persist) persistRuntimeLogChannelId(channel.id);
+  mirrorRuntimeLog('LOG', `Discord log channel attached id=${channel.id}`);
   mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
   mirrorRuntimeLog('BOOT', `TalkSys=${TALKSYS_BASE_URL}`);
   mirrorRuntimeLog('BOOT', `ttsPrimary=${process.platform === 'win32' ? 'windows-system-speech' : 'cloudflare-melotts'}`);
   scheduleRuntimeLogFlush();
   return true;
 }
+
+async function restoreRuntimeLogChannel() {
+  const channelId = readPersistedRuntimeLogChannelId();
+  if (!channelId) return false;
+  try {
+    const channel = await client.channels.fetch(channelId);
+    return attachRuntimeLogChannel(channel, { persist: false });
+  } catch (error) {
+    console.warn('[discord-log] persisted channel unavailable:', error?.message || error);
+    return false;
+  }
+}
+
+installConsoleMirror();
 
 function realtimeSttUrl() {
   const url = new URL(TALKSYS_BASE_URL);
