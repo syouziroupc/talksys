@@ -105,6 +105,8 @@ let recoveryAudio = null;
 let recoveryAudioPromise = null;
 let recoverySpeaking = false;
 let voiceRecoveryTimer = null;
+let voiceStallTimer = null;
+let voiceRecoveryInFlight = false;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
@@ -114,6 +116,11 @@ function resetConversationState() {
     clearTimeout(voiceRecoveryTimer);
     voiceRecoveryTimer = null;
   }
+  if (voiceStallTimer) {
+    clearTimeout(voiceStallTimer);
+    voiceStallTimer = null;
+  }
+  voiceRecoveryInFlight = false;
   voiceRecoveryAttempts = 0;
   try { activeTurnAbortController?.abort(); } catch {}
   try { activeWaitCue?.stop?.('reset'); } catch {}
@@ -1868,7 +1875,7 @@ client.once('ready', async () => {
   if (discordHealthTimer) clearInterval(discordHealthTimer);
   discordHealthTimer = setInterval(() => {
     console.log(`[discord] gateway health ready=${client.isReady()} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
-    if (runtimeLogChannel) mirrorRuntimeLog('HEALTH', `gateway=${client.isReady()} ping=${client.ws.ping}ms sessions=${sessions.size}`);
+    if (runtimeLogChannel) mirrorRuntimeLog('HEALTH', `gateway=${client.isReady()} ping=${client.ws.ping}ms voice=${connection?.state?.status || 'none'} channel=${connection?.joinConfig?.channelId || '-'} captures=${sessions.size} answering=${answering} queued=${pendingTurns.length} logPending=${discordLogQueue.length}`);
   }, DISCORD_HEALTH_LOG_MS);
 
   console.log(`[discord] bridge revision=${DISCORD_BRIDGE_REVISION}`);
@@ -1940,6 +1947,12 @@ client.on('interactionCreate', async (interaction) => {
       console.error('[command] failure reply failed:', replyError?.message || replyError);
     }
   }
+});
+
+client.on('voiceStateUpdate', (oldState, newState) => {
+  if (!client.user || newState.id !== client.user.id) return;
+  if (oldState.channelId === newState.channelId) return;
+  mirrorRuntimeLog('VOICE-STATE', `bot channel ${oldState.channelId || '-'} -> ${newState.channelId || '-'}`);
 });
 
 client.on('error', (error) => console.error('[discord]', error));
