@@ -336,6 +336,8 @@ function sanitizeLogText(value = '') {
   return String(value || '')
     .replace(/("?(?:token|authorization|discord_token|discord_bridge_token)"?\s*[:=]\s*")([^"]+)(")/gi, '$1[redacted]$3')
     .replace(/(Bot\s+)[A-Za-z0-9._-]{20,}/g, '$1[redacted]')
+    .replace(/(Bearer\s+)[A-Za-z0-9._-]{12,}/gi, '$1[redacted]')
+    .replace(/(["']?(?:token|authorization|api_key|api-key|secret|password)["']?\s*[:=]\s*["']?)[A-Za-z0-9._-]{8,}/gi, '$1[redacted]')
     .replace(/([?&](?:token|key|secret)=)[^&\s]+/gi, '$1[redacted]')
     .replace(/`/g, 'ˋ')
     .replace(/[\r\n]+/g, ' ')
@@ -439,44 +441,50 @@ function readPersistedRuntimeLogChannelId() {
 }
 
 function nextDiscordLogBatch() {
-  if (!discordLogQueue.length) return '';
-  const picked = [];
+  if (!discordLogQueue.length) return { body: '', count: 0 };
+  const lines = [];
   let chars = 0;
-  while (discordLogQueue.length) {
-    const line = discordLogQueue[0];
-    if (picked.length && chars + line.length + 1 > 1650) break;
-    discordLogQueue.shift();
-    picked.push(line);
+  for (const line of discordLogQueue) {
+    if (lines.length && chars + line.length + 1 > 1500) break;
+    lines.push(line.slice(0, 1500));
     chars += line.length + 1;
-    if (picked.length >= 12) break;
+    if (lines.length >= 10) break;
   }
-  return picked.join('\n');
+  return { body: lines.join('\n'), count: lines.length };
 }
 
 async function flushRuntimeLogQueue() {
   if (!runtimeLogChannel || runtimeLogFlushBusy || !discordLogQueue.length) return;
   runtimeLogFlushBusy = true;
   try {
-    while (runtimeLogChannel && discordLogQueue.length) {
-      const body = nextDiscordLogBatch();
-      if (!body) break;
-      await runtimeLogChannel.send(`**TalkSys Discord runtime** · ${DISCORD_BRIDGE_REVISION}\n\`\`\`text\n${body}\n\`\`\``);
-    }
+    // Only one Discord API call per flush; persist everything to disk separately.
+    const batch = nextDiscordLogBatch();
+    if (!batch.count) return;
+    await runtimeLogChannel.send(`**TalkSys Discord runtime** · ${DISCORD_BRIDGE_REVISION}\n\`\`\`text\n${batch.body}\n\`\`\``);
+    discordLogQueue.splice(0, batch.count);
+    discordLogSendFailCount = 0;
   } catch (error) {
-    const originalWarn = console.warn;
-    originalWarn.call(console, '[discord-log] mirror failed:', error?.message || error);
+    discordLogSendFailCount += 1;
+    process.stderr.write('[discord-log] send failed code='
+      + String(error?.code || error?.status || 'unknown')
+      + ' retry=' + discordLogSendFailCount + '\n');
   } finally {
     runtimeLogFlushBusy = false;
-    if (runtimeLogChannel && discordLogQueue.length) scheduleRuntimeLogFlush();
+    if (runtimeLogChannel && discordLogQueue.length) {
+      const delay = discordLogSendFailCount
+        ? Math.min(60_000, 1000 * (2 ** Math.min(discordLogSendFailCount, 6)))
+        : 1500;
+      scheduleRuntimeLogFlush(delay);
+    }
   }
 }
 
-function scheduleRuntimeLogFlush() {
+function scheduleRuntimeLogFlush(delayMs = 1500) {
   if (!runtimeLogChannel || runtimeLogFlushTimer || runtimeLogFlushBusy || !discordLogQueue.length) return;
   runtimeLogFlushTimer = setTimeout(() => {
     runtimeLogFlushTimer = null;
     flushRuntimeLogQueue().catch(() => {});
-  }, 550);
+  }, delayMs);
 }
 
 function mirrorRuntimeLog(kind, message) {
@@ -486,8 +494,13 @@ function mirrorRuntimeLog(kind, message) {
   const line = `${stamp} [${kind}] ${value}`;
   runtimeLogLines.push(line);
   if (runtimeLogLines.length > 300) runtimeLogLines.splice(0, runtimeLogLines.length - 300);
+  diskLogQueue.push(new Date().toISOString() + ' ' + line);
+  scheduleDiskLogFlush();
   discordLogQueue.push(line);
-  if (discordLogQueue.length > 1000) discordLogQueue.splice(0, discordLogQueue.length - 1000);
+  if (discordLogQueue.length > 2000) {
+    discordLogQueue.splice(0, discordLogQueue.length - 1999);
+    discordLogQueue.unshift('[LOG] Discord backlog exceeded 2000 lines; complete log retained in /logdump');
+  }
   scheduleRuntimeLogFlush();
 }
 
