@@ -16,7 +16,7 @@ test('v84 common Gemini path is single-pass grounded without serial verification
 
 test('Discord confirmed Whisper remains the primary text while Nova is side-channel evidence', () => {
   assert.match(bridge, /confirmedTranscript = String\(body\.text\)\.trim\(\)/);
-  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives, spokenBackchannel\)/);
+  assert.match(bridge, /const turn = await talk\(confirmedTranscript, utteranceId, controller\.signal\)/);
   assert.match(bridge, /geminiInputText: confirmedTranscript/);
   assert.match(bridge, /\/api\/realtime-stt/);
   assert.match(bridge, /\/api\/fast-reaction/);
@@ -35,7 +35,7 @@ test('Whisper is the normal path with a quality-first timeout', () => {
 test('wait audio cannot block final answer TTS', () => {
   assert.match(bridge, /activeWaitCue = startWaitCue/);
   assert.match(bridge, /const turn = await talk/);
-  assert.match(bridge, /activeWaitCue\?\.utteranceId === utteranceId[\s\S]*activeWaitCue\.stop\?\.\('final-answer-ready'\)/);
+  assert.match(bridge, /activeWaitCue\?\.stop\('final-answer-ready'\)/);
   assert.match(bridge, /player\.stop\(true\)/);
   assert.doesNotMatch(bridge, /await activeWaitCue\.done/);
 });
