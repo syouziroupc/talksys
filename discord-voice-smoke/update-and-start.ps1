@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 Set-Location $RepoRoot
+Write-Host "[boot] TalkSys updater starting..."
 
 function Require-Git {
   try {
@@ -18,10 +19,11 @@ if (-not (Test-Path (Join-Path $RepoRoot '.git'))) {
   throw "このスクリプトはTalkSysのGitリポジトリ内で実行してください。"
 }
 
-$dirty = (& git status --porcelain)
+Write-Host "[check] checking tracked local changes..."
+$dirty = (& git --no-optional-locks status --porcelain --untracked-files=no)
 if ($dirty) {
   Write-Host "[stop] ローカル変更があります。誤上書きを防ぐため自動更新を中止します。" -ForegroundColor Yellow
-  & git status --short
+  & git --no-optional-locks status --short --untracked-files=no
   throw "ローカル変更をcommit/stashしてから再実行してください。"
 }
 
