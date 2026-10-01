@@ -1891,46 +1891,85 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   }
 
   const boundConnection = connection;
-  boundConnection.on('stateChange', (_oldState, newState) => {
+  const noRejoinClose = () => boundConnection.state?.status === VoiceConnectionStatus.Disconnected
+    && [4014, 4021, 4022].includes(Number(boundConnection.state?.closeCode));
+
+  const scheduleRecovery = (reason = 'voice-disconnected') => {
+    if (boundConnection !== connection || !connection) return;
+    if (boundConnection.state.status === VoiceConnectionStatus.Ready
+      || boundConnection.state.status === VoiceConnectionStatus.Destroyed || noRejoinClose()) return;
+    if (voiceRecoveryTimer || voiceRecoveryInFlight) return;
+    const delayMs = Math.min(30_000, 500 * (2 ** Math.min(voiceRecoveryAttempts, 6)));
+    mirrorRuntimeLog('VOICE-RECOVERY', `scheduled reason=${reason} delay=${delayMs}ms attempt=${voiceRecoveryAttempts + 1}`);
+    voiceRecoveryTimer = setTimeout(async () => {
+      voiceRecoveryTimer = null;
+      if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Ready
+        || boundConnection.state.status === VoiceConnectionStatus.Destroyed || noRejoinClose()) return;
+      voiceRecoveryInFlight = true;
+      voiceRecoveryAttempts += 1;
+      try {
+        const accepted = boundConnection.rejoin();
+        if (!accepted) throw new Error('voice_rejoin_rejected');
+        await entersState(boundConnection, VoiceConnectionStatus.Ready, VOICE_REJOIN_TIMEOUT_MS);
+        if (boundConnection !== connection) return;
+        boundConnection.subscribe(player);
+        voiceRecoveryAttempts = 0;
+        mirrorRuntimeLog('VOICE-RECOVERY', 'rejoin recovered; player subscription restored');
+      } catch (error) {
+        mirrorRuntimeLog('VOICE-RECOVERY', `failed attempt=${voiceRecoveryAttempts} state=${boundConnection.state.status}: ${error?.message || error}`);
+      } finally {
+        voiceRecoveryInFlight = false;
+        if (boundConnection === connection && boundConnection.state.status !== VoiceConnectionStatus.Ready
+          && boundConnection.state.status !== VoiceConnectionStatus.Destroyed && !noRejoinClose()) {
+          scheduleRecovery('retry-after-failure');
+        }
+      }
+    }, delayMs);
+  };
+
+  boundConnection.on('stateChange', (oldState, newState) => {
     if (boundConnection !== connection) return;
-    console.log(`[discord] voice state=${newState.status}`);
+    const reason = String(newState?.reason || '-');
+    const code = String(newState?.closeCode ?? '-');
+    mirrorRuntimeLog('VOICE-STATE', `${oldState?.status || '-'} -> ${newState.status} reason=${reason} closeCode=${code}`);
     if (newState.status === VoiceConnectionStatus.Ready) {
       voiceRecoveryAttempts = 0;
-      if (voiceRecoveryTimer) {
-        clearTimeout(voiceRecoveryTimer);
-        voiceRecoveryTimer = null;
-      }
+      if (voiceRecoveryTimer) clearTimeout(voiceRecoveryTimer);
+      if (voiceStallTimer) clearTimeout(voiceStallTimer);
+      voiceRecoveryTimer = null;
+      voiceStallTimer = null;
       boundConnection.subscribe(player);
       return;
     }
-    if (newState.status !== VoiceConnectionStatus.Disconnected || voiceRecoveryTimer) return;
-
-    const scheduleRecovery = () => {
-      if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
-      const delayMs = Math.min(8000, 500 * (2 ** Math.min(voiceRecoveryAttempts, 4)));
-      voiceRecoveryTimer = setTimeout(async () => {
-        voiceRecoveryTimer = null;
-        if (boundConnection !== connection || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
-        voiceRecoveryAttempts += 1;
-        try {
-          const accepted = boundConnection.rejoin();
-          if (!accepted) throw new Error('voice_rejoin_rejected');
-          await entersState(boundConnection, VoiceConnectionStatus.Ready, VOICE_REJOIN_TIMEOUT_MS);
-          if (boundConnection === connection) {
-            boundConnection.subscribe(player);
-            voiceRecoveryAttempts = 0;
-            console.log('[discord] voice rejoin recovered');
-          }
-        } catch (error) {
-          console.error(`[discord] voice rejoin failed attempt=${voiceRecoveryAttempts}:`, error?.message || error);
-          if (voiceRecoveryAttempts < 5) scheduleRecovery();
-        }
-      }, delayMs);
-    };
-    console.warn('[discord] voice disconnected; scheduling rejoin');
-    scheduleRecovery();
+    if (newState.status === VoiceConnectionStatus.Destroyed) {
+      if (voiceStallTimer) clearTimeout(voiceStallTimer);
+      voiceStallTimer = null;
+      return;
+    }
+    if (noRejoinClose()) {
+      mirrorRuntimeLog('VOICE-ERROR', `server rejected auto-rejoin closeCode=${code} reason=${reason}`);
+      if (voiceStallTimer) clearTimeout(voiceStallTimer);
+      voiceStallTimer = null;
+      return;
+    }
+    if (newState.status === VoiceConnectionStatus.Disconnected) {
+      scheduleRecovery('disconnected');
+    } else if (!voiceStallTimer && !voiceRecoveryInFlight
+      && [VoiceConnectionStatus.Connecting, VoiceConnectionStatus.Signalling].includes(newState.status)) {
+      voiceStallTimer = setTimeout(() => {
+        voiceStallTimer = null;
+        if (boundConnection !== connection || !connection) return;
+        if (boundConnection.state.status === VoiceConnectionStatus.Ready
+          || boundConnection.state.status === VoiceConnectionStatus.Destroyed) return;
+        mirrorRuntimeLog('VOICE-STALLED', `state=${boundConnection.state.status} >15000ms; requesting rejoin`);
+        scheduleRecovery('nonready-timeout');
+      }, 15_000);
+    }
   });
-  boundConnection.on('error', (error) => console.error('[discord] voice connection error:', error?.message || error));
+  boundConnection.on('error', (error) => {
+    mirrorRuntimeLog('VOICE-ERROR', `status=${boundConnection.state?.status || '-'}: ${error?.message || error}`);
+    console.error('[discord] voice connection error:', error?.message || error);
+  });
 
   console.log('[discord] voice ready:', channel.name);
   console.log('[discord] conversation session:', discordSessionId);
