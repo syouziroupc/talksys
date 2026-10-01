@@ -795,12 +795,20 @@ function boundedSignal(parentSignal, timeoutMs) {
 }
 
 async function fetchWithBudget(url, init = {}, { timeoutMs = 15000, label = 'request' } = {}) {
-  const response = await fetch(url, {
-    ...init,
-    signal: boundedSignal(init.signal, timeoutMs),
-  });
+  const startedAt = Date.now();
+  const signal = boundedSignal(init.signal, timeoutMs);
+  let response;
+  try {
+    response = await fetch(url, { ...init, signal });
+  } catch (error) {
+    const reason = signal.aborted ? String(signal.reason?.name || error?.name || 'aborted') : String(error?.name || 'network-error');
+    const kind = init.signal?.aborted ? 'API-CANCEL' : 'API-ERROR';
+    mirrorRuntimeLog(kind, `${label} reason=${reason} elapsed=${Date.now() - startedAt}ms limit=${timeoutMs}ms ${String(error?.message || error).slice(0, 160)}`);
+    throw error;
+  }
   if (!response.ok) {
     const detail = await response.text().catch(() => '');
+    mirrorRuntimeLog('API-ERROR', `${label} http=${response.status} elapsed=${Date.now() - startedAt}ms detail=${detail.slice(0, 300)}`);
     const error = new Error(`${label}_http_${response.status}: ${detail.slice(0, 300)}`);
     error.status = response.status;
     throw error;
