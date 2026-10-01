@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Client, GatewayIntentBits } from 'discord.js';
+import { AttachmentBuilder, Client, GatewayIntentBits } from 'discord.js';
 import {
   AudioPlayerStatus,
   EndBehaviorType,
@@ -96,6 +96,14 @@ const runtimeLogLines = [];
 const discordLogQueue = [];
 const discordLogStateDir = path.join(process.env.LOCALAPPDATA || process.env.HOME || process.cwd(), 'TalkSys');
 const discordLogChannelFile = path.join(discordLogStateDir, 'discord-log-channel.txt');
+const discordLogOwnerFile = path.join(discordLogStateDir, 'discord-log-owner.txt');
+const discordLogFile = path.join(discordLogStateDir, 'discord-runtime.log');
+const discordLogPreviousFile = path.join(discordLogStateDir, 'discord-runtime.previous.log');
+const DISK_LOG_MAX_BYTES = 5 * 1024 * 1024;
+const diskLogQueue = [];
+let diskLogFlushTimer = null;
+let diskLogFlushBusy = false;
+let discordLogSendFailCount = 0;
 let consoleMirrorInstalled = false;
 let activeBotPlaybackRecord = null;
 let lastBotPlaybackEndedAt = 0;
@@ -346,6 +354,80 @@ function persistRuntimeLogChannelId(channelId = '') {
     console.warn('[discord-log] failed to persist log channel:', error?.message || error);
     return false;
   }
+}
+
+function persistRuntimeLogOwnerId(userId = '') {
+  try {
+    const id = String(userId || '').trim();
+    if (!id) return false;
+    fs.mkdirSync(discordLogStateDir, { recursive: true });
+    fs.writeFileSync(discordLogOwnerFile, id, { encoding: 'utf8', mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readPersistedRuntimeLogOwnerId() {
+  try {
+    return fs.readFileSync(discordLogOwnerFile, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+async function flushRuntimeLogsToDisk() {
+  if (diskLogFlushBusy) return;
+  if (!diskLogQueue.length) return;
+  diskLogFlushBusy = true;
+  const lines = diskLogQueue.splice(0, 300);
+  try {
+    await fs.promises.mkdir(discordLogStateDir, { recursive: true });
+    const stat = await fs.promises.stat(discordLogFile).catch(() => null);
+    if (stat && stat.size >= DISK_LOG_MAX_BYTES) {
+      await fs.promises.rm(discordLogPreviousFile, { force: true });
+      await fs.promises.rename(discordLogFile, discordLogPreviousFile);
+    }
+    await fs.promises.appendFile(discordLogFile, lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o600 });
+  } catch (error) {
+    diskLogQueue.unshift(...lines);
+    // Use the original stderr writer: logging this through the mirror would recurse.
+    process.stderr.write('[discord-log] disk write failed: ' + String(error?.message || error) + '\n');
+  } finally {
+    diskLogFlushBusy = false;
+    if (diskLogQueue.length) scheduleDiskLogFlush();
+  }
+}
+
+function scheduleDiskLogFlush() {
+  if (diskLogFlushTimer || diskLogFlushBusy || !diskLogQueue.length) return;
+  diskLogFlushTimer = setTimeout(() => {
+    diskLogFlushTimer = null;
+    flushRuntimeLogsToDisk().catch(() => {});
+  }, 300);
+}
+
+async function exportRuntimeLogs() {
+  if (diskLogFlushTimer) clearTimeout(diskLogFlushTimer);
+  diskLogFlushTimer = null;
+  for (let i = 0; i < 20 && diskLogQueue.length; i += 1) {
+    if (diskLogFlushBusy) {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      continue;
+    }
+    await flushRuntimeLogsToDisk();
+  }
+  const chunks = [];
+  for (const filename of [discordLogPreviousFile, discordLogFile]) {
+    try { chunks.push(await fs.promises.readFile(filename)); } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  let all = Buffer.concat(chunks);
+  if (all.length > 7_000_000) {
+    all = Buffer.concat([Buffer.from('[Older runtime log truncated for Discord upload]\n'), all.subarray(all.length - 6_900_000)]);
+  }
+  return all.length ? all : Buffer.from('No TalkSys runtime logs were available.\n');
 }
 
 function readPersistedRuntimeLogChannelId() {
