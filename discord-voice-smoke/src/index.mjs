@@ -119,6 +119,9 @@ let voiceRecoveryInFlight = false;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
+let lastHealthLogSignature = '';
+let lastHealthLogAt = 0;
+const DISCORD_HEALTH_LOG_INTERVAL_MS = 300_000;
 let desiredVoiceTarget = null;
 let fullReconnectTimer = null;
 let fullReconnectInFlight = false;
@@ -2148,11 +2151,33 @@ client.once('ready', async () => {
   }
   if (discordHealthTimer) clearInterval(discordHealthTimer);
   discordHealthTimer = setInterval(() => {
+    const ready = client.isReady();
     const voiceStatus = connection?.state?.status || 'none';
     const voiceChannel = connection?.joinConfig?.channelId || '-';
-    console.log(`[discord] gateway health ready=${client.isReady()} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
-    if (runtimeLogChannel) mirrorRuntimeLog('HEALTH', `gateway=${client.isReady()} ping=${client.ws.ping}ms voice=${voiceStatus} channel=${voiceChannel} captures=${sessions.size} answering=${answering} queued=${pendingTurns.length} logPending=${discordLogQueue.length} desired=${desiredVoiceTarget?.channelId || '-'}`);
-    if (desiredVoiceTarget && client.isReady()) {
+    const desiredChannel = desiredVoiceTarget?.channelId || '-';
+    const healthSignature = [
+      ready ? '1' : '0',
+      voiceStatus,
+      voiceChannel,
+      desiredChannel,
+      String(sessions.size),
+      answering ? '1' : '0',
+      String(pendingTurns.length),
+    ].join('|');
+    const now = Date.now();
+    const healthChanged = healthSignature !== lastHealthLogSignature;
+    const summaryDue = now - lastHealthLogAt >= DISCORD_HEALTH_LOG_INTERVAL_MS;
+
+    if (healthChanged || summaryDue) {
+      lastHealthLogSignature = healthSignature;
+      lastHealthLogAt = now;
+      console.log(`[discord] gateway health ready=${ready} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size} voice=${voiceStatus} channel=${voiceChannel} desired=${desiredChannel}`);
+      if (runtimeLogChannel) {
+        mirrorRuntimeLog('HEALTH', `gateway=${ready} ping=${client.ws.ping}ms voice=${voiceStatus} channel=${voiceChannel} captures=${sessions.size} answering=${answering} queued=${pendingTurns.length} logPending=${discordLogQueue.length} desired=${desiredChannel}`);
+      }
+    }
+
+    if (desiredVoiceTarget && ready) {
       const missing = !connection || voiceStatus === VoiceConnectionStatus.Destroyed;
       const wrongChannel = connection && voiceChannel !== desiredVoiceTarget.channelId;
       if (missing || wrongChannel) scheduleFullReconnect(missing ? 'health-missing-connection' : 'health-channel-mismatch');
