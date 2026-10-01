@@ -31,6 +31,6 @@ test('barge-in mismatch rescues meaningful realtime transcript instead of blind 
 test('pure greeting and thanks are terminal voice reactions', () => {
   assert.match(reactionSource, /kind: 'greeting'[\s\S]*terminal: true/);
   assert.match(reactionSource, /kind: 'thanks'[\s\S]*terminal: true/);
-  assert.match(source, /fastReaction\?\.terminal && fastReaction\?\.shouldSpeak/);
+  assert.match(source, /reaction\?\.terminal && reaction\?\.shouldSpeak/);
   assert.match(source, /mirrorRuntimeLog\('TERMINAL'/);
 });
