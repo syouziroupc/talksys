@@ -523,28 +523,23 @@ function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, real
   return handle;
 }
 
-function triggerWebFastReaction(helper, text) {
+function triggerWebFastReaction(helper, text, source = 'realtime') {
   const active = helper?.active;
   const value = String(text || '').trim();
-  if (!active || active.reactionIssued || !value || active.sessionEpoch !== voiceEpoch) return;
+  if (!active || active.reactionIssued || !value || active.sessionEpoch !== voiceEpoch) return false;
   active.latestRealtimeTranscript = value;
-  if (active.startedDuringBotPlayback) {
+  if (active.startedDuringBotPlayback && !active.bargeInTriggered) {
     console.log(`[fast-reaction] deferred bot-overlap utterance=${active.utteranceId}`);
-    return;
+    return false;
   }
+  const reaction = fastReaction(value);
+  if (!reaction?.shouldSpeak || !String(reaction?.text || '').trim()) return false;
   active.reactionIssued = true;
-  const seq = ++helper.reactionSeq;
-  setTimeout(async () => {
-    if (helper.reactionSeq !== seq || helper.active !== active || active.sessionEpoch !== voiceEpoch) return;
-    try {
-      const reaction = await fetchFastReaction(value);
-      if (helper.reactionSeq !== seq || helper.active !== active || active.sessionEpoch !== voiceEpoch) return;
-      active.reaction = reaction;
-      if (reaction?.shouldSpeak) playWebFastReaction(reaction, active.utteranceId, active.sessionEpoch, active.timeline, value);
-    } catch (error) {
-      console.warn('[fast-reaction] endpoint failed:', error?.message || error);
-    }
-  }, 90);
+  active.reaction = reaction;
+  helper.reactionSeq += 1;
+  mirrorRuntimeLog('REACTION-CANDIDATE', `${source} ${reaction.kind}: ${value}`);
+  playWebFastReaction(reaction, active.utteranceId, active.sessionEpoch, active.timeline, value);
+  return true;
 }
 
 function handleRealtimeMessage(helper, data) {
@@ -1558,6 +1553,9 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     const realtimeConfidence = realtimeActive && Number.isFinite(Number(realtimeActive.latestRealtimeConfidence))
       ? Number(realtimeActive.latestRealtimeConfidence) : null;
     const realtimeWords = realtimeActive && Array.isArray(realtimeActive.realtimeWords) ? realtimeActive.realtimeWords.slice(0,120) : [];
+    if (realtimeActive && realtimeTranscript) {
+      triggerWebFastReaction(realtimeHelper, realtimeTranscript, 'capture-finalize');
+    }
     if (realtimeActive) realtimeHelper.active = null;
     timeline.realtimeTranscript = realtimeTranscript;
     const captureMetrics = {
