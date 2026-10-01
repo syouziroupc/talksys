@@ -120,8 +120,6 @@ let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
 let lastHealthLogSignature = '';
-let lastHealthLogAt = 0;
-const DISCORD_HEALTH_LOG_INTERVAL_MS = 300_000;
 let desiredVoiceTarget = null;
 let fullReconnectTimer = null;
 let fullReconnectInFlight = false;
@@ -2160,17 +2158,11 @@ client.once('ready', async () => {
       voiceStatus,
       voiceChannel,
       desiredChannel,
-      String(sessions.size),
-      answering ? '1' : '0',
-      String(pendingTurns.length),
     ].join('|');
-    const now = Date.now();
     const healthChanged = healthSignature !== lastHealthLogSignature;
-    const summaryDue = now - lastHealthLogAt >= DISCORD_HEALTH_LOG_INTERVAL_MS;
 
-    if (healthChanged || summaryDue) {
+    if (healthChanged) {
       lastHealthLogSignature = healthSignature;
-      lastHealthLogAt = now;
       console.log(`[discord] gateway health ready=${ready} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size} voice=${voiceStatus} channel=${voiceChannel} desired=${desiredChannel}`);
       if (runtimeLogChannel) {
         mirrorRuntimeLog('HEALTH', `gateway=${ready} ping=${client.ws.ping}ms voice=${voiceStatus} channel=${voiceChannel} captures=${sessions.size} answering=${answering} queued=${pendingTurns.length} logPending=${discordLogQueue.length} desired=${desiredChannel}`);
