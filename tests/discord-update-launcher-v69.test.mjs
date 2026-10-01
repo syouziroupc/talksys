@@ -6,7 +6,8 @@ const updater = fs.readFileSync(new URL('../discord-voice-smoke/update-and-start
 const readme = fs.readFileSync(new URL('../discord-voice-smoke/README.md', import.meta.url), 'utf8');
 
 test('Discord update launcher only fast-forwards a clean local checkout', () => {
-  assert.match(updater, /git status --porcelain/);
+  assert.match(updater, /git --no-optional-locks status --porcelain --untracked-files=no/);
+  assert.match(updater, /\[boot\] TalkSys updater starting/);
   assert.match(updater, /git fetch origin main/);
   assert.match(updater, /git rev-parse --abbrev-ref HEAD/);
   assert.match(updater, /git merge-base --is-ancestor HEAD origin\/main/);
