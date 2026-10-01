@@ -1,4 +1,4 @@
-export const UI_REVISION = 'talksys-v54-ui-two-column-20260917';
+export const UI_REVISION = 'talksys-v55-experiment-chat-copy-20261001';
 
 export const TALK_HTML_V45 = `<!doctype html>
 <html lang="ja" data-ui-revision="${UI_REVISION}">
@@ -20,7 +20,7 @@ export const TALK_HTML_V45 = `<!doctype html>
     .chat{flex:1;min-height:560px;max-height:calc(100dvh - 320px);overflow:auto;padding:20px;display:flex;flex-direction:column;gap:10px;background:#fff}.msg{max-width:86%;padding:11px 14px;border-radius:15px;line-height:1.58;white-space:pre-wrap;overflow-wrap:anywhere}.user{align-self:flex-end;background:#172033;color:#fff;border-bottom-right-radius:5px}.assistant{align-self:flex-start;background:#f2f4f7;color:#1d2939;border-bottom-left-radius:5px}
     .controls{padding:14px 18px 16px;border-top:1px solid #e7eaf0;background:#fff}.mic{width:100%;border:0;border-radius:13px;padding:14px 16px;background:#172033;color:#fff;font-weight:850;cursor:pointer;min-height:52px}.mic.on{background:#b42318}.mic:focus-visible,.send:focus-visible,.test:focus-visible,input:focus-visible{outline:3px solid rgba(47,128,237,.25);outline-offset:2px}
     .form{display:flex;gap:8px;margin-top:10px}.input{flex:1;min-width:0;border:1px solid #d0d5dd;border-radius:11px;padding:11px 12px;font-size:16px}.send{border:1px solid #172033;background:#fff;color:#172033;border-radius:11px;padding:0 16px;font-weight:800;cursor:pointer}.hint{margin:8px 2px 0;color:#667085;font-size:11px;line-height:1.5}
-    .debug{min-width:0;background:#fbfcfd;padding:16px 18px 18px;overflow:auto;max-height:calc(100dvh - 72px);position:sticky;top:62px;align-self:start}.debug-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.debug-title{font-size:14px;font-weight:900}.debug-copy{margin-top:3px;color:#667085;font-size:11px;line-height:1.45}.runtime{font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;padding:7px 9px;border:1px solid #d0d5dd;background:#fff;border-radius:9px;white-space:nowrap}.grid{display:grid;grid-template-columns:150px 1fr;gap:5px 10px;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}.key{color:#667085}.log{margin-top:10px;min-height:300px;max-height:calc(100dvh - 390px);overflow:auto;background:#101828;color:#d0d5dd;border-radius:10px;padding:10px;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.test{margin-top:10px;border:1px solid #d0d5dd;background:#fff;border-radius:9px;padding:8px 10px;font-weight:750;cursor:pointer}
+    .debug{min-width:0;background:#fbfcfd;padding:16px 18px 18px;overflow:auto;max-height:calc(100dvh - 72px);position:sticky;top:62px;align-self:start}.debug-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.debug-title{font-size:14px;font-weight:900}.debug-copy{margin-top:3px;color:#667085;font-size:11px;line-height:1.45}.runtime{font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;padding:7px 9px;border:1px solid #d0d5dd;background:#fff;border-radius:9px;white-space:nowrap}.grid{display:grid;grid-template-columns:150px 1fr;gap:5px 10px;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}.key{color:#667085}.log{margin-top:10px;min-height:300px;max-height:calc(100dvh - 390px);overflow:auto;background:#101828;color:#d0d5dd;border-radius:10px;padding:10px;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.test{margin-top:10px;border:1px solid #d0d5dd;background:#fff;border-radius:9px;padding:8px 10px;font-weight:750;cursor:pointer}.copy{margin-top:10px;border:1px solid #172033;background:#fff;color:#172033;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer}.copy:focus-visible{outline:3px solid rgba(47,128,237,.25);outline-offset:2px}
     @media(max-width:960px){.app{max-width:none;box-shadow:none}.workspace{grid-template-columns:1fr}.conversation{border-right:0}.chat{min-height:420px;max-height:none}.debug{position:static;max-height:none;border-top:1px solid #e7eaf0}.log{max-height:300px}.top{padding:12px}.brand{font-size:18px}.hero{padding:12px}.chat{padding:12px}.msg{max-width:94%}.controls{padding:12px}.grid{grid-template-columns:112px 1fr}.status{font-size:12px}}
   </style>
 </head>
@@ -28,12 +28,12 @@ export const TALK_HTML_V45 = `<!doctype html>
 <!-- deployment compatibility marker: talksys-v45-ui-restored-20260911 -->
 <main class="app">
   <header class="top">
-    <div><div class="brand">TalkSys</div><div class="mode">電話相談・音声実証 / evidence-first</div></div>
+    <div><div class="brand">TalkSys</div><div class="mode">実験用チャット / 音声・検索検証</div></div>
     <div id="status" class="status" aria-live="polite">停止中</div>
   </header>
   <section class="hero">
-    <div class="hero-title">3.5 Flash-Lite + 検索・根拠ゲート</div>
-    <div class="hero-copy">店舗・商品・価格・営業時間・交通・天気など外部事実は、取得済み根拠を優先して回答します。ブラウザ会話と電話受け入れ系は分離し、相互の作業を止めない構成です。</div>
+    <div class="hero-title">TalkSys 実験用チャット</div>
+    <div class="hero-copy">回答・検索・音声・割込み動作を確認するための検証画面です。会話内容は下のボタンから1つのテキストとしてまとめてコピーできます。</div>
     <div class="chips">
       <span class="chip"><span class="dot"></span><strong>音声</strong> HTTP + 適応VAD</span>
       <span class="chip"><span class="dot"></span><strong>回答</strong> evidence-first router</span>
@@ -44,11 +44,12 @@ export const TALK_HTML_V45 = `<!doctype html>
   </section>
   <section class="workspace">
     <div class="conversation">
-      <section id="chat" class="chat" aria-live="polite"><div class="msg assistant">マイク会話を開始してください。外で話せない場合は、下の文字入力も同じ会話として使えます。</div></section>
+      <section id="chat" class="chat" aria-live="polite"><div class="msg assistant">実験を開始できます。マイクでも文字入力でも同じTalkSys回答経路を検証します。</div></section>
       <section class="controls">
         <button id="mic" class="mic" type="button">マイク会話を開始</button>
-        <form id="form" class="form"><input id="input" class="input" autocomplete="off" placeholder="非常用の文字入力" aria-label="非常用の文字入力"><button class="send" type="submit">送信</button></form>
-        <div class="hint">左は会話、右は常時デバッグ表示です。同じ通話内の文脈は引き継ぎます。</div>
+        <form id="form" class="form"><input id="input" class="input" autocomplete="off" placeholder="実験用の文字入力" aria-label="実験用の文字入力"><button class="send" type="submit">送信</button></form>
+        <button id="copy-chat" class="copy" type="button">会話をまとめてコピー</button>
+        <div class="hint">左は実験用チャット、右は常時デバッグ表示です。同じ通話内の文脈は引き継ぎます。</div>
       </section>
     </div>
     <aside id="debug-pane" class="debug" aria-label="デバッグ情報">
@@ -62,6 +63,23 @@ export const TALK_HTML_V45 = `<!doctype html>
 <script src="/talk-v45.js"></script>
 <script>
 (function(){
+  var copy=document.getElementById('copy-chat');
+  if(copy)copy.addEventListener('click',async function(){
+    var chat=document.getElementById('chat');
+    var rows=chat?Array.from(chat.querySelectorAll('.msg')).map(function(el){
+      var who=el.classList.contains('user')?'利用者':'TalkSys';
+      return who+': '+String(el.innerText||'').trim();
+    }).filter(Boolean):[];
+    var value=rows.join('\n\n').trim();
+    if(!value){copy.textContent='コピー対象なし';setTimeout(function(){copy.textContent='会話をまとめてコピー';},1400);return;}
+    try{
+      await navigator.clipboard.writeText(value);
+      copy.textContent='コピーしました';
+    }catch(e){
+      copy.textContent='コピー失敗';
+    }
+    setTimeout(function(){copy.textContent='会話をまとめてコピー';},1400);
+  });
   var runtime=document.getElementById('runtime-revision');
   var model=document.getElementById('model-name');
   fetch('/gemini-health',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
