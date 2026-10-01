@@ -524,9 +524,9 @@ async function flushRuntimeLogQueue() {
     discordLogSendFailCount = 0;
   } catch (error) {
     discordLogSendFailCount += 1;
-    process.stderr.write('[discord-log] send failed code='
+    mirrorRuntimeLog('LOG-ERROR', 'Discord log send failed code='
       + String(error?.code || error?.status || 'unknown')
-      + ' retry=' + discordLogSendFailCount + '\n');
+      + ' retry=' + discordLogSendFailCount);
   } finally {
     runtimeLogFlushBusy = false;
     if (runtimeLogChannel && discordLogQueue.length) {
@@ -547,19 +547,21 @@ function scheduleRuntimeLogFlush(delayMs = 1500) {
 }
 
 function mirrorRuntimeLog(kind, message) {
-  const value = sanitizeLogText(message).slice(0, 1200);
+  const value = sanitizeLogText(message).slice(0, 24000);
   if (!value) return;
-  const stamp = new Date().toISOString().slice(11, 19);
-  const line = `${stamp} [${kind}] ${value}`;
-  runtimeLogLines.push(line);
-  if (runtimeLogLines.length > 300) runtimeLogLines.splice(0, runtimeLogLines.length - 300);
-  diskLogQueue.push(new Date().toISOString() + ' ' + line);
-  scheduleDiskLogFlush();
-  discordLogQueue.push(line);
+  const stamp = new Date().toISOString();
+  for (let i = 0; i < value.length; i += 1100) {
+    const line = `${stamp} [${kind}${i ? '-CONT' : ''}] ${value.slice(i, i + 1100)}`;
+    runtimeLogLines.push(line);
+    if (runtimeLogLines.length > 300) runtimeLogLines.splice(0, runtimeLogLines.length - 300);
+    diskLogQueue.push(line);
+    discordLogQueue.push(line);
+  }
   if (discordLogQueue.length > 2000) {
     discordLogQueue.splice(0, discordLogQueue.length - 1999);
-    discordLogQueue.unshift('[LOG] Discord backlog exceeded 2000 lines; complete log retained in /logdump');
+    discordLogQueue.unshift('[LOG] Discord backlog exceeded 2000 lines; full retained logs in /logdump');
   }
+  scheduleDiskLogFlush();
   scheduleRuntimeLogFlush();
 }
 
