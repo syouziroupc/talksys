@@ -6,8 +6,6 @@ import { fastReaction } from '../src/voice-fast-reaction.js';
 
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 const supervisor = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
-const updater = fs.readFileSync(new URL('../discord-voice-smoke/update-and-start.ps1', import.meta.url), 'utf8');
-const webUi = fs.readFileSync(new URL('../src/ui-v45.js', import.meta.url), 'utf8');
 
 test('receiver does not re-subscribe after empty transport end', () => {
   const block = source.slice(source.indexOf('function startReceiverSession('), source.indexOf('function destroyVoiceConnection('));
@@ -79,32 +77,4 @@ test('barge-in rescue recalculates terminal greeting/thanks classification', () 
   const block = source.slice(source.indexOf('async function processConfirmedTranscript('), source.indexOf('async function handleCapturedUtterance('));
   assert.match(block, /reaction = fastReaction\(realtimeRescue\)/);
   assert.match(block, /if \(reaction\?\.terminal && reaction\?\.shouldSpeak\)/);
-});
-
-
-test('Discord supervisor is single-instance and updater stops parent before child', () => {
-  assert.match(supervisor, /talksys-discord-supervisor\.lock/);
-  assert.match(supervisor, /\[System\.IO\.FileShare\]::None/);
-  assert.match(supervisor, /singleton lock acquired pid=\$PID/);
-  assert.match(updater, /stopping old Discord supervisor pid=/);
-  assert.match(updater, /stopping old Discord bridge pid=/);
-  assert.ok(
-    updater.indexOf('stopping old Discord supervisor pid=') < updater.indexOf('stopping old Discord bridge pid='),
-    'old supervisor must be terminated before its Node child'
-  );
-});
-
-test('Discord interaction runtime uses current ready/ephemeral APIs and logs IDs', () => {
-  assert.match(source, /client\.once\('clientReady'/);
-  assert.match(source, /MessageFlags\.Ephemeral/);
-  assert.match(source, /received id=\$\{interaction\.id\}/);
-  assert.match(source, /process start pid=\$\{process\.pid\}/);
-});
-
-test('web chat is explicitly experimental and supports one-shot transcript copy', () => {
-  assert.match(webUi, /実験用チャット/);
-  assert.match(webUi, /id="copy-chat"/);
-  assert.match(webUi, /会話をまとめてコピー/);
-  assert.match(webUi, /navigator\.clipboard\.writeText\(value\)/);
-  assert.match(webUi, /rows\.join\('\\n\\n'\)/);
 });

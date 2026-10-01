@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { AttachmentBuilder, Client, GatewayIntentBits, MessageFlags } from 'discord.js';
+import { AttachmentBuilder, Client, GatewayIntentBits } from 'discord.js';
 import {
   AudioPlayerStatus,
   EndBehaviorType,
@@ -30,7 +30,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-resilience-r6-singleton';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-resilience-r5';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -2141,7 +2141,7 @@ async function ensureTalkSysCommands(guild) {
   }
 }
 
-client.once('clientReady', async () => {
+client.once('ready', async () => {
   if (discordReadyWatchdog) {
     clearTimeout(discordReadyWatchdog);
     discordReadyWatchdog = null;
@@ -2184,9 +2184,9 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand() || !interaction.guild) return;
   if (!['talksys', 'logs', 'logdump', 'leave'].includes(interaction.commandName)) return;
 
-  console.log(`[interaction] received id=${interaction.id} command=/${interaction.commandName} guild=${interaction.guild.id} user=${interaction.user.id}`);
+  console.log(`[interaction] received command=/${interaction.commandName} guild=${interaction.guild.id} user=${interaction.user.id}`);
   try {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    await interaction.deferReply({ ephemeral: true });
     console.log(`[interaction] acked command=/${interaction.commandName}`);
   } catch (error) {
     console.error(`[interaction] ack failed command=/${interaction.commandName}:`, error?.stack || error);
@@ -2293,7 +2293,7 @@ discordReadyWatchdog = setTimeout(() => {
 
 process.on('exit', flushPendingLogsOnExit);
 startBridgeMonitors();
-mirrorRuntimeLog('BOOT', `process start pid=${process.pid} node=${process.version}`);
+mirrorRuntimeLog('BOOT', `process start node=${process.version}`);
 mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
 client.login(DISCORD_TOKEN).catch((error) => {
   if (discordReadyWatchdog) clearTimeout(discordReadyWatchdog);
