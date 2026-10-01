@@ -6,7 +6,7 @@ import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 import { persistTalkLog, listTalkLogs, listArchivedTalkLogs, archiveTalkLogs, collapseTalkLogs } from './log-v42.js';
 import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
 
-export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v105-clock-transit-asr-r1';
+export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v106-grounding-recovery-r1';
 export const PERSONALIZATION_REVISION = 'talksys-v87-jst-location-personalization-r1';
 export const TEMPORAL_TRANSIT_REVISION = 'talksys-v56-transit-time-r1';
 export const GENERIC_VERIFICATION_REVISION = 'talksys-v59-evidence-reuse-verify-r1';
