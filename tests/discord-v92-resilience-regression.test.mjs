@@ -15,7 +15,8 @@ test('receiver does not re-subscribe after empty transport end', () => {
 });
 
 test('voice health includes the real voice connection status', () => {
-  assert.match(source, /voice=\$\{connection\?\.state\?\.status \|\| 'none'\}/);
+  assert.match(source, /const voiceStatus = connection\?\.state\?\.status \|\| 'none'/);
+  assert.match(source, /voice=\$\{voiceStatus\}/);
   assert.match(source, /captures=\$\{sessions\.size\}/);
 });
 
