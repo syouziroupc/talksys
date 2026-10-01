@@ -1949,7 +1949,8 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
 
 const TALKSYS_COMMANDS = [
   { name: 'talksys', description: 'TalkSysを現在参加中のVCへ呼び出します' },
-  { name: 'logs', description: 'TalkSysの起動・通話ライブログをこのチャンネルに表示します' },
+  { name: 'logs', description: 'TalkSysのライブログをこのチャンネルに転送します' },
+  { name: 'logdump', description: 'TalkSysのログを1つのテキストファイルで取得します' },
   { name: 'leave', description: 'TalkSysをVCから退出させます' },
 ];
 
@@ -1996,7 +1997,7 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand() || !interaction.guild) return;
-  if (!['talksys', 'logs', 'leave'].includes(interaction.commandName)) return;
+  if (!['talksys', 'logs', 'logdump', 'leave'].includes(interaction.commandName)) return;
 
   console.log(`[interaction] received command=/${interaction.commandName} guild=${interaction.guild.id} user=${interaction.user.id}`);
   try {
@@ -2009,10 +2010,35 @@ client.on('interactionCreate', async (interaction) => {
 
   try {
     if (interaction.commandName === 'logs') {
+      const currentOwner = readPersistedRuntimeLogOwnerId();
+      if (currentOwner && currentOwner !== interaction.user.id) {
+        await interaction.editReply('既存のログ設定者以外は変更できません。');
+        return;
+      }
       const attached = await attachRuntimeLogChannel(interaction.channel);
+      if (attached) persistRuntimeLogOwnerId(interaction.user.id);
       await interaction.editReply(attached
-        ? 'このチャンネルをTalkSys専用ログチャンネルとして保存しました。再起動後もここへ追記します。'
+        ? 'このチャンネルをログ先として保存しました。再起動後も追記します。すべてまとめて取得するには /logdump を実行してください。'
         : 'このチャンネルにはライブログを表示できません。');
+      return;
+    }
+
+    if (interaction.commandName === 'logdump') {
+      const owner = readPersistedRuntimeLogOwnerId();
+      if (!owner) {
+        await interaction.editReply('専用ログチャンネルで一度 /logs を実行してください。');
+        return;
+      }
+      if (owner !== interaction.user.id) {
+        await interaction.editReply('ログ設定者のみ取得できます。');
+        return;
+      }
+      const data = await exportRuntimeLogs();
+      const filename = 'talksys-discord-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt';
+      await interaction.editReply({
+        content: 'ログを1つのテキストファイルにまとめました。ファイルを開けば全選択してコピーできます。',
+        files: [new AttachmentBuilder(data, { name: filename })],
+      });
       return;
     }
 
