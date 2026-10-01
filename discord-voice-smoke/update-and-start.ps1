@@ -83,19 +83,63 @@ try {
 }
 Write-Host "[ok] restart preflight: Discord secrets available"
 
-# Stop only an older TalkSys Discord bridge process from this checkout.
+# Graceful handoff: killing only node.exe causes the old start.ps1 supervisor
+# to respawn its child while a new supervisor starts. The bridge already
+# supports a shutdown-file request and exits 0; its parent then exits 0 too.
 $entry = Join-Path $PSScriptRoot 'src\index.mjs'
 $entryPattern = [regex]::Escape($entry)
-$oldBridges = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
-  Where-Object { $_.CommandLine -and $_.CommandLine -match $entryPattern })
+$supervisorPath = Join-Path $PSScriptRoot 'start.ps1'
+$supervisorPattern = [regex]::Escape($supervisorPath)
+$shutdownFile = Join-Path $env:TEMP 'talksys-discord-shutdown.txt'
 
-foreach ($proc in $oldBridges) {
-  Write-Host "[restart] stopping old Discord bridge pid=$($proc.ProcessId)..."
-  Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+function Get-ExistingBridges {
+  return @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match $entryPattern })
+}
+function Get-ExistingSupervisors {
+  return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.ProcessId -ne $PID -and
+      $_.Name -match '^(?:powershell|pwsh)\.exe
+ -and
+      $_.CommandLine -and
+      $_.CommandLine -match $supervisorPattern
+    })
+}
+
+$oldBridges = @(Get-ExistingBridges)
+$oldSupervisors = @(Get-ExistingSupervisors)
+if ($oldSupervisors.Count -gt 0 -and $oldBridges.Count -eq 0) {
+  throw "[stop] 旧Supervisorが起動中ですが子Botを確認できません。二重起動を防ぐため、旧TalkSysウィンドウを閉じて再実行してください。"
 }
 
 if ($oldBridges.Count -gt 0) {
-  Start-Sleep -Milliseconds 600
+  Write-Host "[restart] requesting graceful shutdown of $($oldBridges.Count) existing bridge(s)..."
+  Set-Content -LiteralPath $shutdownFile -Value "updater-graceful-restart" -NoNewline -Force
+  $deadline = (Get-Date).AddSeconds(15)
+  do {
+    Start-Sleep -Milliseconds 250
+    $remainingBridges = @(Get-ExistingBridges)
+    $remainingSupervisors = @(Get-ExistingSupervisors)
+    if ($remainingBridges.Count -eq 0 -and $remainingSupervisors.Count -eq 0) { break }
+  } while ((Get-Date) -lt $deadline)
+
+  if ($remainingBridges.Count -gt 0 -or $remainingSupervisors.Count -gt 0) {
+    throw "[stop] 旧Bot/Supervisorが正常終了しませんでした。二重起動を避けるため新Botは起動しません。旧TalkSysを手動終了してから再実行してください。"
+  }
+
+  # Guard against a previously invisible interactive supervisor respawning
+  # its Node child after the first shutdown check.
+  Start-Sleep -Seconds 3
+  $remainingBridges = @(Get-ExistingBridges)
+  $remainingSupervisors = @(Get-ExistingSupervisors)
+  if ($remainingBridges.Count -gt 0 -or $remainingSupervisors.Count -gt 0) {
+    throw "[stop] 旧Supervisorの再起動を検出しました。旧TalkSysを終了してから再実行してください。"
+  }
+  if (Test-Path $shutdownFile) {
+    Remove-Item -LiteralPath $shutdownFile -Force -ErrorAction SilentlyContinue
+  }
+  Write-Host "[ok] previous bridge and supervisor fully stopped"
 }
 
 Write-Host "[start] launching Discord voice bridge..."
