@@ -83,7 +83,29 @@ try {
 }
 Write-Host "[ok] restart preflight: Discord secrets available"
 
-# Stop only an older TalkSys Discord bridge process from this checkout.
+# Stop older supervisor shells first. If only the Node child is killed, an old
+# start.ps1 loop can immediately respawn it while this updater launches another
+# supervisor, producing multiple Discord gateway sessions.
+$supervisorScript = Join-Path $PSScriptRoot 'start.ps1'
+$supervisorPattern = [regex]::Escape($supervisorScript)
+$oldSupervisors = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {
+    $_.ProcessId -ne $PID -and
+    $_.Name -match '^(?:powershell|pwsh)\.exe$' -and
+    $_.CommandLine -and
+    $_.CommandLine -match $supervisorPattern
+  })
+
+foreach ($proc in $oldSupervisors) {
+  Write-Host "[restart] stopping old Discord supervisor pid=$($proc.ProcessId)..."
+  Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+}
+
+if ($oldSupervisors.Count -gt 0) {
+  Start-Sleep -Milliseconds 600
+}
+
+# Stop any remaining TalkSys Discord bridge child process from this checkout.
 $entry = Join-Path $PSScriptRoot 'src\index.mjs'
 $entryPattern = [regex]::Escape($entry)
 $oldBridges = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
