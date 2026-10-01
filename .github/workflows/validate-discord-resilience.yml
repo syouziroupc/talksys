@@ -7,6 +7,7 @@ on:
       - discord-voice-smoke/start.ps1
       - src/voice-fast-reaction.js
       - tests/discord-v92-resilience-regression.test.mjs
+      - tests/discord-v92-voice-self-heal.test.mjs
       - .github/workflows/validate-discord-resilience.yml
   workflow_dispatch:
 
@@ -21,4 +22,4 @@ jobs:
       - name: Check Discord entry syntax
         run: node --check discord-voice-smoke/src/index.mjs
       - name: Run focused resilience tests
-        run: node --test tests/discord-v92-resilience-regression.test.mjs
+        run: node --test tests/discord-v92-resilience-regression.test.mjs tests/discord-v92-voice-self-heal.test.mjs
