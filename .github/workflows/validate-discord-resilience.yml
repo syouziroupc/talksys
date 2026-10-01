@@ -1,0 +1,24 @@
+name: Validate Discord bridge resilience
+on:
+  push:
+    branches: [main]
+    paths:
+      - discord-voice-smoke/src/index.mjs
+      - discord-voice-smoke/start.ps1
+      - src/voice-fast-reaction.js
+      - tests/discord-v92-resilience-regression.test.mjs
+      - .github/workflows/validate-discord-resilience.yml
+  workflow_dispatch:
+
+jobs:
+  discord-resilience:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check Discord entry syntax
+        run: node --check discord-voice-smoke/src/index.mjs
+      - name: Run focused resilience tests
+        run: node --test tests/discord-v92-resilience-regression.test.mjs
