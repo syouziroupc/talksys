@@ -331,7 +331,7 @@ jobs:
 
           payload='{"text":"別府市の今日の天気は？","history":[]}'
           out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const rescue=String(d.route||'').startsWith('cloudflare-region-rescue:');if(!d.ok||!(d.route==='gemini-native-interactions'||rescue)||d.search!==true||d.personalizationRevision!=='talksys-v87-jst-location-personalization-r1'||!String(d.answer||'').trim()||(!rescue&&(d.nativeGoogleSearch!==true||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'))||(rescue&&d.generationProvider!=='workers-ai'))throw new Error(process.env.OUT);"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const rescue=String(d.route||'').startsWith('cloudflare-region-rescue:');const groundingRecovery=d.route==='gemini-generate-content-grounding-recovery';if(!d.ok||!(d.route==='gemini-native-interactions'||groundingRecovery||rescue)||d.search!==true||d.personalizationRevision!=='talksys-v87-jst-location-personalization-r1'||!String(d.answer||'').trim()||(!rescue&&(d.nativeGoogleSearch!==true||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'))||(groundingRecovery&&d.generationTransport!=='generateContent')||(rescue&&d.generationProvider!=='workers-ai'))throw new Error(process.env.OUT);"
 
           payload='{"text":"どれがいい？","history":[{"role":"user","content":"大学のレポート用に中古ノートPCを探してる。予算は3万円。"},{"role":"assistant","content":"Officeとブラウザ中心ですね。"}]}'
           out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
