@@ -78,3 +78,13 @@ test('barge-in rescue recalculates terminal greeting/thanks classification', () 
   assert.match(block, /reaction = fastReaction\(realtimeRescue\)/);
   assert.match(block, /if \(reaction\?\.terminal && reaction\?\.shouldSpeak\)/);
 });
+
+
+test('health watchdog keeps 10s recovery checks but rate-limits idle Discord logs', () => {
+  assert.match(source, /const DISCORD_HEALTH_LOG_INTERVAL_MS = 300_000/);
+  assert.match(source, /healthSignature !== lastHealthLogSignature/);
+  assert.match(source, /summaryDue = now - lastHealthLogAt >= DISCORD_HEALTH_LOG_INTERVAL_MS/);
+  assert.match(source, /if \(healthChanged \|\| summaryDue\)/);
+  assert.match(source, /scheduleFullReconnect\(missing \? 'health-missing-connection' : 'health-channel-mismatch'\)/);
+  assert.match(source, /\}, 10_000\);/);
+});
