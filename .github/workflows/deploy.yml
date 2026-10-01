@@ -294,7 +294,9 @@ jobs:
           page="$(curl -fsS --max-time 20 "$PRODUCTION_URL/")"
           grep -F 'talksys-v45-ui-restored-20260911' <<< "$page"
           grep -F '/talk-v45.js' <<< "$page"
-          grep -F '非常用の文字入力' <<< "$page"
+          grep -F 'TalkSys 実験用チャット' <<< "$page"
+          grep -F '会話をまとめてコピー' <<< "$page"
+          grep -F '実験用の文字入力' <<< "$page"
 
           client="$(curl -fsS --max-time 20 "$PRODUCTION_URL/talk-v45.js")"
           grep -F 'talksys-v47-web-stability-freeze-r1' <<< "$client"
