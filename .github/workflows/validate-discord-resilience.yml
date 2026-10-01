@@ -5,6 +5,8 @@ on:
     paths:
       - discord-voice-smoke/src/index.mjs
       - discord-voice-smoke/start.ps1
+      - discord-voice-smoke/update-and-start.ps1
+      - src/ui-v45.js
       - src/voice-fast-reaction.js
       - tests/discord-v92-resilience-regression.test.mjs
       - tests/discord-v92-voice-self-heal.test.mjs
