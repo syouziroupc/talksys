@@ -1831,6 +1831,7 @@ client.once('ready', async () => {
   console.log(`[discord] gateway ready user=${client.user?.tag || client.user?.id || 'unknown'} ping=${client.ws.ping}ms`);
   mirrorRuntimeLog('VERSION', DISCORD_BRIDGE_REVISION);
   mirrorRuntimeLog('GATEWAY', `ready ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
+  await restoreRuntimeLogChannel();
   try {
     const guilds = [...client.guilds.cache.values()];
     if (!guilds.length) throw new Error('Discord Botがサーバーに参加していません');
@@ -1870,7 +1871,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.commandName === 'talksys') {
-      await attachRuntimeLogChannel(interaction.channel);
+      if (!runtimeLogChannel) await attachRuntimeLogChannel(interaction.channel, { persist: false });
       mirrorRuntimeLog('CMD', `/talksys by ${interaction.user.tag || interaction.user.id}`);
       const voiceState = interaction.guild.voiceStates.cache.get(interaction.user.id);
       const channelId = voiceState?.channelId;
