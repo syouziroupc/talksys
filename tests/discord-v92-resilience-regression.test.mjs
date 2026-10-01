@@ -80,11 +80,13 @@ test('barge-in rescue recalculates terminal greeting/thanks classification', () 
 });
 
 
-test('health watchdog keeps 10s recovery checks but rate-limits idle Discord logs', () => {
-  assert.match(source, /const DISCORD_HEALTH_LOG_INTERVAL_MS = 300_000/);
+test('health watchdog keeps 10s recovery checks but logs only connection-state changes', () => {
   assert.match(source, /healthSignature !== lastHealthLogSignature/);
-  assert.match(source, /summaryDue = now - lastHealthLogAt >= DISCORD_HEALTH_LOG_INTERVAL_MS/);
-  assert.match(source, /if \(healthChanged \|\| summaryDue\)/);
+  assert.match(source, /voiceStatus,[\s\S]*voiceChannel,[\s\S]*desiredChannel/);
+  assert.doesNotMatch(source, /DISCORD_HEALTH_LOG_INTERVAL_MS/);
+  assert.doesNotMatch(source, /summaryDue/);
+  assert.doesNotMatch(source, /healthSignature = \[[\s\S]{0,220}answering/);
+  assert.match(source, /if \(healthChanged\)/);
   assert.match(source, /scheduleFullReconnect\(missing \? 'health-missing-connection' : 'health-channel-mismatch'\)/);
   assert.match(source, /\}, 10_000\);/);
 });
