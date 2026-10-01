@@ -1333,10 +1333,16 @@ async function playMp3(mp3, options = {}) {
     player.once('error', fail);
   });
 
-  const startedInfo = await playbackStartedPromise;
-  await completionPromise;
-  if (ffmpegError.trim()) console.log('[ffmpeg]', ffmpegError.trim());
-  return startedInfo;
+  const watchId = `playback:${randomUUID()}`;
+  beginWatchStage(watchId, 'playback', 40_000);
+  try {
+    const startedInfo = await playbackStartedPromise;
+    await completionPromise;
+    if (ffmpegError.trim()) console.log('[ffmpeg]', ffmpegError.trim());
+    return startedInfo;
+  } finally {
+    endWatchStage(watchId);
+  }
 }
 
 async function processConfirmedTranscript({ confirmedTranscript, rawTranscript = '', correctedTranscript = '', correctionReason = '', fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
@@ -1439,7 +1445,9 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     if (!timeline.fastReactionRequestedAt) {
       activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, fastReaction);
     }
-    const turn = await talk(confirmedTranscript, utteranceId, controller.signal);
+    beginWatchStage(`turn:${utteranceId}`, 'turn', 50_000);
+    const turn = await talk(confirmedTranscript, utteranceId, controller.signal)
+      .finally(() => endWatchStage(`turn:${utteranceId}`));
     timeline.finalAnswerAt = Date.now();
     timings.primaryMs = Number(turn?.timings?.primaryMs) || 0;
     timings.verifierMs = Number(turn?.timings?.verifierMs) || 0;
@@ -1457,7 +1465,9 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     player.stop(true);
 
     timeline.ttsStartAt = Date.now();
-    const tts = await synthesize(turn.answer, controller.signal, { utteranceId, purpose: 'answer' });
+    beginWatchStage(`tts:${utteranceId}`, 'tts', 30_000);
+    const tts = await synthesize(turn.answer, controller.signal, { utteranceId, purpose: 'answer' })
+      .finally(() => endWatchStage(`tts:${utteranceId}`));
     timeline.ttsEndAt = Date.now();
     timings.firstTtsMs = tts.elapsedMs;
     timings.firstAudioReadyMs = Math.max(0, timeline.ttsEndAt - pipelineStarted);
@@ -1528,7 +1538,9 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
 
   const controller = new AbortController();
   try {
-    const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal);
+    beginWatchStage(`stt:${utteranceId}`, 'stt', 45_000);
+    const stt = await transcribeCapturedUtterance(pcm, utteranceId, timeline, controller.signal)
+      .finally(() => endWatchStage(`stt:${utteranceId}`));
     let rawTranscript = stt.confirmedTranscript;
     const correction = correctLowConfidenceTranscript(rawTranscript, captureMetrics, history);
     let correctedTranscript = correction.correctedTranscript || rawTranscript;
