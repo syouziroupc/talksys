@@ -1579,9 +1579,12 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     timeline.utteranceEndAt = endedAt;
     cleanup();
 
-    queueMicrotask(() => {
-      if (sessionEpoch === voiceEpoch && connection) startReceiverSession(userId, false);
-    });
+    // Re-subscribe only on the next speaking.start event.
+    // Re-subscribing an empty ended stream here can loop without incoming PCM.
+    if (!pcm.length) {
+      if (speakingMarked) mirrorRuntimeLog('CAPTURE-SKIP', `no PCM reason=${reason} user=${userId}`);
+      return;
+    }
 
     const realtimeActive = realtimeHelper?.active?.utteranceId === utteranceId ? realtimeHelper.active : null;
     const realtimeTranscript = realtimeActive ? String(realtimeActive.latestRealtimeTranscript || '') : '';
