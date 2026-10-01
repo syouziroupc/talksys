@@ -40,10 +40,10 @@ export function fastReaction(text = '') {
       : /^こんばんは/i.test(value) ? 'こんばんは。'
       : /^もしもし/i.test(value) ? 'はい、フォーンズです。'
       : 'こんにちは。';
-    return { kind: 'greeting', text: reply, shouldSpeak: true, terminal: false };
+    return { kind: 'greeting', text: reply, shouldSpeak: true, terminal: true };
   }
   if (PURE_THANKS_RE.test(value)) {
-    return { kind: 'thanks', text: 'どういたしまして。', shouldSpeak: true, terminal: false };
+    return { kind: 'thanks', text: 'どういたしまして。', shouldSpeak: true, terminal: true };
   }
   if (SEARCHISH_RE.test(value)) {
     const text = LOOKUP_REACTIONS[stableVariantIndex(value, LOOKUP_REACTIONS.length)];
