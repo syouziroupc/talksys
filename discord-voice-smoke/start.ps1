@@ -106,6 +106,7 @@ while ($true) {
   Write-Host "[supervisor] starting Discord bridge process..."
   $proc = Start-Process -FilePath 'node.exe' -ArgumentList @($entry) -PassThru -NoNewWindow
   $hung = $false
+  $heartbeatSeen = $false
 
   while (-not $proc.HasExited) {
     Start-Sleep -Seconds 5
@@ -114,6 +115,7 @@ while ($true) {
 
     $ageSeconds = $null
     if (Test-Path $heartbeatFile) {
+      $heartbeatSeen = $true
       try {
         $heartbeat = Get-Content -LiteralPath $heartbeatFile -Raw | ConvertFrom-Json
         $heartbeatAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$heartbeat.at).LocalDateTime
@@ -136,7 +138,7 @@ while ($true) {
           break
         }
       } catch {}
-    } elseif (((Get-Date) - $startedAt).TotalSeconds -gt 20) {
+    } elseif ($heartbeatSeen) {
       $ageSeconds = 999
     }
 
