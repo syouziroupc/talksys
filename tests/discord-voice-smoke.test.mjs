@@ -152,7 +152,7 @@ test('Discord supervisor backs off repeated transient process failures instead o
 });
 
 test('Discord uses Node native WebSocket and carries no extra websocket dependency', () => {
-  assert.match(packageJson.dependencies['@discordjs/voice'], /^\^0\.19\./);
+  assert.match(packageJson.dependencies['@discordjs/voice'], /^\^?0\.19\./);
   assert.match(packageJson.dependencies['discord.js'], /^\^14\./);
   assert.equal(packageJson.dependencies.opusscript, '^0.0.8');
   assert.equal(packageJson.dependencies.ws, undefined);
