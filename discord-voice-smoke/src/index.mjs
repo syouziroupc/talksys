@@ -30,7 +30,7 @@ for (const key of required) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
-const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-resilience-r4';
+const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-resilience-r5';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -119,6 +119,10 @@ let voiceRecoveryInFlight = false;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
+let desiredVoiceTarget = null;
+let fullReconnectTimer = null;
+let fullReconnectInFlight = false;
+let consecutivePipelineFailures = 0;
 const bridgeHeartbeatFile = process.env.TALKSYS_BRIDGE_HEARTBEAT_FILE || '';
 const bridgeShutdownFile = process.env.TALKSYS_BRIDGE_SHUTDOWN_FILE || '';
 const activeWatchStages = new Map();
@@ -1873,7 +1877,12 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
   if (!speakingMarked) console.log(`[capture] prearmed user=${userId}`);
 }
 
-function destroyVoiceConnection() {
+function destroyVoiceConnection({ clearIntent = false } = {}) {
+  if (clearIntent) desiredVoiceTarget = null;
+  if (fullReconnectTimer) {
+    clearTimeout(fullReconnectTimer);
+    fullReconnectTimer = null;
+  }
   voiceEpoch += 1;
   resetConversationState();
   for (const session of sessions.values()) {
@@ -1948,7 +1957,38 @@ async function createReadyVoiceConnection(channel) {
   throw lastError || new Error('voice_ready_failed');
 }
 
-async function connectToVoiceChannel(channel, initialUserId = '') {
+async function forceReconnectDesiredVoice(reason = 'voice-self-heal') {
+  if (!desiredVoiceTarget || fullReconnectInFlight || bridgeShuttingDown) return false;
+  fullReconnectInFlight = true;
+  const target = { ...desiredVoiceTarget };
+  try {
+    mirrorRuntimeLog('VOICE-RESET', `full reconnect reason=${reason} guild=${target.guildId} channel=${target.channelId}`);
+    const guild = client.guilds.cache.get(target.guildId) || await client.guilds.fetch(target.guildId);
+    const channel = await guild.channels.fetch(target.channelId);
+    if (!channel?.isVoiceBased?.()) throw new Error('desired_voice_channel_unavailable');
+    await connectToVoiceChannel(channel, target.initialUserId, { suppressGreeting: true });
+    mirrorRuntimeLog('VOICE-RESET', 'full reconnect recovered');
+    return true;
+  } catch (error) {
+    mirrorRuntimeLog('VOICE-RESET', `full reconnect failed: ${error?.message || error}`);
+    return false;
+  } finally {
+    fullReconnectInFlight = false;
+  }
+}
+
+function scheduleFullReconnect(reason = 'voice-reset', delayMs = 1200) {
+  if (!desiredVoiceTarget || fullReconnectTimer || fullReconnectInFlight || bridgeShuttingDown) return;
+  fullReconnectTimer = setTimeout(async () => {
+    fullReconnectTimer = null;
+    const ok = await forceReconnectDesiredVoice(reason);
+    if (!ok && desiredVoiceTarget && !bridgeShuttingDown) {
+      scheduleFullReconnect('retry-' + reason, Math.min(30_000, Math.max(2000, delayMs * 2)));
+    }
+  }, delayMs);
+}
+
+async function connectToVoiceChannel(channel, initialUserId = '', options = {}) {
   if (!channel || !channel.isVoiceBased()) throw new Error('target channel is not voice based');
   if (connection
       && connection.joinConfig?.channelId === channel.id
@@ -1956,6 +1996,11 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
     mirrorRuntimeLog('VOICE', `already connected channel=${channel.name}; duplicate greeting skipped`);
     return channel;
   }
+  desiredVoiceTarget = {
+    guildId: channel.guild.id,
+    channelId: channel.id,
+    initialUserId: String(initialUserId || desiredVoiceTarget?.initialUserId || ''),
+  };
   destroyVoiceConnection();
 
   connection = await createReadyVoiceConnection(channel);
@@ -2036,12 +2081,14 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
     if (newState.status === VoiceConnectionStatus.Destroyed) {
       if (voiceStallTimer) clearTimeout(voiceStallTimer);
       voiceStallTimer = null;
+      scheduleFullReconnect('destroyed');
       return;
     }
     if (noRejoinClose()) {
-      mirrorRuntimeLog('VOICE-ERROR', `server rejected auto-rejoin closeCode=${code} reason=${reason}`);
+      mirrorRuntimeLog('VOICE-ERROR', `server rejected rejoin closeCode=${code} reason=${reason}; creating fresh connection`);
       if (voiceStallTimer) clearTimeout(voiceStallTimer);
       voiceStallTimer = null;
+      scheduleFullReconnect('non-rejoin-close-' + code);
       return;
     }
     if (newState.status === VoiceConnectionStatus.Disconnected) {
@@ -2072,7 +2119,7 @@ async function connectToVoiceChannel(channel, initialUserId = '') {
   mirrorRuntimeLog('VOICE', `ready channel=${channel.name}`);
   mirrorRuntimeLog('ARCH', 'Nova helper is reaction-only; Whisper remains authoritative');
   console.log('[discord] bridge revision:', DISCORD_BRIDGE_REVISION);
-  await playConnectionGreeting();
+  if (!options?.suppressGreeting) await playConnectionGreeting();
   warmFastReactionAudio().catch((error) => console.warn('[fast-reaction] warmup failed:', error?.message || error));
   warmRecoveryAudio().catch((error) => console.warn('[recovery] warmup failed:', error?.message || error));
   return channel;
@@ -2101,9 +2148,16 @@ client.once('ready', async () => {
   }
   if (discordHealthTimer) clearInterval(discordHealthTimer);
   discordHealthTimer = setInterval(() => {
+    const voiceStatus = connection?.state?.status || 'none';
+    const voiceChannel = connection?.joinConfig?.channelId || '-';
     console.log(`[discord] gateway health ready=${client.isReady()} ping=${client.ws.ping}ms guilds=${client.guilds.cache.size}`);
-    if (runtimeLogChannel) mirrorRuntimeLog('HEALTH', `gateway=${client.isReady()} ping=${client.ws.ping}ms voice=${connection?.state?.status || 'none'} channel=${connection?.joinConfig?.channelId || '-'} captures=${sessions.size} answering=${answering} queued=${pendingTurns.length} logPending=${discordLogQueue.length}`);
-  }, DISCORD_HEALTH_LOG_MS);
+    if (runtimeLogChannel) mirrorRuntimeLog('HEALTH', `gateway=${client.isReady()} ping=${client.ws.ping}ms voice=${voiceStatus} channel=${voiceChannel} captures=${sessions.size} answering=${answering} queued=${pendingTurns.length} logPending=${discordLogQueue.length} desired=${desiredVoiceTarget?.channelId || '-'}`);
+    if (desiredVoiceTarget && client.isReady()) {
+      const missing = !connection || voiceStatus === VoiceConnectionStatus.Destroyed;
+      const wrongChannel = connection && voiceChannel !== desiredVoiceTarget.channelId;
+      if (missing || wrongChannel) scheduleFullReconnect(missing ? 'health-missing-connection' : 'health-channel-mismatch');
+    }
+  }, 10_000);
 
   console.log(`[discord] bridge revision=${DISCORD_BRIDGE_REVISION}`);
   console.log(`[discord] gateway ready user=${client.user?.tag || client.user?.id || 'unknown'} ping=${client.ws.ping}ms`);
@@ -2189,7 +2243,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     mirrorRuntimeLog('CMD', '/leave');
-    destroyVoiceConnection();
+    destroyVoiceConnection({ clearIntent: true });
     await interaction.editReply('TalkSysをボイスチャンネルから退出させました。');
   } catch (error) {
     console.error('[command]', error?.stack || error);
