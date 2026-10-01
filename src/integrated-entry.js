@@ -1022,15 +1022,64 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   }
   let interactionsRegionFallback = Boolean(interaction?.regionFallback);
   const primaryMs = Date.now() - primaryStarted;
-  const citationCount = interactionCitationCount(interaction.payload);
   const groundingRequired = requiresGroundedEvidence(text);
-  const groundingSourceCount = interactionSources(interaction.payload).length;
-  const groundingSearchPerformed = searchedInInteraction(interaction.payload);
-  const groundingFailClosed = groundingRequired && !groundingSearchPerformed;
+  let citationCount = interactionCitationCount(interaction.payload);
+  let groundingSourceCount = interactionSources(interaction.payload).length;
+  let groundingSearchPerformed = searchedInInteraction(interaction.payload);
+  let groundingFailClosed = groundingRequired && !groundingSearchPerformed;
+  let groundingRecoveryUsed = false;
+  let searchRetried = false;
+  let searchRetryMs = 0;
+
+  // Gemini Interactions can occasionally return a normal model answer without
+  // executing the requested google_search tool. For dynamic facts, retry only
+  // that failed grounding case through Gemini generateContent + google_search.
+  // This keeps the normal one-pass path unchanged and prevents the fixed
+  // "no evidence" sentence from replacing an answer before a real search retry.
+  if (groundingFailClosed) {
+    const retryStarted = Date.now();
+    searchRetried = true;
+    try {
+      const recovery = await createGeminiGenerateContentFallback(
+        env,
+        { ...body, previousInteractionId: '' },
+        signal,
+        { forceSearch: true, now, immediateTransit },
+      );
+      searchRetryMs = Date.now() - retryStarted;
+      const recoverySearched = searchedInInteraction(recovery.payload);
+      emitLatencyLog('gemini-grounding-recovery', body, {
+        durationMs: searchRetryMs,
+        model: GEMINI_MODEL,
+        searched: recoverySearched,
+        sourceCount: interactionSources(recovery.payload).length,
+        transport: 'generateContent',
+      }, recoverySearched ? 'log' : 'warn');
+      if (recoverySearched) {
+        interaction = {
+          ...recovery,
+          fallbackReason: 'missing-google-search-recovered',
+        };
+        groundingRecoveryUsed = true;
+        citationCount = interactionCitationCount(interaction.payload);
+        groundingSourceCount = interactionSources(interaction.payload).length;
+        groundingSearchPerformed = true;
+        groundingFailClosed = false;
+      }
+    } catch (error) {
+      searchRetryMs = Date.now() - retryStarted;
+      emitLatencyLog('gemini-grounding-recovery-failed', body, {
+        durationMs: searchRetryMs,
+        model: GEMINI_MODEL,
+        error: compact(error?.message || error, 500),
+      }, 'warn');
+    }
+  }
+
   if (groundingFailClosed) {
     interaction = {
       ...interaction,
-      answer: 'この質問は現在情報の確認が必要ですが、検索結果から根拠を取得できませんでした。推測では答えず、確認できない点だけを未確認として扱います。',
+      answer: 'この質問は現在情報の確認が必要ですが、Google検索を再試行しても根拠を取得できませんでした。確認できない内容は推測で補いません。',
     };
   }
   emitLatencyLog('gemini-primary-complete', body, {
@@ -1040,12 +1089,9 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     citationCount,
     groundingRequired,
     groundingFailClosed,
+    searchRetried,
+    searchRetryMs,
   });
-
-  // Kept in the response contract for telemetry compatibility. The normal
-  // answer path no longer performs a separate primary search retry.
-  let searchRetried = false;
-  let searchRetryMs = 0;
 
   const primaryInteraction = interaction;
   const genericVerificationAttempted = false;
@@ -1119,8 +1165,12 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   return {
     ok: true,
     answer,
-    route: interactionsRegionFallback ? 'gemini-generate-content-region-fallback' : 'gemini-native-interactions',
-    planner: interactionsRegionFallback ? 'gemini-generate-content-region-fallback-v96' : 'gemini-native-personalized-v55',
+    route: groundingRecoveryUsed
+      ? 'gemini-generate-content-grounding-recovery'
+      : (interactionsRegionFallback ? 'gemini-generate-content-region-fallback' : 'gemini-native-interactions'),
+    planner: groundingRecoveryUsed
+      ? 'gemini-grounding-recovery-v84'
+      : (interactionsRegionFallback ? 'gemini-generate-content-region-fallback-v96' : 'gemini-native-personalized-v55'),
     search: searched,
     searchUseful: searched,
     searchPolicy: 'aggressive-native-google-search',
@@ -1143,12 +1193,15 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     queries,
     sources,
     apiSources: [],
-    interactionId: interactionsRegionFallback ? '' : compact(interaction.payload?.id, 400),
-    interactionStatus: compact(interaction.payload?.status || (interactionsRegionFallback ? 'completed' : ''), 80),
-    interactionReset: interactionsRegionFallback,
+    interactionId: (interactionsRegionFallback || groundingRecoveryUsed) ? '' : compact(interaction.payload?.id, 400),
+    interactionStatus: compact(interaction.payload?.status || ((interactionsRegionFallback || groundingRecoveryUsed) ? 'completed' : ''), 80),
+    interactionReset: interactionsRegionFallback || groundingRecoveryUsed,
     interactionsRegionFallback,
-    generationTransport: interactionsRegionFallback ? 'generateContent' : 'interactions',
-    fallbackReason: interactionsRegionFallback ? 'interactions-region-unavailable' : '',
+    groundingRecoveryUsed,
+    generationTransport: (interactionsRegionFallback || groundingRecoveryUsed) ? 'generateContent' : 'interactions',
+    fallbackReason: groundingRecoveryUsed
+      ? 'missing-google-search-recovered'
+      : (interactionsRegionFallback ? 'interactions-region-unavailable' : ''),
     model: GEMINI_MODEL,
     generationProvider: 'gemini',
     generationModel: GEMINI_MODEL,
