@@ -302,6 +302,21 @@ function shouldDropUncorroboratedBotOverlap(text, captureMetrics = {}, policy = 
   return Boolean(realtime) && !sameUtterance(confirmed, realtime);
 }
 
+function rescueBargeInTranscriptFromRealtime(confirmedText, captureMetrics = {}, timeline = {}) {
+  if (!captureMetrics?.overlappedBotPlayback) return '';
+  const confirmed = String(confirmedText || '').trim();
+  const realtime = String(captureMetrics?.realtimeTranscript || '').trim();
+  if (!confirmed || !realtime || sameUtterance(confirmed, realtime)) return '';
+  const bargeTriggered = Number(captureMetrics?.bargeInTriggerMs || timeline?.bargeInTriggerMs || 0) > 0;
+  if (!bargeTriggered) return '';
+  if (normalizeSttToken(confirmed).length > BOT_OVERLAP_SHORT_TEXT_MAX) return '';
+  if (normalizeSttToken(realtime).length < 6) return '';
+  if (looksLikeRecentBotEcho(realtime, timeline)) return '';
+  const realtimePolicy = classifyVoiceTurn(realtime, { answerInFlight: false });
+  if (realtimePolicy.action !== 'answer') return '';
+  return realtime;
+}
+
 function sanitizeLogText(value = '') {
   return String(value || '')
     .replace(/("?(?:token|authorization|discord_token|discord_bridge_token)"?\s*[:=]\s*")([^"]+)(")/gi, '$1[redacted]$3')
@@ -1154,6 +1169,14 @@ async function playMp3(mp3, options = {}) {
 async function processConfirmedTranscript({ confirmedTranscript, rawTranscript = '', correctedTranscript = '', correctionReason = '', fastReaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta }) {
   if (!confirmedTranscript || sessionEpoch !== voiceEpoch) return;
 
+  const realtimeRescue = rescueBargeInTranscriptFromRealtime(confirmedTranscript, captureMetrics, timeline);
+  if (realtimeRescue) {
+    mirrorRuntimeLog('STT-RESCUE', `barge-in realtime replaced short Whisper: "${confirmedTranscript}" -> "${realtimeRescue}"`);
+    correctedTranscript = realtimeRescue;
+    confirmedTranscript = realtimeRescue;
+    correctionReason = [correctionReason, 'barge-in-realtime-rescue'].filter(Boolean).join(';');
+  }
+
   const recentDuplicate = looksLikeRecentUserDuplicate(confirmedTranscript, userId, timeline);
   if (recentDuplicate) {
     console.warn(`[dedupe] suppressed adjacent completed duplicate utterance=${utteranceId}: ${confirmedTranscript}`);
@@ -1182,6 +1205,14 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     interruptActiveAnswer('explicit-user-stop');
     pendingTurns.splice(0, pendingTurns.length);
     mirrorRuntimeLog('INTERRUPT', `explicit stop: ${confirmedTranscript}`);
+    return;
+  }
+  if (fastReaction?.terminal && fastReaction?.shouldSpeak) {
+    if (!timeline.fastReactionRequestedAt) {
+      playWebFastReaction(fastReaction, utteranceId, sessionEpoch, timeline, confirmedTranscript);
+    }
+    rememberAcceptedUserTurn(confirmedTranscript, userId, timeline);
+    mirrorRuntimeLog('TERMINAL', `${fastReaction.kind}: ${confirmedTranscript}`);
     return;
   }
   if (shouldDropUncorroboratedBotOverlap(confirmedTranscript, captureMetrics, policy)) {
