@@ -17,7 +17,7 @@ import {
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY, pcm16Level } from '../../src/voice-capture-policy.js';
-import { fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure } from '../../src/voice-fast-reaction.js';
+import { fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure, FAST_REACTION_STATIC_TEXTS } from '../../src/voice-fast-reaction.js';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -342,6 +342,29 @@ function correctLowConfidenceTranscript(rawTranscript, captureMetrics = {}, rece
   }
   return { rawTranscript: raw, correctedTranscript: corrected, correctionReason: [...new Set(reasons)].join(';') };
 }
+
+function realtimeSpeechAlternatives(confirmedTranscript, captureMetrics = {}, recentHistory = []) {
+  const confirmed = String(confirmedTranscript || '').trim();
+  const realtime = String(captureMetrics?.realtimeTranscript || '').trim();
+  if (!confirmed || !realtime) return [];
+
+  const priorUsers = recentHistory
+    .filter((item) => item?.role === 'user')
+    .slice(-4)
+    .map((item) => String(item?.content || '').trim())
+    .filter(Boolean);
+
+  const segments = realtime.split(/[。！？!?]+/).map((part) => part.trim()).filter(Boolean);
+  const kept = segments.filter((segment) => !priorUsers.some((prior) => sameUtterance(segment, prior)));
+  const candidate = (kept.length ? kept.join('。') : realtime).trim();
+  const confirmedNorm = normalizeSttToken(confirmed);
+  const candidateNorm = normalizeSttToken(candidate);
+
+  if (!candidateNorm || candidateNorm === confirmedNorm) return [];
+  if (sameUtterance(candidate, confirmed) && candidateNorm.length <= confirmedNorm.length + 5) return [];
+  if (candidateNorm.length < 6) return [];
+  return [candidate];
+}
 function maybeTriggerConfirmedBargeIn(active, transcript = '') {
   if (!active?.bargeInArmed || active.bargeInTriggered || !active.startedDuringBotPlayback) return false;
   const value = String(transcript || active.latestRealtimeTranscript || '').trim();
@@ -656,8 +679,7 @@ async function cachedReactionAudio(text, signal) {
 }
 
 async function warmFastReactionAudio() {
-  const samples = ['こんにちは', 'ありがとう', '今日の天気を教えて', 'これを調べて', '何時？', 'この内容について詳しく相談したいです'];
-  const texts = [...new Set(samples.map((sample) => fastReaction(sample)).filter((r) => r?.shouldSpeak && r?.text).map((r) => r.text))];
+  const texts = [...new Set(FAST_REACTION_STATIC_TEXTS.map((text) => String(text || '').trim()).filter(Boolean))];
   await Promise.allSettled(texts.map((text) => cachedReactionAudio(text)));
   mirrorRuntimeLog('READY', `fast-reaction cache=${fastReactionAudioCache.size}`);
 }
@@ -1090,7 +1112,7 @@ function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
   };
 }
 
-async function talk(text, utteranceId = '', signal) {
+async function talk(text, utteranceId = '', signal, speechAlternatives = []) {
   const started = Date.now();
   console.log('[turn] user:', text);
   mirrorRuntimeLog('TURN', `user: ${text}`);
@@ -1101,6 +1123,7 @@ async function talk(text, utteranceId = '', signal) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       text,
+      speechAlternatives: Array.isArray(speechAlternatives) ? speechAlternatives.slice(0, 3) : [],
       history: previous,
       searchTrace,
       sessionId: discordSessionId || `discord-${randomUUID()}`,
@@ -1116,7 +1139,9 @@ async function talk(text, utteranceId = '', signal) {
   if (!body?.ok || !body?.answer) {
     throw new Error(body?.detail || body?.error || 'turn_empty_answer');
   }
-  if (body.interactionId) previousInteractionId = body.interactionId;
+  if (body.interactionReset) previousInteractionId = '';
+  else if (body.interactionId) previousInteractionId = body.interactionId;
+  mirrorRuntimeLog('TURN-META', `route=${body?.route || '-'} search=${body?.search ? 1 : 0} reset=${body?.interactionReset ? 1 : 0} groundingRecovery=${body?.groundingRecoveryUsed ? 1 : 0} transport=${body?.generationTransport || '-'}`);
   if (body.search) {
     searchTrace = {
       resolvedQuestion: body.resolvedQuestion || text,
@@ -1519,8 +1544,12 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     if (!timeline.fastReactionRequestedAt) {
       activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, reaction);
     }
+    const speechAlternatives = realtimeSpeechAlternatives(confirmedTranscript, captureMetrics, history);
+    if (speechAlternatives.length) {
+      mirrorRuntimeLog('STT-ALT', `Whisper="${confirmedTranscript}" Nova="${speechAlternatives[0]}"`);
+    }
     beginWatchStage(`turn:${utteranceId}`, 'turn', 50_000);
-    const turn = await talk(confirmedTranscript, utteranceId, controller.signal)
+    const turn = await talk(confirmedTranscript, utteranceId, controller.signal, speechAlternatives)
       .finally(() => endWatchStage(`turn:${utteranceId}`));
     timeline.finalAnswerAt = Date.now();
     timings.primaryMs = Number(turn?.timings?.primaryMs) || 0;
