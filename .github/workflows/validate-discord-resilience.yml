@@ -8,6 +8,7 @@ on:
       - discord-voice-smoke/update-and-start.ps1
       - tests/discord-update-launcher-v69.test.mjs
       - src/voice-fast-reaction.js
+      - src/integrated-entry.js
       - tests/discord-v92-resilience-regression.test.mjs
       - tests/discord-v92-voice-self-heal.test.mjs
       - .github/workflows/validate-discord-resilience.yml
