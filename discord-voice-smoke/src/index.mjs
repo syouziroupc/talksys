@@ -869,6 +869,20 @@ function boundedSignal(parentSignal, timeoutMs) {
   return parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
 }
 
+async function promiseWithTimeout(promise, timeoutMs, label = 'operation_timeout') {
+  let timer = null;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function fetchWithBudget(url, init = {}, { timeoutMs = 15000, label = 'request' } = {}) {
   const startedAt = Date.now();
   const signal = boundedSignal(init.signal, timeoutMs);
@@ -2011,8 +2025,10 @@ async function forceReconnectDesiredVoice(reason = 'voice-self-heal') {
   const target = { ...desiredVoiceTarget };
   try {
     mirrorRuntimeLog('VOICE-RESET', `full reconnect reason=${reason} guild=${target.guildId} channel=${target.channelId}`);
-    const guild = client.guilds.cache.get(target.guildId) || await client.guilds.fetch(target.guildId);
-    const channel = await guild.channels.fetch(target.channelId);
+    const channel = await promiseWithTimeout((async () => {
+      const guild = client.guilds.cache.get(target.guildId) || await client.guilds.fetch(target.guildId);
+      return guild.channels.cache.get(target.channelId) || await guild.channels.fetch(target.channelId);
+    })(), VOICE_REJOIN_TIMEOUT_MS, 'voice_reconnect_target_resolve_timeout');
     if (!channel?.isVoiceBased?.()) throw new Error('desired_voice_channel_unavailable');
     await connectToVoiceChannel(channel, target.initialUserId, { suppressGreeting: true });
     mirrorRuntimeLog('VOICE-RESET', 'full reconnect recovered');
