@@ -390,6 +390,12 @@ export function resolvedUserQuestion(body = {}) {
   return compact(fragments.join(' '), 8000);
 }
 
+export function searchRoutingQuestion(body = {}) {
+  const raw = compact(body?.text, 4000);
+  const anchored = resolveAmbiguousFollowupText(body);
+  return anchored !== raw ? raw : resolvedUserQuestion(body);
+}
+
 function interactionInput(body = {}, { forceSearch = false, immediateTransit = false, now = new Date() } = {}) {
   const text = resolveAmbiguousFollowupText(body);
   if (!text) throw new Error('empty_user_input');
@@ -1025,7 +1031,8 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   if (locationClarification) return locationClarification;
 
   const immediateTransit = isImmediateTransitQuestion(text);
-  const externalFactSearch = shouldStronglyPreferSearch(text) || shouldContinueExternalSearch(text, body);
+  const searchText = searchRoutingQuestion(body);
+  const externalFactSearch = shouldStronglyPreferSearch(searchText) || shouldContinueExternalSearch(searchText, body);
   const primaryStarted = Date.now();
   // v84 quality fix: only external-fact turns force Google Search.
   // Casual conversation and context-dependent follow-ups stay in one conversational Gemini turn.
