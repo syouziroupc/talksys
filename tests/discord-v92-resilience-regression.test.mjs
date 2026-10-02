@@ -116,3 +116,13 @@ test('receiver close clears stale TalkSys sessions immediately', () => {
   assert.match(source, /finalize\('discord-transport-close'\)/);
   assert.match(source, /sessions\.delete\(userId\)/);
 });
+
+
+test('full voice reconnect cannot hang forever resolving Discord targets', () => {
+  assert.match(source, /async function promiseWithTimeout/);
+  assert.match(source, /voice_reconnect_target_resolve_timeout/);
+  assert.match(source, /client\.guilds\.cache\.get\(target\.guildId\)/);
+  assert.match(source, /guild\.channels\.cache\.get\(target\.channelId\)/);
+  assert.match(source, /VOICE_REJOIN_TIMEOUT_MS/);
+  assert.match(source, /finally \{[\s\S]*fullReconnectInFlight = false/);
+});
