@@ -10,6 +10,7 @@ import {
 import {
   fastReaction,
   FAST_REACTION_STATIC_TEXTS,
+  realtimeSpeechAlternatives,
 } from '../src/voice-fast-reaction.js';
 
 const discordSource = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
@@ -56,10 +57,49 @@ test('Discord clears stale Gemini interaction IDs on reset responses', () => {
 
 test('Discord sends Nova only as a secondary speech alternative', () => {
   assert.match(discordSource, /speechAlternatives: Array\.isArray\(speechAlternatives\)/);
-  assert.match(discordSource, /function realtimeSpeechAlternatives/);
-  assert.match(discordSource, /priorUsers[\s\S]*slice\(-4\)/);
+  assert.match(discordSource, /realtimeSpeechAlternatives\(/);
   assert.match(discordSource, /STT-ALT/);
   assert.match(discordSource, /talk\(confirmedTranscript, utteranceId, controller\.signal, speechAlternatives\)/);
+});
+
+test('Nova alternative selector drops prior-turn carryover and fails safe on cumulative text', () => {
+  assert.deepEqual(
+    realtimeSpeechAlternatives(
+      '今何時ですか?',
+      'こんばんは。今何時ですか。',
+      ['こんばんは。'],
+    ),
+    [],
+  );
+
+  assert.deepEqual(
+    realtimeSpeechAlternatives(
+      'おすすめのお店を教えてください。',
+      '予算は3万円ぐらい。ネットで買いたい。おすすめのお店を教えてください。',
+      ['予算は3万円ぐらい。ネットで買いたい。'],
+    ),
+    ['おすすめのお店を教えてください'],
+  );
+
+  assert.deepEqual(
+    realtimeSpeechAlternatives(
+      '元マチバルについて教えて。',
+      '元町バルというお店について詳しく教えて。',
+      [],
+    ),
+    ['元町バルというお店について詳しく教えて'],
+  );
+});
+
+test('Nova alternative selector does not force uncertain punctuation-free carryover into Gemini', () => {
+  assert.deepEqual(
+    realtimeSpeechAlternatives(
+      '今何時ですか?',
+      'こんばんは今何時ですか',
+      ['こんばんは。'],
+    ),
+    [],
+  );
 });
 
 test('all static fast-reaction outputs are eligible for startup warming', () => {
