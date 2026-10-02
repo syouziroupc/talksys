@@ -86,6 +86,7 @@ let activeWaitCue = null;
 let activeFastReaction = null;
 let preAnswerCueSerial = 0;
 const fastReactionAudioCache = new Map();
+let fastReactionWarmPromise = null;
 const realtimeHelpers = new Map();
 const recentBotSpeech = [];
 const recentAcceptedUserTurns = [];
@@ -657,9 +658,22 @@ async function cachedReactionAudio(text, signal) {
 }
 
 async function warmFastReactionAudio() {
+  if (fastReactionWarmPromise) return fastReactionWarmPromise;
   const texts = [...new Set(FAST_REACTION_STATIC_TEXTS.map((text) => String(text || '').trim()).filter(Boolean))];
-  await Promise.allSettled(texts.map((text) => cachedReactionAudio(text)));
-  mirrorRuntimeLog('READY', `fast-reaction cache=${fastReactionAudioCache.size}`);
+  fastReactionWarmPromise = (async () => {
+    for (const text of texts) {
+      if (fastReactionAudioCache.has(text)) continue;
+      try {
+        await cachedReactionAudio(text);
+      } catch (error) {
+        mirrorRuntimeLog('REACTION-WARM', `failed text="${text}" error=${String(error?.message || error).slice(0, 120)}`);
+      }
+    }
+    mirrorRuntimeLog('READY', `fast-reaction cache=${fastReactionAudioCache.size}`);
+  })().finally(() => {
+    fastReactionWarmPromise = null;
+  });
+  return fastReactionWarmPromise;
 }
 
 function playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, realtimeTranscript = '') {
