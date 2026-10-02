@@ -3,64 +3,45 @@ on:
   push:
     branches:
       - analysis/context-repro-20261002
-
 permissions:
   contents: read
-
 jobs:
   repro:
     runs-on: ubuntu-latest
     steps:
-      - name: A/B context resolution variants
-        shell: bash
+      - name: Test anchor with live previous interaction retained
         run: |
           node <<'NODE'
           const base='https://talksys.syouziroupc.workers.dev';
-          const seedTurns=[
+          const sessionId='analysis-anchor-live-'+Date.now();
+          let previousInteractionId='';
+          const history=[];
+          const seed=[
             '別府市のおすすめのイタリアンレストランについて教えて。',
             '元マチバルっていうところがいいと聞きましたが。',
             '泡盛と沖縄そばの店923について教えて。',
             'パソコンが壊れて買い替えたいけど安い中古パソコンで何を買えばいいかが分かんない。予算は3万円ぐらい。ネットで買いたい。'
           ];
-          async function buildSeed(label){
-            const sessionId='analysis-'+label+'-'+Date.now();
-            let previousInteractionId='';
-            let history=[];
-            for(let i=0;i<seedTurns.length;i++){
-              const text=seedTurns[i];
-              const r=await fetch(base+'/api/turn',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
-                text,history:history.slice(-14),sessionId,utteranceId:label+'-seed-'+(i+1),previousInteractionId,channel:'discord'
-              })});
-              const j=await r.json();
-              if(j.interactionReset) previousInteractionId=''; else if(j.interactionId) previousInteractionId=j.interactionId;
-              if(j.ok&&j.answer) history.push({role:'user',content:text},{role:'assistant',content:j.answer});
-            }
-            return {sessionId,previousInteractionId,history};
-          }
-          async function finalCall(label, mutate){
-            const seed=await buildSeed(label);
-            const payload={
-              text:'おすすめのお店を教えてください。',
-              history:seed.history.slice(-14),
-              sessionId:seed.sessionId,
-              utteranceId:label+'-final',
-              previousInteractionId:seed.previousInteractionId,
-              channel:'discord'
-            };
-            mutate(payload);
-            const started=Date.now();
-            const r=await fetch(base+'/api/turn',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
+          for(let i=0;i<seed.length;i++){
+            const text=seed[i];
+            const r=await fetch(base+'/api/turn',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+              text,history:history.slice(-14),sessionId,utteranceId:'seed-'+i,previousInteractionId,channel:'discord'
+            })});
             const j=await r.json();
-            console.log('VARIANT '+JSON.stringify({
-              label,http:r.status,elapsedMs:Date.now()-started,
-              sentPreviousInteractionId:Boolean(payload.previousInteractionId),
-              speechAlternatives:payload.speechAlternatives||[],
-              answer:j.answer||'',search:Boolean(j.search),queries:j.queries||[],
-              interactionReset:Boolean(j.interactionReset),route:j.route||'',
-              groundingRecoveryUsed:Boolean(j.groundingRecoveryUsed)
+            if(j.interactionReset) previousInteractionId=''; else if(j.interactionId) previousInteractionId=j.interactionId;
+            if(j.ok&&j.answer) history.push({role:'user',content:text},{role:'assistant',content:j.answer});
+          }
+          for(const variant of [
+            {label:'raw',text:'おすすめのお店を教えてください。'},
+            {label:'anchored',text:'直前の相談は、予算3万円くらいでネットで中古パソコンを買い替える話です。その条件で、おすすめのお店を教えてください。'}
+          ]){
+            const r=await fetch(base+'/api/turn',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+              text:variant.text,history:history.slice(-14),sessionId,utteranceId:variant.label,previousInteractionId,channel:'discord'
+            })});
+            const j=await r.json();
+            console.log('ANCHOR_LIVE '+JSON.stringify({
+              label:variant.label,answer:j.answer||'',queries:j.queries||[],search:Boolean(j.search),
+              interactionReset:Boolean(j.interactionReset),route:j.route||''
             }));
           }
-          await finalCall('baseline',()=>{});
-          await finalCall('explicit-history',p=>{p.previousInteractionId='';});
-          await finalCall('nova-alternative',p=>{p.speechAlternatives=['予算は3万円ぐらい。ネットで買いたい。おすすめのお店を教えてください。'];});
           NODE
