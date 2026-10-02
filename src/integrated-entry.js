@@ -42,6 +42,8 @@ const EXPLICIT_FUTURE_TRANSIT_DATE_RE = /(?:明日|明後日|来週|来月|翌�
 const VERIFIER_FRESHNESS_RE = /(?:今(?:日|夜|朝|週|月|年|から|現在)?|現在|現時点|最新|速報|ニュース|天気|気温|価格|値段|相場|在庫|営業(?:中|時間)?|開店|閉店|時刻|何時|交通|運行|遅延|次の便|法律|制度|規制|選挙|大統領|首相|社長|CEO|発売|販売中|バージョン|version|アップデート|障害|株価|為替|レート)/i;
 const STRICT_DYNAMIC_GROUNDING_RE = /(?:住所|所在地|場所|どこ|店舗|店|営業時間|営業中|開店|閉店|電話番号|価格|値段|相場|在庫|何時|時刻|現在時刻|今日|明日|天気|気温|交通|運行|遅延|次の便|時刻表|乗換|乗り換え|発売|販売中|バージョン|version|アップデート|株価|為替|レート|社長|CEO|大統領|首相|法律|制度|規制)/i;
 const ENTITY_EXPLANATION_RE = /(?:について(?:教えて|知りたい|調べて|説明して)|って(?:知ってる|知っていますか|何|なに)|とは(?:何|なに|どんな|どういう)?|(?:を|は)?知っていますか)/i;
+const ENTITY_NATURAL_MENTION_RE = /[^\n。！？!?]{1,48}(?:っていう|という)(?:ところ|お店|店|店舗|会社|企業|商品|製品|人|人物|場所)[^\n。！？!?]{0,48}(?:聞いた|聞きました|聞いて|気になる|評判|どう|いい|良い|おすすめ|知りたい|教えて)/i;
+const AMBIGUOUS_CONTEXT_FOLLOWUP_RE = /^(?:(?:それ|その|これ|じゃあ|では|なら|ちなみに)[、,\s]*)?(?:おすすめ(?:の)?(?:お店|店|店舗|ところ|場所|もの|商品|やつ)?(?:を)?(?:教えて(?:ください|下さい)?|知りたい|ありますか|ある|は(?:何|どれ|どこ)?|お願い(?:します)?)|どこで(?:買えば|購入すれば|頼めば|探せば|見れば)いい(?:ですか)?|他(?:に|には)?(?:ありますか|ある|は)|それなら(?:どれ|何|どこ)がいい(?:ですか)?|どれがいい(?:ですか)?|何がいい(?:ですか)?|どこがいい(?:ですか)?)[。！？!?…\s]*$/i;
 const SEARCH_CONTINUATION_CUE_RE = /(?:名前|歌|曲|人物|場所|大学|会社|商品|作品|イベント|それ|その|これ|そういう|です|だよ|のこと)/i;
 
 function clean(value, max = 12000) {
@@ -354,8 +356,29 @@ export function unansweredUserTail(body = {}) {
   return out.reverse();
 }
 
-export function resolvedUserQuestion(body = {}) {
+function latestAnsweredUserTurn(body = {}) {
+  const history = Array.isArray(body?.history) ? body.history.slice(-8) : [];
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i]?.role !== 'assistant') continue;
+    for (let j = i - 1; j >= 0; j -= 1) {
+      if (history[j]?.role !== 'user') continue;
+      const content = compact(history[j]?.content, 3000);
+      if (content) return content;
+    }
+  }
+  return '';
+}
+
+export function resolveAmbiguousFollowupText(body = {}) {
   const current = compact(body?.text, 4000);
+  if (!current || !AMBIGUOUS_CONTEXT_FOLLOWUP_RE.test(current)) return current;
+  const priorUser = latestAnsweredUserTurn(body);
+  if (!priorUser) return current;
+  return compact(`直前の利用者相談: ${priorUser}\nその続きの質問: ${current}`, 8000);
+}
+
+export function resolvedUserQuestion(body = {}) {
+  const current = resolveAmbiguousFollowupText(body);
   const tail = unansweredUserTail(body);
   const fragments = [];
   for (const value of [...tail, current]) {
@@ -367,8 +390,14 @@ export function resolvedUserQuestion(body = {}) {
   return compact(fragments.join(' '), 8000);
 }
 
+export function searchRoutingQuestion(body = {}) {
+  const raw = compact(body?.text, 4000);
+  const anchored = resolveAmbiguousFollowupText(body);
+  return anchored !== raw ? raw : resolvedUserQuestion(body);
+}
+
 function interactionInput(body = {}, { forceSearch = false, immediateTransit = false, now = new Date() } = {}) {
-  const text = compact(body?.text, 4000);
+  const text = resolveAmbiguousFollowupText(body);
   if (!text) throw new Error('empty_user_input');
   const previousInteractionId = compact(body?.previousInteractionId, 400);
   const transitPrefix = immediateTransit ? `${immediateTransitInstruction(now)}\n` : '';
@@ -475,7 +504,7 @@ export function shouldStronglyPreferSearch(text = '') {
   if (TRIVIAL_CONVERSATION_RE.test(value) || CURRENT_TIME_ONLY_RE.test(value)) return false;
   if (SIMPLE_ARITHMETIC_RE.test(value) || LOCAL_TRANSFORM_RE.test(value)) return false;
   if (/(?:検索|調べ|確認|探して|見つけて)/i.test(value)) return true;
-  if (ENTITY_EXPLANATION_RE.test(value)) return true;
+  if (ENTITY_EXPLANATION_RE.test(value) || ENTITY_NATURAL_MENTION_RE.test(value)) return true;
   if (STRICT_DYNAMIC_GROUNDING_RE.test(value) || isImmediateTransitQuestion(value)) return true;
   return /(?:誰|どこ|いつ|何日|いくら|価格|値段|相場|在庫|天気|運行|時刻表|乗換|乗り換え|おすすめ|候補|店|店舗|会社|企業|病院|ホテル|商品|製品|型番|仕様|互換|対応|住所|電話番号|営業時間|ニュース|法律|制度|社長|CEO|大統領|首相|発売|販売中|高さ|標高|人口|面積|年齢|生年月日|発売日|性能|スペック|重量|重さ|長さ|容量|速度)/i.test(value);
 }
@@ -694,7 +723,7 @@ export function interactionCitationCount(payload = {}) {
 export function requiresGroundedEvidence(text = '') {
   const value = compact(text, 4000);
   if (!value || TRIVIAL_CONVERSATION_RE.test(value) || SIMPLE_ARITHMETIC_RE.test(value) || LOCAL_TRANSFORM_RE.test(value)) return false;
-  return STRICT_DYNAMIC_GROUNDING_RE.test(value) || isImmediateTransitQuestion(value);
+  return STRICT_DYNAMIC_GROUNDING_RE.test(value) || ENTITY_EXPLANATION_RE.test(value) || ENTITY_NATURAL_MENTION_RE.test(value) || isImmediateTransitQuestion(value);
 }
 
 function sourceSummary(payload = {}) {
@@ -1002,7 +1031,8 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   if (locationClarification) return locationClarification;
 
   const immediateTransit = isImmediateTransitQuestion(text);
-  const externalFactSearch = shouldStronglyPreferSearch(text) || shouldContinueExternalSearch(text, body);
+  const searchText = searchRoutingQuestion(body);
+  const externalFactSearch = shouldStronglyPreferSearch(searchText) || shouldContinueExternalSearch(searchText, body);
   const primaryStarted = Date.now();
   // v84 quality fix: only external-fact turns force Google Search.
   // Casual conversation and context-dependent follow-ups stay in one conversational Gemini turn.
