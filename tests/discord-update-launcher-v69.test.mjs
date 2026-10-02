@@ -50,6 +50,8 @@ test('Discord updater gracefully stops the old bridge and supervisor before rest
   assert.match(updater, /Name = 'node\.exe'/);
   assert.match(updater, /\[regex\]::Escape\(\$entry\)/);
   assert.match(updater, /Get-ExistingSupervisors/);
+  assert.match(updater, /\$_\.Name -match '\^\(\?:powershell\|pwsh\)\\\.exe' -and/);
+  assert.doesNotMatch(updater, /\\\.exe\n -and/);
   assert.match(updater, /talksys-discord-shutdown\.txt/);
   assert.match(updater, /updater-graceful-restart/);
   assert.match(updater, /remainingBridges\.Count -gt 0 -or \$remainingSupervisors\.Count -gt 0/);
