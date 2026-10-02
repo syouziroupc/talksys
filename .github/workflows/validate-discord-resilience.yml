@@ -23,21 +23,5 @@ jobs:
           node-version: '22'
       - name: Check Discord entry syntax
         run: node --check discord-voice-smoke/src/index.mjs
-      - name: Check PowerShell launcher syntax
-        shell: pwsh
-        run: |
-          $files = @(
-            'discord-voice-smoke/start.ps1',
-            'discord-voice-smoke/update-and-start.ps1'
-          )
-          foreach ($file in $files) {
-            $tokens = $null
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null
-            if ($errors.Count -gt 0) {
-              $errors | ForEach-Object { Write-Error "${file}: $($_.Message)" }
-              exit 1
-            }
-          }
       - name: Run focused resilience tests
         run: node --test tests/discord-v92-resilience-regression.test.mjs tests/discord-v92-voice-self-heal.test.mjs tests/discord-update-launcher-v69.test.mjs

@@ -100,7 +100,8 @@ function Get-ExistingSupervisors {
   return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
       $_.ProcessId -ne $PID -and
-      $_.Name -match '^(?:powershell|pwsh)\.exe' -and
+      $_.Name -match '^(?:powershell|pwsh)\.exe
+ -and
       $_.CommandLine -and
       $_.CommandLine -match $supervisorPattern
     })

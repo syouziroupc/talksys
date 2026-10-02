@@ -19,18 +19,6 @@ const LOOKUP_REACTIONS = Object.freeze([
   '確認できる情報を調べています。',
 ]);
 
-export const FAST_REACTION_STATIC_TEXTS = Object.freeze([
-  'おはようございます。',
-  'こんばんは。',
-  'はい、フォーンズです。',
-  'こんにちは。',
-  'どういたしまして。',
-  ...LOOKUP_REACTIONS,
-  'はい、内容を確認しますね。',
-  'はい、確認してお答えしますね。',
-  'はい、内容を確認しています。',
-]);
-
 function stableVariantIndex(value = '', count = 1) {
   const text = clean(value, 800);
   let hash = 2166136261;
@@ -93,44 +81,6 @@ export function sameUtterance(a = '', b = '') {
   for (const g of gx) if (gy.has(g)) overlap += 1;
   const union = new Set([...gx, ...gy]).size;
   return union > 0 && overlap / union >= 0.62;
-}
-
-export function realtimeSpeechAlternatives(confirmedTranscript = '', realtimeTranscript = '', priorUserTexts = []) {
-  const confirmed = clean(confirmedTranscript, 1200);
-  const realtime = clean(realtimeTranscript, 2400);
-  if (!confirmed || !realtime) return [];
-
-  const norm = (v) => clean(v, 2400).replace(/[、。！？!?・「」『』"'\s]/g, '').toLowerCase();
-  const priorUsers = (Array.isArray(priorUserTexts) ? priorUserTexts : [])
-    .map((value) => clean(value, 1800))
-    .filter(Boolean)
-    .slice(-4);
-
-  const segments = realtime.split(/[。！？!?]+/).map((part) => part.trim()).filter(Boolean);
-  const isPriorCarryover = (segment) => {
-    const segmentNorm = norm(segment);
-    if (!segmentNorm) return false;
-    return priorUsers.some((prior) => {
-      const priorNorm = norm(prior);
-      if (!priorNorm) return false;
-      return sameUtterance(segment, prior)
-        || segmentNorm.startsWith(priorNorm)
-        || priorNorm.startsWith(segmentNorm);
-    });
-  };
-
-  const kept = segments.filter((segment) => !isPriorCarryover(segment));
-  // Fail safe: if every realtime segment can be explained by prior turns, do
-  // not pass the cumulative transcript to Gemini as an alternative.
-  if (segments.length && kept.length === 0) return [];
-
-  const candidate = (kept.length ? kept.join('。') : realtime).trim();
-  const confirmedNorm = norm(confirmed);
-  const candidateNorm = norm(candidate);
-  if (!candidateNorm || candidateNorm === confirmedNorm) return [];
-  if (sameUtterance(candidate, confirmed) && candidateNorm.length <= confirmedNorm.length + 5) return [];
-  if (candidateNorm.length < 6) return [];
-  return [candidate];
 }
 
 
