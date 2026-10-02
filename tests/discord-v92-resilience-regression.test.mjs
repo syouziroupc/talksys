@@ -100,3 +100,19 @@ test('Windows TTS cannot wait forever after timeout or abort kill request', () =
   assert.match(source, /Promise\.race\(\[childDone, hardClosePromise\]\)/);
   assert.match(source, /hardCloseTimer = setTimeout\([\s\S]*5000\)/);
 });
+
+
+test('playback start failure cancels completion waiters on the shared AudioPlayer', () => {
+  assert.match(source, /let cancelCompletionWait = \(\) => \{\}/);
+  assert.match(source, /completionPromise\.catch\(\(\) => \{\}\)/);
+  assert.match(source, /cancelCompletionWait\(\);[\s\S]*ffmpeg\.kill\('SIGKILL'\)[\s\S]*player\.stop\(true\)[\s\S]*playback_start_timeout/);
+  assert.match(source, /player\.off\(AudioPlayerStatus\.Idle, done\)/);
+  assert.match(source, /player\.off\('error', fail\)/);
+});
+
+test('receiver close clears stale TalkSys sessions immediately', () => {
+  assert.match(source, /opus\.on\('close', \(\) => \{/);
+  assert.match(source, /AudioReceiveStream closed before finalize/);
+  assert.match(source, /finalize\('discord-transport-close'\)/);
+  assert.match(source, /sessions\.delete\(userId\)/);
+});
