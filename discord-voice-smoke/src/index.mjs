@@ -1166,24 +1166,39 @@ async function synthesizeWindowsJapaneseTts(text, signal) {
   child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
   child.stderr.on('data', (chunk) => { stderr += String(chunk); });
 
-  const timeout = setTimeout(() => {
+  let stopReason = '';
+  let hardCloseTimer = null;
+  let rejectHardClose = null;
+  const hardClosePromise = new Promise((_, reject) => { rejectHardClose = reject; });
+  const requestChildStop = (reason) => {
+    if (!stopReason) stopReason = String(reason || 'stop');
+    mirrorRuntimeLog('TTS-CHILD', `Windows TTS stop requested reason=${stopReason} pid=${child.pid || '-'}`);
     try { child.kill(); } catch {}
-  }, 8000);
+    if (!hardCloseTimer) {
+      hardCloseTimer = setTimeout(() => {
+        mirrorRuntimeLog('TTS-CHILD', `Windows TTS hard-close timeout reason=${stopReason} pid=${child.pid || '-'}`);
+        rejectHardClose(new Error(`windows_tts_hard_close_timeout:${stopReason}`));
+      }, 5000);
+    }
+  };
+
+  const timeout = setTimeout(() => requestChildStop('tts-timeout-8000ms'), 8000);
 
   let abortHandler = null;
   if (signal) {
-    abortHandler = () => {
-      try { child.kill(); } catch {}
-    };
+    abortHandler = () => requestChildStop('abort');
     if (signal.aborted) abortHandler();
     else signal.addEventListener('abort', abortHandler, { once: true });
   }
 
-  const code = await new Promise((resolve, reject) => {
+  const childDone = new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('close', resolve);
-  }).finally(() => {
+  });
+
+  const code = await Promise.race([childDone, hardClosePromise]).finally(() => {
     clearTimeout(timeout);
+    if (hardCloseTimer) clearTimeout(hardCloseTimer);
     if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
   });
 
