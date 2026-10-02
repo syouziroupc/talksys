@@ -1915,6 +1915,11 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     finalize('opus-error').catch(() => {});
   });
   opus.on('end', () => finalize('discord-transport-end').catch(() => {}));
+  opus.on('close', () => {
+    if (completed) return;
+    mirrorRuntimeLog('RECEIVER', `AudioReceiveStream closed before finalize user=${userId}`);
+    finalize('discord-transport-close').catch(() => {});
+  });
   opus.pipe(decoder);
 
   if (!speakingMarked) console.log(`[capture] prearmed user=${userId}`);
