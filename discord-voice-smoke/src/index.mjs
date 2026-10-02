@@ -1325,14 +1325,56 @@ async function playMp3(mp3, options = {}) {
   ffmpeg.stdin.end(mp3);
 
   const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+  let cancelCompletionWait = () => {};
+  const completionPromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      try { ffmpeg.kill('SIGKILL'); } catch {}
+      player.stop(true);
+      reject(new Error('playback_timeout'));
+    }, 30000);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      player.off(AudioPlayerStatus.Idle, done);
+      player.off('error', fail);
+    };
+    const finishRecord = () => {
+      finishBotSpeech(botSpeechRecord);
+      if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now();
+      if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null;
+    };
+    const done = () => { cleanup(); finishRecord(); resolve(); };
+    const fail = (error) => { cleanup(); finishRecord(); reject(error); };
+    cancelCompletionWait = () => {
+      cleanup();
+      finishRecord();
+      resolve();
+    };
+    player.once(AudioPlayerStatus.Idle, done);
+    player.once('error', fail);
+  });
+  // A player error may arrive before playbackStartedPromise is awaited. Keep a
+  // rejection observer attached so Node never treats that early rejection as
+  // unhandled; the original promise still rejects when awaited below.
+  completionPromise.catch(() => {});
+
   const playbackStartedPromise = new Promise((resolve, reject) => {
+    const onPlayerErrorBeforeStart = (error) => {
+      clearTimeout(timeout);
+      player.off(AudioPlayerStatus.Playing, onPlaying);
+      cancelCompletionWait();
+      reject(error);
+    };
     const timeout = setTimeout(() => {
       player.off(AudioPlayerStatus.Playing, onPlaying);
+      player.off('error', onPlayerErrorBeforeStart);
+      cancelCompletionWait();
       try { ffmpeg.kill('SIGKILL'); } catch {}
+      player.stop(true);
       reject(new Error('playback_start_timeout'));
     }, 5000);
     const onPlaying = () => {
       clearTimeout(timeout);
+      player.off('error', onPlayerErrorBeforeStart);
       const playbackStartedAt = Date.now();
       if (options?.spokenText) {
         botSpeechRecord = rememberBotSpeech(options.spokenText, options?.purpose || '', playbackStartedAt);
@@ -1344,25 +1386,10 @@ async function playMp3(mp3, options = {}) {
       resolve({ playbackStartedAt, ffmpegSpawnMs: measuredFfmpegMs });
     };
     player.once(AudioPlayerStatus.Playing, onPlaying);
+    player.once('error', onPlayerErrorBeforeStart);
   });
 
   player.play(resource);
-
-  const completionPromise = new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      try { ffmpeg.kill('SIGKILL'); } catch {}
-      player.stop(true);
-      reject(new Error('playback_timeout'));
-    }, 30000);
-    const done = () => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now(); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); resolve(); };
-    const fail = (error) => { clearTimeout(timeout); finishBotSpeech(botSpeechRecord); if (botSpeechRecord) lastBotPlaybackEndedAt = Date.now(); if (activeBotPlaybackRecord === botSpeechRecord) activeBotPlaybackRecord = null; cleanup(); reject(error); };
-    const cleanup = () => {
-      player.off(AudioPlayerStatus.Idle, done);
-      player.off('error', fail);
-    };
-    player.once(AudioPlayerStatus.Idle, done);
-    player.once('error', fail);
-  });
 
   const watchId = `playback:${randomUUID()}`;
   beginWatchStage(watchId, 'playback', 40_000);
