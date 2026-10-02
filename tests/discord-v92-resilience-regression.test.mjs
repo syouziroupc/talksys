@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { fastReaction } from '../src/voice-fast-reaction.js';
+import { fastReaction, isIgnorableSttFailure } from '../src/voice-fast-reaction.js';
 
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
 const supervisor = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
+const integratedEntry = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
 
 test('receiver does not re-subscribe after empty transport end', () => {
   const block = source.slice(source.indexOf('function startReceiverSession('), source.indexOf('function destroyVoiceConnection('));
@@ -77,6 +78,41 @@ test('barge-in rescue recalculates terminal greeting/thanks classification', () 
   const block = source.slice(source.indexOf('async function processConfirmedTranscript('), source.indexOf('async function handleCapturedUtterance('));
   assert.match(block, /reaction = fastReaction\(realtimeRescue\)/);
   assert.match(block, /if \(reaction\?\.terminal && reaction\?\.shouldSpeak\)/);
+});
+
+
+test('Whisper hallucination guard failures can never be promoted from Nova realtime text', () => {
+  assert.equal(isIgnorableSttFailure('stt_http_422: {"error":"hallucinated transcript rejected","rejected":"hallucination-guard"}'), false);
+  assert.equal(isIgnorableSttFailure('stt_http_422: {"error":"no speech detected","rejected":"empty-transcript"}'), true);
+  assert.equal(isIgnorableSttFailure('weak-speech-signal'), true);
+  const block = source.slice(source.indexOf('async function handleCapturedUtterance('), source.indexOf('function interruptActiveAnswer('));
+  assert.match(block, /if \(isIgnorableSttFailure\(message\)\)/);
+  assert.match(block, /correctionReason: 'realtime-rescue-after-whisper-failure'/);
+});
+
+test('Discord supervisor keeps an OS-level single-instance lock', () => {
+  assert.match(supervisor, /talksys-discord-supervisor\.lock/);
+  assert.match(supervisor, /\[System\.IO\.FileShare\]::None/);
+  assert.match(supervisor, /singleton lock acquired pid=\$PID/);
+  assert.match(supervisor, /duplicate start refused/);
+});
+
+test('Discord runtime logs process and interaction identity and uses current interaction APIs', () => {
+  assert.match(source, /MessageFlags\.Ephemeral/);
+  assert.match(source, /client\.once\('clientReady'/);
+  assert.match(source, /received id=\$\{interaction\.id\} pid=\$\{process\.pid\}/);
+  assert.match(source, /process start pid=\$\{process\.pid\} node=\$\{process\.version\}/);
+  assert.doesNotMatch(source, /deferReply\(\{ ephemeral: true \}\)/);
+});
+
+test('Discord voice metrics carry and persist the exact bridge revision', () => {
+  const clientBlock = source.slice(source.indexOf('async function postVoiceMetrics('), source.indexOf('async function postVoiceStage('));
+  assert.match(clientBlock, /bridgeRevision: DISCORD_BRIDGE_REVISION/);
+  const serverStart = integratedEntry.indexOf('function discordVoiceMetricsResponse(');
+  const serverEnd = integratedEntry.indexOf('\nfunction ', serverStart + 10);
+  const serverBlock = integratedEntry.slice(serverStart, serverEnd);
+  assert.match(serverBlock, /const bridgeRevision = compact\(body\?\.bridgeRevision \|\| '', 160\)/);
+  assert.match(serverBlock, /route: 'discord-client-metrics',[\s\S]*bridgeRevision,[\s\S]*search: false/);
 });
 
 
