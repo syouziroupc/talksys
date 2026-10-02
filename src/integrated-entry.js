@@ -1736,6 +1736,7 @@ function discordVoiceMetricsResponse(request, env, ctx) {
     try { body = await request.json(); }
     catch { return json({ ok: false, error: 'invalid_json' }, 400); }
 
+    const bridgeRevision = compact(body?.bridgeRevision || '', 160);
     const timings = compactClientTimings(body?.timings || {});
     const timeline = compactVoiceTimeline(body?.timeline || {});
     const realtimeTranscript = compact(body?.realtimeTranscript || '', 1600);
@@ -1752,6 +1753,7 @@ function discordVoiceMetricsResponse(request, env, ctx) {
     const result = {
       ok: !error,
       route: 'discord-client-metrics',
+      bridgeRevision,
       search: false,
       searchUseful: false,
       timings,
