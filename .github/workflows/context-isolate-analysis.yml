@@ -1,4 +1,4 @@
-name: Context isolate analysis
+name: Context policy controls
 on:
   push:
     branches:
@@ -6,20 +6,26 @@ on:
 permissions:
   contents: read
 jobs:
-  isolate:
+  controls:
     runs-on: ubuntu-latest
     steps:
-      - name: Compare immediate context and resolved question
+      - name: Test ambiguous followup and explicit topic switches
         run: |
           node <<'NODE'
           const base='https://talksys.syouziroupc.workers.dev';
           const pc='パソコンが壊れて買い替えたい。予算は3万円ぐらい。ネットで中古パソコンを買いたい。';
-          const a='予算3万円なら、中古パソコン専門店で保証付きのものを選ぶと安心です。';
-          async function run(label,payload){
-            const r=await fetch(base+'/api/turn',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sessionId:'ctx-'+label+'-'+Date.now(),utteranceId:label,channel:'discord',previousInteractionId:'',...payload})});
+          const cases=[
+            {label:'ambiguous-store', text:pc+' おすすめのお店を教えてください。'},
+            {label:'ambiguous-where-buy', text:pc+' どこで買えばいいですか。'},
+            {label:'explicit-restaurant-switch', text:'別府市でおすすめの飲食店を教えてください。'},
+            {label:'explicit-hot-spring-switch', text:'別府市でおすすめの温泉を教えてください。'},
+            {label:'explicit-pc-store', text:'3万円くらいで買えるおすすめの中古パソコン店を教えてください。'}
+          ];
+          for(const c of cases){
+            const r=await fetch(base+'/api/turn',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+              text:c.text,history:[],sessionId:'policy-'+c.label+'-'+Date.now(),utteranceId:c.label,previousInteractionId:'',channel:'discord'
+            })});
             const j=await r.json();
-            console.log('CTX_RESULT '+JSON.stringify({label,answer:j.answer||'',queries:j.queries||[],search:Boolean(j.search),route:j.route||''}));
+            console.log('POLICY '+JSON.stringify({label:c.label,answer:j.answer||'',queries:j.queries||[],search:Boolean(j.search),route:j.route||''}));
           }
-          await run('last-pair',{text:'おすすめのお店を教えてください。',history:[{role:'user',content:pc},{role:'assistant',content:a}]});
-          await run('resolved',{text:pc+' おすすめのお店を教えてください。',history:[]});
           NODE
