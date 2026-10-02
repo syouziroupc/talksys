@@ -17,7 +17,7 @@ import {
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY, pcm16Level } from '../../src/voice-capture-policy.js';
-import { fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure, FAST_REACTION_STATIC_TEXTS } from '../../src/voice-fast-reaction.js';
+import { fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure, FAST_REACTION_STATIC_TEXTS, realtimeSpeechAlternatives } from '../../src/voice-fast-reaction.js';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -343,28 +343,6 @@ function correctLowConfidenceTranscript(rawTranscript, captureMetrics = {}, rece
   return { rawTranscript: raw, correctedTranscript: corrected, correctionReason: [...new Set(reasons)].join(';') };
 }
 
-function realtimeSpeechAlternatives(confirmedTranscript, captureMetrics = {}, recentHistory = []) {
-  const confirmed = String(confirmedTranscript || '').trim();
-  const realtime = String(captureMetrics?.realtimeTranscript || '').trim();
-  if (!confirmed || !realtime) return [];
-
-  const priorUsers = recentHistory
-    .filter((item) => item?.role === 'user')
-    .slice(-4)
-    .map((item) => String(item?.content || '').trim())
-    .filter(Boolean);
-
-  const segments = realtime.split(/[。！？!?]+/).map((part) => part.trim()).filter(Boolean);
-  const kept = segments.filter((segment) => !priorUsers.some((prior) => sameUtterance(segment, prior)));
-  const candidate = (kept.length ? kept.join('。') : realtime).trim();
-  const confirmedNorm = normalizeSttToken(confirmed);
-  const candidateNorm = normalizeSttToken(candidate);
-
-  if (!candidateNorm || candidateNorm === confirmedNorm) return [];
-  if (sameUtterance(candidate, confirmed) && candidateNorm.length <= confirmedNorm.length + 5) return [];
-  if (candidateNorm.length < 6) return [];
-  return [candidate];
-}
 function maybeTriggerConfirmedBargeIn(active, transcript = '') {
   if (!active?.bargeInArmed || active.bargeInTriggered || !active.startedDuringBotPlayback) return false;
   const value = String(transcript || active.latestRealtimeTranscript || '').trim();
@@ -1544,7 +1522,11 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     if (!timeline.fastReactionRequestedAt) {
       activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, reaction);
     }
-    const speechAlternatives = realtimeSpeechAlternatives(confirmedTranscript, captureMetrics, history);
+    const speechAlternatives = realtimeSpeechAlternatives(
+      confirmedTranscript,
+      captureMetrics?.realtimeTranscript || '',
+      history.filter((item) => item?.role === 'user').slice(-4).map((item) => item?.content || ''),
+    );
     if (speechAlternatives.length) {
       mirrorRuntimeLog('STT-ALT', `Whisper="${confirmedTranscript}" Nova="${speechAlternatives[0]}"`);
     }
