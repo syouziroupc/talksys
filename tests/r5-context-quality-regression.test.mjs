@@ -121,6 +121,9 @@ test('all static fast-reaction outputs are eligible for startup warming', () => 
   for (const text of expected) assert.ok(FAST_REACTION_STATIC_TEXTS.includes(text), text);
   assert.equal(new Set(FAST_REACTION_STATIC_TEXTS).size, expected.length);
   assert.match(discordSource, /FAST_REACTION_STATIC_TEXTS/);
+  assert.match(discordSource, /let fastReactionWarmPromise = null/);
+  assert.match(discordSource, /for \(const text of texts\)/);
+  assert.doesNotMatch(discordSource, /Promise\.allSettled\(texts\.map/);
   assert.doesNotMatch(discordSource, /const samples = \['こんにちは'/);
 });
 
