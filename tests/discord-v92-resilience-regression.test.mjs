@@ -106,7 +106,7 @@ test('Discord runtime logs process and interaction identity and uses current int
 });
 
 test('Discord voice metrics carry and persist the exact bridge revision', () => {
-  const clientBlock = source.slice(source.indexOf('async function postVoiceMetrics('), source.indexOf('async function postVoiceStage('));
+  const clientBlock = source.slice(source.indexOf('async function postVoiceMetrics('), source.indexOf('async function fetchSearchPreface('));
   assert.match(clientBlock, /bridgeRevision: DISCORD_BRIDGE_REVISION/);
   const serverStart = integratedEntry.indexOf('function discordVoiceMetricsResponse(');
   const serverEnd = integratedEntry.indexOf('\nfunction ', serverStart + 10);
