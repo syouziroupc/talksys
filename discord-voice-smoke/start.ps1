@@ -2,6 +2,30 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Set-Location $PSScriptRoot
+
+# Keep exactly one long-running TalkSys Discord supervisor per Windows host.
+# The file may remain on disk after an abnormal exit, but the exclusive handle
+# is released by Windows when the process exits, so the next launch can acquire it.
+$lockRoot = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
+$supervisorLockPath = Join-Path $lockRoot 'talksys-discord-supervisor.lock'
+try {
+  $supervisorLock = [System.IO.File]::Open(
+    $supervisorLockPath,
+    [System.IO.FileMode]::OpenOrCreate,
+    [System.IO.FileAccess]::ReadWrite,
+    [System.IO.FileShare]::None
+  )
+} catch [System.IO.IOException] {
+  Write-Warning "[supervisor] another TalkSys Discord supervisor is already running; duplicate start refused."
+  exit 0
+}
+$lockText = "pid=$PID started=$([DateTimeOffset]::Now.ToString('o'))"
+$lockBytes = [System.Text.Encoding]::UTF8.GetBytes($lockText)
+$supervisorLock.SetLength(0)
+$supervisorLock.Write($lockBytes, 0, $lockBytes.Length)
+$supervisorLock.Flush()
+Write-Host "[supervisor] singleton lock acquired pid=$PID"
+
 . "$PSScriptRoot\secret-store.ps1"
 
 function Require-Node {
