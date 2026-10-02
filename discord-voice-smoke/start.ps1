@@ -107,6 +107,7 @@ while ($true) {
   $proc = Start-Process -FilePath 'node.exe' -ArgumentList @($entry) -PassThru -NoNewWindow
   $hung = $false
   $heartbeatSeen = $false
+  $gatewayUnreadySince = $null
 
   while (-not $proc.HasExited) {
     Start-Sleep -Seconds 5
@@ -131,6 +132,25 @@ while ($true) {
         $stageBlocking = if ($blockingProp) { [bool]$blockingProp.Value } else { $stage -and $stage -ne 'idle' }
         $deadlineMs = if ($deadlineProp -and [double]$deadlineProp.Value -gt 0) { [double]$deadlineProp.Value } else { 30000 }
         $deadlineSeconds = [math]::Max(5, ($deadlineMs / 1000.0) + 5)
+        $gatewayReadyProp = $heartbeat.PSObject.Properties['gatewayReady']
+        $gatewayStatusProp = $heartbeat.PSObject.Properties['gatewayStatus']
+        if ($gatewayReadyProp) {
+          $gatewayReady = [bool]$gatewayReadyProp.Value
+          if ($gatewayReady) {
+            $gatewayUnreadySince = $null
+          } elseif ($null -eq $gatewayUnreadySince) {
+            $gatewayUnreadySince = Get-Date
+          } else {
+            $gatewayUnreadyAgeSeconds = ((Get-Date) - $gatewayUnreadySince).TotalSeconds
+            if ($gatewayUnreadyAgeSeconds -gt 30) {
+              $hung = $true
+              $gatewayStatus = if ($gatewayStatusProp) { [string]$gatewayStatusProp.Value } else { 'unknown' }
+              Write-Warning "[supervisor] Discord gateway unready for $([math]::Round($gatewayUnreadyAgeSeconds,1))s status=$gatewayStatus; requesting bridge restart pid=$($proc.Id)"
+              Stop-TalkSysBridgeGracefully -Process $proc -Reason "gateway-unready"
+              break
+            }
+          }
+        }
         if ($stageBlocking -and $stage -and $stage -ne 'idle' -and $stageAgeSeconds -gt $deadlineSeconds) {
           $hung = $true
           Write-Warning "[supervisor] blocking pipeline stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s deadline=$([math]::Round($deadlineSeconds,1))s; requesting Discord bridge shutdown pid=$($proc.Id)"
