@@ -19,6 +19,18 @@ const LOOKUP_REACTIONS = Object.freeze([
   '確認できる情報を調べています。',
 ]);
 
+export const FAST_REACTION_STATIC_TEXTS = Object.freeze([
+  'おはようございます。',
+  'こんばんは。',
+  'はい、フォーンズです。',
+  'こんにちは。',
+  'どういたしまして。',
+  ...LOOKUP_REACTIONS,
+  'はい、内容を確認しますね。',
+  'はい、確認してお答えしますね。',
+  'はい、内容を確認しています。',
+]);
+
 function stableVariantIndex(value = '', count = 1) {
   const text = clean(value, 800);
   let hash = 2166136261;
