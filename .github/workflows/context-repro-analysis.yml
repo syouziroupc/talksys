@@ -1,0 +1,72 @@
+name: Context repro analysis
+on:
+  push:
+    branches:
+      - analysis/context-repro-20261002
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Replay observed context sequence
+        shell: bash
+        run: |
+          node <<'NODE'
+          const base='https://talksys.syouziroupc.workers.dev';
+          const sessionId='analysis-context-'+Date.now();
+          let previousInteractionId='';
+          let history=[];
+          const turns=[
+            '別府市のおすすめのイタリアンレストランについて教えて。',
+            '元マチバルっていうところがいいと聞きましたが。',
+            '泡盛と沖縄そばの店923について教えて。',
+            'パソコンが壊れて買い替えたいけど安い中古パソコンで何を買えばいいかが分かんない。予算は3万円ぐらい。ネットで買いたい。',
+            'おすすめのお店を教えてください。'
+          ];
+          for (let i=0;i<turns.length;i++) {
+            const text=turns[i];
+            const payload={
+              text,
+              history:history.slice(-14),
+              searchTrace:null,
+              sessionId,
+              utteranceId:'analysis-'+(i+1),
+              previousInteractionId,
+              channel:'discord'
+            };
+            const started=Date.now();
+            const r=await fetch(base+'/api/turn',{
+              method:'POST',
+              headers:{'content-type':'application/json'},
+              body:JSON.stringify(payload)
+            });
+            const j=await r.json();
+            console.log('TURN_META '+JSON.stringify({
+              n:i+1,
+              http:r.status,
+              elapsedMs:Date.now()-started,
+              input:text,
+              answer:j.answer||'',
+              interactionId:j.interactionId||'',
+              interactionReset:Boolean(j.interactionReset),
+              route:j.route||'',
+              planner:j.planner||'',
+              search:Boolean(j.search),
+              queries:Array.isArray(j.queries)?j.queries:[],
+              groundingRecoveryUsed:Boolean(j.groundingRecoveryUsed),
+              interactionsRegionFallback:Boolean(j.interactionsRegionFallback),
+              generationTransport:j.generationTransport||'',
+              fallbackReason:j.fallbackReason||'',
+              timings:j.timings||{}
+            }));
+            if (j.interactionReset) previousInteractionId='';
+            else if (j.interactionId) previousInteractionId=j.interactionId;
+            if(j.ok&&j.answer){
+              history.push({role:'user',content:text},{role:'assistant',content:j.answer});
+              if(history.length>28) history=history.slice(-28);
+            }
+          }
+          NODE
