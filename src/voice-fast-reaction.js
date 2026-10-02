@@ -158,5 +158,6 @@ export function classifyVoiceTurn(text = '', { answerInFlight = false } = {}) {
 
 export function isIgnorableSttFailure(error = '') {
   const value = clean(error, 1000);
-  return /weak-speech-signal|no speech detected|empty-transcript|stt_empty_transcript|stt_http_422|captured_pcm_empty/i.test(value);
+  if (/hallucinated transcript rejected|hallucination-guard/i.test(value)) return false;
+  return /weak-speech-signal|no speech detected|empty-transcript|stt_empty_transcript|captured_pcm_empty/i.test(value);
 }
