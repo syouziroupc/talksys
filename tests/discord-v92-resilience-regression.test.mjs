@@ -90,3 +90,13 @@ test('health watchdog keeps 10s recovery checks but logs only connection-state c
   assert.match(source, /scheduleFullReconnect\(missing \? 'health-missing-connection' : 'health-channel-mismatch'\)/);
   assert.match(source, /\}, 10_000\);/);
 });
+
+
+test('Windows TTS cannot wait forever after timeout or abort kill request', () => {
+  assert.match(source, /const hardClosePromise = new Promise/);
+  assert.match(source, /requestChildStop\('tts-timeout-8000ms'\)/);
+  assert.match(source, /requestChildStop\('abort'\)/);
+  assert.match(source, /windows_tts_hard_close_timeout/);
+  assert.match(source, /Promise\.race\(\[childDone, hardClosePromise\]\)/);
+  assert.match(source, /hardCloseTimer = setTimeout\([\s\S]*5000\)/);
+});
