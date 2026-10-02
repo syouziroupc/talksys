@@ -20,6 +20,35 @@ test('voice health includes the real voice connection status', () => {
   assert.match(source, /captures=\$\{sessions\.size\}/);
 });
 
+
+test('Discord gateway death cannot remain falsely healthy', () => {
+  assert.match(source, /const DISCORD_GATEWAY_UNREADY_RESTART_MS = 20000/);
+  assert.match(source, /gatewayReady: client\.isReady\(\)/);
+  assert.match(source, /gatewayStatus: client\.ws\.status/);
+  assert.match(source, /gatewayUnreadySince/);
+  assert.match(source, /GATEWAY-STALL/);
+  assert.match(source, /client\.on\('shardDisconnect'/);
+  assert.match(source, /GATEWAY-DISCONNECT/);
+  assert.match(source, /Discord shard disconnected without a reconnect path/);
+  assert.match(supervisor, /gatewayReady/);
+  assert.match(supervisor, /Discord gateway unready/);
+  assert.match(supervisor, /gateway-unready/);
+});
+
+test('slash commands acknowledge before voice or log work', () => {
+  const block = source.slice(source.indexOf("client.on('interactionCreate'"), source.indexOf("client.on('voiceStateUpdate'"));
+  const ack = block.indexOf('await interaction.deferReply');
+  const commandWork = Math.min(
+    ...[
+      block.indexOf("interaction.commandName === 'logs'"),
+      block.indexOf("interaction.commandName === 'logdump'"),
+      block.indexOf("interaction.commandName === 'talksys'"),
+    ].filter((value) => value >= 0)
+  );
+  assert.ok(ack >= 0);
+  assert.ok(commandWork > ack);
+});
+
 test('signalling and connecting stalls trigger bounded recovery', () => {
   assert.match(source, /VOICE-STALLED/);
   assert.match(source, /VoiceConnectionStatus\.Connecting, VoiceConnectionStatus\.Signalling/);
