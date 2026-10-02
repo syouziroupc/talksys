@@ -1,0 +1,29 @@
+name: Build R5 stable ZIP
+on:
+  push:
+    branches:
+      - backup/build-r5-stable-zip
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build exact stable source archive
+        run: |
+          git archive --format=zip --prefix=TalkSys_R5_STABLE_2026-10-02_103ba724/ \
+            --output=TalkSys_R5_STABLE_2026-10-02_103ba724.zip \
+            103ba7249d74123ec0253518ad8d6dbd26e054a7
+          sha256sum TalkSys_R5_STABLE_2026-10-02_103ba724.zip | tee SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TalkSys_R5_STABLE_2026-10-02_103ba724
+          path: |
+            TalkSys_R5_STABLE_2026-10-02_103ba724.zip
+            SHA256SUMS.txt
+          if-no-files-found: error
