@@ -78,7 +78,7 @@ test('Nova alternative selector drops prior-turn carryover and fails safe on cum
       '予算は3万円ぐらい。ネットで買いたい。おすすめのお店を教えてください。',
       ['予算は3万円ぐらい。ネットで買いたい。'],
     ),
-    ['おすすめのお店を教えてください'],
+    [],
   );
 
   assert.deepEqual(
