@@ -35,7 +35,6 @@ const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
 const DISCORD_READY_TIMEOUT_MS = 20000;
-const DISCORD_GATEWAY_UNREADY_RESTART_MS = 20000;
 const DISCORD_HEALTH_LOG_MS = 60000;
 const RECOVERY_PROMPT = 'すみません、うまく聞き取れませんでした。もう一度お願いします。';
 const BOT_ECHO_WINDOW_MS = 20000;
@@ -121,7 +120,6 @@ let voiceRecoveryInFlight = false;
 let voiceRecoveryAttempts = 0;
 let discordReadyWatchdog = null;
 let discordHealthTimer = null;
-let gatewayUnreadySince = 0;
 let lastHealthLogSignature = '';
 let desiredVoiceTarget = null;
 let fullReconnectTimer = null;
@@ -153,9 +151,6 @@ function writeBridgeHeartbeat() {
       stageDeadlineMs: stage?.deadlineMs || 0,
       voice: connection?.state?.status || 'none',
       captures: sessions.size,
-      gatewayReady: client.isReady(),
-      gatewayStatus: client.ws.status,
-      gatewayPing: client.ws.ping,
       revision: DISCORD_BRIDGE_REVISION,
     }));
   } catch (error) {
@@ -2241,26 +2236,8 @@ client.once('ready', async () => {
     discordReadyWatchdog = null;
   }
   if (discordHealthTimer) clearInterval(discordHealthTimer);
-  gatewayUnreadySince = 0;
   discordHealthTimer = setInterval(() => {
     const ready = client.isReady();
-    if (ready) {
-      gatewayUnreadySince = 0;
-    } else {
-      if (!gatewayUnreadySince) gatewayUnreadySince = Date.now();
-      const gatewayUnreadyMs = Date.now() - gatewayUnreadySince;
-      if (gatewayUnreadyMs >= DISCORD_GATEWAY_UNREADY_RESTART_MS) {
-        console.error(`[fatal] Discord Gateway remained unready for ${gatewayUnreadyMs}ms; restarting bridge`);
-        mirrorRuntimeLog('GATEWAY-STALL', `unready=${gatewayUnreadyMs}ms status=${client.ws.status} ping=${client.ws.ping}ms`);
-        if (discordHealthTimer) {
-          clearInterval(discordHealthTimer);
-          discordHealthTimer = null;
-        }
-        client.destroy();
-        process.exit(2);
-        return;
-      }
-    }
     const voiceStatus = connection?.state?.status || 'none';
     const voiceChannel = connection?.joinConfig?.channelId || '-';
     const desiredChannel = desiredVoiceTarget?.channelId || '-';
@@ -2392,15 +2369,7 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 client.on('error', (error) => console.error('[discord]', error));
 client.on('warn', (info) => console.warn('[discord] warning:', info));
 client.on('shardError', (error, shardId) => console.error(`[discord] shard error id=${shardId}:`, error?.stack || error));
-client.on('shardDisconnect', (event, shardId) => {
-  const code = event?.code ?? 'unknown';
-  console.error(`[discord] shard disconnected id=${shardId} code=${code}`);
-  mirrorRuntimeLog('GATEWAY-DISCONNECT', `shard=${shardId} code=${code}`);
-  if (bridgeShuttingDown) return;
-  console.error('[fatal] Discord shard disconnected without a reconnect path; restarting bridge');
-  flushPendingLogsOnExit();
-  process.exit(2);
-});
+client.on('shardDisconnect', (event, shardId) => console.error(`[discord] shard disconnected id=${shardId} code=${event?.code ?? 'unknown'}`));
 client.on('shardReconnecting', (shardId) => console.warn(`[discord] shard reconnecting id=${shardId}`));
 client.on('shardResume', (shardId, replayedEvents) => console.log(`[discord] shard resumed id=${shardId} replayed=${replayedEvents}`));
 player.on('error', (error) => { console.error('[player]', error.message); mirrorRuntimeLog('ERROR', `player: ${error.message}`); });
@@ -2411,7 +2380,6 @@ process.on('unhandledRejection', (reason) => {
 });
 
 process.on('SIGINT', () => {
-  bridgeShuttingDown = true;
   if (bridgeHeartbeatTimer) clearInterval(bridgeHeartbeatTimer);
   if (bridgeShutdownTimer) clearInterval(bridgeShutdownTimer);
   if (discordReadyWatchdog) clearTimeout(discordReadyWatchdog);
