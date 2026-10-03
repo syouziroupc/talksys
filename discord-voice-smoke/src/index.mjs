@@ -1101,6 +1101,22 @@ function startWaitCue(text, utteranceId, parentSignal, fastReaction = null) {
   };
 }
 
+function commitConversationTurn(text, body) {
+  if (!body?.answer) return false;
+  if (body.interactionId) previousInteractionId = body.interactionId;
+  if (body.search) {
+    searchTrace = {
+      resolvedQuestion: body.resolvedQuestion || text,
+      queries: Array.isArray(body.queries) ? body.queries.slice(0, 6) : [],
+      sources: Array.isArray(body.sources) ? body.sources.slice(0, 8) : [],
+    };
+  }
+  history.push({ role: 'user', content: text }, { role: 'assistant', content: body.answer });
+  if (history.length > MAX_HISTORY * 2) history.splice(0, history.length - MAX_HISTORY * 2);
+  mirrorRuntimeLog('CONTEXT-COMMIT', `utterance committed interaction=${body.interactionId || '-'} history=${history.length}`);
+  return true;
+}
+
 async function talk(text, utteranceId = '', signal) {
   const started = Date.now();
   console.log('[turn] user:', text);
@@ -1127,16 +1143,6 @@ async function talk(text, utteranceId = '', signal) {
   if (!body?.ok || !body?.answer) {
     throw new Error(body?.detail || body?.error || 'turn_empty_answer');
   }
-  if (body.interactionId) previousInteractionId = body.interactionId;
-  if (body.search) {
-    searchTrace = {
-      resolvedQuestion: body.resolvedQuestion || text,
-      queries: Array.isArray(body.queries) ? body.queries.slice(0, 6) : [],
-      sources: Array.isArray(body.sources) ? body.sources.slice(0, 8) : [],
-    };
-  }
-  history.push({ role: 'user', content: text }, { role: 'assistant', content: body.answer });
-  if (history.length > MAX_HISTORY * 2) history.splice(0, history.length - MAX_HISTORY * 2);
   const elapsed = Date.now() - started;
   console.log('[turn] assistant:', body.answer);
   console.log(`[latency] turn-http=${elapsed}ms server-total=${body?.timings?.totalMs ?? '?'}ms primary=${body?.timings?.primaryMs ?? '?'}ms verifier=${body?.timings?.verifierMs ?? '?'}ms`);
@@ -1572,6 +1578,11 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
         timings.speechEndToPlaybackStartMs = Math.max(0, playbackStartedAt - (timeline.utteranceEndAt || playbackStartedAt));
       },
     });
+    if (!controller.signal.aborted && turnSerial === activeTurnSerial && sessionEpoch === voiceEpoch) {
+      commitConversationTurn(confirmedTranscript, turn);
+    } else {
+      mirrorRuntimeLog('CONTEXT-DROP', `uncommitted interrupted answer utterance=${utteranceId}`);
+    }
     timings.playbackMs = Date.now() - playbackWallStarted;
   } catch (error) {
     pipelineError = String(error?.message || error || '').slice(0, 500);
