@@ -1,0 +1,68 @@
+name: Diagnose production answer smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-production-answer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  greeting:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Greeting
+        shell: bash
+        env:
+          PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+        run: |
+          set -euo pipefail
+          payload='{"text":"こんにちは","history":[]}'
+          out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          echo "$out"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const rescue=String(d.route||'').startsWith('cloudflare-region-rescue:');if(!d.ok||!(d.route==='gemini-native-interactions'||rescue)||d.search!==false||!String(d.answer||'').trim())throw new Error(process.env.OUT);"
+
+  arithmetic:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Arithmetic
+        shell: bash
+        env:
+          PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+        run: |
+          set -euo pipefail
+          payload='{"text":"12345÷15","history":[]}'
+          out="$(curl -fsS --max-time 45 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          echo "$out"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!d.ok||d.route!=='deterministic-arithmetic'||d.search!==false||d.genericVerificationAttempted!==false||d.genericVerificationSucceeded!==false||d.generationProvider!=='local'||d.generationModel!=='deterministic-arithmetic-v1'||!Number.isFinite(d.timings?.primaryMs)||!Number.isFinite(d.timings?.verifierMs)||!String(d.answer||'').includes('823'))throw new Error(process.env.OUT);"
+
+  weather:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Weather
+        shell: bash
+        env:
+          PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+        run: |
+          set -euo pipefail
+          payload='{"text":"別府市の今日の天気は？","history":[]}'
+          out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          echo "$out"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const rescue=String(d.route||'').startsWith('cloudflare-region-rescue:');const groundingRecovery=d.route==='gemini-generate-content-grounding-recovery';if(!d.ok||!(d.route==='gemini-native-interactions'||groundingRecovery||rescue)||d.search!==true||d.personalizationRevision!=='talksys-v87-jst-location-personalization-r1'||!String(d.answer||'').trim()||(!rescue&&(d.nativeGoogleSearch!==true||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'))||(groundingRecovery&&d.generationTransport!=='generateContent')||(rescue&&d.generationProvider!=='workers-ai'))throw new Error(process.env.OUT);"
+
+  context-followup:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Context followup
+        shell: bash
+        env:
+          PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+        run: |
+          set -euo pipefail
+          payload='{"text":"どれがいい？","history":[{"role":"user","content":"大学のレポート用に中古ノートPCを探してる。予算は3万円。"},{"role":"assistant","content":"Officeとブラウザ中心ですね。"}]}'
+          out="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/api/turn")"
+          echo "$out"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const a=String(d.answer||'');const rescue=String(d.route||'').startsWith('cloudflare-region-rescue:');if(!d.ok||!(d.route==='gemini-native-interactions'||rescue)||a.length<8||d.personalizationRevision!=='talksys-v87-jst-location-personalization-r1'||/何について|もう少し詳しく|詳しく教えて/.test(a)||(!rescue&&(d.search!==false||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'))||(rescue&&d.generationProvider!=='workers-ai'))throw new Error(process.env.OUT);"
