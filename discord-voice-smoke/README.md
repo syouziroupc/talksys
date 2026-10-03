@@ -166,3 +166,16 @@ LATENCY
 - `LATENCY` は capture / STT / turn / TTS / speech-end-to-playback / total の最終要約。
 
 Discordのライブ表示は直近18行、本文1750文字に制限し、詳細な全ログはコンソールおよび既存のvoice metrics側に残します。ログ追加によってDiscordメッセージ上限を超えない設計です。
+
+
+## v112 起動時の「応答なし」対策
+
+`update-and-start.ps1` は更新処理だけを担当し、長時間動作する `start.ps1` supervisor は別PowerShellプロセスで起動します。更新スクリプト自身は起動成功後すぐに終了するため、正常な常駐Botを「アプリケーションが応答しない」と誤認しにくくなります。
+
+再起動前に次を検証します。
+
+- `DISCORD_TOKEN`: Windows DPAPI保存済みのDiscord Bot Token。未保存なら旧Botは停止しません。
+- `DISCORD_BRIDGE_TOKEN`: Workerとbridgeで共有する保存済みtoken。未保存なら旧Botは停止しません。
+- `DISCORD_TOKEN` はDiscord REST API `/users/@me` で実際に有効か確認してから旧Botを停止します。
+
+不足時は、Discord Bot Tokenについては一度 `start.ps1` を対話実行して保存し、bridge tokenについては `setup-bridge-secret.ps1` を実行します。

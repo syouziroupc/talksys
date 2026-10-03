@@ -63,6 +63,10 @@ Write-Host "[ok] TalkSys revision: $revision"
 if (-not $env:DISCORD_TOKEN) {
   $env:DISCORD_TOKEN = Get-TalkSysPersistedSecret 'discord-bot-token'
 }
+if (-not $env:DISCORD_TOKEN) {
+  Write-Host "[setup] Discord Bot Token is not saved yet. Enter it once; it will be protected with Windows DPAPI." -ForegroundColor Yellow
+  $env:DISCORD_TOKEN = Read-TalkSysSecret 'discord-bot-token' 'Discord Bot Token'
+}
 if (-not $env:DISCORD_BRIDGE_TOKEN) {
   $env:DISCORD_BRIDGE_TOKEN = Get-TalkSysPersistedSecret 'discord-bridge-token'
 }
@@ -142,6 +146,13 @@ if ($oldBridges.Count -gt 0) {
   Write-Host "[ok] previous bridge and supervisor fully stopped"
 }
 
-Write-Host "[start] launching Discord voice bridge..."
-& powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\start.ps1"
-exit $LASTEXITCODE
+Write-Host "[start] launching Discord voice bridge supervisor..."
+$launcher = Join-Path $PSScriptRoot 'start.ps1'
+$child = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+  '-NoProfile',
+  '-ExecutionPolicy', 'Bypass',
+  '-File', $launcher
+) -PassThru
+Write-Host "[ok] Discord voice bridge supervisor started pid=$($child.Id)"
+Write-Host "[ok] updater is exiting normally; the bridge continues in the child process."
+exit 0
