@@ -4,6 +4,15 @@ $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 . "$PSScriptRoot\secret-store.ps1"
 
+$supervisorLogDir = Join-Path $env:LOCALAPPDATA 'TalkSys'
+$supervisorLogFile = Join-Path $supervisorLogDir 'supervisor.log'
+New-Item -ItemType Directory -Path $supervisorLogDir -Force | Out-Null
+function Write-SupervisorLog {
+  param([Parameter(Mandatory=$true)][string]$Message)
+  $stamp = (Get-Date).ToString('o')
+  try { Add-Content -LiteralPath $supervisorLogFile -Value ("$stamp $Message") -Encoding UTF8 } catch {}
+}
+
 function Require-Node {
   try {
     $versionText = (& node --version).Trim().TrimStart('v')
@@ -105,6 +114,7 @@ while ($true) {
   $startedAt = Get-Date
   Write-Host "[supervisor] starting Discord bridge process..."
   $proc = Start-Process -FilePath 'node.exe' -ArgumentList @($entry) -PassThru -NoNewWindow
+  Write-SupervisorLog "START pid=$($proc.Id) entry=$entry"
   $hung = $false
   $heartbeatSeen = $false
 
@@ -134,6 +144,7 @@ while ($true) {
         if ($stageBlocking -and $stage -and $stage -ne 'idle' -and $stageAgeSeconds -gt $deadlineSeconds) {
           $hung = $true
           Write-Warning "[supervisor] blocking pipeline stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s deadline=$([math]::Round($deadlineSeconds,1))s; requesting Discord bridge shutdown pid=$($proc.Id)"
+          Write-SupervisorLog "STUCK pid=$($proc.Id) stage=$stage age=$([math]::Round($stageAgeSeconds,1)) deadline=$([math]::Round($deadlineSeconds,1)) heartbeat=$((Get-Content -LiteralPath $heartbeatFile -Raw -ErrorAction SilentlyContinue))"
           Stop-TalkSysBridgeGracefully -Process $proc -Reason "pipeline-stage-stuck:$stage"
           break
         }
@@ -145,6 +156,7 @@ while ($true) {
     if (-not $hung -and $null -ne $ageSeconds -and $ageSeconds -gt 20) {
       $hung = $true
       Write-Warning "[supervisor] heartbeat stale $([math]::Round($ageSeconds,1))s; requesting hung Discord bridge shutdown pid=$($proc.Id)"
+      Write-SupervisorLog "HEARTBEAT_STALE pid=$($proc.Id) age=$([math]::Round($ageSeconds,1)) heartbeat=$((Get-Content -LiteralPath $heartbeatFile -Raw -ErrorAction SilentlyContinue))"
       Stop-TalkSysBridgeGracefully -Process $proc -Reason "heartbeat-stale"
       break
     }
@@ -157,6 +169,7 @@ while ($true) {
 
   if ($exitCode -eq 0 -and -not $hung) {
     Write-Host "[supervisor] Discord bridge stopped normally."
+    Write-SupervisorLog "STOP_NORMAL pid=$($proc.Id) uptime=$([math]::Round($uptimeSeconds,1))"
     exit 0
   }
 
@@ -164,6 +177,7 @@ while ($true) {
   $rapidFailures += 1
   $delaySeconds = if ($hung) { 2 } else { [math]::Min(60, [math]::Pow(2, [math]::Min($rapidFailures, 5))) }
   Write-Warning "[supervisor] Discord bridge stopped code=$exitCode hung=$hung uptime=$([math]::Round($uptimeSeconds, 1))s. Restarting in $delaySeconds seconds..."
+  Write-SupervisorLog "RESTART pid=$($proc.Id) code=$exitCode hung=$hung uptime=$([math]::Round($uptimeSeconds,1)) delay=$delaySeconds"
   if ($rapidFailures -ge 12) {
     throw "Discord bridgeが短時間に12回連続で異常終了しました。上のログを確認してください。"
   }

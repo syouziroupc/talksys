@@ -17,7 +17,8 @@ import {
 import prism from 'prism-media';
 import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY, pcm16Level } from '../../src/voice-capture-policy.js';
-import { fastReaction, sameUtterance, classifyVoiceTurn, isIgnorableSttFailure } from '../../src/voice-fast-reaction.js';
+import { fastReaction, sameUtterance, classifyVoiceTurn } from '../../src/voice-fast-reaction.js';
+import { arbitrateSuccessfulTranscript, classifySttFailure, rescueFailedWhisper } from '../../src/voice-transcript-arbiter.js';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -31,6 +32,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-resilience-r5';
+const DISCORD_STABILITY_PATCH_REVISION = 'talksys-r5-stability-coordinator-p1';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -149,8 +151,14 @@ function writeBridgeHeartbeat() {
       stageBlocking: Boolean(stage),
       stageDeadlineMs: stage?.deadlineMs || 0,
       voice: connection?.state?.status || 'none',
+      player: player.state.status,
       captures: sessions.size,
+      answering,
+      queued: pendingTurns.length,
+      activeUtterance: activeUserUtteranceId || '',
+      logPending: discordLogQueue.length,
       revision: DISCORD_BRIDGE_REVISION,
+      stabilityPatch: DISCORD_STABILITY_PATCH_REVISION,
     }));
   } catch (error) {
     process.stderr.write('[heartbeat] write failed: ' + String(error?.message || error) + '\n');
@@ -604,6 +612,7 @@ async function attachRuntimeLogChannel(channel, { persist = true } = {}) {
   if (persist) persistRuntimeLogChannelId(channel.id);
   mirrorRuntimeLog('LOG', `Discord log channel attached id=${channel.id}`);
   mirrorRuntimeLog('BOOT', `bridge=${DISCORD_BRIDGE_REVISION}`);
+mirrorRuntimeLog('BOOT', `stabilityPatch=${DISCORD_STABILITY_PATCH_REVISION}`);
   mirrorRuntimeLog('BOOT', `TalkSys=${TALKSYS_BASE_URL}`);
   mirrorRuntimeLog('BOOT', `ttsPrimary=${process.platform === 'win32' ? 'windows-system-speech' : 'cloudflare-melotts'}`);
   scheduleRuntimeLogFlush();
@@ -748,6 +757,7 @@ function handleRealtimeMessage(helper, data) {
   if (/SpeechStarted/i.test(type)) {
     helper.finalParts = [];
     helper.interim = '';
+    if (helper.active) helper.active.realtimeSpeechStartedAt = Date.now();
     return;
   }
   if (transcript) {
@@ -763,7 +773,7 @@ function handleRealtimeMessage(helper, data) {
     if (payload?.is_final && transcript && !helper.finalParts.includes(transcript)) helper.finalParts.push(transcript);
     if (payload?.speech_final) {
       const text = [...helper.finalParts, (!payload?.is_final && transcript ? transcript : '')].filter(Boolean).join(' ').trim() || transcript;
-      if (text) triggerWebFastReaction(helper, text);
+      if (text && helper.active) helper.active.latestRealtimeTranscript = text;
       helper.finalParts = [];
       helper.interim = '';
     }
@@ -771,7 +781,7 @@ function handleRealtimeMessage(helper, data) {
   }
   if (/UtteranceEnd/i.test(type)) {
     const text = helper.finalParts.join(' ').trim() || helper.interim;
-    if (text) triggerWebFastReaction(helper, text);
+    if (text && helper.active) helper.active.latestRealtimeTranscript = text;
     helper.finalParts = [];
     helper.interim = '';
   }
@@ -833,6 +843,7 @@ function beginRealtimeUtterance(userId, meta) {
     latestRealtimeTranscript: '',
     latestRealtimeConfidence: null,
     realtimeWords: [],
+    realtimeSpeechStartedAt: 0,
     bargeInVoicedMs: 0,
     bargeInArmed: false,
     bargeInArmedAt: 0,
@@ -1271,6 +1282,10 @@ async function synthesize(text, signal, meta = {}) {
       return local;
     } catch (localError) {
       const detail = String(localError?.message || localError || '');
+      if (signal?.aborted || localError?.name === 'AbortError' || /(?:^|\b)abort(?:ed)?(?:\b|$)/i.test(detail)) {
+        mirrorRuntimeLog('TTS', 'Windows local cancelled; fallback suppressed');
+        throw localError;
+      }
       console.warn('[tts] Windows System.Speech failed; trying Cloudflare MeloTTS:', detail);
       mirrorRuntimeLog('TTS-ERROR', `Windows local failed: ${detail.slice(0, 180)}`);
       mirrorRuntimeLog('TTS', 'Windows local failed -> Cloudflare recovery');
@@ -1620,7 +1635,23 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
     let correctedTranscript = correction.correctedTranscript || rawTranscript;
     let correctionReason = correction.correctionReason || '';
     if (correctionReason) mirrorRuntimeLog('STT-CORRECT', correctionReason + ': "' + rawTranscript + '" -> "' + correctedTranscript + '"');
-    const echoRecord = looksLikeRecentBotEcho(rawTranscript, timeline);
+    const arbitration = arbitrateSuccessfulTranscript({ whisperText: correctedTranscript, captureMetrics, timeline });
+    mirrorRuntimeLog('STT-ARBITER', arbitration.action + ' reason=' + arbitration.reason
+      + ' whisper="' + correctedTranscript + '" realtime="' + String(captureMetrics?.realtimeTranscript || '') + '"');
+    if (arbitration.action === 'drop') {
+      activeFastReaction?.stop?.('stt-conflict');
+      activeFastReaction = null;
+      if (!answering && player.state.status !== AudioPlayerStatus.Playing) {
+        await speakRecoveryPrompt('stt-transcript-conflict', sessionEpoch, timeline.utteranceEndAt || 0);
+      }
+      return;
+    }
+    if (arbitration.action === 'accept-realtime') {
+      correctedTranscript = arbitration.text;
+      correctionReason = [correctionReason, arbitration.reason].filter(Boolean).join(';');
+    }
+
+    const echoRecord = looksLikeRecentBotEcho(correctedTranscript, timeline);
     if (echoRecord) {
       console.warn(`[echo-guard] suppressed bot echo utterance=${utteranceId} purpose=${echoRecord.purpose}: ${stt.confirmedTranscript}`);
       mirrorRuntimeLog('ECHO', `suppressed ${echoRecord.purpose}: ${stt.confirmedTranscript}`);
@@ -1688,19 +1719,21 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
     }).catch(() => {});
     activeFastReaction?.stop?.('stt-failed');
     activeFastReaction = null;
-    if (isIgnorableSttFailure(message)) {
-      const realtimeRescue = String(captureMetrics?.realtimeTranscript || '').trim();
-      const rescuePolicy = classifyVoiceTurn(realtimeRescue, {
+    const failureKind = classifySttFailure(message);
+    const rescue = rescueFailedWhisper({ error: message, captureMetrics, timeline });
+    mirrorRuntimeLog('STT-ARBITER', `failure=${failureKind} action=${rescue.action} reason=${rescue.reason}`);
+    if (rescue.action === 'accept-realtime') {
+      const rescuePolicy = classifyVoiceTurn(rescue.text, {
         answerInFlight: answering || player.state.status === AudioPlayerStatus.Playing,
       });
-      if (realtimeRescue && rescuePolicy.action === 'answer') {
-        mirrorRuntimeLog('STT-RESCUE', `Whisper failed -> realtime: ${realtimeRescue}`);
+      if (rescuePolicy.action === 'answer') {
+        mirrorRuntimeLog('STT-RESCUE', `safe realtime rescue: ${rescue.text}`);
         await processConfirmedTranscript({
-          confirmedTranscript: realtimeRescue,
-          rawTranscript: realtimeRescue,
-          correctedTranscript: realtimeRescue,
-          correctionReason: 'realtime-rescue-after-whisper-failure',
-          fastReaction: fastReaction(realtimeRescue),
+          confirmedTranscript: rescue.text,
+          rawTranscript: rescue.text,
+          correctedTranscript: rescue.text,
+          correctionReason: rescue.reason,
+          fastReaction: fastReaction(rescue.text),
           userId,
           sessionEpoch,
           utteranceId,
@@ -1710,7 +1743,9 @@ async function handleCapturedUtterance({ pcm, userId, sessionEpoch, utteranceId,
         });
         return;
       }
-      mirrorRuntimeLog('DROP', `ignorable STT failure without usable realtime text: ${message}`);
+    }
+    if (['no-speech', 'hallucination', 'weak-speech'].includes(failureKind)) {
+      mirrorRuntimeLog('DROP', `unsafe STT rescue blocked kind=${failureKind}: ${message}`);
       return;
     }
     await speakRecoveryPrompt('stt-failed', sessionEpoch, timeline.utteranceEndAt || 0);
@@ -1846,7 +1881,8 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
     const realtimeConfidence = realtimeActive && Number.isFinite(Number(realtimeActive.latestRealtimeConfidence))
       ? Number(realtimeActive.latestRealtimeConfidence) : null;
     const realtimeWords = realtimeActive && Array.isArray(realtimeActive.realtimeWords) ? realtimeActive.realtimeWords.slice(0,120) : [];
-    if (realtimeActive && realtimeTranscript) {
+    const realtimeSpeechStartedAt = Number(realtimeActive?.realtimeSpeechStartedAt || 0);
+    if (realtimeActive && realtimeTranscript && realtimeSpeechStartedAt) {
       triggerWebFastReaction(realtimeHelper, realtimeTranscript, 'capture-finalize');
     }
     if (realtimeActive) realtimeHelper.active = null;
@@ -1862,6 +1898,7 @@ function startReceiverSession(userId, speakingNow = false, options = {}) {
       realtimeTranscript,
       realtimeConfidence,
       realtimeWords,
+      realtimeSpeechStartedAt,
       bargeInTriggerMs: Number(timeline.bargeInTriggerMs) || 0,
     };
     console.log(`[capture] finalized utterance=${utteranceId} reason=${reason} duration=${captureMetrics.durationMs}ms pcm=${pcm.length}B transport-gated=true botOverlap=${overlappedBotPlayback}`);
