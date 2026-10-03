@@ -19,6 +19,7 @@ import ffmpegPath from 'ffmpeg-static';
 import { WEB_VOICE_CAPTURE_POLICY, pcm16Level } from '../../src/voice-capture-policy.js';
 import { fastReaction, sameUtterance, classifyVoiceTurn } from '../../src/voice-fast-reaction.js';
 import { arbitrateSuccessfulTranscript, classifySttFailure, rescueFailedWhisper } from '../../src/voice-transcript-arbiter.js';
+import { guardFfmpegStdin } from './ffmpeg-stdin.mjs';
 
 const required = ['DISCORD_TOKEN', 'DISCORD_BRIDGE_TOKEN'];
 for (const key of required) {
@@ -32,7 +33,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const TALKSYS_BASE_URL = (process.env.TALKSYS_BASE_URL || 'https://talksys.syouziroupc.workers.dev').replace(/\/$/, '');
 const BRIDGE_TOKEN = process.env.DISCORD_BRIDGE_TOKEN;
 const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-resilience-r5';
-const DISCORD_STABILITY_PATCH_REVISION = 'talksys-r5-stability-coordinator-p1';
+const DISCORD_STABILITY_PATCH_REVISION = 'talksys-r5-stability-coordinator-p2-stdin-fast-reaction';
 const MAX_HISTORY = 14;
 const RECEIVER_PACKET_START_TIMEOUT_MS = 5000;
 const VOICE_REJOIN_TIMEOUT_MS = 10000;
@@ -774,6 +775,7 @@ function handleRealtimeMessage(helper, data) {
     if (payload?.speech_final) {
       const text = [...helper.finalParts, (!payload?.is_final && transcript ? transcript : '')].filter(Boolean).join(' ').trim() || transcript;
       if (text && helper.active) helper.active.latestRealtimeTranscript = text;
+      if (text) triggerWebFastReaction(helper, text, 'speech-final');
       helper.finalParts = [];
       helper.interim = '';
     }
@@ -782,6 +784,7 @@ function handleRealtimeMessage(helper, data) {
   if (/UtteranceEnd/i.test(type)) {
     const text = helper.finalParts.join(' ').trim() || helper.interim;
     if (text && helper.active) helper.active.latestRealtimeTranscript = text;
+    if (text) triggerWebFastReaction(helper, text, 'utterance-end');
     helper.finalParts = [];
     helper.interim = '';
   }
@@ -1357,6 +1360,13 @@ async function playMp3(mp3, options = {}) {
     console.log(`[latency] ffmpeg-first-output=${ffmpegSpawnMs}ms`);
   });
   ffmpeg.on('error', (error) => console.error('[ffmpeg]', error.message));
+  guardFfmpegStdin(ffmpeg.stdin, {
+    onExpected: (error) => mirrorRuntimeLog('FFMPEG-STDIN', `expected close code=${error?.code || '-'} message=${error?.message || error}`),
+    onUnexpected: (error) => {
+      console.error('[ffmpeg-stdin]', error?.message || error);
+      mirrorRuntimeLog('ERROR', `ffmpeg stdin: ${error?.message || error}`);
+    },
+  });
   ffmpeg.stdin.end(mp3);
 
   const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
