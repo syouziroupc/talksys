@@ -1494,6 +1494,15 @@ async function processConfirmedTranscript({ confirmedTranscript, rawTranscript =
     mirrorRuntimeLog('DROP', `bot-overlap-unconfirmed: ${confirmedTranscript}`);
     return;
   }
+
+  // A final accepted user utterance that began while the bot was audibly
+  // speaking is authoritative barge-in evidence. Preempt the old answer once,
+  // then process this same utterance as the new turn instead of buffering it.
+  if (answering && captureMetrics?.overlappedBotPlayback) {
+    const interrupted = interruptActiveAnswer('confirmed-transcript-barge-in');
+    if (interrupted) mirrorRuntimeLog('BARGE', `confirmed transcript preempted prior answer utterance=${utteranceId}`);
+  }
+
   if (answering) {
     const nextTurn = { confirmedTranscript, rawTranscript, correctedTranscript, correctionReason, fastReaction: reaction, userId, sessionEpoch, utteranceId, timeline, captureMetrics, sttMeta };
     if (pendingTurns.length === 0) pendingTurns.push(nextTurn);
