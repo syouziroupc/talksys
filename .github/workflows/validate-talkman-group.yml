@@ -1,13 +1,23 @@
-name: Validate TalkMan group runtime
+name: Validate unified TalkSys TalkMan runtime
 
 on:
   push:
     branches:
-      - feature/talkman-group-v1
+      - main
+      - feature/unified-talkbot-v1
     paths:
       - discord-voice-smoke/src/build-talkman.mjs
       - discord-voice-smoke/src/build-talkman-runtime.mjs
-      - discord-voice-smoke/start-talkman.ps1
+      - discord-voice-smoke/start.ps1
+      - tests/discord-talkman-builder.test.mjs
+      - tests/discord-talkman-runtime-hardening.test.mjs
+      - .github/workflows/validate-talkman-group.yml
+      - discord-voice-smoke/src/index.mjs
+  pull_request:
+    paths:
+      - discord-voice-smoke/src/build-talkman.mjs
+      - discord-voice-smoke/src/build-talkman-runtime.mjs
+      - discord-voice-smoke/start.ps1
       - tests/discord-talkman-builder.test.mjs
       - tests/discord-talkman-runtime-hardening.test.mjs
       - .github/workflows/validate-talkman-group.yml
@@ -15,7 +25,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  talkman:
+  unified-discord:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,14 +36,23 @@ jobs:
         run: |
           node --check discord-voice-smoke/src/build-talkman.mjs
           node --check discord-voice-smoke/src/build-talkman-runtime.mjs
-      - name: Generate isolated TalkMan runtime
+      - name: Generate unified runtime
         run: node discord-voice-smoke/src/build-talkman-runtime.mjs
       - name: Check generated runtime syntax
         run: node --check discord-voice-smoke/src/index-talkman.generated.mjs
+      - name: Verify both slash commands exist in generated runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F "name: 'talksys'" discord-voice-smoke/src/index-talkman.generated.mjs
+          grep -F "name: 'talkman'" discord-voice-smoke/src/index-talkman.generated.mjs
+          grep -F "interaction.commandName === 'talksys' || interaction.commandName === 'talkman'" discord-voice-smoke/src/index-talkman.generated.mjs
       - name: Run TalkMan regression tests
         run: node --test tests/discord-talkman-builder.test.mjs tests/discord-talkman-runtime-hardening.test.mjs
-      - name: Parse PowerShell launcher
+      - name: Parse unified PowerShell launcher
         shell: pwsh
         run: |
-          $text = Get-Content -LiteralPath discord-voice-smoke/start-talkman.ps1 -Raw
+          $text = Get-Content -LiteralPath discord-voice-smoke/start.ps1 -Raw
           [void][scriptblock]::Create($text)
+          if ($text -notmatch 'build-talkman-runtime\.mjs') { throw 'start.ps1 does not build unified runtime' }
+          if ($text -notmatch 'index-talkman\.generated\.mjs') { throw 'start.ps1 does not launch unified runtime' }
