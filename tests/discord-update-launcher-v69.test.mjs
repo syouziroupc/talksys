@@ -45,10 +45,12 @@ test('Discord launcher supervises exits and hung bridge heartbeat/stage states',
 });
 
 
-test('Discord updater gracefully stops the old bridge and supervisor before restart', () => {
+test('Discord updater gracefully stops legacy or unified bridge and supervisor before restart', () => {
   assert.match(updater, /Get-CimInstance Win32_Process/);
   assert.match(updater, /Name = 'node\.exe'/);
   assert.match(updater, /\[regex\]::Escape\(\$entry\)/);
+  assert.match(updater, /\[regex\]::Escape\(\$unifiedEntry\)/);
+  assert.match(updater, /\$unifiedEntryPattern/);
   assert.match(updater, /Get-ExistingSupervisors/);
   assert.match(updater, /talksys-discord-shutdown\.txt/);
   assert.match(updater, /updater-graceful-restart/);
@@ -56,4 +58,6 @@ test('Discord updater gracefully stops the old bridge and supervisor before rest
   assert.match(updater, /二重起動を避けるため新Botは起動しません/);
   assert.doesNotMatch(updater, /Stop-Process -Id \$proc\.ProcessId -Force/);
   assert.match(updater, /src\\index\.mjs/);
+  assert.match(updater, /src\\index-talkman\.generated\.mjs/);
+  assert.match(updater, /\^\(\?:powershell\|pwsh\)\\\.exe\$/);
 });

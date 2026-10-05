@@ -65,11 +65,33 @@ if ($needsInstall) {
   Write-Host "[ok] Discord dependencies unchanged; skipping npm install"
 }
 
-Write-Host "[start] Discord voice smoke"
-Write-Host "[start] TalkSys: $env:TALKSYS_BASE_URL"
-Write-Host "[start] mode: /talksys joins caller VC; /leave disconnects; TalkSys STT/turn/TTS permanent bridge auth"
+$builder = Join-Path $PSScriptRoot 'src\build-talkman-runtime.mjs'
+$entry = Join-Path $PSScriptRoot 'src\index-talkman.generated.mjs'
 
-$entry = Join-Path $PSScriptRoot 'src\index.mjs'
+function Build-UnifiedDiscordBridge {
+  if (-not (Test-Path $builder)) {
+    throw "TalkSys/TalkMan builder が見つかりません: $builder"
+  }
+
+  Write-Host "[build] generating unified TalkSys/TalkMan runtime..."
+  & node.exe $builder
+  if ($LASTEXITCODE -ne 0) {
+    throw "TalkSys/TalkMan統合ランタイムの生成に失敗しました。元の index.mjs は変更していません。"
+  }
+  if (-not (Test-Path $entry)) {
+    throw "TalkSys/TalkMan統合ランタイムが生成されませんでした: $entry"
+  }
+
+  & node.exe --check $entry
+  if ($LASTEXITCODE -ne 0) {
+    throw "生成したTalkSys/TalkMan統合ランタイムの構文検査に失敗しました。"
+  }
+}
+
+Write-Host "[start] Discord TalkSys/TalkMan unified bridge"
+Write-Host "[start] TalkSys: $env:TALKSYS_BASE_URL"
+Write-Host "[start] mode: /talksys=classic assistant; /talkman=group participant; /leave=disconnect"
+
 $heartbeatFile = Join-Path $env:TEMP 'talksys-discord-heartbeat.json'
 $shutdownFile = Join-Path $env:TEMP 'talksys-discord-shutdown.txt'
 $env:TALKSYS_BRIDGE_HEARTBEAT_FILE = $heartbeatFile
@@ -109,10 +131,11 @@ function Stop-TalkSysBridgeGracefully {
 }
 
 while ($true) {
+  Build-UnifiedDiscordBridge
   if (Test-Path $heartbeatFile) { Remove-Item $heartbeatFile -Force -ErrorAction SilentlyContinue }
   if (Test-Path $shutdownFile) { Remove-Item $shutdownFile -Force -ErrorAction SilentlyContinue }
   $startedAt = Get-Date
-  Write-Host "[supervisor] starting Discord bridge process..."
+  Write-Host "[supervisor] starting Discord bridge process (TalkSys/TalkMan unified)..."
   $proc = Start-Process -FilePath 'node.exe' -ArgumentList @($entry) -PassThru -NoNewWindow
   Write-SupervisorLog "START pid=$($proc.Id) entry=$entry"
   $hung = $false

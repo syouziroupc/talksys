@@ -83,25 +83,31 @@ try {
 }
 Write-Host "[ok] restart preflight: Discord secrets available"
 
-# Graceful handoff: killing only node.exe causes the old start.ps1 supervisor
-# to respawn its child while a new supervisor starts. The bridge already
-# supports a shutdown-file request and exits 0; its parent then exits 0 too.
+# Graceful handoff: during the first unified deployment the live bridge may
+# still be the legacy index.mjs process. After cutover it is the generated
+# unified runtime. Detect both so an update can never leave a second bot alive.
 $entry = Join-Path $PSScriptRoot 'src\index.mjs'
+$unifiedEntry = Join-Path $PSScriptRoot 'src\index-talkman.generated.mjs'
 $entryPattern = [regex]::Escape($entry)
+$unifiedEntryPattern = [regex]::Escape($unifiedEntry)
 $supervisorPath = Join-Path $PSScriptRoot 'start.ps1'
 $supervisorPattern = [regex]::Escape($supervisorPath)
 $shutdownFile = Join-Path $env:TEMP 'talksys-discord-shutdown.txt'
 
 function Get-ExistingBridges {
   return @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match $entryPattern })
+    Where-Object {
+      $_.CommandLine -and (
+        $_.CommandLine -match $entryPattern -or
+        $_.CommandLine -match $unifiedEntryPattern
+      )
+    })
 }
 function Get-ExistingSupervisors {
   return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
       $_.ProcessId -ne $PID -and
-      $_.Name -match '^(?:powershell|pwsh)\.exe
- -and
+      $_.Name -match '^(?:powershell|pwsh)\.exe$' -and
       $_.CommandLine -and
       $_.CommandLine -match $supervisorPattern
     })
