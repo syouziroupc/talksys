@@ -135,7 +135,7 @@ while ($true) {
   if (Test-Path $heartbeatFile) { Remove-Item $heartbeatFile -Force -ErrorAction SilentlyContinue }
   if (Test-Path $shutdownFile) { Remove-Item $shutdownFile -Force -ErrorAction SilentlyContinue }
   $startedAt = Get-Date
-  Write-Host "[supervisor] starting unified Discord bridge process..."
+  Write-Host "[supervisor] starting Discord bridge process (TalkSys/TalkMan unified)..."
   $proc = Start-Process -FilePath 'node.exe' -ArgumentList @($entry) -PassThru -NoNewWindow
   Write-SupervisorLog "START pid=$($proc.Id) entry=$entry"
   $hung = $false
