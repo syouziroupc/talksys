@@ -53,7 +53,7 @@ export function buildTalkmanSource(input) {
     "  activeUserText = '';\n  activeUserUtteranceId = '';",
     "  activeUserText = '';\n  activeUserId = '';\n  activeUserUtteranceId = '';",
     'reset active user id',
-    3,
+    2,
   );
 
   const helpers = `
