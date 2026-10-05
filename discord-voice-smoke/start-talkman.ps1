@@ -4,15 +4,6 @@ $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 . "$PSScriptRoot\secret-store.ps1"
 
-$supervisorLogDir = Join-Path $env:LOCALAPPDATA 'TalkSys'
-$supervisorLogFile = Join-Path $supervisorLogDir 'supervisor-talkman.log'
-New-Item -ItemType Directory -Path $supervisorLogDir -Force | Out-Null
-function Write-SupervisorLog {
-  param([Parameter(Mandatory=$true)][string]$Message)
-  $stamp = (Get-Date).ToString('o')
-  try { Add-Content -LiteralPath $supervisorLogFile -Value ("$stamp $Message") -Encoding UTF8 } catch {}
-}
-
 function Require-Node {
   try {
     $versionText = (& node --version).Trim().TrimStart('v')
@@ -50,7 +41,7 @@ $installedHash = if (Test-Path $dependencyStamp) { (Get-Content $dependencyStamp
 $needsInstall = (-not (Test-Path $nodeModules)) -or ($installedHash -ne $packageHash)
 
 if ($needsInstall) {
-  Write-Host "[setup] installing Discord smoke dependencies..."
+  Write-Host "[setup] installing Discord dependencies..."
   npm install --no-audit --no-fund
   if ($LASTEXITCODE -ne 0) {
     Write-Warning "通常のnpm installが失敗したため、peer dependency競合を無視して再試行します。"
@@ -60,55 +51,91 @@ if ($needsInstall) {
     }
   }
   Set-Content -Path $dependencyStamp -Value $packageHash -NoNewline
-  Write-Host "[ok] Discord dependencies installed for current package.json"
 } else {
   Write-Host "[ok] Discord dependencies unchanged; skipping npm install"
 }
 
-Write-Host "[build] generating isolated TalkMan bridge..."
-& node.exe "$PSScriptRoot\src\build-talkman.mjs"
-if ($LASTEXITCODE -ne 0) {
-  throw "TalkManブリッジの生成に失敗しました。現行index.mjsは変更していません。"
+$builder = Join-Path $PSScriptRoot 'src\build-talkman-runtime.mjs'
+if (-not (Test-Path $builder)) {
+  throw "TalkMan builder が見つかりません: $builder"
 }
 
-Write-Host "[start] Discord TalkMan group bridge"
-Write-Host "[start] TalkSys: $env:TALKSYS_BASE_URL"
-Write-Host "[start] mode: /talkman=group chat; /talksys=classic; /leave=disconnect"
+Write-Host "[build] generating isolated TalkMan runtime..."
+& node $builder
+if ($LASTEXITCODE -ne 0) {
+  throw "TalkMan runtime の生成に失敗しました。現行 index.mjs は変更していません。"
+}
 
 $entry = Join-Path $PSScriptRoot 'src\index-talkman.generated.mjs'
-$heartbeatFile = Join-Path $env:TEMP 'talksys-discord-heartbeat.json'
-$shutdownFile = Join-Path $env:TEMP 'talksys-discord-shutdown.txt'
+if (-not (Test-Path $entry)) {
+  throw "TalkMan runtime が生成されませんでした: $entry"
+}
+
+# Never run the stable TalkSys bridge and the TalkMan bridge with the same bot
+# token at the same time. Refuse rather than killing a known-good process.
+$existingNodes = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+  Where-Object {
+    $_.CommandLine -and (
+      $_.CommandLine -match 'discord-voice-smoke[\\/]src[\\/]index\.mjs' -or
+      $_.CommandLine -match 'index-talkman\.generated\.mjs'
+    )
+  })
+$stableSupervisorPath = [regex]::Escape((Join-Path $PSScriptRoot 'start.ps1'))
+$talkmanSupervisorPath = [regex]::Escape((Join-Path $PSScriptRoot 'start-talkman.ps1'))
+$existingSupervisors = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {
+    $_.ProcessId -ne $PID -and
+    $_.Name -match '^(?:powershell|pwsh)\.exe$' -and
+    $_.CommandLine -and (
+      $_.CommandLine -match $stableSupervisorPath -or
+      $_.CommandLine -match $talkmanSupervisorPath
+    )
+  })
+if ($existingNodes.Count -gt 0 -or $existingSupervisors.Count -gt 0) {
+  throw "既存のTalkSys/TalkMan BotまたはSupervisorが動作中です。二重接続を防ぐため、先に既存のBotウィンドウを終了してください。"
+}
+
+$stateDir = Join-Path $env:LOCALAPPDATA 'TalkSys'
+$supervisorLogFile = Join-Path $stateDir 'talkman-supervisor.log'
+New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+
+function Write-SupervisorLog {
+  param([Parameter(Mandatory=$true)][string]$Message)
+  try {
+    Add-Content -LiteralPath $supervisorLogFile -Value ("{0} {1}" -f (Get-Date).ToString('o'), $Message) -Encoding UTF8
+  } catch {}
+}
+
+$heartbeatFile = Join-Path $env:TEMP 'talkman-discord-heartbeat.json'
+$shutdownFile = Join-Path $env:TEMP 'talkman-discord-shutdown.txt'
 $env:TALKSYS_BRIDGE_HEARTBEAT_FILE = $heartbeatFile
 $env:TALKSYS_BRIDGE_SHUTDOWN_FILE = $shutdownFile
+
+Write-Host "[start] TalkMan group runtime"
+Write-Host "[start] /talkman = group chat, /talksys = existing 1-on-1 behavior"
+Write-Host "[start] TalkMan has no search/wait cue such as '確認してお答えします'"
+Write-Host "[start] source index.mjs remains untouched"
+
 $rapidFailures = 0
 
-function Stop-TalkSysBridgeGracefully {
+function Stop-TalkManBridgeGracefully {
   param(
     [Parameter(Mandatory=$true)]$Process,
     [Parameter(Mandatory=$true)][string]$Reason
   )
-
   try {
     Set-Content -LiteralPath $shutdownFile -Value $Reason -NoNewline -Force
-  } catch {
-    Write-Warning "[supervisor] failed to write graceful shutdown request: $($_.Exception.Message)"
-  }
-
-  $graceDeadline = (Get-Date).AddSeconds(2)
-  while (-not $Process.HasExited -and (Get-Date) -lt $graceDeadline) {
+  } catch {}
+  $deadline = (Get-Date).AddSeconds(2)
+  while (-not $Process.HasExited -and (Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 200
     $Process.Refresh()
   }
-
   if (-not $Process.HasExited) {
-    Write-Warning "[supervisor] graceful shutdown timed out; terminating process tree pid=$($Process.Id)"
-    try {
-      & taskkill.exe /PID $Process.Id /T /F 2>$null | Out-Null
-    } catch {}
+    try { & taskkill.exe /PID $Process.Id /T /F 2>$null | Out-Null } catch {}
     Start-Sleep -Milliseconds 200
     $Process.Refresh()
   }
-
   if (-not $Process.HasExited) {
     Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
   }
@@ -117,8 +144,9 @@ function Stop-TalkSysBridgeGracefully {
 while ($true) {
   if (Test-Path $heartbeatFile) { Remove-Item $heartbeatFile -Force -ErrorAction SilentlyContinue }
   if (Test-Path $shutdownFile) { Remove-Item $shutdownFile -Force -ErrorAction SilentlyContinue }
+
   $startedAt = Get-Date
-  Write-Host "[supervisor] starting TalkMan bridge process..."
+  Write-Host "[supervisor] starting TalkMan bridge..."
   $proc = Start-Process -FilePath 'node.exe' -ArgumentList @($entry) -PassThru -NoNewWindow
   Write-SupervisorLog "START pid=$($proc.Id) entry=$entry"
   $hung = $false
@@ -142,16 +170,16 @@ while ($true) {
           $stageAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$heartbeat.stageAt).LocalDateTime
           $stageAgeSeconds = ((Get-Date) - $stageAt).TotalSeconds
         }
-        $blockingProp = $heartbeat.PSObject.Properties['stageBlocking']
-        $deadlineProp = $heartbeat.PSObject.Properties['stageDeadlineMs']
-        $stageBlocking = if ($blockingProp) { [bool]$blockingProp.Value } else { $stage -and $stage -ne 'idle' }
-        $deadlineMs = if ($deadlineProp -and [double]$deadlineProp.Value -gt 0) { [double]$deadlineProp.Value } else { 30000 }
+        $deadlineMs = if ($heartbeat.stageDeadlineMs -and [double]$heartbeat.stageDeadlineMs -gt 0) {
+          [double]$heartbeat.stageDeadlineMs
+        } else { 30000 }
+        $stageBlocking = if ($null -ne $heartbeat.stageBlocking) { [bool]$heartbeat.stageBlocking } else { $stage -and $stage -ne 'idle' }
         $deadlineSeconds = [math]::Max(5, ($deadlineMs / 1000.0) + 5)
         if ($stageBlocking -and $stage -and $stage -ne 'idle' -and $stageAgeSeconds -gt $deadlineSeconds) {
           $hung = $true
-          Write-Warning "[supervisor] blocking pipeline stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s deadline=$([math]::Round($deadlineSeconds,1))s; requesting TalkMan shutdown pid=$($proc.Id)"
-          Write-SupervisorLog "STUCK pid=$($proc.Id) stage=$stage age=$([math]::Round($stageAgeSeconds,1)) deadline=$([math]::Round($deadlineSeconds,1))"
-          Stop-TalkSysBridgeGracefully -Process $proc -Reason "pipeline-stage-stuck:$stage"
+          Write-Warning "[supervisor] TalkMan stage stuck stage=$stage age=$([math]::Round($stageAgeSeconds,1))s"
+          Write-SupervisorLog "STUCK pid=$($proc.Id) stage=$stage age=$([math]::Round($stageAgeSeconds,1))"
+          Stop-TalkManBridgeGracefully -Process $proc -Reason "pipeline-stage-stuck:$stage"
           break
         }
       } catch {}
@@ -161,9 +189,9 @@ while ($true) {
 
     if (-not $hung -and $null -ne $ageSeconds -and $ageSeconds -gt 20) {
       $hung = $true
-      Write-Warning "[supervisor] heartbeat stale $([math]::Round($ageSeconds,1))s; requesting TalkMan shutdown pid=$($proc.Id)"
+      Write-Warning "[supervisor] TalkMan heartbeat stale; restarting"
       Write-SupervisorLog "HEARTBEAT_STALE pid=$($proc.Id) age=$([math]::Round($ageSeconds,1))"
-      Stop-TalkSysBridgeGracefully -Process $proc -Reason "heartbeat-stale"
+      Stop-TalkManBridgeGracefully -Process $proc -Reason "heartbeat-stale"
       break
     }
   }
@@ -182,10 +210,10 @@ while ($true) {
   if ($uptimeSeconds -ge 60) { $rapidFailures = 0 }
   $rapidFailures += 1
   $delaySeconds = if ($hung) { 2 } else { [math]::Min(60, [math]::Pow(2, [math]::Min($rapidFailures, 5))) }
-  Write-Warning "[supervisor] TalkMan bridge stopped code=$exitCode hung=$hung uptime=$([math]::Round($uptimeSeconds, 1))s. Restarting in $delaySeconds seconds..."
-  Write-SupervisorLog "RESTART pid=$($proc.Id) code=$exitCode hung=$hung uptime=$([math]::Round($uptimeSeconds,1)) delay=$delaySeconds"
+  Write-Warning "[supervisor] TalkMan stopped code=$exitCode hung=$hung. Restarting in $delaySeconds seconds..."
+  Write-SupervisorLog "RESTART pid=$($proc.Id) code=$exitCode hung=$hung delay=$delaySeconds"
   if ($rapidFailures -ge 12) {
-    throw "TalkMan bridgeが短時間に12回連続で異常終了しました。上のログを確認してください。"
+    throw "TalkMan bridgeが短時間に12回連続で異常終了しました。ログを確認してください。"
   }
   Start-Sleep -Seconds $delaySeconds
 }
