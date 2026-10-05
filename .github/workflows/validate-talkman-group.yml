@@ -9,8 +9,10 @@ on:
       - discord-voice-smoke/src/build-talkman.mjs
       - discord-voice-smoke/src/build-talkman-runtime.mjs
       - discord-voice-smoke/start.ps1
+      - discord-voice-smoke/update-and-start.ps1
       - tests/discord-talkman-builder.test.mjs
       - tests/discord-talkman-runtime-hardening.test.mjs
+      - tests/discord-update-launcher-v69.test.mjs
       - .github/workflows/validate-talkman-group.yml
       - discord-voice-smoke/src/index.mjs
   pull_request:
@@ -18,8 +20,10 @@ on:
       - discord-voice-smoke/src/build-talkman.mjs
       - discord-voice-smoke/src/build-talkman-runtime.mjs
       - discord-voice-smoke/start.ps1
+      - discord-voice-smoke/update-and-start.ps1
       - tests/discord-talkman-builder.test.mjs
       - tests/discord-talkman-runtime-hardening.test.mjs
+      - tests/discord-update-launcher-v69.test.mjs
       - .github/workflows/validate-talkman-group.yml
       - discord-voice-smoke/src/index.mjs
   workflow_dispatch:
@@ -47,12 +51,18 @@ jobs:
           grep -F "name: 'talksys'" discord-voice-smoke/src/index-talkman.generated.mjs
           grep -F "name: 'talkman'" discord-voice-smoke/src/index-talkman.generated.mjs
           grep -F "interaction.commandName === 'talksys' || interaction.commandName === 'talkman'" discord-voice-smoke/src/index-talkman.generated.mjs
-      - name: Run TalkMan regression tests
-        run: node --test tests/discord-talkman-builder.test.mjs tests/discord-talkman-runtime-hardening.test.mjs
-      - name: Parse unified PowerShell launcher
+      - name: Run TalkMan and updater regression tests
+        run: node --test tests/discord-talkman-builder.test.mjs tests/discord-talkman-runtime-hardening.test.mjs tests/discord-update-launcher-v69.test.mjs
+      - name: Parse unified PowerShell launchers
         shell: pwsh
         run: |
-          $text = Get-Content -LiteralPath discord-voice-smoke/start.ps1 -Raw
-          [void][scriptblock]::Create($text)
-          if ($text -notmatch 'build-talkman-runtime\.mjs') { throw 'start.ps1 does not build unified runtime' }
-          if ($text -notmatch 'index-talkman\.generated\.mjs') { throw 'start.ps1 does not launch unified runtime' }
+          $launcher = Get-Content -LiteralPath discord-voice-smoke/start.ps1 -Raw
+          [void][scriptblock]::Create($launcher)
+          if ($launcher -notmatch 'build-talkman-runtime\.mjs') { throw 'start.ps1 does not build unified runtime' }
+          if ($launcher -notmatch 'index-talkman\.generated\.mjs') { throw 'start.ps1 does not launch unified runtime' }
+
+          $updater = Get-Content -LiteralPath discord-voice-smoke/update-and-start.ps1 -Raw
+          [void][scriptblock]::Create($updater)
+          if ($updater -notmatch 'src\\index\.mjs') { throw 'updater does not detect legacy runtime during cutover' }
+          if ($updater -notmatch 'src\\index-talkman\.generated\.mjs') { throw 'updater does not detect unified runtime' }
+          if ($updater -notmatch '\$unifiedEntryPattern') { throw 'updater does not match unified bridge processes' }
