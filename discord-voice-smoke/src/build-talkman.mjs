@@ -14,6 +14,16 @@ function replaceOnce(source, before, after, label) {
   return source.slice(0, first) + after + source.slice(first + before.length);
 }
 
+function replaceExpected(source, before, after, label, expectedCount) {
+  if (!before) throw new Error(`TalkMan build anchor is empty: ${label}`);
+  const parts = source.split(before);
+  const actualCount = parts.length - 1;
+  if (actualCount !== expectedCount) {
+    throw new Error(`TalkMan build anchor count mismatch: ${label} expected=${expectedCount} actual=${actualCount}`);
+  }
+  return parts.join(after);
+}
+
 export function buildTalkmanSource(input) {
   let source = String(input || '');
 
@@ -38,11 +48,12 @@ export function buildTalkmanSource(input) {
     'mode globals',
   );
 
-  source = replaceOnce(
+  source = replaceExpected(
     source,
     "  activeUserText = '';\n  activeUserUtteranceId = '';",
     "  activeUserText = '';\n  activeUserId = '';\n  activeUserUtteranceId = '';",
     'reset active user id',
+    3,
   );
 
   const helpers = `
@@ -192,13 +203,6 @@ function enqueueTalkmanTurn(nextTurn) {
     '      commitConversationTurn(confirmedTranscript, turn);',
     '      commitConversationTurn(conversationalInput, turn);',
     'TalkMan attributed history',
-  );
-
-  source = replaceOnce(
-    source,
-    "      activeUserText = '';\n      activeUserUtteranceId = '';",
-    "      activeUserText = '';\n      activeUserId = '';\n      activeUserUtteranceId = '';",
-    'clear active TalkMan speaker',
   );
 
   source = replaceOnce(
