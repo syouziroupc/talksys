@@ -1,0 +1,39 @@
+name: Validate TalkMan group runtime
+
+on:
+  push:
+    branches:
+      - feature/talkman-group-v1
+    paths:
+      - discord-voice-smoke/src/build-talkman.mjs
+      - discord-voice-smoke/src/build-talkman-runtime.mjs
+      - discord-voice-smoke/start-talkman.ps1
+      - tests/discord-talkman-builder.test.mjs
+      - tests/discord-talkman-runtime-hardening.test.mjs
+      - .github/workflows/validate-talkman-group.yml
+      - discord-voice-smoke/src/index.mjs
+  workflow_dispatch:
+
+jobs:
+  talkman:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check builder syntax
+        run: |
+          node --check discord-voice-smoke/src/build-talkman.mjs
+          node --check discord-voice-smoke/src/build-talkman-runtime.mjs
+      - name: Generate isolated TalkMan runtime
+        run: node discord-voice-smoke/src/build-talkman-runtime.mjs
+      - name: Check generated runtime syntax
+        run: node --check discord-voice-smoke/src/index-talkman.generated.mjs
+      - name: Run TalkMan regression tests
+        run: node --test tests/discord-talkman-builder.test.mjs tests/discord-talkman-runtime-hardening.test.mjs
+      - name: Parse PowerShell launcher
+        shell: pwsh
+        run: |
+          $text = Get-Content -LiteralPath discord-voice-smoke/start-talkman.ps1 -Raw
+          [void][scriptblock]::Create($text)
