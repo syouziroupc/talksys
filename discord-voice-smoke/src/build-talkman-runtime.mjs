@@ -1,9 +1,10 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildTalkmanSource } from './build-talkman.mjs';
 
-export const TALKMAN_RUNTIME_HARDENING_REVISION = 'talkman-group-v1-hardening-r3-canonical-fallback';
+export const TALKMAN_RUNTIME_HARDENING_REVISION = 'talkman-group-v1-hardening-r5-eol-normalized';
 
 function replaceOnce(source, before, after, label) {
   const first = source.indexOf(before);
@@ -14,7 +15,8 @@ function replaceOnce(source, before, after, label) {
 }
 
 export function buildTalkmanRuntimeSource(input) {
-  let source = buildTalkmanSource(String(input || ''));
+  const normalizedInput = String(input || '').replace(/\r\n?/g, '\n');
+  let source = buildTalkmanSource(normalizedInput);
 
   source = replaceOnce(
     source,
@@ -92,9 +94,10 @@ function pruneRecentBotSpeech`,
 }
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, '..', '..');
 const sourcePath = path.join(here, 'index.mjs');
-const canonicalSourcePath = path.join(here, 'index-classic-base.mjs');
 const outputPath = path.join(here, 'index-talkman.generated.mjs');
+const trackedSourceSpec = 'HEAD:discord-voice-smoke/src/index.mjs';
 
 export function hasTalkmanWorkingTreeMarkers(input = '') {
   const source = String(input || '');
@@ -115,20 +118,46 @@ export function buildTalkmanRuntimeWithFallback(primaryInput = '', canonicalInpu
     if (!hasTalkmanWorkingTreeMarkers(primary)) throw error;
     const canonical = String(canonicalInput || '');
     if (!canonical) throw error;
-    return {
-      built: buildTalkmanRuntimeSource(canonical),
-      fallbackUsed: true,
-      reason: String(error?.message || error),
-    };
+    try {
+      return {
+        built: buildTalkmanRuntimeSource(canonical),
+        fallbackUsed: true,
+        reason: String(error?.message || error),
+      };
+    } catch (canonicalError) {
+      throw new Error(
+        `TalkMan working source build failed (${String(error?.message || error)}); canonical ${trackedSourceSpec} build also failed (${String(canonicalError?.message || canonicalError)})`,
+        { cause: canonicalError },
+      );
+    }
   }
+}
+
+function readTrackedClassicSource() {
+  const result = spawnSync('git', ['show', trackedSourceSpec], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (result.status !== 0 || !String(result.stdout || '').trim()) {
+    const detail = String(result.stderr || '').trim();
+    throw new Error(`TalkMan canonical source unavailable from Git ${trackedSourceSpec}${detail ? `: ${detail}` : ''}`);
+  }
+  return String(result.stdout);
 }
 
 export function buildTalkmanRuntimeFile() {
   const workingSource = fs.readFileSync(sourcePath, 'utf8');
-  const canonicalSource = fs.readFileSync(canonicalSourcePath, 'utf8');
-  const result = buildTalkmanRuntimeWithFallback(workingSource, canonicalSource);
+  let result;
+  try {
+    result = { built: buildTalkmanRuntimeSource(workingSource), fallbackUsed: false, reason: '' };
+  } catch (error) {
+    if (!hasTalkmanWorkingTreeMarkers(workingSource)) throw error;
+    const trackedSource = readTrackedClassicSource();
+    result = buildTalkmanRuntimeWithFallback(workingSource, trackedSource);
+  }
   if (result.fallbackUsed) {
-    console.warn(`[talkman-build] index.mjs contains TalkMan/partial-patch markers; using canonical classic base (${result.reason})`);
+    console.warn(`[talkman-build] index.mjs contains TalkMan/partial-patch markers; using tracked Git source (${result.reason})`);
   }
   fs.writeFileSync(outputPath, result.built, 'utf8');
   return outputPath;

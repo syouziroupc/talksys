@@ -62,7 +62,7 @@ test('clean classic source builds without fallback', () => {
   assert.match(result.built, /name: 'talkman'/);
 });
 
-test('partially patched activeUserId source falls back to canonical classic base', () => {
+test('partially patched activeUserId source falls back to canonical tracked source', () => {
   const partial = sourceLf.replace(
     "let activeUserText = '';\nlet activeUserUtteranceId = '';",
     "let activeUserText = '';\nlet activeUserId = '';\nlet activeUserUtteranceId = '';",
@@ -78,14 +78,39 @@ test('partially patched activeUserId source falls back to canonical classic base
   assert.match(result.built, /let activeUserId = '';/);
 });
 
-test('ordinary upstream anchor drift is not hidden by canonical fallback', () => {
-  const drifted = source.replace(
+test('ordinary upstream anchor drift is not hidden by tracked fallback', () => {
+  const drifted = sourceLf.replace(
     "const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-resilience-r5';",
     "const DISCORD_BRIDGE_REVISION = 'unexpected-upstream-revision';",
   );
   assert.equal(hasTalkmanWorkingTreeMarkers(drifted), false);
   assert.throws(
-    () => buildTalkmanRuntimeWithFallback(drifted, source),
+    () => buildTalkmanRuntimeWithFallback(drifted, sourceLf),
     /TalkMan build anchor missing: revision/,
   );
+});
+
+test('tracked canonical source drift still fails loudly during partial-patch recovery', () => {
+  const partial = sourceLf.replace(
+    "let activeUserText = '';\nlet activeUserUtteranceId = '';",
+    "let activeUserText = '';\nlet activeUserId = '';\nlet activeUserUtteranceId = '';",
+  );
+  const driftedCanonical = sourceLf.replace(
+    "const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-resilience-r5';",
+    "const DISCORD_BRIDGE_REVISION = 'unexpected-upstream-revision';",
+  );
+  assert.equal(hasTalkmanWorkingTreeMarkers(partial), true);
+  assert.throws(
+    () => buildTalkmanRuntimeWithFallback(partial, driftedCanonical),
+    /canonical HEAD:discord-voice-smoke\/src\/index\.mjs build also failed.*TalkMan build anchor missing: revision/,
+  );
+});
+
+test('hardened runtime accepts Windows CRLF source text', () => {
+  const crlf = sourceLf.replace(/\n/g, '\r\n');
+  const builtLf = buildTalkmanRuntimeSource(sourceLf);
+  const builtCrlf = buildTalkmanRuntimeSource(crlf);
+  assert.equal(builtCrlf, builtLf);
+  assert.match(builtCrlf, /name: 'talksys'/);
+  assert.match(builtCrlf, /name: 'talkman'/);
 });
