@@ -7,7 +7,7 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "start": "node src/index.mjs"
+    "start": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File update-and-start.ps1"
   },
   "dependencies": {
     "@discordjs/voice": "0.19.2",
