@@ -12,6 +12,7 @@ import {
 
 const sourcePath = path.resolve('discord-voice-smoke/src/index.mjs');
 const source = fs.readFileSync(sourcePath, 'utf8');
+const sourceLf = source.replace(/\r\n?/g, '\n');
 
 test('hardened TalkMan runtime is parseable and leaves stable source untouched', () => {
   const before = fs.readFileSync(sourcePath, 'utf8');
@@ -62,14 +63,14 @@ test('clean classic source builds without fallback', () => {
 });
 
 test('partially patched activeUserId source falls back to canonical classic base', () => {
-  const partial = source.replace(
+  const partial = sourceLf.replace(
     "let activeUserText = '';\nlet activeUserUtteranceId = '';",
     "let activeUserText = '';\nlet activeUserId = '';\nlet activeUserUtteranceId = '';",
   );
-  assert.notEqual(partial, source);
+  assert.notEqual(partial, sourceLf);
   assert.equal(hasTalkmanWorkingTreeMarkers(partial), true);
 
-  const result = buildTalkmanRuntimeWithFallback(partial, source);
+  const result = buildTalkmanRuntimeWithFallback(partial, sourceLf);
   assert.equal(result.fallbackUsed, true);
   assert.match(result.reason, /active user id/);
   assert.match(result.built, /name: 'talksys'/);

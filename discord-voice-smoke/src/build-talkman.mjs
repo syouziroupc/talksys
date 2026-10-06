@@ -25,7 +25,7 @@ function replaceExpected(source, before, after, label, expectedCount) {
 }
 
 export function buildTalkmanSource(input) {
-  let source = String(input || '');
+  let source = String(input || '').replace(/\r\n?/g, '\n');
 
   source = replaceOnce(
     source,
