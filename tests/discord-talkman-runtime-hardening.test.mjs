@@ -4,7 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildTalkmanRuntimeSource } from '../discord-voice-smoke/src/build-talkman-runtime.mjs';
+import {
+  buildTalkmanRuntimeSource,
+  buildTalkmanRuntimeWithFallback,
+  hasTalkmanWorkingTreeMarkers,
+} from '../discord-voice-smoke/src/build-talkman-runtime.mjs';
 
 const sourcePath = path.resolve('discord-voice-smoke/src/index.mjs');
 const source = fs.readFileSync(sourcePath, 'utf8');
@@ -48,4 +52,39 @@ test('classic TalkSys and TalkMan group queue behavior both remain present', () 
   assert.match(built, /TALKMAN_QUEUE_LIMIT = 12/);
   assert.match(built, /conversationMode !== 'talkman' && answering && captureMetrics\?\.overlappedBotPlayback/);
   assert.match(built, /conversationMode !== 'talkman' && !timeline\.fastReactionRequestedAt/);
+});
+
+test('clean classic source builds without fallback', () => {
+  const result = buildTalkmanRuntimeWithFallback(source, source);
+  assert.equal(result.fallbackUsed, false);
+  assert.equal(result.reason, '');
+  assert.match(result.built, /name: 'talkman'/);
+});
+
+test('partially patched activeUserId source falls back to canonical classic base', () => {
+  const partial = source.replace(
+    "let activeUserText = '';\nlet activeUserUtteranceId = '';",
+    "let activeUserText = '';\nlet activeUserId = '';\nlet activeUserUtteranceId = '';",
+  );
+  assert.notEqual(partial, source);
+  assert.equal(hasTalkmanWorkingTreeMarkers(partial), true);
+
+  const result = buildTalkmanRuntimeWithFallback(partial, source);
+  assert.equal(result.fallbackUsed, true);
+  assert.match(result.reason, /active user id/);
+  assert.match(result.built, /name: 'talksys'/);
+  assert.match(result.built, /name: 'talkman'/);
+  assert.match(result.built, /let activeUserId = '';/);
+});
+
+test('ordinary upstream anchor drift is not hidden by canonical fallback', () => {
+  const drifted = source.replace(
+    "const DISCORD_BRIDGE_REVISION = 'talksys-discord-bridge-v92-resilience-r5';",
+    "const DISCORD_BRIDGE_REVISION = 'unexpected-upstream-revision';",
+  );
+  assert.equal(hasTalkmanWorkingTreeMarkers(drifted), false);
+  assert.throws(
+    () => buildTalkmanRuntimeWithFallback(drifted, source),
+    /TalkMan build anchor missing: revision/,
+  );
 });
