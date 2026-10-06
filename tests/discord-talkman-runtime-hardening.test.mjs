@@ -30,13 +30,15 @@ test('hardened TalkMan runtime is parseable and leaves stable source untouched',
   }
 });
 
-test('TalkMan strips assistant-like wait phrases and keeps TalkMan identity', () => {
+test('TalkMan uses a compact sharp persona and final-answer guard', () => {
   const built = buildTalkmanRuntimeSource(source);
   assert.match(built, /function normalizeTalkmanAnswer/);
   assert.match(built, /replace\(\/フォーンズ\/g, 'トークマン'\)/);
-  assert.match(built, /確認してお答えします/);
-  assert.match(built, /司会者、案内係、サポート窓口ではなく、VCに一人混ざっている参加者/);
-  assert.match(built, /自分の名前を言う必要があるときはTalkMan/);
+  assert.match(built, /原則1文45字以内/);
+  assert.match(built, /VC参加者として即答/);
+  assert.match(built, /待ち文句・司会口調・丁寧な締め・長い一般論は禁止/);
+  assert.doesNotMatch(built, /このモードは複数人の雑談用です/);
+  assert.doesNotMatch(built, /通常は1文から3文で短く返してください/);
 });
 
 test('mode switch renews session only when reset cleared it', () => {
@@ -45,14 +47,41 @@ test('mode switch renews session only when reset cleared it', () => {
   assert.match(built, /mode-switch renewed/);
 });
 
-test('classic TalkSys and TalkMan group queue behavior both remain present', () => {
+test('TalkMan reactions are local, cached and enabled while Whisper stays authoritative', () => {
+  const built = buildTalkmanRuntimeSource(source);
+  assert.match(built, /function talkmanFastReaction/);
+  assert.match(built, /conversationMode === 'talkman' \? talkmanFastReaction\(value\) : fastReaction\(value\)/);
+  assert.match(built, /talkmanTexts = \['お、どうも。'/);
+  assert.doesNotMatch(built, /if \(conversationMode === 'talkman'\) return false;/);
+  assert.match(built, /final STT: Whisper Large v3 Turbo/);
+  assert.match(built, /const stt = await transcribeCapturedUtterance/);
+});
+
+test('TalkMan preempts stale answers and coalesces backlog to latest only', () => {
+  const built = buildTalkmanRuntimeSource(source);
+  assert.match(built, /const TALKMAN_QUEUE_LIMIT = 1/);
+  assert.match(built, /pendingTurns\.splice\(0, pendingTurns\.length, nextTurn\)/);
+  assert.match(built, /if \(answering && captureMetrics\?\.overlappedBotPlayback\)/);
+  assert.doesNotMatch(built, /conversationMode !== 'talkman' && answering && captureMetrics\?\.overlappedBotPlayback/);
+  assert.match(built, /TalkMan latest user=/);
+  assert.doesNotMatch(built, /TalkMan FIFO user=/);
+});
+
+test('TalkMan trims local prompt history and does not persist the directive in history', () => {
+  const built = buildTalkmanRuntimeSource(source);
+  assert.match(built, /history\.slice\(-\(conversationMode === 'talkman' \? 6 : MAX_HISTORY\)\)/);
+  assert.match(built, /TOKEN-PROXY/);
+  assert.match(built, /\('\[TM ' \+ talkmanSpeaker \+ '\] ' \+ confirmedTranscript\)/);
+  assert.doesNotMatch(built, /commitConversationTurn\(conversationalInput, turn\)/);
+});
+
+test('classic TalkSys path remains present and unchanged in mode branches', () => {
   const built = buildTalkmanRuntimeSource(source);
   assert.match(built, /name: 'talksys'/);
   assert.match(built, /name: 'talkman'/);
-  assert.match(built, /enqueueTalkmanTurn\(nextTurn\)/);
-  assert.match(built, /TALKMAN_QUEUE_LIMIT = 12/);
-  assert.match(built, /conversationMode !== 'talkman' && answering && captureMetrics\?\.overlappedBotPlayback/);
-  assert.match(built, /conversationMode !== 'talkman' && !timeline\.fastReactionRequestedAt/);
+  assert.match(built, /if \(conversationMode === 'talkman'\) \{/);
+  assert.match(built, /else \{\n      if \(pendingTurns\.length === 0\) pendingTurns\.push\(nextTurn\);/);
+  assert.match(built, /conversationMode !== 'talkman'\) \{\n        activeWaitCue = startWaitCue/);
 });
 
 test('clean classic source builds without fallback', () => {
