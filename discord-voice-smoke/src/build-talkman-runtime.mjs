@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildTalkmanSource } from './build-talkman.mjs';
 
-export const TALKMAN_RUNTIME_HARDENING_REVISION = 'talkman-group-v1-hardening-r4-git-canonical-fallback';
+export const TALKMAN_RUNTIME_HARDENING_REVISION = 'talkman-group-v1-hardening-r5-eol-normalized';
 
 function replaceOnce(source, before, after, label) {
   const first = source.indexOf(before);
@@ -15,7 +15,8 @@ function replaceOnce(source, before, after, label) {
 }
 
 export function buildTalkmanRuntimeSource(input) {
-  let source = buildTalkmanSource(String(input || ''));
+  const normalizedInput = String(input || '').replace(/\r\n?/g, '\n');
+  let source = buildTalkmanSource(normalizedInput);
 
   source = replaceOnce(
     source,
