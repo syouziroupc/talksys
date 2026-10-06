@@ -1,0 +1,42 @@
+name: Validate Windows PowerShell launchers
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - discord-voice-smoke/start.ps1
+      - discord-voice-smoke/update-and-start.ps1
+      - .github/workflows/validate-windows-powershell.yml
+  pull_request:
+    paths:
+      - discord-voice-smoke/start.ps1
+      - discord-voice-smoke/update-and-start.ps1
+      - .github/workflows/validate-windows-powershell.yml
+  workflow_dispatch:
+
+jobs:
+  windows-powershell-51:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify UTF-8 BOM and Windows PowerShell 5.1 parsing
+        shell: powershell
+        run: |
+          $files = @(
+            'discord-voice-smoke/start.ps1',
+            'discord-voice-smoke/update-and-start.ps1'
+          )
+          foreach ($file in $files) {
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $file))
+            if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+              throw "$file is not UTF-8 BOM encoded"
+            }
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              throw "$file failed Windows PowerShell 5.1 parsing"
+            }
+          }
