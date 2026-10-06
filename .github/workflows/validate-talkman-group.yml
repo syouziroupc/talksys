@@ -9,7 +9,9 @@ on:
       - discord-voice-smoke/src/build-talkman.mjs
       - discord-voice-smoke/src/build-talkman-runtime.mjs
       - discord-voice-smoke/start.ps1
+      - discord-voice-smoke/start-utf8.ps1
       - discord-voice-smoke/update-and-start.ps1
+      - discord-voice-smoke/update-and-start-utf8.ps1
       - tests/discord-talkman-builder.test.mjs
       - tests/discord-talkman-runtime-hardening.test.mjs
       - tests/discord-update-launcher-v69.test.mjs
@@ -20,7 +22,9 @@ on:
       - discord-voice-smoke/src/build-talkman.mjs
       - discord-voice-smoke/src/build-talkman-runtime.mjs
       - discord-voice-smoke/start.ps1
+      - discord-voice-smoke/start-utf8.ps1
       - discord-voice-smoke/update-and-start.ps1
+      - discord-voice-smoke/update-and-start-utf8.ps1
       - tests/discord-talkman-builder.test.mjs
       - tests/discord-talkman-runtime-hardening.test.mjs
       - tests/discord-update-launcher-v69.test.mjs
@@ -56,12 +60,20 @@ jobs:
       - name: Parse unified PowerShell launchers
         shell: pwsh
         run: |
-          $launcher = Get-Content -LiteralPath discord-voice-smoke/start.ps1 -Raw
-          [void][scriptblock]::Create($launcher)
-          if ($launcher -notmatch 'build-talkman-runtime\.mjs') { throw 'start.ps1 does not build unified runtime' }
-          if ($launcher -notmatch 'index-talkman\.generated\.mjs') { throw 'start.ps1 does not launch unified runtime' }
+          $bootstrap = Get-Content -LiteralPath discord-voice-smoke/start.ps1 -Raw
+          [void][scriptblock]::Create($bootstrap)
+          if ($bootstrap -notmatch 'start-utf8\.ps1') { throw 'start.ps1 is not the compatibility bootstrap' }
 
-          $updater = Get-Content -LiteralPath discord-voice-smoke/update-and-start.ps1 -Raw
+          $launcher = Get-Content -LiteralPath discord-voice-smoke/start-utf8.ps1 -Raw
+          [void][scriptblock]::Create($launcher)
+          if ($launcher -notmatch 'build-talkman-runtime\.mjs') { throw 'start implementation does not build unified runtime' }
+          if ($launcher -notmatch 'index-talkman\.generated\.mjs') { throw 'start implementation does not launch unified runtime' }
+
+          $updaterBootstrap = Get-Content -LiteralPath discord-voice-smoke/update-and-start.ps1 -Raw
+          [void][scriptblock]::Create($updaterBootstrap)
+          if ($updaterBootstrap -notmatch 'update-and-start-utf8\.ps1') { throw 'update-and-start.ps1 is not the compatibility bootstrap' }
+
+          $updater = Get-Content -LiteralPath discord-voice-smoke/update-and-start-utf8.ps1 -Raw
           [void][scriptblock]::Create($updater)
           if ($updater -notmatch 'src\\index\.mjs') { throw 'updater does not detect legacy runtime during cutover' }
           if ($updater -notmatch 'src\\index-talkman\.generated\.mjs') { throw 'updater does not detect unified runtime' }

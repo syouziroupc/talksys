@@ -2,8 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const updater = fs.readFileSync(new URL('../discord-voice-smoke/update-and-start.ps1', import.meta.url), 'utf8');
+const updater = fs.readFileSync(new URL('../discord-voice-smoke/update-and-start-utf8.ps1', import.meta.url), 'utf8');
+const updaterBootstrap = fs.readFileSync(new URL('../discord-voice-smoke/update-and-start.ps1', import.meta.url), 'utf8');
+const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start-utf8.ps1', import.meta.url), 'utf8');
+const launcherBootstrap = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
 const readme = fs.readFileSync(new URL('../discord-voice-smoke/README.md', import.meta.url), 'utf8');
+
+test('Windows PowerShell compatibility bootstraps are ASCII-only and create BOM runtime copies', () => {
+  assert.match(launcherBootstrap, /start-utf8\.ps1/);
+  assert.match(launcherBootstrap, /\.start-runtime\.ps1/);
+  assert.match(updaterBootstrap, /update-and-start-utf8\.ps1/);
+  assert.match(updaterBootstrap, /\.update-and-start-runtime\.ps1/);
+  assert.match(launcherBootstrap, /UTF8Encoding -ArgumentList \$true/);
+  assert.match(updaterBootstrap, /UTF8Encoding -ArgumentList \$true/);
+  assert.equal(/[^\x00-\x7F]/.test(launcherBootstrap), false);
+  assert.equal(/[^\x00-\x7F]/.test(updaterBootstrap), false);
+});
 
 test('Discord update launcher only fast-forwards a clean local checkout', () => {
   assert.match(updater, /git --no-optional-locks status --porcelain --untracked-files=no/);
@@ -28,9 +42,7 @@ test('Discord update launcher starts the existing secret-aware launcher after up
   assert.doesNotMatch(readme, /WebSocket先行接続|batch STT|\/api\/turn-stream/);
 });
 
-
 test('Discord launcher supervises exits and hung bridge heartbeat/stage states', () => {
-  const launcher = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
   assert.match(launcher, /\[supervisor\] starting Discord bridge process/);
   assert.match(launcher, /Start-Process -FilePath 'node\.exe'/);
   assert.match(launcher, /heartbeat stale/);
@@ -43,7 +55,6 @@ test('Discord launcher supervises exits and hung bridge heartbeat/stage states',
   assert.match(launcher, /\$rapidFailures -ge 12/);
   assert.match(launcher, /短時間に12回連続で異常終了/);
 });
-
 
 test('Discord updater gracefully stops legacy or unified bridge and supervisor before restart', () => {
   assert.match(updater, /Get-CimInstance Win32_Process/);
