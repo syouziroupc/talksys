@@ -69,19 +69,13 @@ jobs:
           set -euo pipefail
           printf '%s' "$GEMINI_API_KEY" | npx wrangler secret put GEMINI_API_KEY
 
-      - name: Verify Gemini enabled
+      - name: Verify Gemini secret exists
+        working-directory: helpsys
         shell: bash
         run: |
           set -euo pipefail
-          body=""
-          for attempt in $(seq 1 20); do
-            body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/health/outlaw" || true)"
-            ok="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.ok===true&&d.geminiConfigured===true&&Array.isArray(d.providers)&&d.providers.includes('gemini')))")"
-            [[ "$ok" == "true" ]] && break
-            [[ "$attempt" -eq 20 ]] && { echo "$body"; exit 1; }
-            sleep 3
-          done
-          echo "$body"
+          secrets_json="$(npx wrangler secret list --format json)"
+          SECRETS_JSON="$secrets_json" node -e "const rows=JSON.parse(process.env.SECRETS_JSON||'[]');if(!Array.isArray(rows)||!rows.some(x=>x?.name==='GEMINI_API_KEY'))throw new Error('GEMINI_API_KEY missing');console.log('HelpSys GEMINI_API_KEY configured');"
 
       - name: Smoke strict Gemini planner
         shell: bash
@@ -89,7 +83,8 @@ jobs:
           set -euo pipefail
           payload='{"request":"設定を開く次の操作を案内して","aiProvider":"gemini","history":[],"systemContext":{"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","ForegroundProcessId":1234,"TaskbarVisible":true,"runningApps":["explorer"],"browser":null},"evidence":{"ScreenshotAvailable":false,"UiElementCount":1,"InteractableCount":1,"FocusedCount":0,"FocusedElements":[],"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","TaskbarVisible":true,"RunningAppCount":1,"BrowserDomain":null,"BrowserUrl":null,"BrowserAddressFocused":false,"HistoryCount":0,"RecentTargets":[],"EvidenceSources":["ui-automation"],"SourceCount":1},"elements":[{"Id":"u1","Name":"スタート","AutomationId":"Start","ClassName":"","ControlType":"Button","ProcessName":"explorer","Interactable":true,"Enabled":true,"KeyboardFocusable":true,"Focused":false,"Password":false,"ProcessId":1234,"Value":null,"ToggleState":null,"Selected":null,"ExpandCollapseState":null,"X":0,"Y":0,"Width":80,"Height":40}]}'
           out="$(curl -fsS --max-time 60 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/v1/outlaw-plan")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!['target','clarify','done','not_found'].includes(String(d?.status||'')))throw new Error(process.env.OUT);console.log(JSON.stringify(d));"
+          echo "$out"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(d?.error)throw new Error(process.env.OUT);if(!['target','clarify','done','not_found'].includes(String(d?.status||'')))throw new Error(process.env.OUT);console.log('strict Gemini OK status='+d.status);"
 
       - name: Verify GLM route still alive
         shell: bash
@@ -97,4 +92,5 @@ jobs:
           set -euo pipefail
           payload='{"request":"設定を開く次の操作を案内して","aiProvider":"glm","history":[],"systemContext":{"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","ForegroundProcessId":1234,"TaskbarVisible":true,"runningApps":["explorer"],"browser":null},"evidence":{"ScreenshotAvailable":false,"UiElementCount":1,"InteractableCount":1,"FocusedCount":0,"FocusedElements":[],"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","TaskbarVisible":true,"RunningAppCount":1,"BrowserDomain":null,"BrowserUrl":null,"BrowserAddressFocused":false,"HistoryCount":0,"RecentTargets":[],"EvidenceSources":["ui-automation"],"SourceCount":1},"elements":[{"Id":"u1","Name":"スタート","AutomationId":"Start","ClassName":"","ControlType":"Button","ProcessName":"explorer","Interactable":true,"Enabled":true,"KeyboardFocusable":true,"Focused":false,"Password":false,"ProcessId":1234,"Value":null,"ToggleState":null,"Selected":null,"ExpandCollapseState":null,"X":0,"Y":0,"Width":80,"Height":40}]}'
           out="$(curl -fsS --max-time 60 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/v1/outlaw-plan")"
-          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!['target','clarify','done','not_found'].includes(String(d?.status||'')))throw new Error(process.env.OUT);console.log(JSON.stringify(d));"
+          echo "$out"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(d?.error)throw new Error(process.env.OUT);if(!['target','clarify','done','not_found'].includes(String(d?.status||'')))throw new Error(process.env.OUT);console.log('strict GLM OK status='+d.status);"
