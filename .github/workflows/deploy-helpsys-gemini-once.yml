@@ -47,6 +47,23 @@ jobs:
             echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
           fi
 
+      - name: Patch Gemini JSON Schema adapter only
+        working-directory: helpsys
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('fs');
+          const p = 'worker/quality-guide.js';
+          let s = fs.readFileSync(p, 'utf8');
+          const before = 'responseSchema: qualityTool.parameters';
+          const after = 'responseJsonSchema: qualityTool.parameters';
+          if (!s.includes(before)) throw new Error('expected Gemini responseSchema adapter not found');
+          s = s.replace(before, after);
+          fs.writeFileSync(p, s);
+          NODE
+          git diff -- worker/quality-guide.js
+
       - name: Install and validate HelpSys
         working-directory: helpsys
         shell: bash
@@ -57,7 +74,7 @@ jobs:
           node --check worker/reliability-v4-guard.js
           npx wrangler deploy --dry-run
 
-      - name: Deploy exact HelpSys Worker revision first
+      - name: Deploy HelpSys Worker with Gemini adapter fix
         working-directory: helpsys
         shell: bash
         run: npx wrangler deploy
@@ -86,7 +103,7 @@ jobs:
             -X POST 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent' \
             -H 'content-type: application/json' \
             -H "x-goog-api-key: $GEMINI_API_KEY" \
-            --data '{"contents":[{"role":"user","parts":[{"text":"Reply with OK only."}]}],"generationConfig":{"maxOutputTokens":32}}' || true)"
+            --data '{"contents":[{"role":"user","parts":[{"text":"Reply with OK only."}]}],"generationConfig":{"maxOutputTokens":64,"thinkingConfig":{"thinkingLevel":"low"}}}' || true)"
           echo "Gemini direct HTTP=$status"
           cat "$body_file"
           echo
@@ -94,7 +111,6 @@ jobs:
 
       - name: Smoke strict Gemini planner
         shell: bash
-        continue-on-error: true
         run: |
           set -euo pipefail
           payload='{"request":"設定を開く次の操作を案内して","aiProvider":"gemini","history":[],"systemContext":{"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","ForegroundProcessId":1234,"TaskbarVisible":true,"runningApps":["explorer"],"browser":null},"evidence":{"ScreenshotAvailable":false,"UiElementCount":1,"InteractableCount":1,"FocusedCount":0,"FocusedElements":[],"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","TaskbarVisible":true,"RunningAppCount":1,"BrowserDomain":null,"BrowserUrl":null,"BrowserAddressFocused":false,"HistoryCount":0,"RecentTargets":[],"EvidenceSources":["ui-automation"],"SourceCount":1},"elements":[{"Id":"u1","Name":"スタート","AutomationId":"Start","ClassName":"","ControlType":"Button","ProcessName":"explorer","Interactable":true,"Enabled":true,"KeyboardFocusable":true,"Focused":false,"Password":false,"ProcessId":1234,"Value":null,"ToggleState":null,"Selected":null,"ExpandCollapseState":null,"X":0,"Y":0,"Width":80,"Height":40}]}'
