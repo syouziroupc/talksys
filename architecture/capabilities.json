@@ -22,10 +22,11 @@
       "status": "production",
       "responsibility": "Telnyx inbound call acceptance, WebSocket media intake, phone VAD, TalkSys STT/turn/TTS bridging, concurrent call isolation, and the Japanese phone management surface",
       "companions": [
+        "src/telephony/runtime.js",
         "src/telephony/codec.js",
         "src/telephony/protocol.js"
       ],
-      "migrationNote": "This is an intake adapter only. It reuses the existing TalkSys STT, answer path, TTS, AI binding, and D1 instead of introducing a separate phone AI stack."
+      "migrationNote": "The canonical entry injects the phone-only Deepgram TTS when configured, while runtime.js preserves the existing Telnyx/STT/turn/media behavior. The phone adapter reuses the existing TalkSys answer path, AI binding, and D1 instead of introducing a separate phone AI stack."
     },
     "answer.authorization": {
       "canonical": "src/entry.js",
