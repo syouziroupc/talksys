@@ -22,6 +22,6 @@ test('v109 channel health reports LINE as a web-link fallback, not native LINE C
   assert.match(integrated, /sharedTokenConfigured: telephonyTokenConfigured/);
 });
 
-test('PSTN stays disabled by default until the Telnyx runtime is ready', () => {
-  assert.match(wrangler, /"TELEPHONY_ENABLED": "false"/);
+test('PSTN is enabled in production after the Telnyx runtime is ready', () => {
+  assert.match(wrangler, /"TELEPHONY_ENABLED": "true"/);
 });
