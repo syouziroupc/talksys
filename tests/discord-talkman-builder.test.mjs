@@ -61,3 +61,12 @@ test('TalkMan sends speaker identity and humor policy only in TalkMan mode', () 
   assert.match(built, /const turn = await talk\(conversationalInput/);
   assert.match(built, /commitConversationTurn\(conversationalInput, turn\)/);
 });
+
+test('TalkMan builder accepts LF and CRLF source text', () => {
+  const lf = source.replace(/\r\n?/g, '\n');
+  const crlf = lf.replace(/\n/g, '\r\n');
+  const builtLf = buildTalkmanSource(lf);
+  const builtCrlf = buildTalkmanSource(crlf);
+  assert.equal(builtCrlf, builtLf);
+  assert.match(builtCrlf, /name: 'talkman'/);
+});
