@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { fastReaction } from '../src/voice-fast-reaction.js';
 
 const source = fs.readFileSync(new URL('../discord-voice-smoke/src/index.mjs', import.meta.url), 'utf8');
-const supervisor = fs.readFileSync(new URL('../discord-voice-smoke/start.ps1', import.meta.url), 'utf8');
+const supervisor = fs.readFileSync(new URL('../discord-voice-smoke/start-utf8.ps1', import.meta.url), 'utf8');
 
 test('receiver does not re-subscribe after empty transport end', () => {
   const block = source.slice(source.indexOf('function startReceiverSession('), source.indexOf('function destroyVoiceConnection('));
