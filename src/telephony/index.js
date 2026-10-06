@@ -1,11 +1,16 @@
-import { CloudflareJapaneseTTS } from '../cloudflare-japanese-tts.js';
+import { normalizeJapaneseTtsText } from '../cloudflare-japanese-tts.js';
 import { transcribeV45 } from '../stt-v45.js';
 import { bytesToBase64, pcmuBase64ToSamples, rmsOfSamples, samplesToWav } from './codec.js';
 import { buildTexml, clampInt, clean, flag, xmlEscape } from './protocol.js';
 import { fastReaction, sameUtterance, FAST_REACTION_REVISION } from '../voice-fast-reaction.js';
 import { WEB_VOICE_CAPTURE_POLICY } from '../voice-capture-policy.js';
 
-export const TELEPHONY_REVISION = 'talksys-telephony-v84-shared-turn-dedupe';
+export const TELEPHONY_REVISION = 'talksys-telephony-v85-grok-phone-tts';
+export const PHONE_TTS_MODEL = 'xai/grok-tts';
+export const PHONE_TTS_DEFAULT_VOICE = 'ara';
+export const PHONE_TTS_SAMPLE_RATE = 24000;
+export const PHONE_TTS_BIT_RATE = 64000;
+const PHONE_TTS_VOICES = new Set(['eve', 'ara', 'rex', 'sal', 'leo']);
 const FRAME_MS = 20;
 let schemaPromise;
 
@@ -215,6 +220,51 @@ export function highPassPcmFrame(samples, state = {}, sampleRate = 8000, cutoffH
   return out;
 }
 
+export function phoneTtsVoice(env) {
+  const configured = clean(env?.TELEPHONY_TTS_VOICE || '', 24).toLowerCase();
+  return PHONE_TTS_VOICES.has(configured) ? configured : PHONE_TTS_DEFAULT_VOICE;
+}
+
+function phoneTtsAudioUrl(result) {
+  const candidates = [
+    result?.result?.audio,
+    result?.audio,
+    result?.response?.result?.audio,
+    result?.response?.audio,
+  ];
+  for (const candidate of candidates) {
+    const value = clean(candidate, 4000);
+    if (/^https:\/\//i.test(value)) return value;
+  }
+  return '';
+}
+
+export async function synthesizeGrokPhoneMp3(env, text, fetchImpl = fetch) {
+  if (!env?.AI || typeof env.AI.run !== 'function') throw new Error('workers_ai_unavailable');
+  const spoken = normalizeJapaneseTtsText(text);
+  if (!spoken) return null;
+
+  const result = await env.AI.run(PHONE_TTS_MODEL, {
+    text: spoken,
+    voice_id: phoneTtsVoice(env),
+    language: 'ja',
+    output_format: {
+      codec: 'mp3',
+      sample_rate: PHONE_TTS_SAMPLE_RATE,
+      bit_rate: PHONE_TTS_BIT_RATE,
+    },
+    text_normalization: false,
+  });
+
+  const audioUrl = phoneTtsAudioUrl(result);
+  if (!audioUrl) throw new Error('grok_tts_audio_url_missing');
+  const response = await fetchImpl(audioUrl, { headers: { accept: 'audio/mpeg' } });
+  if (!response?.ok) throw new Error(`grok_tts_audio_fetch_${Number(response?.status || 0) || 'error'}`);
+  const audio = await response.arrayBuffer();
+  if (!audio || audio.byteLength <= 0) throw new Error('grok_tts_empty_audio');
+  return audio;
+}
+
 async function synthesizeMp3(env, text, deps = {}) {
   const spoken = clean(text, clampInt(env?.TELEPHONY_MAX_SPOKEN_CHARS, 1200, 200, 3000));
   if (!spoken) return null;
@@ -226,9 +276,7 @@ async function synthesizeMp3(env, text, deps = {}) {
     if (typeof provided === 'string' && provided.trim()) return provided.trim();
   }
 
-  if (!env?.AI) return null;
-  const tts = new CloudflareJapaneseTTS(env.AI);
-  const audio = await tts.synthesize(spoken);
+  const audio = await synthesizeGrokPhoneMp3(env, spoken);
   if (!audio || audio.byteLength <= 0) return null;
   return bytesToBase64(new Uint8Array(audio));
 }
@@ -264,13 +312,17 @@ function health(request, env, deps) {
     talksysTurnConnected: typeof deps?.turn === 'function',
     pluggableTts: true,
     externalTtsConnected: typeof deps?.synthesize === 'function',
+    phoneTtsModel: PHONE_TTS_MODEL,
+    phoneTtsVoice: phoneTtsVoice(env),
+    phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE,
+    phoneTtsBitRate: PHONE_TTS_BIT_RATE,
     storageMode: env?.TALKSYS_LOG_DB ? '既存TalkSys D1' : 'disabled',
     recording: false,
     concurrency: '通話ごとに独立WebSocket。確定した追加入力は進行中AIターンを中断。',
     inputAudio: 'Telnyx PCMU 8kHz → 90Hz HPF → 適応VAD → TalkSys STT',
     voiceInterruption: 'STT確定後に旧GeminiターンをAbort。ノイズだけでは中断しない。',
     fastReaction: `STT確定直後の短い相槌 + Gemini本回答 / ${FAST_REACTION_REVISION}`,
-    outputAudio: 'TalkSys TTS MP3 → Telnyx',
+    outputAudio: 'Cloudflare Grok TTS MP3 24kHz/64kbps → Telnyx',
     answerEngine: 'TalkSys本体（既存回答経路）',
     routes: { management: '/phone', health: '/telephony-health', voice: '/telnyx/voice', media: '/telnyx/media' },
     origin: publicBaseUrl(request),
