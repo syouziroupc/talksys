@@ -20,11 +20,11 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       PRODUCTION_URL: https://helpsys.syouziroupc.workers.dev
     steps:
-      - name: Checkout HelpSys exact revision
+      - name: Checkout original HelpSys Outlaw r3.8 production source
         uses: actions/checkout@v6
         with:
           repository: syouziroupc/helpsys
-          ref: abe2bdd2f33ffb77f05fe17fcf197febf0b5d91d
+          ref: a14c58f92fa004640e8378d8836122dfde9fafa9
           path: helpsys
 
       - uses: actions/setup-node@v6
@@ -47,52 +47,73 @@ jobs:
             echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
           fi
 
-      - name: Patch Gemini JSON Schema adapter only
+      - name: Patch only Gemini JSON Schema adapter
         working-directory: helpsys
         shell: bash
         run: |
           set -euo pipefail
           node - <<'NODE'
           const fs = require('fs');
-          const p = 'worker/quality-guide.js';
+          const p = 'worker/outlaw-guide.js';
           let s = fs.readFileSync(p, 'utf8');
-          const before = 'responseSchema: qualityTool.parameters';
-          const after = 'responseJsonSchema: qualityTool.parameters';
-          if (!s.includes(before)) throw new Error('expected Gemini responseSchema adapter not found');
+          const before = 'responseSchema: tool.parameters';
+          const after = 'responseJsonSchema: tool.parameters';
+          if (!s.includes(before)) throw new Error('expected Outlaw Gemini responseSchema adapter not found');
           s = s.replace(before, after);
           fs.writeFileSync(p, s);
           NODE
-          git diff -- worker/quality-guide.js
+          node --check worker/outlaw-guide.js
+          git diff --check
+          git diff -- worker/outlaw-guide.js
 
-      - name: Install and validate HelpSys
+      - name: Install and validate original Outlaw Worker
         working-directory: helpsys
         shell: bash
         run: |
           set -euo pipefail
           if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
-          node --check worker/quality-guide.js
-          node --check worker/reliability-v4-guard.js
-          npx wrangler deploy --dry-run
+          node --check worker/stable-gemini.js
+          node --check worker/education-gemini.js
+          node --check worker/outlaw-guide.js
+          node --check worker/stable-router.js
+          node tests/outlaw-worker-grounding-contract.mjs
+          npx wrangler deploy --config wrangler.jsonc --dry-run
 
-      - name: Deploy HelpSys Worker with Gemini adapter fix
+      - name: Restore original Outlaw r3.8 Worker architecture
         working-directory: helpsys
         shell: bash
-        run: npx wrangler deploy
+        run: npx wrangler deploy --config wrangler.jsonc
 
-      - name: Put Gemini secret on deployed HelpSys Worker
-        working-directory: helpsys
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf '%s' "$GEMINI_API_KEY" | npx wrangler secret put GEMINI_API_KEY
-
-      - name: Verify Gemini secret exists
+      - name: Put Gemini secret on restored HelpSys Worker
         working-directory: helpsys
         shell: bash
         run: |
           set -euo pipefail
-          secrets_json="$(npx wrangler secret list --format json)"
-          SECRETS_JSON="$secrets_json" node -e "const rows=JSON.parse(process.env.SECRETS_JSON||'[]');if(!Array.isArray(rows)||!rows.some(x=>x?.name==='GEMINI_API_KEY'))throw new Error('GEMINI_API_KEY missing');console.log('HelpSys GEMINI_API_KEY configured');"
+          printf '%s' "$GEMINI_API_KEY" | npx wrangler secret put GEMINI_API_KEY --config wrangler.jsonc
+
+      - name: Verify original Outlaw health contract and Gemini configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          body=""
+          for attempt in $(seq 1 20); do
+            body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/health/outlaw" || true)"
+            ok="$(BODY="$body" node - <<'NODE'
+          let d={}; try { d=JSON.parse(process.env.BODY||'{}'); } catch {}
+          const ok=d.ok===true && d.service==='helpsys-outlaw' && d.version==='outlaw-2026.09.27-r3.8'
+            && d.geminiModel==='gemini-3.8-flash' && d.geminiConfigured===true
+            && d.aiConfigured===true && d.independentVisionReview===true
+            && d.visualCoordinateSpace==='image_px' && d.geometryConsensus===true
+            && d.visualConsensusField===true && Array.isArray(d.providers)
+            && ['auto','gemini','glm'].every(x=>d.providers.includes(x));
+          process.stdout.write(String(ok));
+          NODE
+            )"
+            [[ "$ok" == "true" ]] && break
+            [[ "$attempt" -eq 20 ]] && { echo "$body"; exit 1; }
+            sleep 3
+          done
+          echo "$body"
 
       - name: Probe Gemini API directly
         shell: bash
@@ -109,26 +130,30 @@ jobs:
           echo
           [[ "$status" == "200" ]]
 
-      - name: Smoke strict Gemini planner
+      - name: Smoke strict Gemini on original Outlaw planner
         shell: bash
         run: |
           set -euo pipefail
-          payload='{"request":"設定を開く次の操作を案内して","aiProvider":"gemini","history":[],"systemContext":{"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","ForegroundProcessId":1234,"TaskbarVisible":true,"runningApps":["explorer"],"browser":null},"evidence":{"ScreenshotAvailable":false,"UiElementCount":1,"InteractableCount":1,"FocusedCount":0,"FocusedElements":[],"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","TaskbarVisible":true,"RunningAppCount":1,"BrowserDomain":null,"BrowserUrl":null,"BrowserAddressFocused":false,"HistoryCount":0,"RecentTargets":[],"EvidenceSources":["ui-automation"],"SourceCount":1},"elements":[{"Id":"u1","Name":"スタート","AutomationId":"Start","ClassName":"","ControlType":"Button","ProcessName":"explorer","Interactable":true,"Enabled":true,"KeyboardFocusable":true,"Focused":false,"Password":false,"ProcessId":1234,"Value":null,"ToggleState":null,"Selected":null,"ExpandCollapseState":null,"X":0,"Y":0,"Width":80,"Height":40}]}'
-          body_file="$(mktemp)"
-          status="$(curl --silent --show-error --max-time 60 -o "$body_file" -w '%{http_code}' -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/v1/outlaw-plan" || true)"
-          echo "HelpSys strict Gemini HTTP=$status"
-          cat "$body_file"
-          echo
-          [[ "$status" == "200" ]]
+          payload='{"request":"設定を開く次の操作を案内して","aiProvider":"gemini","history":[],"systemContext":{"foregroundProcess":"explorer","foregroundTitle":"デスクトップ","foregroundProcessId":1234,"taskbarVisible":true,"runningApps":["explorer"],"browser":null},"evidence":{"screenshotPresent":false},"elements":[{"id":"u1","name":"スタート","automationId":"Start","className":"","controlType":"Button","processName":"explorer","interactable":true,"enabled":true,"keyboardFocusable":true,"focused":false,"password":false,"processId":1234,"value":null,"toggleState":null,"selected":null,"expandCollapseState":null,"x":0,"y":0,"width":80,"height":40}]}'
+          out="$(curl -fsS --max-time 60 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/v1/outlaw-plan")"
+          echo "$out"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!['target','clarify','done','not_found'].includes(String(d?.status||'')))throw new Error(process.env.OUT);console.log('strict Gemini OK status='+d.status);"
 
-      - name: Verify GLM route still alive
+      - name: Verify original GLM route still alive
         shell: bash
         run: |
           set -euo pipefail
-          payload='{"request":"設定を開く次の操作を案内して","aiProvider":"glm","history":[],"systemContext":{"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","ForegroundProcessId":1234,"TaskbarVisible":true,"runningApps":["explorer"],"browser":null},"evidence":{"ScreenshotAvailable":false,"UiElementCount":1,"InteractableCount":1,"FocusedCount":0,"FocusedElements":[],"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","TaskbarVisible":true,"RunningAppCount":1,"BrowserDomain":null,"BrowserUrl":null,"BrowserAddressFocused":false,"HistoryCount":0,"RecentTargets":[],"EvidenceSources":["ui-automation"],"SourceCount":1},"elements":[{"Id":"u1","Name":"スタート","AutomationId":"Start","ClassName":"","ControlType":"Button","ProcessName":"explorer","Interactable":true,"Enabled":true,"KeyboardFocusable":true,"Focused":false,"Password":false,"ProcessId":1234,"Value":null,"ToggleState":null,"Selected":null,"ExpandCollapseState":null,"X":0,"Y":0,"Width":80,"Height":40}]}'
-          body_file="$(mktemp)"
-          status="$(curl --silent --show-error --max-time 60 -o "$body_file" -w '%{http_code}' -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/v1/outlaw-plan" || true)"
-          echo "HelpSys strict GLM HTTP=$status"
-          cat "$body_file"
-          echo
-          [[ "$status" == "200" ]]
+          payload='{"request":"設定を開く次の操作を案内して","aiProvider":"glm","history":[],"systemContext":{"foregroundProcess":"explorer","foregroundTitle":"デスクトップ","foregroundProcessId":1234,"taskbarVisible":true,"runningApps":["explorer"],"browser":null},"evidence":{"screenshotPresent":false},"elements":[{"id":"u1","name":"スタート","automationId":"Start","className":"","controlType":"Button","processName":"explorer","interactable":true,"enabled":true,"keyboardFocusable":true,"focused":false,"password":false,"processId":1234,"value":null,"toggleState":null,"selected":null,"expandCollapseState":null,"x":0,"y":0,"width":80,"height":40}]}'
+          out="$(curl -fsS --max-time 60 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/v1/outlaw-plan")"
+          echo "$out"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!['target','clarify','done','not_found'].includes(String(d?.status||'')))throw new Error(process.env.OUT);console.log('strict GLM OK status='+d.status);"
+
+      - name: Verify stable router auxiliary routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          site="$(curl -fsS --max-time 20 "$PRODUCTION_URL/health/site")"
+          SITE="$site" node -e "const d=JSON.parse(process.env.SITE||'{}');if(d.ok!==true||d.service!=='helpsys-site')throw new Error(process.env.SITE);console.log(process.env.SITE);"
+          code="$(curl --silent --show-error --max-time 20 -o /tmp/transcribe-body -w '%{http_code}' -X POST -H 'content-type: application/json' --data '{}' "$PRODUCTION_URL/v1/transcribe" || true)"
+          echo "transcribe probe HTTP=$code"
+          [[ "$code" == "415" ]]
