@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildTalkmanSource } from './build-talkman.mjs';
 
-export const TALKMAN_RUNTIME_HARDENING_REVISION = 'talkman-group-v1-hardening-r2';
+export const TALKMAN_RUNTIME_HARDENING_REVISION = 'talkman-group-v1-hardening-r3-canonical-fallback';
 
 function replaceOnce(source, before, after, label) {
   const first = source.indexOf(before);
@@ -93,12 +93,44 @@ function pruneRecentBotSpeech`,
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sourcePath = path.join(here, 'index.mjs');
+const canonicalSourcePath = path.join(here, 'index-classic-base.mjs');
 const outputPath = path.join(here, 'index-talkman.generated.mjs');
 
+export function hasTalkmanWorkingTreeMarkers(input = '') {
+  const source = String(input || '');
+  return [
+    "let activeUserId = '';",
+    "let conversationMode = 'talksys';",
+    "name: 'talkman'",
+    'function sanitizeTalkmanSpeakerName',
+    'function normalizeTalkmanAnswer',
+  ].some((marker) => source.includes(marker));
+}
+
+export function buildTalkmanRuntimeWithFallback(primaryInput = '', canonicalInput = '') {
+  const primary = String(primaryInput || '');
+  try {
+    return { built: buildTalkmanRuntimeSource(primary), fallbackUsed: false, reason: '' };
+  } catch (error) {
+    if (!hasTalkmanWorkingTreeMarkers(primary)) throw error;
+    const canonical = String(canonicalInput || '');
+    if (!canonical) throw error;
+    return {
+      built: buildTalkmanRuntimeSource(canonical),
+      fallbackUsed: true,
+      reason: String(error?.message || error),
+    };
+  }
+}
+
 export function buildTalkmanRuntimeFile() {
-  const original = fs.readFileSync(sourcePath, 'utf8');
-  const built = buildTalkmanRuntimeSource(original);
-  fs.writeFileSync(outputPath, built, 'utf8');
+  const workingSource = fs.readFileSync(sourcePath, 'utf8');
+  const canonicalSource = fs.readFileSync(canonicalSourcePath, 'utf8');
+  const result = buildTalkmanRuntimeWithFallback(workingSource, canonicalSource);
+  if (result.fallbackUsed) {
+    console.warn(`[talkman-build] index.mjs contains TalkMan/partial-patch markers; using canonical classic base (${result.reason})`);
+  }
+  fs.writeFileSync(outputPath, result.built, 'utf8');
   return outputPath;
 }
 
