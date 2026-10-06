@@ -1,0 +1,100 @@
+name: Deploy HelpSys Gemini once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-helpsys-gemini-once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-helpsys:
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 25
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      PRODUCTION_URL: https://helpsys.syouziroupc.workers.dev
+    steps:
+      - name: Checkout HelpSys exact revision
+        uses: actions/checkout@v6
+        with:
+          repository: syouziroupc/helpsys
+          ref: abe2bdd2f33ffb77f05fe17fcf197febf0b5d91d
+          path: helpsys
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Verify deployment credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${GEMINI_API_KEY:-}"
+          if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+            account_id="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              https://api.cloudflare.com/client/v4/accounts?per_page=1 | \
+              node -e "let d=JSON.parse(require('fs').readFileSync(0,'utf8'));process.stdout.write(d.result?.[0]?.id||'')")"
+            test -n "$account_id"
+            echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install and validate HelpSys
+        working-directory: helpsys
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+          node --check worker/quality-guide.js
+          node --check worker/reliability-v4-guard.js
+          npx wrangler deploy --dry-run
+
+      - name: Put Gemini secret on HelpSys Worker
+        working-directory: helpsys
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GEMINI_API_KEY" | npx wrangler secret put GEMINI_API_KEY
+
+      - name: Deploy HelpSys Worker
+        working-directory: helpsys
+        shell: bash
+        run: npx wrangler deploy
+
+      - name: Verify Gemini enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          body=""
+          for attempt in $(seq 1 20); do
+            body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/health/outlaw" || true)"
+            ok="$(BODY="$body" node -e "let d={};try{d=JSON.parse(process.env.BODY||'{}')}catch{};process.stdout.write(String(d.ok===true&&d.geminiConfigured===true&&Array.isArray(d.providers)&&d.providers.includes('gemini')))")"
+            [[ "$ok" == "true" ]] && break
+            [[ "$attempt" -eq 20 ]] && { echo "$body"; exit 1; }
+            sleep 3
+          done
+          echo "$body"
+
+      - name: Smoke strict Gemini planner
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload='{"request":"設定を開く次の操作を案内して","aiProvider":"gemini","history":[],"systemContext":{"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","ForegroundProcessId":1234,"TaskbarVisible":true,"runningApps":["explorer"],"browser":null},"evidence":{"ScreenshotAvailable":false,"UiElementCount":1,"InteractableCount":1,"FocusedCount":0,"FocusedElements":[],"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","TaskbarVisible":true,"RunningAppCount":1,"BrowserDomain":null,"BrowserUrl":null,"BrowserAddressFocused":false,"HistoryCount":0,"RecentTargets":[],"EvidenceSources":["ui-automation"],"SourceCount":1},"elements":[{"Id":"u1","Name":"スタート","AutomationId":"Start","ClassName":"","ControlType":"Button","ProcessName":"explorer","Interactable":true,"Enabled":true,"KeyboardFocusable":true,"Focused":false,"Password":false,"ProcessId":1234,"Value":null,"ToggleState":null,"Selected":null,"ExpandCollapseState":null,"X":0,"Y":0,"Width":80,"Height":40}]}'
+          out="$(curl -fsS --max-time 60 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/v1/outlaw-plan")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!['target','clarify','done','not_found'].includes(String(d?.status||'')))throw new Error(process.env.OUT);console.log(JSON.stringify(d));"
+
+      - name: Verify GLM route still alive
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload='{"request":"設定を開く次の操作を案内して","aiProvider":"glm","history":[],"systemContext":{"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","ForegroundProcessId":1234,"TaskbarVisible":true,"runningApps":["explorer"],"browser":null},"evidence":{"ScreenshotAvailable":false,"UiElementCount":1,"InteractableCount":1,"FocusedCount":0,"FocusedElements":[],"ForegroundProcess":"explorer","ForegroundTitle":"Program Manager","TaskbarVisible":true,"RunningAppCount":1,"BrowserDomain":null,"BrowserUrl":null,"BrowserAddressFocused":false,"HistoryCount":0,"RecentTargets":[],"EvidenceSources":["ui-automation"],"SourceCount":1},"elements":[{"Id":"u1","Name":"スタート","AutomationId":"Start","ClassName":"","ControlType":"Button","ProcessName":"explorer","Interactable":true,"Enabled":true,"KeyboardFocusable":true,"Focused":false,"Password":false,"ProcessId":1234,"Value":null,"ToggleState":null,"Selected":null,"ExpandCollapseState":null,"X":0,"Y":0,"Width":80,"Height":40}]}'
+          out="$(curl -fsS --max-time 60 -H 'content-type: application/json' --data "$payload" "$PRODUCTION_URL/v1/outlaw-plan")"
+          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');if(!['target','clarify','done','not_found'].includes(String(d?.status||'')))throw new Error(process.env.OUT);console.log(JSON.stringify(d));"
