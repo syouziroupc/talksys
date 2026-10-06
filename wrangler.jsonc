@@ -8,7 +8,7 @@
   "compatibility_date": "2026-09-09",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "TELEPHONY_ENABLED": "true",
+    "TELEPHONY_ENABLED": "false",
     "TELEPHONY_SESSION_MAX_MINUTES": "30",
     "TELEPHONY_END_SILENCE_MS": "700",
     "TELEPHONY_MIN_SPEECH_MS": "320",
