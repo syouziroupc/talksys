@@ -57,17 +57,17 @@ jobs:
           node --check worker/reliability-v4-guard.js
           npx wrangler deploy --dry-run
 
-      - name: Put Gemini secret on HelpSys Worker
+      - name: Deploy exact HelpSys Worker revision first
+        working-directory: helpsys
+        shell: bash
+        run: npx wrangler deploy
+
+      - name: Put Gemini secret on deployed HelpSys Worker
         working-directory: helpsys
         shell: bash
         run: |
           set -euo pipefail
           printf '%s' "$GEMINI_API_KEY" | npx wrangler secret put GEMINI_API_KEY
-
-      - name: Deploy HelpSys Worker
-        working-directory: helpsys
-        shell: bash
-        run: npx wrangler deploy
 
       - name: Verify Gemini enabled
         shell: bash
