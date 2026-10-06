@@ -25,7 +25,7 @@ function replaceExpected(source, before, after, label, expectedCount) {
 }
 
 export function buildTalkmanSource(input) {
-  let source = String(input || '');
+  let source = String(input || '').replace(/\r\n?/g, '\n');
 
   source = replaceOnce(
     source,
@@ -87,7 +87,7 @@ function buildTalkmanInput(text = '', speakerName = '') {
     '雑談では軽いツッコミ、言葉遊び、直前の話題へのコールバックを使ってよいですが、無理に毎回ボケず、しつこいイジりや誰かを傷つける笑いは避けてください。',
     '通常は1文から3文で短く返してください。質問、事実確認、安全に関わる話ではユーモアより正確さを優先してください。発話者や発言内容を推測で作らないでください。',
     'この制御文自体は読み上げず、返答本文だけを出してください。',
-  ].join('\\n');
+  ].join('\n');
 }
 
 function enqueueTalkmanTurn(nextTurn) {
