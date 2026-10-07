@@ -1,0 +1,194 @@
+name: Configure TalkSys Telnyx production
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.telnyx/configure-trigger.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: talksys-telnyx-production
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      TELNYX_API_KEY: ${{ secrets.TELNYX_API_KEY || secrets.TELNYX_TOKEN || secrets.TELNYX_API_V2_KEY }}
+      PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+      TELNYX_NUMBER: '+815031501235'
+      TEXML_APP_NAME: TalkSys
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Verify credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || { echo 'Cloudflare deployment credential is missing'; exit 1; }
+          test -n "${TELNYX_API_KEY:-}" || { echo 'TELNYX_API_KEY/TELNYX_TOKEN/TELNYX_API_V2_KEY GitHub Actions secret is missing'; exit 1; }
+          if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+            account_id="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              https://api.cloudflare.com/client/v4/accounts?per_page=1 | \
+              node -e "let d=JSON.parse(require('fs').readFileSync(0,'utf8'));process.stdout.write(d.result?.[0]?.id||'')")"
+            test -n "$account_id"
+            echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+      - name: Rotate production telephony shared token
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")"
+          echo "::add-mask::$token"
+          echo "TELEPHONY_SHARED_TOKEN=$token" >> "$GITHUB_ENV"
+          printf '%s' "$token" | npx wrangler secret put TELEPHONY_SHARED_TOKEN
+
+      - name: Upsert TalkSys TeXML application and assign 050 number
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = 'https://api.telnyx.com/v2';
+          const key = process.env.TELNYX_API_KEY;
+          const target = process.env.TELNYX_NUMBER;
+          const appName = process.env.TEXML_APP_NAME;
+          const voiceUrl = `${process.env.PRODUCTION_URL}/telnyx/voice?token=${encodeURIComponent(process.env.TELEPHONY_SHARED_TOKEN)}`;
+          const headers = { Authorization: `Bearer ${key}`, Accept: 'application/json', 'Content-Type': 'application/json' };
+
+          async function api(path, options = {}) {
+            const response = await fetch(base + path, { ...options, headers: { ...headers, ...(options.headers || {}) } });
+            const text = await response.text();
+            let body = {};
+            try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text.slice(0, 800) }; }
+            if (!response.ok) throw new Error(`Telnyx ${response.status} ${path}: ${JSON.stringify(body).slice(0, 1200)}`);
+            return body;
+          }
+
+          const appList = await api('/texml_applications?page[size]=250');
+          const matches = (appList.data || []).filter((x) => String(x.friendly_name || '').toLowerCase() === appName.toLowerCase());
+          if (matches.length > 1) throw new Error(`Multiple TeXML applications named ${appName}; refusing ambiguous update`);
+          let app;
+          const appBody = { friendly_name: appName, voice_url: voiceUrl, voice_method: 'post', active: true };
+          if (matches.length === 1) {
+            app = (await api(`/texml_applications/${encodeURIComponent(matches[0].id)}`, { method: 'PATCH', body: JSON.stringify(appBody) })).data;
+          } else {
+            app = (await api('/texml_applications', { method: 'POST', body: JSON.stringify(appBody) })).data;
+          }
+          if (!app?.id) throw new Error('TeXML application ID was not returned');
+
+          let number = null;
+          for (let page = 1; page <= 20 && !number; page += 1) {
+            const listed = await api(`/phone_numbers?page[size]=250&page[number]=${page}`);
+            number = (listed.data || []).find((x) => String(x.phone_number || '').replace(/[^+\d]/g, '') === target);
+            const totalPages = Number(listed.meta?.total_pages || 1);
+            if (page >= totalPages) break;
+          }
+          if (!number?.id) throw new Error(`Owned phone number ${target} was not found in the Telnyx account`);
+
+          await api(`/phone_numbers/${encodeURIComponent(number.id)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ connection_id: app.id }),
+          });
+
+          const verifyApp = (await api(`/texml_applications/${encodeURIComponent(app.id)}`)).data;
+          const verifyNumber = (await api(`/phone_numbers/${encodeURIComponent(number.id)}`)).data;
+          if (verifyNumber?.connection_id !== app.id) throw new Error(`Phone number assignment mismatch: expected ${app.id}, got ${verifyNumber?.connection_id || 'none'}`);
+          if (verifyApp?.voice_url !== voiceUrl) throw new Error('TeXML voice_url verification failed');
+          if (String(verifyApp?.voice_method || '').toLowerCase() !== 'post') throw new Error('TeXML voice_method verification failed');
+
+          console.log(JSON.stringify({
+            ok: true,
+            phoneNumber: verifyNumber.phone_number,
+            phoneNumberStatus: verifyNumber.status,
+            connectionId: verifyNumber.connection_id,
+            connectionName: verifyNumber.connection_name,
+            texmlApplicationId: verifyApp.id,
+            texmlApplicationName: verifyApp.friendly_name,
+            voiceMethod: verifyApp.voice_method,
+            voiceUrlHost: new URL(verifyApp.voice_url).host,
+            voiceUrlPath: new URL(verifyApp.voice_url).pathname,
+          }, null, 2));
+          NODE
+
+      - name: Verify live telephony endpoint and TeXML response
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 20); do
+            health="$(curl -fsS --max-time 20 "$PRODUCTION_URL/telephony-health" || true)"
+            ok="$(HEALTH="$health" node -e "let d={};try{d=JSON.parse(process.env.HEALTH||'{}')}catch{};process.stdout.write(String(d.ok===true&&d.enabled===true&&d.webhookTokenConfigured===true&&d.talksysTurnConnected===true&&d.routes?.voice==='/telnyx/voice'&&d.routes?.media==='/telnyx/media'))")"
+            [[ "$ok" == "true" ]] && break
+            [[ "$attempt" -eq 20 ]] && { echo "$health"; exit 1; }
+            sleep 2
+          done
+          echo "$health"
+
+          voice_url="$PRODUCTION_URL/telnyx/voice?token=$TELEPHONY_SHARED_TOKEN"
+          xml_file="$(mktemp)"
+          trap 'rm -f "$xml_file"' EXIT
+          curl -fsS --max-time 30 -X POST \
+            -H 'content-type: application/x-www-form-urlencoded' \
+            --data-urlencode 'CallSid=talksys-deploy-smoke' \
+            --data-urlencode 'From=+819000000000' \
+            --data-urlencode "To=$TELNYX_NUMBER" \
+            "$voice_url" > "$xml_file"
+          grep -F '<Connect><Stream ' "$xml_file" >/dev/null
+          grep -F 'wss://talksys.syouziroupc.workers.dev/telnyx/media?token=' "$xml_file" >/dev/null
+          grep -F 'codec="PCMU"' "$xml_file" >/dev/null
+          grep -F 'bidirectionalMode="mp3"' "$xml_file" >/dev/null
+          echo 'Live TeXML endpoint returned the expected bidirectional media stream contract.'
+
+      - name: Verify live media websocket returns TalkSys greeting audio
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const token = process.env.TELEPHONY_SHARED_TOKEN;
+          const url = `wss://talksys.syouziroupc.workers.dev/telnyx/media?token=${encodeURIComponent(token)}`;
+          const callId = `github-smoke-${Date.now()}`;
+          const ws = new WebSocket(url);
+          let settled = false;
+          const timer = setTimeout(() => finish(new Error('Timed out waiting for TalkSys greeting audio')), 45000);
+          function finish(err) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try { ws.close(); } catch {}
+            if (err) { console.error(err.message); process.exitCode = 1; }
+            else console.log('Live telephony WebSocket emitted greeting audio successfully.');
+          }
+          ws.addEventListener('open', () => {
+            ws.send(JSON.stringify({ event: 'start', start: { call_sid: callId, custom_parameters: { call_id: callId, from: '+819000000000', to: process.env.TELNYX_NUMBER } } }));
+          });
+          ws.addEventListener('message', (event) => {
+            try {
+              const msg = JSON.parse(String(event.data));
+              if (msg?.event === 'media' && String(msg?.media?.payload || '').length > 100) {
+                try { ws.send(JSON.stringify({ event: 'stop' })); } catch {}
+                finish();
+              }
+            } catch {}
+          });
+          ws.addEventListener('error', () => finish(new Error('Live telephony WebSocket error')));
+          ws.addEventListener('close', () => { if (!settled) finish(new Error('Live telephony WebSocket closed before greeting audio')); });
+          NODE
