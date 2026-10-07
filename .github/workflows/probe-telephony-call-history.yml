@@ -31,9 +31,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          out="$(npx wrangler d1 execute talksys-conversation-logs --remote --json --command \"SELECT COUNT(*) AS total_calls, SUM(CASE WHEN message_count > 0 THEN 1 ELSE 0 END) AS conversational_calls, MAX(updated_at) AS latest_call_update FROM phone_calls WHERE replace(replace(replace(to_number,' ',''),'-',''),'(', '') LIKE '%5031501235%';\")"
-          OUT="$out" node <<'NODE'
-          const d = JSON.parse(process.env.OUT || '[]');
+          node <<'NODE'
+          const { spawnSync } = require('child_process');
+          const sql = "SELECT COUNT(*) AS total_calls, SUM(CASE WHEN message_count > 0 THEN 1 ELSE 0 END) AS conversational_calls, MAX(updated_at) AS latest_call_update FROM phone_calls WHERE replace(replace(replace(to_number,' ',''),'-',''),'(', '') LIKE '%5031501235%';";
+          const r = spawnSync('npx', ['wrangler','d1','execute','talksys-conversation-logs','--remote','--json','--command',sql], { encoding: 'utf8', env: process.env });
+          if (r.status !== 0) {
+            process.stderr.write(r.stderr || r.stdout || 'wrangler d1 failed');
+            process.exit(r.status || 1);
+          }
+          const d = JSON.parse(r.stdout || '[]');
           const rows = Array.isArray(d) ? (d[0]?.results || []) : (d.result?.[0]?.results || []);
           const row = rows[0] || {};
           console.log(JSON.stringify({
