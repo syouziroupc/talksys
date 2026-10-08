@@ -37,15 +37,28 @@ jobs:
           set -euo pipefail
           if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 
-      - name: Validate PCMU hotfix
+      - name: Validate phone source syntax
         run: |
           set -euo pipefail
           node --check src/telephony/index.js
           node --check src/telephony/protocol.js
-          npm run architecture:check
-          npm run architecture:graph
-          npm test
-          npx wrangler deploy --dry-run
+          grep -q "talksys-telephony-v86-grok-pcmu" src/telephony/index.js
+          grep -q "codec: 'mulaw'" src/telephony/index.js
+          grep -q 'bidirectionalMode="rtp"' src/telephony/protocol.js
+          grep -q 'bidirectionalCodec="PCMU"' src/telephony/protocol.js
+          ! grep -q 'bidirectionalSamplingRate' src/telephony/protocol.js
+
+      - name: Validate architecture rules
+        run: npm run architecture:check
+
+      - name: Validate architecture graph
+        run: npm run architecture:graph
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Validate Wrangler bundle
+        run: npx wrangler deploy --dry-run
 
       - name: Commit validated PCMU hotfix to main
         run: |
@@ -55,7 +68,7 @@ jobs:
           git add src/telephony/index.js src/telephony/protocol.js tests/telephony-integration.test.mjs
           git diff --cached --check
           git diff --cached --quiet && { echo 'No PCMU hotfix changes detected'; exit 1; }
-          git commit -m 'Switch phone audio to Grok PCMU 8kHz'
+          git commit -m 'Fix phone audio with Grok mulaw over Telnyx PCMU RTP'
           git push origin HEAD:main
 
       - name: Resolve Cloudflare account
@@ -90,7 +103,9 @@ jobs:
             if BODY="$body" node - <<'NODE'
           const d = JSON.parse(process.env.BODY || '{}');
           if (d.revision !== 'talksys-telephony-v86-grok-pcmu') process.exit(1);
+          if (d.phoneTtsModel !== 'xai/grok-tts') process.exit(1);
           if (d.phoneTtsSampleRate !== 8000) process.exit(1);
+          if (d.phoneTtsBitRate !== null) process.exit(1);
           if (!String(d.outputAudio || '').includes('PCMU RTP')) process.exit(1);
           NODE
             then
