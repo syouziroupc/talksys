@@ -52,11 +52,14 @@ jobs:
               'export const PHONE_TTS_SAMPLE_RATE = 24000;',
               'export const PHONE_TTS_SAMPLE_RATE = 8000;')
           replace_exact(index,
+              'export const PHONE_TTS_BIT_RATE = 64000;',
+              'export const PHONE_TTS_BIT_RATE = null;')
+          replace_exact(index,
               "      codec: 'mp3',\n      sample_rate: PHONE_TTS_SAMPLE_RATE,\n      bit_rate: PHONE_TTS_BIT_RATE,",
               "      codec: 'mulaw',\n      sample_rate: PHONE_TTS_SAMPLE_RATE,")
           replace_exact(index,
               "  const response = await fetchImpl(audioUrl, { headers: { accept: 'audio/mpeg' } });",
-              "  const response = await fetchImpl(audioUrl, { headers: { accept: 'application/octet-stream' } });")
+              "  const response = await fetchImpl(audioUrl);")
           replace_exact(index,
               "    outputAudio: 'Cloudflare Grok TTS MP3 24kHz/64kbps → Telnyx',",
               "    outputAudio: 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP',")
@@ -64,17 +67,21 @@ jobs:
           protocol = 'src/telephony/protocol.js'
           replace_exact(protocol,
               'codec="PCMU" bidirectionalMode="mp3" statusCallback=',
-              'codec="PCMU" bidirectionalMode="rtp" bidirectionalCodec="PCMU" bidirectionalSamplingRate="8000" statusCallback=')
+              'codec="PCMU" bidirectionalMode="rtp" bidirectionalCodec="PCMU" statusCallback=')
 
           for p in Path('tests').glob('*.test.mjs'):
               s = p.read_text()
               s2 = s
               s2 = s2.replace('talksys-telephony-v85-grok-phone-tts', 'talksys-telephony-v86-grok-pcmu')
               s2 = s2.replace('assert.equal(PHONE_TTS_SAMPLE_RATE, 24000);', 'assert.equal(PHONE_TTS_SAMPLE_RATE, 8000);')
+              s2 = s2.replace('assert.equal(PHONE_TTS_BIT_RATE, 64000);', 'assert.equal(PHONE_TTS_BIT_RATE, null);')
               s2 = s2.replace("codec: 'mp3',\n    sample_rate: 24000,\n    bit_rate: 64000,", "codec: 'mulaw',\n    sample_rate: 8000,")
-              s2 = s2.replace("fetchCalls[0].options.headers.accept, 'audio/mpeg'", "fetchCalls[0].options.headers.accept, 'application/octet-stream'")
+              s2 = s2.replace("assert.equal(fetchCalls[0].options.headers.accept, 'audio/mpeg');", "assert.equal(fetchCalls[0].options, undefined);")
+              s2 = s2.replace('assert.doesNotMatch(xml, /bidirectionalCodec=/);', 'assert.match(xml, /bidirectionalCodec="PCMU"/);')
               s2 = s2.replace('Cloudflare Grok TTS MP3 24kHz\\/64kbps', 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP')
               s2 = s2.replace('bidirectionalMode="mp3"', 'bidirectionalMode="rtp"')
+              s2 = s2.replace("test('TeXML receives PCMU and returns MP3 on the same Telnyx stream'", "test('TeXML receives and returns PCMU on the same Telnyx stream'")
+              s2 = s2.replace("test('phone TTS uses Cloudflare Grok with the MP3 format proven compatible with Telnyx'", "test('phone TTS uses Cloudflare Grok telephony mulaw at 8 kHz'")
               if s2 != s:
                   p.write_text(s2)
 
@@ -82,10 +89,12 @@ jobs:
           proto = Path(protocol).read_text()
           assert "codec: 'mulaw'" in idx
           assert 'PHONE_TTS_SAMPLE_RATE = 8000' in idx
+          assert 'PHONE_TTS_BIT_RATE = null' in idx
+          assert "codec: 'mp3'" not in idx[idx.find('export async function synthesizeGrokPhoneMp3'):idx.find('async function synthesizeMp3')]
           assert 'Telnyx PCMU RTP' in idx
           assert 'bidirectionalMode="rtp"' in proto
           assert 'bidirectionalCodec="PCMU"' in proto
-          assert 'bidirectionalSamplingRate="8000"' in proto
+          assert 'bidirectionalSamplingRate=' not in proto
           assert 'bidirectionalMode="mp3"' not in proto
           PY
 
@@ -154,6 +163,7 @@ jobs:
           const d = JSON.parse(process.env.BODY || '{}');
           if (d.revision !== 'talksys-telephony-v86-grok-pcmu') process.exit(1);
           if (d.phoneTtsSampleRate !== 8000) process.exit(1);
+          if (d.phoneTtsBitRate !== null) process.exit(1);
           if (!String(d.outputAudio || '').includes('PCMU RTP')) process.exit(1);
           NODE
             then
