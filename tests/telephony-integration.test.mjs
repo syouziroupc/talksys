@@ -3,6 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { decodeMuLawByte, pcmuBase64ToSamples, samplesToWav } from '../src/telephony/codec.js';
 import { buildTexml } from '../src/telephony/protocol.js';
+import {
+  PHONE_TTS_BIT_RATE,
+  PHONE_TTS_DEFAULT_VOICE,
+  PHONE_TTS_MODEL,
+  PHONE_TTS_SAMPLE_RATE,
+  phoneTtsVoice,
+  synthesizeGrokPhoneMp3,
+} from '../src/telephony/index.js';
 
 test('PCMU silence decodes and produces valid 8 kHz WAV', () => {
   assert.equal(decodeMuLawByte(0xff), 0);
@@ -66,7 +74,7 @@ test('telephone transport shares the 900ms voice end policy and duplicate suppre
   assert.match(source, /WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
   assert.match(source, /sameUtterance\(stt\.text, lastAcceptedUserText\)/);
   assert.match(source, /phone_duplicate_suppressed/);
-  assert.match(source, /talksys-telephony-v84-shared-turn-dedupe/);
+  assert.match(source, /talksys-telephony-v85-grok-phone-tts/);
 });
 
 test('telephone outbound TTS is pluggable without replacing Telnyx media transport', () => {
@@ -74,4 +82,59 @@ test('telephone outbound TTS is pluggable without replacing Telnyx media transpo
   assert.match(source, /typeof deps\?\.synthesize === 'function'/);
   assert.match(source, /synthesizeMp3\(env, text, deps\)/);
   assert.match(source, /pluggableTts: true/);
+});
+
+test('phone TTS uses Cloudflare Grok with the MP3 format proven compatible with Telnyx', async () => {
+  assert.equal(PHONE_TTS_MODEL, 'xai/grok-tts');
+  assert.equal(PHONE_TTS_SAMPLE_RATE, 24000);
+  assert.equal(PHONE_TTS_BIT_RATE, 64000);
+  assert.equal(PHONE_TTS_DEFAULT_VOICE, 'ara');
+  assert.equal(phoneTtsVoice({}), 'ara');
+  assert.equal(phoneTtsVoice({ TELEPHONY_TTS_VOICE: 'REX' }), 'rex');
+  assert.equal(phoneTtsVoice({ TELEPHONY_TTS_VOICE: 'unknown' }), 'ara');
+
+  const aiCalls = [];
+  const fetchCalls = [];
+  const env = {
+    AI: {
+      async run(model, input) {
+        aiCalls.push({ model, input });
+        return { state: 'Completed', result: { audio: 'https://audio.example.test/phone.mp3' } };
+      },
+    },
+  };
+  const fakeAudio = Uint8Array.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00]);
+  const result = await synthesizeGrokPhoneMp3(env, 'PCは128GBです。', async (url, options) => {
+    fetchCalls.push({ url, options });
+    return {
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => fakeAudio.buffer.slice(0),
+    };
+  });
+
+  assert.equal(result.byteLength, fakeAudio.byteLength);
+  assert.equal(aiCalls.length, 1);
+  assert.equal(aiCalls[0].model, 'xai/grok-tts');
+  assert.equal(aiCalls[0].input.language, 'ja');
+  assert.equal(aiCalls[0].input.voice_id, 'ara');
+  assert.deepEqual(aiCalls[0].input.output_format, {
+    codec: 'mp3',
+    sample_rate: 24000,
+    bit_rate: 64000,
+  });
+  assert.equal(aiCalls[0].input.text_normalization, false);
+  assert.match(aiCalls[0].input.text, /パソコン/);
+  assert.match(aiCalls[0].input.text, /128ギガバイト/);
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, 'https://audio.example.test/phone.mp3');
+  assert.equal(fetchCalls[0].options.headers.accept, 'audio/mpeg');
+});
+
+test('phone TTS no longer depends on direct Deepgram credentials or Melo output', () => {
+  const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /DEEPGRAM_API_KEY/);
+  assert.doesNotMatch(source, /new CloudflareJapaneseTTS/);
+  assert.match(source, /normalizeJapaneseTtsText/);
+  assert.match(source, /Cloudflare Grok TTS MP3 24kHz\/64kbps/);
 });
