@@ -13,7 +13,7 @@ def one(old, new):
 one("import { CloudflareJapaneseTTS } from '../cloudflare-japanese-tts.js';",
     "import { normalizeJapaneseTtsText } from '../cloudflare-japanese-tts.js';")
 one("export const TELEPHONY_REVISION = 'talksys-telephony-v84-shared-turn-dedupe';",
-    "export const TELEPHONY_REVISION = 'talksys-telephony-v86-grok-pcmu';\nexport const PHONE_TTS_MODEL = 'xai/grok-tts';\nexport const PHONE_TTS_DEFAULT_VOICE = 'ara';\nexport const PHONE_TTS_SAMPLE_RATE = 8000;\nconst PHONE_TTS_VOICES = new Set(['eve', 'ara', 'rex', 'sal', 'leo']);")
+    "export const TELEPHONY_REVISION = 'talksys-telephony-v86-grok-pcmu';\nexport const PHONE_TTS_MODEL = 'xai/grok-tts';\nexport const PHONE_TTS_DEFAULT_VOICE = 'ara';\nexport const PHONE_TTS_SAMPLE_RATE = 8000;\nexport const PHONE_TTS_BIT_RATE = null;\nconst PHONE_TTS_VOICES = new Set(['eve', 'ara', 'rex', 'sal', 'leo']);")
 
 anchor = "async function synthesizeMp3(env, text, deps = {}) {"
 start = s.index(anchor)
@@ -36,22 +36,37 @@ export function extractMulawPayload(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input || new ArrayBuffer(0));
   if (!bytes.byteLength) throw new Error('grok_tts_empty_audio');
   const ascii = (off, len) => String.fromCharCode(...bytes.subarray(off, off + len));
-  if (bytes.byteLength >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WAVE') {
-    let off = 12;
-    while (off + 8 <= bytes.byteLength) {
-      const id = ascii(off, 4);
-      const size = bytes[off + 4] | (bytes[off + 5] << 8) | (bytes[off + 6] << 16) | (bytes[off + 7] << 24);
-      const dataStart = off + 8;
-      const dataEnd = dataStart + Math.max(0, size);
-      if (dataEnd > bytes.byteLength) throw new Error('grok_tts_bad_wav');
-      if (id === 'data') return bytes.slice(dataStart, dataEnd);
-      off = dataEnd + (size & 1);
-    }
-    throw new Error('grok_tts_wav_data_missing');
-  }
   if (bytes.byteLength >= 3 && ascii(0, 3) === 'ID3') throw new Error('grok_tts_unexpected_mp3');
   if (bytes.byteLength >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) throw new Error('grok_tts_unexpected_mp3');
-  return bytes;
+  if (!(bytes.byteLength >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WAVE')) return bytes;
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let fmt = null;
+  let data = null;
+  let off = 12;
+  while (off + 8 <= bytes.byteLength) {
+    const id = ascii(off, 4);
+    const size = view.getUint32(off + 4, true);
+    const dataStart = off + 8;
+    const dataEnd = dataStart + size;
+    if (dataEnd > bytes.byteLength) throw new Error('grok_tts_bad_wav');
+    if (id === 'fmt ' && size >= 16) {
+      fmt = {
+        format: view.getUint16(dataStart, true),
+        channels: view.getUint16(dataStart + 2, true),
+        sampleRate: view.getUint32(dataStart + 4, true),
+        bitsPerSample: view.getUint16(dataStart + 14, true),
+      };
+    }
+    if (id === 'data') data = bytes.slice(dataStart, dataEnd);
+    off = dataEnd + (size & 1);
+  }
+  if (!fmt || !data) throw new Error('grok_tts_wav_structure_invalid');
+  if (fmt.format !== 7 || fmt.channels !== 1 || fmt.sampleRate !== PHONE_TTS_SAMPLE_RATE || fmt.bitsPerSample !== 8) {
+    throw new Error(`grok_tts_unexpected_wav_format_${fmt.format}_${fmt.channels}_${fmt.sampleRate}_${fmt.bitsPerSample}`);
+  }
+  if (!data.byteLength) throw new Error('grok_tts_empty_audio');
+  return data;
 }
 
 export async function synthesizeGrokPhonePcmu(env, text, fetchImpl = fetch) {
@@ -69,8 +84,7 @@ export async function synthesizeGrokPhonePcmu(env, text, fetchImpl = fetch) {
   if (!audioUrl) throw new Error('grok_tts_audio_url_missing');
   const response = await fetchImpl(audioUrl);
   if (!response?.ok) throw new Error(`grok_tts_audio_fetch_${Number(response?.status || 0) || 'error'}`);
-  const audio = await response.arrayBuffer();
-  return extractMulawPayload(audio);
+  return extractMulawPayload(await response.arrayBuffer());
 }
 
 async function synthesizePcmu(env, text) {
@@ -82,17 +96,17 @@ async function synthesizePcmu(env, text) {
 s = s[:start] + replacement + s[end:]
 
 one("    outputAudio: 'TalkSys TTS MP3 → Telnyx',",
-    "    outputAudio: 'Cloudflare Grok G.711 μ-law 8kHz → Telnyx PCMU RTP',")
+    "    outputAudio: 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP',")
 one("    pluggableTts: true,\n    externalTtsConnected: typeof deps?.synthesize === 'function',",
-    "    pluggableTts: false,\n    externalTtsConnected: false,\n    phoneTtsModel: PHONE_TTS_MODEL,\n    phoneTtsVoice: phoneTtsVoice(env),\n    phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE,")
+    "    pluggableTts: false,\n    externalTtsConnected: false,\n    phoneTtsModel: PHONE_TTS_MODEL,\n    phoneTtsVoice: phoneTtsVoice(env),\n    phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE,\n    phoneTtsBitRate: PHONE_TTS_BIT_RATE,")
 one("  const speak = async (text) => {\n    const payload = await synthesizeMp3(env, text, deps);\n    if (!payload || closed) return false;\n    currentMark = `talksys-${crypto.randomUUID()}`;\n    safeSend(telnyx, { event: 'media', media: { payload } });\n    safeSend(telnyx, { event: 'mark', mark: { name: currentMark } });\n    assistantPlaying = true;\n    return true;\n  };",
-    "  const speak = async (text) => {\n    const pcmu = await synthesizePcmu(env, text);\n    if (!pcmu?.byteLength || closed) return false;\n    currentMark = `talksys-${crypto.randomUUID()}`;\n    const maxChunk = 8000; // 1 second of G.711 μ-law at 8 kHz\n    for (let offset = 0; offset < pcmu.byteLength && !closed; offset += maxChunk) {\n      const chunk = pcmu.subarray(offset, Math.min(offset + maxChunk, pcmu.byteLength));\n      safeSend(telnyx, { event: 'media', media: { payload: bytesToBase64(chunk) } });\n    }\n    safeSend(telnyx, { event: 'mark', mark: { name: currentMark } });\n    assistantPlaying = true;\n    return true;\n  };")
+    "  const speak = async (text) => {\n    const pcmu = await synthesizePcmu(env, text);\n    if (!pcmu?.byteLength || closed) return false;\n    currentMark = `talksys-${crypto.randomUUID()}`;\n    const frameBytes = 160; // 20 ms of raw G.711 μ-law at 8 kHz\n    for (let offset = 0; offset < pcmu.byteLength && !closed; offset += frameBytes) {\n      const chunk = pcmu.subarray(offset, Math.min(offset + frameBytes, pcmu.byteLength));\n      safeSend(telnyx, { event: 'media', media: { payload: bytesToBase64(chunk) } });\n    }\n    safeSend(telnyx, { event: 'mark', mark: { name: currentMark } });\n    assistantPlaying = true;\n    return true;\n  };")
 p.write_text(s)
 
 p = Path('src/telephony/protocol.js')
 s = p.read_text()
 old = 'codec="PCMU" bidirectionalMode="mp3" statusCallback='
-new = 'codec="PCMU" bidirectionalMode="rtp" bidirectionalCodec="PCMU" bidirectionalSamplingRate="8000" statusCallback='
+new = 'codec="PCMU" bidirectionalMode="rtp" bidirectionalCodec="PCMU" statusCallback='
 if s.count(old) != 1:
     raise SystemExit('protocol legacy stream contract not found exactly once')
 p.write_text(s.replace(old, new))
@@ -100,15 +114,16 @@ p.write_text(s.replace(old, new))
 p = Path('tests/telephony-integration.test.mjs')
 s = p.read_text()
 s = s.replace("import { buildTexml } from '../src/telephony/protocol.js';",
-              "import { buildTexml } from '../src/telephony/protocol.js';\nimport { PHONE_TTS_MODEL, PHONE_TTS_SAMPLE_RATE, extractMulawPayload, synthesizeGrokPhonePcmu } from '../src/telephony/index.js';")
+              "import { buildTexml } from '../src/telephony/protocol.js';\nimport { PHONE_TTS_BIT_RATE, PHONE_TTS_MODEL, PHONE_TTS_SAMPLE_RATE, extractMulawPayload, synthesizeGrokPhonePcmu } from '../src/telephony/index.js';")
 s = s.replace("test('TeXML receives PCMU and returns MP3 on the same Telnyx stream'", "test('TeXML receives and returns PCMU on the same Telnyx stream'")
 s = s.replace('assert.match(xml, /bidirectionalMode="mp3"/);\n  assert.doesNotMatch(xml, /bidirectionalCodec=/);',
-              'assert.match(xml, /bidirectionalMode="rtp"/);\n  assert.match(xml, /bidirectionalCodec="PCMU"/);\n  assert.match(xml, /bidirectionalSamplingRate="8000"/);')
+              'assert.match(xml, /bidirectionalMode="rtp"/);\n  assert.match(xml, /bidirectionalCodec="PCMU"/);\n  assert.doesNotMatch(xml, /bidirectionalSamplingRate=/);')
 s = s.replace('assert.match(source, /talksys-telephony-v84-shared-turn-dedupe/);', 'assert.match(source, /talksys-telephony-v86-grok-pcmu/);')
 oldtest = "test('telephone outbound TTS is pluggable without replacing Telnyx media transport', () => {\n  const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');\n  assert.match(source, /typeof deps\\?\\.synthesize === 'function'/);\n  assert.match(source, /synthesizeMp3\\(env, text, deps\\)/);\n  assert.match(source, /pluggableTts: true/);\n});"
 newtest = '''test('phone TTS requests raw telephony mulaw at 8 kHz and rejects MP3', async () => {
   assert.equal(PHONE_TTS_MODEL, 'xai/grok-tts');
   assert.equal(PHONE_TTS_SAMPLE_RATE, 8000);
+  assert.equal(PHONE_TTS_BIT_RATE, null);
   const calls = [];
   const env = { AI: { async run(model, input) { calls.push({ model, input }); return { result: { audio: 'https://audio.example.test/phone.ulaw' } }; } } };
   const raw = Uint8Array.from([0xff, 0x7f, 0x00, 0x80]);
@@ -116,13 +131,14 @@ newtest = '''test('phone TTS requests raw telephony mulaw at 8 kHz and rejects M
   assert.deepEqual(Array.from(audio), Array.from(raw));
   assert.equal(calls[0].input.output_format.codec, 'mulaw');
   assert.equal(calls[0].input.output_format.sample_rate, 8000);
+  assert.equal('bit_rate' in calls[0].input.output_format, false);
   assert.throws(() => extractMulawPayload(Uint8Array.from([0x49,0x44,0x33,0x04])), /unexpected_mp3/);
 });
 
-test('telephone outbound path uses PCMU chunks instead of MP3', () => {
+test('telephone outbound path uses 20 ms PCMU frames instead of MP3', () => {
   const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
   assert.match(source, /synthesizePcmu\\(env, text\\)/);
-  assert.match(source, /const maxChunk = 8000/);
+  assert.match(source, /const frameBytes = 160/);
   assert.match(source, /bytesToBase64\\(chunk\\)/);
   assert.doesNotMatch(source, /synthesizeMp3/);
   assert.match(source, /pluggableTts: false/);
@@ -136,7 +152,9 @@ idx = Path('src/telephony/index.js').read_text()
 proto = Path('src/telephony/protocol.js').read_text()
 assert "codec: 'mulaw'" in idx
 assert 'PHONE_TTS_SAMPLE_RATE = 8000' in idx
+assert 'PHONE_TTS_BIT_RATE = null' in idx
 assert 'synthesizeMp3' not in idx
+assert 'const frameBytes = 160' in idx
 assert 'bidirectionalMode="rtp"' in proto
 assert 'bidirectionalCodec="PCMU"' in proto
-assert 'bidirectionalSamplingRate="8000"' in proto
+assert 'bidirectionalSamplingRate' not in proto
