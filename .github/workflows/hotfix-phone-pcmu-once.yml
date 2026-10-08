@@ -9,12 +9,11 @@ on:
 permissions:
   contents: write
 
-environment: production
-
 jobs:
   hotfix:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    environment: production
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
@@ -79,7 +78,6 @@ jobs:
               if s2 != s:
                   p.write_text(s2)
 
-          # Static safety checks: no phone MP3 transport remains in active telephony source.
           idx = Path(index).read_text()
           proto = Path(protocol).read_text()
           assert "codec: 'mulaw'" in idx
