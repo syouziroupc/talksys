@@ -1,0 +1,168 @@
+name: Hotfix phone Grok PCMU once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/hotfix-phone-pcmu-once.yml'
+
+permissions:
+  contents: write
+
+environment: production
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Apply exact Grok mulaw / Telnyx PCMU RTP hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, old, new, count=1):
+              p = Path(path)
+              s = p.read_text()
+              n = s.count(old)
+              if n != count:
+                  raise SystemExit(f'{path}: expected {count} occurrence(s), found {n}: {old!r}')
+              p.write_text(s.replace(old, new))
+
+          index = 'src/telephony/index.js'
+          replace_exact(index,
+              "export const TELEPHONY_REVISION = 'talksys-telephony-v85-grok-phone-tts';",
+              "export const TELEPHONY_REVISION = 'talksys-telephony-v86-grok-pcmu';")
+          replace_exact(index,
+              'export const PHONE_TTS_SAMPLE_RATE = 24000;',
+              'export const PHONE_TTS_SAMPLE_RATE = 8000;')
+          replace_exact(index,
+              "      codec: 'mp3',\n      sample_rate: PHONE_TTS_SAMPLE_RATE,\n      bit_rate: PHONE_TTS_BIT_RATE,",
+              "      codec: 'mulaw',\n      sample_rate: PHONE_TTS_SAMPLE_RATE,")
+          replace_exact(index,
+              "  const response = await fetchImpl(audioUrl, { headers: { accept: 'audio/mpeg' } });",
+              "  const response = await fetchImpl(audioUrl, { headers: { accept: 'application/octet-stream' } });")
+          replace_exact(index,
+              "    outputAudio: 'Cloudflare Grok TTS MP3 24kHz/64kbps → Telnyx',",
+              "    outputAudio: 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP',")
+
+          protocol = 'src/telephony/protocol.js'
+          replace_exact(protocol,
+              'codec="PCMU" bidirectionalMode="mp3" statusCallback=',
+              'codec="PCMU" bidirectionalMode="rtp" bidirectionalCodec="PCMU" bidirectionalSamplingRate="8000" statusCallback=')
+
+          for p in Path('tests').glob('*.test.mjs'):
+              s = p.read_text()
+              s2 = s
+              s2 = s2.replace('talksys-telephony-v85-grok-phone-tts', 'talksys-telephony-v86-grok-pcmu')
+              s2 = s2.replace('assert.equal(PHONE_TTS_SAMPLE_RATE, 24000);', 'assert.equal(PHONE_TTS_SAMPLE_RATE, 8000);')
+              s2 = s2.replace("codec: 'mp3',\n    sample_rate: 24000,\n    bit_rate: 64000,", "codec: 'mulaw',\n    sample_rate: 8000,")
+              s2 = s2.replace("fetchCalls[0].options.headers.accept, 'audio/mpeg'", "fetchCalls[0].options.headers.accept, 'application/octet-stream'")
+              s2 = s2.replace('Cloudflare Grok TTS MP3 24kHz\\/64kbps', 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP')
+              s2 = s2.replace('bidirectionalMode="mp3"', 'bidirectionalMode="rtp"')
+              if s2 != s:
+                  p.write_text(s2)
+
+          # Static safety checks: no phone MP3 transport remains in active telephony source.
+          idx = Path(index).read_text()
+          proto = Path(protocol).read_text()
+          assert "codec: 'mulaw'" in idx
+          assert 'PHONE_TTS_SAMPLE_RATE = 8000' in idx
+          assert 'Telnyx PCMU RTP' in idx
+          assert 'bidirectionalMode="rtp"' in proto
+          assert 'bidirectionalCodec="PCMU"' in proto
+          assert 'bidirectionalSamplingRate="8000"' in proto
+          assert 'bidirectionalMode="mp3"' not in proto
+          PY
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+      - name: Validate hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/telephony/index.js
+          node --check src/telephony/protocol.js
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          npx wrangler deploy --dry-run
+
+      - name: Commit validated hotfix to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/telephony/index.js src/telephony/protocol.js tests
+          git diff --cached --check
+          git diff --cached --quiet && { echo 'No hotfix changes detected'; exit 1; }
+          git commit -m 'Fix phone audio with Grok mulaw over Telnyx PCMU RTP'
+          git push origin HEAD:main
+
+      - name: Resolve Cloudflare account
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${GEMINI_API_KEY:-}"
+          if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+            account_id="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json' https://api.cloudflare.com/client/v4/accounts?per_page=1 | node -e "let d=JSON.parse(require('fs').readFileSync(0,'utf8'));process.stdout.write(d.result?.[0]?.id||'')")"
+            test -n "$account_id"
+            echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
+          fi
+
+      - name: Deploy validated hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          secrets_file="$(mktemp)"
+          trap 'rm -f "$secrets_file"' EXIT
+          SECRETS_FILE="$secrets_file" node <<'NODE'
+          const fs = require('fs');
+          const gemini = process.env.GEMINI_API_KEY || '';
+          if (!gemini) throw new Error('GEMINI_API_KEY is required');
+          fs.writeFileSync(process.env.SECRETS_FILE, JSON.stringify({ GEMINI_API_KEY: gemini }));
+          NODE
+          npx wrangler deploy --secrets-file "$secrets_file"
+
+      - name: Verify production phone contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 20); do
+            body="$(curl -fsS --max-time 20 "$PRODUCTION_URL/telephony-health" || true)"
+            if BODY="$body" node - <<'NODE'
+          const d = JSON.parse(process.env.BODY || '{}');
+          if (d.revision !== 'talksys-telephony-v86-grok-pcmu') process.exit(1);
+          if (d.phoneTtsSampleRate !== 8000) process.exit(1);
+          if (!String(d.outputAudio || '').includes('PCMU RTP')) process.exit(1);
+          NODE
+            then
+              echo "$body"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo 'Production did not report the expected PCMU hotfix contract.'
+          exit 1
