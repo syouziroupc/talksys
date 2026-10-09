@@ -8,6 +8,7 @@ export const PHONE_TTS_FRAME_MS = 20;
 export const PHONE_TTS_FRAME_BYTES = 160;
 export const PHONE_TTS_MAX_SECONDS = 120;
 
+const PHONE_TTS_VOICES = new Set(['eve', 'ara', 'rex', 'sal', 'leo']);
 const EXPLICIT_RAW_PCMU_CONTENT_TYPES = new Set([
   'audio/basic',
   'audio/mulaw',
