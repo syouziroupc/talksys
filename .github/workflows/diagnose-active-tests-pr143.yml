@@ -1,0 +1,56 @@
+name: Diagnose active tests PR143
+
+on:
+  push:
+    branches: [phone-latency-fast-ack-v90]
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    outputs:
+      tests: ${{ steps.list.outputs.tests }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: list
+        shell: bash
+        run: |
+          node <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('fs');
+          const legacy = new Set([
+            'discord-fast-ack-echo-v81.test.mjs',
+            'discord-gateway-ready-v106.test.mjs',
+            'discord-persistent-stt-v67.test.mjs',
+            'discord-stt-correction-barge-v88.test.mjs',
+            'discord-voice-smoke.test.mjs',
+            'discord-web-adapter-v106.test.mjs',
+            'discord-web-audio-adapter-v79.test.mjs',
+            'discord-web-parity-v107.test.mjs',
+          ]);
+          const tests = fs.readdirSync('tests')
+            .filter((name) => name.endsWith('.test.mjs') && !legacy.has(name))
+            .sort()
+            .map((name) => `tests/${name}`);
+          process.stdout.write(`tests=${JSON.stringify(tests)}\n`);
+          NODE
+
+  test:
+    needs: discover
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ${{ fromJSON(needs.discover.outputs.tests) }}
+    name: ${{ matrix.test }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Run test file
+        run: node --test "${{ matrix.test }}"
