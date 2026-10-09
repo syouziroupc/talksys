@@ -23,7 +23,8 @@
       "responsibility": "Telnyx inbound call acceptance, WebSocket media intake, phone VAD, TalkSys STT/turn/TTS bridging, concurrent call isolation, and the Japanese phone management surface",
       "companions": [
         "src/telephony/codec.js",
-        "src/telephony/protocol.js"
+        "src/telephony/protocol.js",
+        "src/telephony/phone-tts.js"
       ],
       "migrationNote": "This is an intake adapter only. It reuses the existing TalkSys STT, answer path, TTS, AI binding, and D1 instead of introducing a separate phone AI stack."
     },
