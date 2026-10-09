@@ -23,6 +23,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
       TELNYX_API_KEY: ${{ secrets.TELNYX_API_KEY || secrets.TELNYX_TOKEN || secrets.TELNYX_API_V2_KEY }}
+      TELEPHONY_SHARED_TOKEN: ${{ secrets.TELEPHONY_SHARED_TOKEN }}
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
       TELNYX_NUMBER: '+815031501235'
       TEXML_APP_NAME: TalkSys
@@ -38,6 +39,7 @@ jobs:
           set -euo pipefail
           test -n "${CLOUDFLARE_API_TOKEN:-}" || { echo 'Cloudflare deployment credential is missing'; exit 1; }
           test -n "${TELNYX_API_KEY:-}" || { echo 'TELNYX_API_KEY/TELNYX_TOKEN/TELNYX_API_V2_KEY GitHub Actions secret is missing'; exit 1; }
+          test -n "${TELEPHONY_SHARED_TOKEN:-}" || { echo 'TELEPHONY_SHARED_TOKEN GitHub Actions secret is missing'; exit 1; }
           if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
             account_id="$(curl --fail-with-body --silent --show-error \
               -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
@@ -54,14 +56,12 @@ jobs:
           set -euo pipefail
           if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 
-      - name: Rotate production telephony shared token
+      - name: Sync production telephony shared token to Cloudflare
         shell: bash
         run: |
           set -euo pipefail
-          token="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")"
-          echo "::add-mask::$token"
-          echo "TELEPHONY_SHARED_TOKEN=$token" >> "$GITHUB_ENV"
-          printf '%s' "$token" | npx wrangler secret put TELEPHONY_SHARED_TOKEN
+          echo "::add-mask::$TELEPHONY_SHARED_TOKEN"
+          printf '%s' "$TELEPHONY_SHARED_TOKEN" | npx wrangler secret put TELEPHONY_SHARED_TOKEN
 
       - name: Upsert TalkSys TeXML application and assign 050 number
         shell: bash
