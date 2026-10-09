@@ -1,4 +1,5 @@
 const MU_LAW_BIAS = 0x84;
+const MU_LAW_CLIP = 32635;
 
 export function base64ToBytes(value = '') {
   const binary = atob(String(value || ''));
@@ -24,6 +25,20 @@ export function decodeMuLawByte(value) {
   let sample = ((mantissa << 3) + MU_LAW_BIAS) << exponent;
   sample -= MU_LAW_BIAS;
   return sign ? -sample : sample;
+}
+
+export function encodeMuLawSample(value) {
+  let sample = Math.max(-32768, Math.min(32767, Math.round(Number(value) || 0)));
+  let sign = 0;
+  if (sample < 0) {
+    sign = 0x80;
+    sample = -sample;
+  }
+  sample = Math.min(sample, MU_LAW_CLIP) + MU_LAW_BIAS;
+  let exponent = 7;
+  for (let mask = 0x4000; exponent > 0 && (sample & mask) === 0; mask >>= 1) exponent -= 1;
+  const mantissa = (sample >> (exponent + 3)) & 0x0f;
+  return (~(sign | (exponent << 4) | mantissa)) & 0xff;
 }
 
 export function pcmuBase64ToSamples(payload) {
