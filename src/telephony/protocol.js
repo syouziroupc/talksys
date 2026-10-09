@@ -34,5 +34,5 @@ export function buildTexml({ host, protocol = 'https:', token, callId = '', from
     to ? `<Parameter name="to" value="${xmlEscape(to)}" />` : '',
   ].filter(Boolean).join('');
 
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Connect><Stream url="${xmlEscape(mediaUrl.toString())}" track="inbound_track" codec="PCMU" bidirectionalMode="mp3" statusCallback="${xmlEscape(statusUrl.toString())}" statusCallbackMethod="POST" enableReconnect="true">${parameters}</Stream></Connect></Response>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Connect><Stream url="${xmlEscape(mediaUrl.toString())}" track="inbound_track" codec="PCMU" bidirectionalMode="rtp" bidirectionalCodec="PCMU" statusCallback="${xmlEscape(statusUrl.toString())}" statusCallbackMethod="POST" enableReconnect="true">${parameters}</Stream></Connect></Response>`;
 }
