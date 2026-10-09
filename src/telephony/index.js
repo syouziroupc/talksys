@@ -6,8 +6,12 @@ import { fastReaction, sameUtterance, FAST_REACTION_REVISION } from '../voice-fa
 import { WEB_VOICE_CAPTURE_POLICY } from '../voice-capture-policy.js';
 
 export const TELEPHONY_REVISION = 'talksys-telephony-v87-grok-pcmu-paced';
+export const TELEPHONY_OBSERVABILITY_REVISION = 'talksys-phone-latency-v90-fast-ack-r1';
 const FRAME_MS = 20;
+const FAST_ACK_TEXT = 'はい。';
 let schemaPromise;
+let fastAckAudioCache = null;
+let fastAckAudioPromise = null;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -82,6 +86,16 @@ function closeSocket(socket, code = 1000, reason = 'closed') {
   } catch {}
 }
 
+function boundedMs(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(600000, Math.round(n)));
+}
+
+function detailJson(detail = {}) {
+  try { return clean(JSON.stringify(detail || {}), 4000); } catch { return '{}'; }
+}
+
 async function ensureSchema(env) {
   if (!env?.TALKSYS_LOG_DB) return false;
   if (!schemaPromise) {
@@ -105,8 +119,19 @@ async function ensureSchema(env) {
         content TEXT NOT NULL,
         created_at TEXT NOT NULL
       )`).run();
+      await env.TALKSYS_LOG_DB.prepare(`CREATE TABLE IF NOT EXISTS phone_latency_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        call_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        elapsed_ms INTEGER NOT NULL DEFAULT 0,
+        detail TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      )`).run();
       await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_phone_messages_call ON phone_messages(call_id, id)').run();
       await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_phone_calls_updated ON phone_calls(updated_at DESC)').run();
+      await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_phone_latency_call ON phone_latency_events(call_id, id)').run();
+      await env.TALKSYS_LOG_DB.prepare('CREATE INDEX IF NOT EXISTS idx_phone_latency_turn ON phone_latency_events(call_id, turn_id, id)').run();
       return true;
     })().catch((error) => {
       schemaPromise = undefined;
@@ -152,6 +177,18 @@ async function appendMessage(env, callId, role, content) {
   ]);
 }
 
+async function appendLatencyEvent(env, { callId, turnId, stage, elapsedMs = 0, detail = {} }) {
+  const safeCallId = clean(callId, 200);
+  const safeTurnId = clean(turnId, 200);
+  const safeStage = clean(stage, 100);
+  if (!safeCallId || !safeTurnId || !safeStage || !(await ensureSchema(env))) return;
+  await env.TALKSYS_LOG_DB.prepare(`INSERT INTO phone_latency_events
+    (call_id, turn_id, stage, elapsed_ms, detail, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(safeCallId, safeTurnId, safeStage, boundedMs(elapsedMs), detailJson(detail), new Date().toISOString())
+    .run();
+}
+
 function customParameters(start = {}) {
   const raw = start.custom_parameters || start.customParameters || start.parameters || {};
   if (Array.isArray(raw)) {
@@ -172,19 +209,19 @@ async function transcribeSamples(env, samples) {
   const response = await transcribeV45(request, env);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok !== true || !payload?.text) {
-    return { ok: false, error: payload?.error || `stt_${response.status}` };
+    return { ok: false, error: payload?.error || `stt_${response.status}`, payload };
   }
-  return { ok: true, text: clean(payload.text, 1800) };
+  return { ok: true, text: clean(payload.text, 1800), payload };
 }
 
-async function answerWithTalkSys(deps, text, history, signal, spokenBackchannel = '', sessionId = '') {
+async function answerWithTalkSys(deps, text, history, signal, spokenBackchannel = '', sessionId = '', utteranceId = '') {
   if (typeof deps?.turn !== 'function') return { ok: false, error: 'talksys_turn_not_connected' };
   try {
     const current = clean(text, 1800);
     const last = history.at(-1);
     const lastIsCurrent = last?.role === 'user' && clean(last?.content, 1800) === current;
     const priorHistory = (lastIsCurrent ? history.slice(0, -1) : history).slice(-16);
-    const payload = await deps.turn({ text: current, history: priorHistory, channel: 'phone', sessionId: clean(sessionId, 200), spokenBackchannel }, signal);
+    const payload = await deps.turn({ text: current, history: priorHistory, channel: 'phone', sessionId: clean(sessionId, 200), utteranceId: clean(utteranceId, 200), spokenBackchannel }, signal);
     const answer = clean(payload?.answer || payload?.response || payload?.text || '', 9000);
     if (!answer) return { ok: false, error: payload?.error || 'empty_answer' };
     return { ok: true, answer, payload };
@@ -221,20 +258,36 @@ async function synthesizePcmu(env, text, deps = {}) {
   return synthesizePhonePcmu(env, spoken, deps);
 }
 
+async function warmFastAckAudio(env, deps = {}) {
+  if (fastAckAudioCache?.bytes?.byteLength) return fastAckAudioCache;
+  if (!fastAckAudioPromise) {
+    fastAckAudioPromise = synthesizePcmu(env, FAST_ACK_TEXT, deps)
+      .then((audio) => {
+        if (audio?.bytes?.byteLength) fastAckAudioCache = audio;
+        return fastAckAudioCache;
+      })
+      .finally(() => { fastAckAudioPromise = null; });
+  }
+  return fastAckAudioPromise;
+}
+
 function dashboardHtml(request) {
   const base = publicBaseUrl(request);
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TalkSys 電話管理</title><style>
-  :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0e14;color:#f3f6fb}body{margin:0}.wrap{max-width:1120px;margin:auto;padding:28px 18px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.sub,.muted{color:#98a5b7}.panel{border:1px solid #293243;background:#121722;border-radius:14px;padding:16px;margin-top:16px}.grid{display:grid;grid-template-columns:minmax(310px,.9fr) minmax(360px,1.4fr);gap:14px}@media(max-width:800px){.grid{grid-template-columns:1fr}}button,input{font:inherit}button{background:#202a3a;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:8px 12px;cursor:pointer}input{background:#0b0e14;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px;width:min(380px,75vw)}.call{padding:12px;border-bottom:1px solid #283245;cursor:pointer}.call:hover{background:#171e2b}.num{font-weight:700}.meta{font-size:12px;color:#91a0b5;margin-top:4px}.msg{margin:10px 0;padding:10px 12px;border-radius:10px;white-space:pre-wrap}.user{background:#1b2b3a}.assistant{background:#25213a}.role{font-size:11px;color:#9ca8ba;margin-bottom:5px}.warn{color:#ffca72}.ok{color:#7dd69a}code{font-size:12px}.hidden{display:none}
+  :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0e14;color:#f3f6fb}body{margin:0}.wrap{max-width:1240px;margin:auto;padding:28px 18px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.sub,.muted{color:#98a5b7}.panel{border:1px solid #293243;background:#121722;border-radius:14px;padding:16px;margin-top:16px}.grid{display:grid;grid-template-columns:minmax(310px,.8fr) minmax(420px,1.5fr);gap:14px}@media(max-width:800px){.grid{grid-template-columns:1fr}}button,input{font:inherit}button{background:#202a3a;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:8px 12px;cursor:pointer}input{background:#0b0e14;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px;width:min(380px,75vw)}.call{padding:12px;border-bottom:1px solid #283245;cursor:pointer}.call:hover{background:#171e2b}.num{font-weight:700}.meta{font-size:12px;color:#91a0b5;margin-top:4px}.msg{margin:10px 0;padding:10px 12px;border-radius:10px;white-space:pre-wrap}.user{background:#1b2b3a}.assistant{background:#25213a}.role{font-size:11px;color:#9ca8ba;margin-bottom:5px}.warn{color:#ffca72}.ok{color:#7dd69a}code{font-size:12px}.hidden{display:none}.latency{margin-top:18px;border-top:1px solid #2a3344;padding-top:12px}.turn{margin:12px 0;border:1px solid #2a3344;border-radius:10px;overflow:hidden}.turnHead{background:#171e2b;padding:8px 10px;font-size:12px;color:#bec9d8}.event{display:grid;grid-template-columns:82px minmax(130px,.7fr) 1fr;gap:8px;padding:7px 10px;border-top:1px solid #222b3a;font-size:12px;align-items:start}.event:first-child{border-top:0}.ms{font-variant-numeric:tabular-nums;color:#9bd1ff}.stage{font-weight:650}.detail{color:#9ca8ba;overflow-wrap:anywhere}@media(max-width:640px){.event{grid-template-columns:72px 1fr}.detail{grid-column:1/-1}}
   </style></head><body><main class="wrap"><div class="top"><div><h1>TalkSys 電話管理</h1><div class="sub">Telnyx着信をTalkSys本体で処理。電話専用AIは使用しません。</div></div><div><a href="${xmlEscape(base)}/telephony-health" style="color:#a8c7ff">状態JSON</a></div></div>
   <section id="login" class="panel"><b>管理トークン</b><p class="muted">着信番号と会話内容の表示には認証が必要です。</p><input id="token" type="password" autocomplete="current-password"><button id="loginBtn">表示</button><div id="loginErr" class="warn"></div></section>
-  <section id="app" class="hidden"><div class="panel"><div id="health">状態確認中...</div></div><div class="grid"><div class="panel"><h2>着信一覧</h2><div id="calls"></div></div><div class="panel"><h2 id="conversationTitle">会話内容</h2><div id="messages" class="muted">左の着信を選択してください。</div></div></div></section>
+  <section id="app" class="hidden"><div class="panel"><div id="health">状態確認中...</div></div><div class="grid"><div class="panel"><h2>着信一覧</h2><div id="calls"></div></div><div class="panel"><h2 id="conversationTitle">会話内容</h2><div id="messages" class="muted">左の着信を選択してください。</div><div class="latency"><h3>遅延タイムライン</h3><div class="muted">発話終了推定を0msとして、STT・AI・TTS・最初のPCMU送信までを表示します。</div><div id="latency" class="muted">通話を選択してください。</div></div></div></div></section>
   </main><script>
   let adminToken=sessionStorage.getItem('talksysPhoneToken')||'';let selected='';const auth=()=>({'authorization':'Bearer '+adminToken});
   function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+  function stageName(s){return ({speech_end_estimate:'発話終了推定',vad_finalize:'VAD確定',stt_start:'STT開始',stt_end:'STT完了',stt_rejected:'STT不成立',turn_start:'AI開始',ack_cache_hit:'受理相槌キャッシュ',ack_cache_miss:'受理相槌未準備',ack_audio_ready:'相槌音声準備',ack_first_pcmu:'相槌 first audio',ack_complete:'相槌送信完了',answer_ready:'AI回答確定',pending_stt_wait_start:'追加入力待機開始',pending_stt_wait_end:'追加入力待機終了',answer_tts_start:'本回答TTS開始',answer_audio_ready:'本回答音声準備',answer_first_pcmu:'本回答 first audio',answer_complete:'本回答送信完了',duplicate_suppressed:'重複発話抑制',turn_error:'AIエラー',tts_error:'TTSエラー'}[s]||s)}
+  function detailText(v){if(!v)return'';try{const o=JSON.parse(v);return Object.entries(o).filter(([,x])=>x!==''&&x!==null&&x!==undefined).map(([k,x])=>k+'='+String(typeof x==='object'?JSON.stringify(x):x)).join(' / ')}catch{return String(v)}}
+  function renderLatency(events){const root=document.getElementById('latency');if(!events?.length){root.innerHTML='<div class="muted">この通話には詳細遅延ログがありません。新しい計測版の通話から記録されます。</div>';return}const groups=[];for(const e of events){let g=groups.at(-1);if(!g||g.id!==e.turn_id){g={id:e.turn_id,events:[]};groups.push(g)}g.events.push(e)}root.innerHTML=groups.map((g,i)=>'<div class="turn"><div class="turnHead">ターン '+(i+1)+' / '+esc(g.id)+'</div>'+g.events.map(e=>'<div class="event"><div class="ms">+'+Number(e.elapsed_ms||0)+' ms</div><div class="stage">'+esc(stageName(e.stage))+'</div><div class="detail">'+esc(detailText(e.detail))+'</div></div>').join('')+'</div>').join('')}
   async function api(path){const r=await fetch(path,{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');return r.json()}
-  async function refreshHealth(){const h=await fetch('/telephony-health',{cache:'no-store'}).then(r=>r.json());document.getElementById('health').innerHTML='電話受付: <b class="'+(h.enabled?'ok':'warn')+'">'+(h.enabled?'有効':'無効')+'</b> / TalkSys本体接続: <b class="'+(h.integrated?'ok':'warn')+'">'+(h.integrated?'統合済み':'未統合')+'</b> / 音声返送: <b>'+esc(h.outputAudio)+'</b>'}
+  async function refreshHealth(){const h=await fetch('/telephony-health',{cache:'no-store'}).then(r=>r.json());document.getElementById('health').innerHTML='電話受付: <b class="'+(h.enabled?'ok':'warn')+'">'+(h.enabled?'有効':'無効')+'</b> / TalkSys本体接続: <b class="'+(h.integrated?'ok':'warn')+'">'+(h.integrated?'統合済み':'未統合')+'</b> / 音声返送: <b>'+esc(h.outputAudio)+'</b> / 計測: <b>'+esc(h.observabilityRevision||'なし')+'</b>'}
   async function refreshCalls(){const d=await api('/phone/api/calls');const root=document.getElementById('calls');root.innerHTML=d.calls.length?d.calls.map(c=>'<div class="call" data-id="'+esc(c.call_id)+'"><div class="num">'+esc(c.from_number||'番号不明')+' → '+esc(c.to_number||'着信番号不明')+'</div><div class="meta">'+esc(c.status)+' / '+esc(c.started_at)+' / '+c.message_count+'件</div><div class="meta">'+esc(c.last_user_text||c.last_assistant_text||'会話待ち')+'</div></div>').join(''):'<div class="muted">まだ着信はありません。</div>';root.querySelectorAll('.call').forEach(x=>x.onclick=()=>loadMessages(x.dataset.id));}
-  async function loadMessages(id){selected=id;const d=await api('/phone/api/calls/'+encodeURIComponent(id)+'/messages');document.getElementById('conversationTitle').textContent=(d.call?.from_number||'番号不明')+' の会話';document.getElementById('messages').innerHTML=d.messages.length?d.messages.map(m=>'<div class="msg '+m.role+'"><div class="role">'+(m.role==='user'?'発信者':'TalkSys')+' / '+esc(m.created_at)+'</div>'+esc(m.content)+'</div>').join(''):'<div class="muted">会話はまだありません。</div>'}
+  async function loadMessages(id){selected=id;const base='/phone/api/calls/'+encodeURIComponent(id);const [d,l]=await Promise.all([api(base+'/messages'),api(base+'/latency')]);document.getElementById('conversationTitle').textContent=(d.call?.from_number||'番号不明')+' の会話';document.getElementById('messages').innerHTML=d.messages.length?d.messages.map(m=>'<div class="msg '+m.role+'"><div class="role">'+(m.role==='user'?'発信者':'TalkSys')+' / '+esc(m.created_at)+'</div>'+esc(m.content)+'</div>').join(''):'<div class="muted">会話はまだありません。</div>';renderLatency(l.events||[])}
   async function start(){try{await api('/phone/api/calls');document.getElementById('login').classList.add('hidden');document.getElementById('app').classList.remove('hidden');await refreshHealth();await refreshCalls();setInterval(async()=>{try{await refreshCalls();if(selected)await loadMessages(selected)}catch{}},3000)}catch(e){document.getElementById('loginErr').textContent=e.message}}
   document.getElementById('loginBtn').onclick=()=>{adminToken=document.getElementById('token').value;sessionStorage.setItem('talksysPhoneToken',adminToken);start()};if(adminToken)start();
   </script></body></html>`;
@@ -244,6 +297,7 @@ function health(request, env, deps) {
   return json({
     ok: true,
     revision: TELEPHONY_REVISION,
+    observabilityRevision: TELEPHONY_OBSERVABILITY_REVISION,
     integrated: true,
     role: 'telnyx-entry-for-talksys-main',
     enabled: enabled(env),
@@ -252,12 +306,13 @@ function health(request, env, deps) {
     talksysTurnConnected: typeof deps?.turn === 'function',
     pluggableTts: true,
     externalTtsConnected: typeof deps?.synthesize === 'function',
-    storageMode: env?.TALKSYS_LOG_DB ? '既存TalkSys D1' : 'disabled',
+    storageMode: env?.TALKSYS_LOG_DB ? '既存TalkSys D1 + phone latency events' : 'disabled',
     recording: false,
     concurrency: '通話ごとに独立WebSocket。確定した追加入力は進行中AIターンを中断。',
     inputAudio: 'Telnyx PCMU 8kHz → 90Hz HPF → 適応VAD → TalkSys STT',
     voiceInterruption: 'STT確定後に旧GeminiターンをAbort。ノイズだけでは中断しない。',
-    fastReaction: `STT確定直後の短い相槌 + Gemini本回答 / ${FAST_REACTION_REVISION}`,
+    fastReaction: `Whisper確定直後の事前生成PCMU受理相槌「${FAST_ACK_TEXT}」 + Gemini本回答 / ${FAST_REACTION_REVISION}`,
+    latencyTelemetry: 'speech end estimate → VAD → STT → TalkSys turn → ack → answer ready → TTS → first PCMU → complete',
     outputAudio: 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP',
     phoneTtsModel: PHONE_TTS_MODEL,
     phoneTtsVoice: phoneTtsVoice(env),
@@ -281,6 +336,14 @@ async function callMessages(request, env, callId) {
   const call = await env.TALKSYS_LOG_DB.prepare('SELECT * FROM phone_calls WHERE call_id=?').bind(callId).first();
   const messages = await env.TALKSYS_LOG_DB.prepare('SELECT role, content, created_at FROM phone_messages WHERE call_id=? ORDER BY id ASC LIMIT 500').bind(callId).all();
   return json({ ok: true, call, messages: messages.results || [] });
+}
+
+async function callLatency(request, env, callId) {
+  if (!adminAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+  if (!(await ensureSchema(env))) return json({ ok: false, error: 'storage unavailable' }, 503);
+  const result = await env.TALKSYS_LOG_DB.prepare(`SELECT turn_id, stage, elapsed_ms, detail, created_at
+    FROM phone_latency_events WHERE call_id=? ORDER BY id ASC LIMIT 1200`).bind(callId).all();
+  return json({ ok: true, events: result.results || [] });
 }
 
 async function texmlResponse(request, env) {
@@ -365,6 +428,13 @@ function mediaBridge(request, env, deps) {
       }));
     }),
   );
+  const queueLatency = (turnId, stage, elapsedMs = 0, detail = {}) => {
+    const record = { type: 'phone_latency', callId, turnId, stage, elapsedMs: boundedMs(elapsedMs), ...detail };
+    console.log(JSON.stringify(record));
+    return trackTask(appendLatencyEvent(env, { callId, turnId, stage, elapsedMs, detail }).catch((error) => {
+      console.error(JSON.stringify({ type: 'phone_latency_log_error', stage, error: clean(error?.message || error, 240) }));
+    }));
+  };
   const abortActiveTurn = () => {
     const controller = activeTurnAbort;
     activeTurnAbort = null;
@@ -387,29 +457,62 @@ function mediaBridge(request, env, deps) {
     currentMark = '';
   };
 
-  const speak = async (text) => {
+  const speak = async (text, options = {}) => {
     if (assistantPlaying || currentMark) interruptPlayback();
     const myGeneration = ++playbackGeneration;
     const startedAt = Date.now();
-    let audio;
-    try {
-      audio = await synthesizePcmu(env, text, deps);
-    } catch (error) {
-      console.error(JSON.stringify({ type: 'phone_tts_error', error: clean(error?.message || error, 240) }));
-      return false;
+    const purpose = clean(options?.purpose || 'answer', 40) || 'answer';
+    const turnId = clean(options?.turnId || '', 200);
+    const originAt = Number(options?.originAt) || startedAt;
+    let audio = options?.preparedAudio || null;
+    if (!audio) {
+      if (turnId) queueLatency(turnId, `${purpose}_tts_start`, startedAt - originAt, { textChars: String(text || '').length });
+      try {
+        audio = await synthesizePcmu(env, text, deps);
+      } catch (error) {
+        if (turnId) queueLatency(turnId, 'tts_error', Date.now() - originAt, { purpose, error: clean(error?.message || error, 240) });
+        console.error(JSON.stringify({ type: 'phone_tts_error', purpose, turnId, error: clean(error?.message || error, 240) }));
+        return false;
+      }
     }
     if (!audio?.bytes?.byteLength || closed || myGeneration !== playbackGeneration) return false;
+    const audioReadyAt = Date.now();
+    if (turnId) queueLatency(turnId, `${purpose}_audio_ready`, audioReadyAt - originAt, {
+      ttsStageMs: options?.preparedAudio ? 0 : audioReadyAt - startedAt,
+      prepared: Boolean(options?.preparedAudio),
+      container: audio.metadata?.container || '',
+      fallbackCodec: audio.metadata?.fallbackCodec || '',
+      audioDurationMs: audio.metadata?.durationMs || 0,
+    });
 
     currentMark = `talksys-${crypto.randomUUID()}`;
     assistantPlaying = true;
+    let firstFrameSent = false;
     const streamed = await streamPcmu20ms(audio.bytes, {
-      sendPayload: (payload) => safeSend(telnyx, { event: 'media', media: { payload } }),
+      sendPayload: (payload) => {
+        safeSend(telnyx, { event: 'media', media: { payload } });
+        if (!firstFrameSent) {
+          firstFrameSent = true;
+          if (turnId) queueLatency(turnId, `${purpose}_first_pcmu`, Date.now() - originAt, {
+            prepared: Boolean(options?.preparedAudio),
+            codec: audio.metadata?.codec || 'PCMU',
+            sampleRate: audio.metadata?.sampleRate || PHONE_TTS_SAMPLE_RATE,
+          });
+        }
+      },
       isCancelled: () => closed || myGeneration !== playbackGeneration,
     });
     if (!streamed.completed || closed || myGeneration !== playbackGeneration) return false;
     safeSend(telnyx, { event: 'mark', mark: { name: currentMark } });
+    if (turnId) queueLatency(turnId, `${purpose}_complete`, Date.now() - originAt, {
+      streamMs: Date.now() - audioReadyAt,
+      frames: streamed.frames,
+      bytes: streamed.sentBytes,
+    });
     console.log(JSON.stringify({
       type: 'phone_tts_sent',
+      purpose,
+      turnId,
       ms: Date.now() - startedAt,
       frames: streamed.frames,
       bytes: streamed.sentBytes,
@@ -427,10 +530,18 @@ function mediaBridge(request, env, deps) {
     return true;
   };
 
+  trackTask(warmFastAckAudio(env, deps).then((audio) => {
+    console.log(JSON.stringify({ type: 'phone_fast_ack_warm', ok: Boolean(audio?.bytes?.byteLength), bytes: audio?.bytes?.byteLength || 0 }));
+  }).catch((error) => {
+    console.warn(JSON.stringify({ type: 'phone_fast_ack_warm_error', error: clean(error?.message || error, 240) }));
+  }));
+
   const finishUtterance = () => {
     if (!speechActive || !speechFrames.length) return;
     const frames = speechFrames;
     const myCapture = ++captureSeq;
+    const finalizedAt = Date.now();
+    const trailingSilenceMs = Math.max(0, silentFor);
     speechActive = false;
     speechHits = 0;
     bargeHits = 0;
@@ -440,19 +551,40 @@ function mediaBridge(request, env, deps) {
     const samples = Int16Array.from(frames.flatMap(frame => Array.from(frame)));
     const durationMs = samples.length / 8;
     if (durationMs < minSpeechMs) return;
+    const speechEndAt = finalizedAt - Math.min(trailingSilenceMs, durationMs);
+    const turnId = `${clean(callId || 'call', 120)}-${myCapture}-${crypto.randomUUID().slice(0, 8)}`;
+    queueLatency(turnId, 'speech_end_estimate', 0, { captureDurationMs: Math.round(durationMs), trailingSilenceMs });
+    queueLatency(turnId, 'vad_finalize', finalizedAt - speechEndAt, { silenceTargetMs: silenceMs, trailingSilenceMs });
 
     pendingSttCount += 1;
     const task = (async () => {
+      const sttStartedAt = Date.now();
+      queueLatency(turnId, 'stt_start', sttStartedAt - speechEndAt, { samples: samples.length });
       let stt;
       try {
         stt = await transcribeSamples(env, samples);
       } catch (error) {
-        console.error(JSON.stringify({ type: 'phone_stt_error', error: clean(error?.message || error, 240) }));
+        queueLatency(turnId, 'stt_rejected', Date.now() - speechEndAt, { stageMs: Date.now() - sttStartedAt, error: clean(error?.message || error, 240) });
+        console.error(JSON.stringify({ type: 'phone_stt_error', turnId, error: clean(error?.message || error, 240) }));
         return;
       } finally {
         pendingSttCount = Math.max(0, pendingSttCount - 1);
       }
-      if (!stt?.ok || !stt.text || myCapture < latestAcceptedCapture) return;
+      const sttEndedAt = Date.now();
+      if (!stt?.ok || !stt.text || myCapture < latestAcceptedCapture) {
+        queueLatency(turnId, 'stt_rejected', sttEndedAt - speechEndAt, {
+          stageMs: sttEndedAt - sttStartedAt,
+          error: clean(stt?.error || 'stale-or-empty', 240),
+          retryUsed: Boolean(stt?.payload?.retryUsed),
+        });
+        return;
+      }
+      queueLatency(turnId, 'stt_end', sttEndedAt - speechEndAt, {
+        stageMs: sttEndedAt - sttStartedAt,
+        textChars: stt.text.length,
+        retryUsed: Boolean(stt?.payload?.retryUsed),
+        model: clean(stt?.payload?.model || '', 120),
+      });
 
       const now = Date.now();
       const duplicateRecent = lastAcceptedUserText
@@ -460,6 +592,7 @@ function mediaBridge(request, env, deps) {
         && now - lastAcceptedUserAt < 12000
         && (assistantPlaying || Boolean(activeTurnAbort));
       if (duplicateRecent) {
+        queueLatency(turnId, 'duplicate_suppressed', now - speechEndAt, { text: clean(stt.text, 160) });
         console.log(JSON.stringify({ type: 'phone_duplicate_suppressed', text: clean(stt.text, 160) }));
         return;
       }
@@ -477,17 +610,40 @@ function mediaBridge(request, env, deps) {
       activeTurnAbort = controller;
       try {
         const reaction = fastReaction(stt.text);
-        const spokenBackchannel = reaction.shouldSpeak ? reaction.text : '';
-        const turnPromise = answerWithTalkSys(deps, stt.text, history, controller.signal, spokenBackchannel, callId);
-        if (spokenBackchannel && myVersion === turnVersion) {
-          const reacted = await speak(spokenBackchannel);
-          if (reacted) console.log(JSON.stringify({ type: 'phone_fast_reaction', kind: reaction.kind, text: spokenBackchannel }));
+        const spokenBackchannel = FAST_ACK_TEXT;
+        const turnStartedAt = Date.now();
+        queueLatency(turnId, 'turn_start', turnStartedAt - speechEndAt, { reactionKind: reaction.kind || 'none' });
+        const turnPromise = answerWithTalkSys(deps, stt.text, history, controller.signal, spokenBackchannel, callId, turnId);
+
+        if (fastAckAudioCache?.bytes?.byteLength && myVersion === turnVersion) {
+          queueLatency(turnId, 'ack_cache_hit', Date.now() - speechEndAt, { text: spokenBackchannel, bytes: fastAckAudioCache.bytes.byteLength });
+          const reacted = await speak(spokenBackchannel, { purpose: 'ack', turnId, originAt: speechEndAt, preparedAudio: fastAckAudioCache });
+          if (reacted) console.log(JSON.stringify({ type: 'phone_fast_reaction', kind: 'receipt', sourceKind: reaction.kind, text: spokenBackchannel, cached: true }));
+        } else {
+          queueLatency(turnId, 'ack_cache_miss', Date.now() - speechEndAt, { text: spokenBackchannel });
         }
+
         const turn = await turnPromise;
+        const answerReadyAt = Date.now();
         if (myVersion !== turnVersion || turn?.aborted) return;
-        if (pendingSttCount > 0 && !await waitForPendingSpeechDecision(myVersion)) return;
+        queueLatency(turnId, 'answer_ready', answerReadyAt - speechEndAt, {
+          stageMs: answerReadyAt - turnStartedAt,
+          route: clean(turn?.payload?.route || '', 160),
+          search: Boolean(turn?.payload?.search),
+          searchRetried: Boolean(turn?.payload?.searchRetried),
+          primaryMs: boundedMs(turn?.payload?.timings?.primaryMs),
+          searchRetryMs: boundedMs(turn?.payload?.timings?.searchRetryMs),
+          totalMs: boundedMs(turn?.payload?.timings?.totalMs),
+        });
+        if (pendingSttCount > 0) {
+          const pendingStartedAt = Date.now();
+          queueLatency(turnId, 'pending_stt_wait_start', pendingStartedAt - speechEndAt, { pendingSttCount });
+          if (!await waitForPendingSpeechDecision(myVersion)) return;
+          queueLatency(turnId, 'pending_stt_wait_end', Date.now() - speechEndAt, { waitMs: Date.now() - pendingStartedAt, pendingSttCount });
+        }
         if (myVersion !== turnVersion) return;
         if (!turn.ok) {
+          queueLatency(turnId, 'turn_error', Date.now() - speechEndAt, { error: clean(turn.error, 200) });
           await setCallStatus(env, callId, 'answer-error');
           console.error(JSON.stringify({ type: 'phone_turn_error', error: clean(turn.error, 200) }));
           return;
@@ -495,10 +651,11 @@ function mediaBridge(request, env, deps) {
         history.push({ role: 'assistant', content: turn.answer });
         queueMessageLog('assistant', turn.answer);
         if (myVersion !== turnVersion) return;
-        const spoken = await speak(turn.answer);
+        const spoken = await speak(turn.answer, { purpose: 'answer', turnId, originAt: speechEndAt });
         if (!spoken) await setCallStatus(env, callId, 'tts-error');
       } catch (error) {
         if (error?.name === 'AbortError' || myVersion !== turnVersion) return;
+        queueLatency(turnId, 'turn_error', Date.now() - speechEndAt, { error: clean(error?.message || error, 240) });
         await setCallStatus(env, callId, 'error');
         console.error(JSON.stringify({ type: 'phone_pipeline_error', error: clean(error?.message || error, 240) }));
       } finally {
@@ -524,7 +681,7 @@ function mediaBridge(request, env, deps) {
       to = clean(params.to || start.to || '', 80);
       await upsertCall(env, { callId, from, to, status: 'active' });
       const greeting = clean(env?.TELEPHONY_GREETING || 'お電話ありがとうございます。フォーンズです。ご用件をどうぞ。', 240);
-      if (greeting && await speak(greeting)) {
+      if (greeting && await speak(greeting, { purpose: 'greeting' })) {
         history.push({ role: 'assistant', content: greeting });
         await appendMessage(env, callId, 'assistant', greeting);
       }
@@ -628,6 +785,7 @@ export function isTelephonyPath(pathname = '') {
     || pathname === '/telephony-health'
     || pathname === '/phone/api/calls'
     || /^\/phone\/api\/calls\/[^/]+\/messages$/.test(pathname)
+    || /^\/phone\/api\/calls\/[^/]+\/latency$/.test(pathname)
     || pathname === '/telnyx/voice'
     || pathname === '/telnyx/media'
     || pathname === '/telnyx/stream-status';
@@ -644,6 +802,8 @@ export async function handleTelephonyRequest(request, env, ctx, deps = {}) {
   if (request.method === 'GET' && url.pathname === '/phone/api/calls') return listCalls(request, env);
   const messageMatch = url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/messages$/);
   if (request.method === 'GET' && messageMatch) return callMessages(request, env, decodeURIComponent(messageMatch[1]));
+  const latencyMatch = url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/latency$/);
+  if (request.method === 'GET' && latencyMatch) return callLatency(request, env, decodeURIComponent(latencyMatch[1]));
   if ((request.method === 'GET' || request.method === 'POST') && url.pathname === '/telnyx/voice') return texmlResponse(request, env);
   if ((request.method === 'GET' || request.method === 'POST') && url.pathname === '/telnyx/stream-status') return streamStatus(request, env);
   if (request.method === 'GET' && url.pathname === '/telnyx/media') return mediaBridge(request, env, deps);
