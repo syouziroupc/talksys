@@ -3,6 +3,8 @@ name: Validate phone Grok PCMU v87
 on:
   push:
     branches: [phone-grok-pcmu-v87]
+    paths-ignore:
+      - '.diagnostics/phone-v87-ci.log'
   workflow_dispatch:
 
 permissions:
@@ -40,7 +42,21 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Run active TalkSys tests
-        run: npm test
+        shell: bash
+        run: |
+          set +e
+          npm test > .diagnostics/phone-v87-ci.log 2>&1
+          status=$?
+          cat .diagnostics/phone-v87-ci.log
+          if [ "$status" -ne 0 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .diagnostics/phone-v87-ci.log
+            git commit -m "Record phone v87 CI failure [skip ci]" || true
+            git push origin HEAD:phone-grok-pcmu-v87 || true
+            exit "$status"
+          fi
+          rm -f .diagnostics/phone-v87-ci.log
 
       - name: Run phone PCMU v87 tests
         run: node --test tests/phone-pcmu-v87.test.mjs tests/telephony-integration.test.mjs
