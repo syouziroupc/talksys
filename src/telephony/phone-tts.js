@@ -8,14 +8,12 @@ export const PHONE_TTS_FRAME_MS = 20;
 export const PHONE_TTS_FRAME_BYTES = 160;
 export const PHONE_TTS_MAX_SECONDS = 120;
 
-const PHONE_TTS_VOICES = new Set(['eve', 'ara', 'rex', 'sal', 'leo']);
-const RAW_PCMU_CONTENT_TYPES = new Set([
-  '',
-  'application/octet-stream',
+const EXPLICIT_RAW_PCMU_CONTENT_TYPES = new Set([
   'audio/basic',
   'audio/mulaw',
   'audio/x-mulaw',
 ]);
+const AMBIGUOUS_BINARY_CONTENT_TYPES = new Set(['', 'application/octet-stream']);
 const WAV_CONTENT_TYPES = new Set(['audio/wav', 'audio/wave', 'audio/x-wav']);
 
 function asBytes(input) {
@@ -67,18 +65,24 @@ export function extractMulawPayload(input, contentType = '') {
   const bytes = asBytes(input);
   const type = normalizedContentType(contentType);
   if (!bytes.byteLength) throw new Error('phone_tts_empty_audio');
-  if (looksLikeMp3(bytes) || type === 'audio/mpeg' || type === 'audio/mp3') {
+
+  if (type === 'audio/mpeg' || type === 'audio/mp3') {
     throw new Error('phone_tts_unexpected_mp3');
   }
-  if (looksLikeTextOrJson(bytes) || type === 'application/json' || type.startsWith('text/')) {
+  if (type === 'application/json' || type.startsWith('text/')) {
     throw new Error('phone_tts_unexpected_text_payload');
   }
 
   const riff = bytes.byteLength >= 12 && ascii(bytes, 0, 4) === 'RIFF' && ascii(bytes, 8, 4) === 'WAVE';
   if (!riff) {
     if (WAV_CONTENT_TYPES.has(type)) throw new Error('phone_tts_expected_wav_container');
-    if (!RAW_PCMU_CONTENT_TYPES.has(type)) throw new Error(`phone_tts_unexpected_content_type_${type || 'empty'}`);
-    return { bytes, container: 'raw' };
+    if (EXPLICIT_RAW_PCMU_CONTENT_TYPES.has(type)) return { bytes, container: 'raw' };
+    if (AMBIGUOUS_BINARY_CONTENT_TYPES.has(type)) {
+      if (looksLikeMp3(bytes)) throw new Error('phone_tts_unexpected_mp3');
+      if (looksLikeTextOrJson(bytes)) throw new Error('phone_tts_unexpected_text_payload');
+      return { bytes, container: 'raw' };
+    }
+    throw new Error(`phone_tts_unexpected_content_type_${type || 'empty'}`);
   }
 
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
