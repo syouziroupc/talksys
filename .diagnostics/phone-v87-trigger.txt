@@ -1,1 +1,0 @@
-trigger diagnostic validation after workflow log capture update
