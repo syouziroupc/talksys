@@ -33,7 +33,7 @@ test('private conversation log reader requires a bearer token', () => {
 });
 
 test('phone turns reuse the Telnyx call id as the unified TalkSys session id', () => {
-  assert.match(telephony, /sessionId: clean\(sessionId, 200\)/);
-  assert.match(telephony, /spokenBackchannel, callId/);
-  assert.match(telephony, /channel: 'phone'/);
+  assert.match(telephony, /sessionId:\s*clean\(sessionId,\s*200\)/);
+  assert.match(telephony, /spokenBackchannel,\s*callId/);
+  assert.match(telephony, /channel:\s*'phone'/);
 });
