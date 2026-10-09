@@ -14,7 +14,7 @@ test('PCMU silence decodes and produces valid 8 kHz WAV', () => {
   assert.equal(wav.readUInt32LE(24), 8000);
 });
 
-test('TeXML receives PCMU and returns MP3 on the same Telnyx stream', () => {
+test('TeXML receives and returns PCMU on the same Telnyx stream', () => {
   const xml = buildTexml({
     host: 'talksys.example.test',
     token: 'secret',
@@ -23,8 +23,9 @@ test('TeXML receives PCMU and returns MP3 on the same Telnyx stream', () => {
     to: '+815012345678',
   });
   assert.match(xml, /codec="PCMU"/);
-  assert.match(xml, /bidirectionalMode="mp3"/);
-  assert.doesNotMatch(xml, /bidirectionalCodec=/);
+  assert.match(xml, /bidirectionalMode="rtp"/);
+  assert.match(xml, /bidirectionalCodec="PCMU"/);
+  assert.doesNotMatch(xml, /bidirectionalSamplingRate=/);
   assert.match(xml, /wss:\/\/talksys\.example\.test\/telnyx\/media\?token=secret/);
   assert.match(xml, /name="call_id" value="call-1"/);
 });
@@ -66,12 +67,14 @@ test('telephone transport shares the 900ms voice end policy and duplicate suppre
   assert.match(source, /WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
   assert.match(source, /sameUtterance\(stt\.text, lastAcceptedUserText\)/);
   assert.match(source, /phone_duplicate_suppressed/);
-  assert.match(source, /talksys-telephony-v84-shared-turn-dedupe/);
+  assert.match(source, /talksys-telephony-v87-grok-pcmu-paced/);
 });
 
-test('telephone outbound TTS is pluggable without replacing Telnyx media transport', () => {
+test('telephone outbound TTS is pluggable while using paced PCMU transport', () => {
   const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
-  assert.match(source, /typeof deps\?\.synthesize === 'function'/);
-  assert.match(source, /synthesizeMp3\(env, text, deps\)/);
+  assert.match(source, /synthesizePhonePcmu\(env, spoken, deps\)/);
+  assert.match(source, /streamPcmu20ms\(audio\.bytes/);
+  assert.match(source, /playbackGeneration/);
+  assert.doesNotMatch(source, /synthesizeMp3/);
   assert.match(source, /pluggableTts: true/);
 });

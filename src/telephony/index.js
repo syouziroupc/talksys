@@ -1,11 +1,11 @@
-import { CloudflareJapaneseTTS } from '../cloudflare-japanese-tts.js';
 import { transcribeV45 } from '../stt-v45.js';
-import { bytesToBase64, pcmuBase64ToSamples, rmsOfSamples, samplesToWav } from './codec.js';
+import { pcmuBase64ToSamples, rmsOfSamples, samplesToWav } from './codec.js';
 import { buildTexml, clampInt, clean, flag, xmlEscape } from './protocol.js';
+import { PHONE_TTS_MODEL, PHONE_TTS_SAMPLE_RATE, phoneTtsVoice, streamPcmu20ms, synthesizePhonePcmu } from './phone-tts.js';
 import { fastReaction, sameUtterance, FAST_REACTION_REVISION } from '../voice-fast-reaction.js';
 import { WEB_VOICE_CAPTURE_POLICY } from '../voice-capture-policy.js';
 
-export const TELEPHONY_REVISION = 'talksys-telephony-v84-shared-turn-dedupe';
+export const TELEPHONY_REVISION = 'talksys-telephony-v87-grok-pcmu-paced';
 const FRAME_MS = 20;
 let schemaPromise;
 
@@ -215,22 +215,10 @@ export function highPassPcmFrame(samples, state = {}, sampleRate = 8000, cutoffH
   return out;
 }
 
-async function synthesizeMp3(env, text, deps = {}) {
+async function synthesizePcmu(env, text, deps = {}) {
   const spoken = clean(text, clampInt(env?.TELEPHONY_MAX_SPOKEN_CHARS, 1200, 200, 3000));
   if (!spoken) return null;
-
-  if (typeof deps?.synthesize === 'function') {
-    const provided = await deps.synthesize(spoken);
-    if (provided instanceof ArrayBuffer) return bytesToBase64(new Uint8Array(provided));
-    if (ArrayBuffer.isView(provided)) return bytesToBase64(new Uint8Array(provided.buffer, provided.byteOffset, provided.byteLength));
-    if (typeof provided === 'string' && provided.trim()) return provided.trim();
-  }
-
-  if (!env?.AI) return null;
-  const tts = new CloudflareJapaneseTTS(env.AI);
-  const audio = await tts.synthesize(spoken);
-  if (!audio || audio.byteLength <= 0) return null;
-  return bytesToBase64(new Uint8Array(audio));
+  return synthesizePhonePcmu(env, spoken, deps);
 }
 
 function dashboardHtml(request) {
@@ -270,7 +258,10 @@ function health(request, env, deps) {
     inputAudio: 'Telnyx PCMU 8kHz → 90Hz HPF → 適応VAD → TalkSys STT',
     voiceInterruption: 'STT確定後に旧GeminiターンをAbort。ノイズだけでは中断しない。',
     fastReaction: `STT確定直後の短い相槌 + Gemini本回答 / ${FAST_REACTION_REVISION}`,
-    outputAudio: 'TalkSys TTS MP3 → Telnyx',
+    outputAudio: 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP',
+    phoneTtsModel: PHONE_TTS_MODEL,
+    phoneTtsVoice: phoneTtsVoice(env),
+    phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE,
     answerEngine: 'TalkSys本体（既存回答経路）',
     routes: { management: '/phone', health: '/telephony-health', voice: '/telnyx/voice', media: '/telnyx/media' },
     origin: publicBaseUrl(request),
@@ -340,6 +331,7 @@ function mediaBridge(request, env, deps) {
   let closed = false;
   let assistantPlaying = false;
   let currentMark = '';
+  let playbackGeneration = 0;
   let noiseFloor = Math.max(0.0015, Math.min(0.02, speechThreshold * 0.45));
   let speechHits = 0;
   let bargeHits = 0;
@@ -388,21 +380,51 @@ function mediaBridge(request, env, deps) {
     return version === turnVersion;
   };
 
-  const speak = async (text) => {
-    const payload = await synthesizeMp3(env, text, deps);
-    if (!payload || closed) return false;
-    currentMark = `talksys-${crypto.randomUUID()}`;
-    safeSend(telnyx, { event: 'media', media: { payload } });
-    safeSend(telnyx, { event: 'mark', mark: { name: currentMark } });
-    assistantPlaying = true;
-    return true;
-  };
-
   const interruptPlayback = () => {
-    if (!assistantPlaying) return;
-    safeSend(telnyx, { event: 'clear' });
+    playbackGeneration += 1;
+    if (assistantPlaying || currentMark) safeSend(telnyx, { event: 'clear' });
     assistantPlaying = false;
     currentMark = '';
+  };
+
+  const speak = async (text) => {
+    if (assistantPlaying || currentMark) interruptPlayback();
+    const myGeneration = ++playbackGeneration;
+    const startedAt = Date.now();
+    let audio;
+    try {
+      audio = await synthesizePcmu(env, text, deps);
+    } catch (error) {
+      console.error(JSON.stringify({ type: 'phone_tts_error', error: clean(error?.message || error, 240) }));
+      return false;
+    }
+    if (!audio?.bytes?.byteLength || closed || myGeneration !== playbackGeneration) return false;
+
+    currentMark = `talksys-${crypto.randomUUID()}`;
+    assistantPlaying = true;
+    const streamed = await streamPcmu20ms(audio.bytes, {
+      sendPayload: (payload) => safeSend(telnyx, { event: 'media', media: { payload } }),
+      isCancelled: () => closed || myGeneration !== playbackGeneration,
+    });
+    if (!streamed.completed || closed || myGeneration !== playbackGeneration) return false;
+    safeSend(telnyx, { event: 'mark', mark: { name: currentMark } });
+    console.log(JSON.stringify({
+      type: 'phone_tts_sent',
+      ms: Date.now() - startedAt,
+      frames: streamed.frames,
+      bytes: streamed.sentBytes,
+      provider: audio.metadata?.provider || '',
+      model: audio.metadata?.model || '',
+      voice: audio.metadata?.voice || '',
+      codec: audio.metadata?.codec || 'PCMU',
+      sampleRate: audio.metadata?.sampleRate || PHONE_TTS_SAMPLE_RATE,
+      durationMs: audio.metadata?.durationMs || 0,
+      rms: audio.metadata?.rms ?? null,
+      peak: audio.metadata?.peak ?? null,
+      silenceRatio: audio.metadata?.silenceRatio ?? null,
+      gatewayKeySource: audio.metadata?.gatewayKeySource || '',
+    }));
+    return true;
   };
 
   const finishUtterance = () => {
@@ -510,7 +532,7 @@ function mediaBridge(request, env, deps) {
     }
 
     if (message?.event === 'mark') {
-      if (!currentMark || message?.mark?.name === currentMark) {
+      if (currentMark && message?.mark?.name === currentMark) {
         assistantPlaying = false;
         currentMark = '';
       }
@@ -574,6 +596,7 @@ function mediaBridge(request, env, deps) {
 
     if (message?.event === 'stop') {
       finishUtterance();
+      interruptPlayback();
       abortActiveTurn();
       await Promise.allSettled([...pendingTasks]);
       await setCallStatus(env, callId, 'ended');
@@ -582,6 +605,7 @@ function mediaBridge(request, env, deps) {
   });
 
   telnyx.addEventListener('error', async () => {
+    interruptPlayback();
     await setCallStatus(env, callId, 'error');
     closeSocket(telnyx, 1011, 'telnyx_error');
   });
@@ -590,6 +614,7 @@ function mediaBridge(request, env, deps) {
     closed = true;
     clearTimeout(deadline);
     finishUtterance();
+    interruptPlayback();
     abortActiveTurn();
     await Promise.allSettled([...pendingTasks]);
     await setCallStatus(env, callId, 'ended');
