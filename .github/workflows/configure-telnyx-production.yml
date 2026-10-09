@@ -155,8 +155,9 @@ jobs:
           grep -F '<Connect><Stream ' "$xml_file" >/dev/null
           grep -F 'wss://talksys.syouziroupc.workers.dev/telnyx/media?token=' "$xml_file" >/dev/null
           grep -F 'codec="PCMU"' "$xml_file" >/dev/null
-          grep -F 'bidirectionalMode="mp3"' "$xml_file" >/dev/null
-          echo 'Live TeXML endpoint returned the expected bidirectional media stream contract.'
+          grep -F 'bidirectionalMode="rtp"' "$xml_file" >/dev/null
+          grep -F 'bidirectionalCodec="PCMU"' "$xml_file" >/dev/null
+          echo 'Live TeXML endpoint returned the expected RTP/PCMU bidirectional media stream contract.'
 
       - name: Verify live media websocket returns TalkSys greeting audio
         shell: bash

@@ -46,11 +46,11 @@ test('phone path uses adaptive VAD, debounce, and confirmed-speech cancellation'
   const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
   assert.match(source, /noiseFloor/);
   assert.match(source, /startThreshold/);
-  assert.match(source, /bargeHits >= 5/);
-  assert.match(source, /speechHits >= 3/);
+  assert.match(source, /bargeHits\s*>=\s*5/);
+  assert.match(source, /speechHits\s*>=\s*3/);
   assert.match(source, /pendingSttCount/);
   assert.match(source, /controller\.abort\('confirmed-voice-interrupt'\)/);
-  assert.match(source, /myCapture < latestAcceptedCapture/);
+  assert.match(source, /myCapture\s*<\s*latestAcceptedCapture/);
   assert.match(source, /waitForPendingSpeechDecision/);
   assert.match(source, /90Hz HPF|90\)/);
   assert.doesNotMatch(source, /processing = processing\.then/);

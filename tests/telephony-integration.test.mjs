@@ -65,7 +65,7 @@ test('phone turn sends only prior history and never duplicates the current STT t
 test('telephone transport shares the 900ms voice end policy and duplicate suppression', () => {
   const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
   assert.match(source, /WEB_VOICE_CAPTURE_POLICY\.silenceMs/);
-  assert.match(source, /sameUtterance\(stt\.text, lastAcceptedUserText\)/);
+  assert.match(source, /sameUtterance\(stt\.text,\s*lastAcceptedUserText\)/);
   assert.match(source, /phone_duplicate_suppressed/);
   assert.match(source, /talksys-telephony-v87-grok-pcmu-paced/);
 });
