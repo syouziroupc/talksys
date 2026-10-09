@@ -25,7 +25,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
 
       - name: Apply minimal phone PCMU patch if needed
         shell: bash
@@ -38,7 +37,7 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Run active TalkSys tests
         run: npm test
