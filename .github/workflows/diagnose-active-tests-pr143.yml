@@ -8,16 +8,23 @@ permissions:
   contents: read
 
 jobs:
-  discover:
+  diagnose:
     runs-on: ubuntu-24.04
-    outputs:
-      tests: ${{ steps.list.outputs.tests }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - id: list
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies once
+        run: npm ci --no-audit --no-fund
+      - name: Run each active test and capture failures
         shell: bash
         run: |
-          node <<'NODE' >> "$GITHUB_OUTPUT"
+          set -uo pipefail
+          : > diagnostic-results.txt
+          failed=0
+          node <<'NODE' > active-tests.txt
           const fs = require('fs');
           const legacy = new Set([
             'discord-fast-ack-echo-v81.test.mjs',
@@ -29,28 +36,27 @@ jobs:
             'discord-web-audio-adapter-v79.test.mjs',
             'discord-web-parity-v107.test.mjs',
           ]);
-          const tests = fs.readdirSync('tests')
-            .filter((name) => name.endsWith('.test.mjs') && !legacy.has(name))
-            .sort()
-            .map((name) => `tests/${name}`);
-          process.stdout.write(`tests=${JSON.stringify(tests)}\n`);
+          for (const name of fs.readdirSync('tests').filter((name) => name.endsWith('.test.mjs') && !legacy.has(name)).sort()) {
+            console.log(`tests/${name}`);
+          }
           NODE
-
-  test:
-    needs: discover
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        test: ${{ fromJSON(needs.discover.outputs.tests) }}
-    name: ${{ matrix.test }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+          while IFS= read -r testfile; do
+            if ! node --test "$testfile" > one-test.log 2>&1; then
+              failed=1
+              {
+                echo "===== $testfile ====="
+                cat one-test.log
+                echo
+              } >> diagnostic-results.txt
+            fi
+          done < active-tests.txt
+          if [[ $failed -eq 0 ]]; then
+            echo "ALL_ACTIVE_TESTS_PASSED" > diagnostic-results.txt
+          fi
+      - name: Upload diagnostic results
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          node-version: 22
-      - name: Install dependencies
-        run: npm ci --no-audit --no-fund
-      - name: Run test file
-        run: node --test "${{ matrix.test }}"
+          name: pr143-test-diagnostics
+          path: diagnostic-results.txt
+          if-no-files-found: error
