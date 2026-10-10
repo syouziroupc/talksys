@@ -8,12 +8,14 @@ on:
     paths:
       - discord-voice-smoke/src/build-talkman.mjs
       - discord-voice-smoke/src/build-talkman-runtime.mjs
+      - discord-voice-smoke/src/build-talkman-runtime-r6.mjs
       - discord-voice-smoke/start.ps1
       - discord-voice-smoke/start-utf8.ps1
       - discord-voice-smoke/update-and-start.ps1
       - discord-voice-smoke/update-and-start-utf8.ps1
       - tests/discord-talkman-builder.test.mjs
       - tests/discord-talkman-runtime-hardening.test.mjs
+      - tests/discord-talkman-runtime-r6-log-control.test.mjs
       - tests/discord-update-launcher-v69.test.mjs
       - .github/workflows/validate-talkman-group.yml
       - discord-voice-smoke/src/index.mjs
@@ -21,12 +23,14 @@ on:
     paths:
       - discord-voice-smoke/src/build-talkman.mjs
       - discord-voice-smoke/src/build-talkman-runtime.mjs
+      - discord-voice-smoke/src/build-talkman-runtime-r6.mjs
       - discord-voice-smoke/start.ps1
       - discord-voice-smoke/start-utf8.ps1
       - discord-voice-smoke/update-and-start.ps1
       - discord-voice-smoke/update-and-start-utf8.ps1
       - tests/discord-talkman-builder.test.mjs
       - tests/discord-talkman-runtime-hardening.test.mjs
+      - tests/discord-talkman-runtime-r6-log-control.test.mjs
       - tests/discord-update-launcher-v69.test.mjs
       - .github/workflows/validate-talkman-group.yml
       - discord-voice-smoke/src/index.mjs
@@ -44,19 +48,21 @@ jobs:
         run: |
           node --check discord-voice-smoke/src/build-talkman.mjs
           node --check discord-voice-smoke/src/build-talkman-runtime.mjs
+          node --check discord-voice-smoke/src/build-talkman-runtime-r6.mjs
       - name: Generate unified runtime
-        run: node discord-voice-smoke/src/build-talkman-runtime.mjs
+        run: node discord-voice-smoke/src/build-talkman-runtime-r6.mjs
       - name: Check generated runtime syntax
         run: node --check discord-voice-smoke/src/index-talkman.generated.mjs
-      - name: Verify both slash commands exist in generated runtime
+      - name: Verify both slash commands and log controls exist in generated runtime
         shell: bash
         run: |
           set -euo pipefail
           grep -F "name: 'talksys'" discord-voice-smoke/src/index-talkman.generated.mjs
           grep -F "name: 'talkman'" discord-voice-smoke/src/index-talkman.generated.mjs
+          grep -F "name: 'logclear'" discord-voice-smoke/src/index-talkman.generated.mjs
           grep -F "interaction.commandName === 'talksys' || interaction.commandName === 'talkman'" discord-voice-smoke/src/index-talkman.generated.mjs
       - name: Run TalkMan and updater regression tests
-        run: node --test tests/discord-talkman-builder.test.mjs tests/discord-talkman-runtime-hardening.test.mjs tests/discord-update-launcher-v69.test.mjs
+        run: node --test tests/discord-talkman-builder.test.mjs tests/discord-talkman-runtime-hardening.test.mjs tests/discord-talkman-runtime-r6-log-control.test.mjs tests/discord-update-launcher-v69.test.mjs
       - name: Parse unified PowerShell launchers
         shell: pwsh
         run: |
@@ -66,7 +72,7 @@ jobs:
 
           $launcher = Get-Content -LiteralPath discord-voice-smoke/start-utf8.ps1 -Raw
           [void][scriptblock]::Create($launcher)
-          if ($launcher -notmatch 'build-talkman-runtime\.mjs') { throw 'start implementation does not build unified runtime' }
+          if ($launcher -notmatch 'build-talkman-runtime-r6\.mjs') { throw 'start implementation does not build R6 unified runtime' }
           if ($launcher -notmatch 'index-talkman\.generated\.mjs') { throw 'start implementation does not launch unified runtime' }
 
           $updaterBootstrap = Get-Content -LiteralPath discord-voice-smoke/update-and-start.ps1 -Raw
