@@ -1,30 +1,43 @@
-name: Apply grounding evidence gate v110
+name: Validate grounding evidence gate v110
 
 on:
   push:
-    branches: [main]
+    branches: [fix/grounding-evidence-gate-v110]
     paths:
       - '.github/workflows/oneoff-grounding-evidence-gate-v110.yml'
+      - 'scripts/apply-phone-quality-v111.py'
+      - 'scripts/fix-phone-quality-v111.py'
+      - 'src/grounding-evidence-gate.js'
+      - 'src/integrated-entry.js'
+      - 'src/telephony/index.js'
+      - 'src/telephony/phone-tts.js'
+      - 'wrangler.jsonc'
+      - 'tests/grounding-evidence-gate-v110.test.mjs'
+      - 'tests/phone-*test.mjs'
+      - 'tests/telephony-*test.mjs'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  apply:
+  validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
           node-version: 22
 
-      - name: Apply evidence-gated grounding patch
-        run: python scripts/apply-grounding-evidence-gate-v110.py
+      - name: Apply phone quality v111 patch
+        run: |
+          python scripts/apply-phone-quality-v111.py
+          python scripts/fix-phone-quality-v111.py
 
       - name: Install dependencies
         run: |
@@ -39,9 +52,40 @@ jobs:
           set -euo pipefail
           node --check src/grounding-evidence-gate.js
           node --check src/integrated-entry.js
+          node --check src/telephony/index.js
+          node --check src/telephony/phone-tts.js
 
       - name: Grounding gate tests
         run: node --test tests/grounding-evidence-gate-v110.test.mjs
+
+      - name: Phone regression suites
+        id: phone_regressions
+        run: |
+          set +e
+          : > /tmp/phone-regression.log
+          mapfile -t suites < <(find tests -maxdepth 1 -type f \( -iname 'phone-*test.mjs' -o -iname 'telephony-*test.mjs' \) | sort)
+          if (( ${#suites[@]} == 0 )); then
+            echo 'No dedicated phone/telephony regression suites found; full suite remains mandatory.' | tee -a /tmp/phone-regression.log
+            exit 0
+          fi
+          failed=0
+          for suite in "${suites[@]}"; do
+            echo "===== $suite =====" | tee -a /tmp/phone-regression.log
+            node --test "$suite" 2>&1 | tee -a /tmp/phone-regression.log
+            status=${PIPESTATUS[0]}
+            echo "===== status=$status $suite =====" | tee -a /tmp/phone-regression.log
+            if (( status != 0 )); then failed=1; fi
+          done
+          exit "$failed"
+
+      - name: Upload phone regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone-regression-v111
+          path: /tmp/phone-regression.log
+          if-no-files-found: warn
+          retention-days: 1
 
       - name: Architecture check
         run: npm run architecture:check
@@ -49,24 +93,44 @@ jobs:
       - name: Architecture graph
         run: npm run architecture:graph
 
-      - name: Full test suite
-        run: npm test
+      - name: Full test suite with concise failure diagnostics
+        run: |
+          set +e
+          npm test 2>&1 | tee /tmp/talksys-full-test.log
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            echo '--- concise failing-test diagnostics ---'
+            grep -E -C 4 '(^not ok|ERR_ASSERTION|AssertionError|Error:|fail [0-9]+|# fail)' /tmp/talksys-full-test.log | tail -n 260 || true
+            exit "$status"
+          fi
+
+      - name: Upload full-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-test-v111
+          path: /tmp/talksys-full-test.log
+          if-no-files-found: warn
+          retention-days: 1
 
       - name: Worker dry run
         run: npx wrangler deploy --dry-run
 
-      - name: Commit validated runtime change
+      - name: Commit validated phone quality changes to feature branch
         run: |
           set -euo pipefail
           git config user.name talksys-automation
           git config user.email actions@users.noreply.github.com
-          git add src/integrated-entry.js
+          git add src/telephony/index.js src/telephony/phone-tts.js wrangler.jsonc \
+            tests/phone-fast-reaction-v2.test.mjs \
+            tests/phone-latency-fast-ack-v90.test.mjs \
+            tests/phone-energetic-progress-v1.test.mjs \
+            tests/phone-pcmu-v87.test.mjs \
+            tests/phone-jsonl-export-v111.test.mjs
           git diff --cached --check
           if git diff --cached --quiet; then
-            echo 'No runtime change to commit.'
+            echo 'No validated phone quality changes to commit.'
             exit 0
           fi
-          git commit -m 'Gate factual answers on Gemini search evidence'
-          git push origin HEAD:main
-
-# retry: v110 validation split r2
+          git commit -m 'Improve phone acknowledgement audio and call exports'
+          git push origin HEAD:${{ github.ref_name }}

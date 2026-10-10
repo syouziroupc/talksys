@@ -35,14 +35,14 @@ test('dynamic factual turn uses one grounded Gemini interaction', async () => {
     const req = JSON.parse(options.body);
     assert.equal(req.model, 'gemini-3.5-flash-lite');
     assert.deepEqual(req.tools, [{ type: 'google_search' }]);
-    assert.match(req.system_instruction, /Google検索を一度実行/);
+    assert.match(req.system_instruction, /まずGoogle検索を実行/);
     return new Response(JSON.stringify({
       id: 'primary-grounded',
       status: 'completed',
       steps: [
         { type: 'google_search_call', arguments: { queries: ['A店 営業時間'] } },
         { type: 'google_search_result', result: [{ title: 'A店公式', url: 'https://example.com/a' }] },
-        { type: 'model_output', content: [{ type: 'text', text: 'A店は19時に閉店しています。' }] },
+        { type: 'model_output', content: [{ type: 'text', text: 'A店は19時に閉店しています。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/a', title: 'A店公式' }] }] },
       ],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -146,7 +146,7 @@ test('dynamic fact fails closed only after both grounding attempts return no sea
     assert.equal(result.groundingRecoveryUsed, false);
     assert.equal(result.searchRetried, true);
     assert.doesNotMatch(result.answer, /5点2|5点4/);
-    assert.match(result.answer, /再試行/);
+    assert.match(result.answer, /推測では答えません/);
   } finally {
     globalThis.fetch = originalFetch;
   }

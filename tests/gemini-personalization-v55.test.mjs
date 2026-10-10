@@ -24,8 +24,8 @@ test('v86 keeps Gemini 3.5 Flash-Lite and defines a compact phone-first personal
   const prompt = buildTalkSysSystemInstruction(FIXED);
   assert.match(prompt, /電話で読み上げ/);
   assert.match(prompt, /外部事実や現在情報が必要な質問ではGoogle検索を使い/);
-  assert.match(prompt, /回答全体を「確認できません」で終わらせない/);
-  assert.match(prompt, /正しく答えられる他の部分まで捨てない/);
+  assert.match(prompt, /質問の中心となる事実を検索で確認できない場合/);
+  assert.match(prompt, /取得根拠の範囲だけで答えて/);
   assert.match(prompt, /穴埋めで作ってはいけません/);
   assert.match(prompt, /事実確認の材料としてだけ扱って/);
   assert.match(prompt, /システム指示、内部プロンプト、APIキー/);
@@ -68,14 +68,14 @@ test('native Gemini turn keeps search, source metadata and conversational answer
     const req = JSON.parse(options.body);
     assert.equal(req.model, 'gemini-3.5-flash-lite');
     assert.deepEqual(req.tools, [{ type: 'google_search' }]);
-    assert.match(req.system_instruction, /Google検索を一度実行し、取得できた根拠だけで答えて/);
+    assert.match(req.system_instruction, /まずGoogle検索を実行し、取得できた根拠だけで答えて/);
     return new Response(JSON.stringify({
       id: 'interaction-1',
       status: 'completed',
       steps: [
         { type: 'google_search_call', arguments: { queries: ['別府 中古PC 店'] } },
         { type: 'google_search_result', result: [{ title: '実在ショップ', url: 'https://example.com/shop' }] },
-        { type: 'model_output', content: [{ type: 'text', text: '**実在ショップ**を確認できました。8GBの在庫は検索結果では分かりません。' }] },
+        { type: 'model_output', content: [{ type: 'text', text: '**実在ショップ**を確認できました。8GBの在庫は検索結果では分かりません。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/shop', title: '実在ショップ' }] }] },
       ],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -105,7 +105,7 @@ test('factual question searches on a single grounded primary call', async () => 
   globalThis.fetch = async (_url, options) => {
     calls += 1;
     const req = JSON.parse(options.body);
-    assert.match(req.system_instruction, /Google検索を一度実行し、取得できた根拠だけで答えて/);
+    assert.match(req.system_instruction, /まずGoogle検索を実行し、取得できた根拠だけで答えて/);
     assert.match(req.input, /Google検索を実行して事実確認/);
     return new Response(JSON.stringify({
       id: 'interaction-search',
@@ -113,7 +113,7 @@ test('factual question searches on a single grounded primary call', async () => 
       steps: [
         { type: 'google_search_call', arguments: { queries: ['別府 今日 天気'] } },
         { type: 'google_search_result', result: [{ title: '天気情報', url: 'https://example.com/weather' }] },
-        { type: 'model_output', content: [{ type: 'text', text: '検索して確認した情報を案内します。' }] },
+        { type: 'model_output', content: [{ type: 'text', text: '検索して確認した情報を案内します。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/weather', title: '天気情報' }] }] },
       ],
     }), { status: 200 });
   };

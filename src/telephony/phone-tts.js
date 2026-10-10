@@ -8,6 +8,8 @@ export const PHONE_TTS_FRAME_MS = 20;
 export const PHONE_TTS_FRAME_BYTES = 160;
 export const PHONE_TTS_MAX_SECONDS = 120;
 export const PHONE_TTS_DELIVERY_DEFAULT = 'loud-bright';
+export const PHONE_TTS_OUTPUT_GAIN_DB_DEFAULT = 3;
+export const PHONE_TTS_OUTPUT_PEAK_CEILING = 0.94;
 
 const PHONE_TTS_VOICES = new Set(['eve', 'ara', 'rex', 'sal', 'leo']);
 const PHONE_TTS_DELIVERY_MODES = new Set(['plain', 'loud', 'bright', 'loud-bright']);
@@ -201,6 +203,43 @@ export function inspectPcmu(bytesInput) {
   };
 }
 
+
+export function phoneTtsOutputGainDb(env = {}) {
+  const value = Number(env?.TELEPHONY_TTS_OUTPUT_GAIN_DB ?? PHONE_TTS_OUTPUT_GAIN_DB_DEFAULT);
+  if (!Number.isFinite(value)) return PHONE_TTS_OUTPUT_GAIN_DB_DEFAULT;
+  return Math.max(0, Math.min(6, value));
+}
+
+export function applyPcmuOutputGain(input, env = {}) {
+  const bytes = asBytes(input);
+  if (!bytes.byteLength) throw new Error('phone_tts_empty_audio');
+  const requestedDb = phoneTtsOutputGainDb(env);
+  const requestedLinear = 10 ** (requestedDb / 20);
+  // Leave mu-law quantization headroom so the decoded signal stays below the advertised ceiling.
+  const ceilingSample = Math.floor(32767 * Math.max(0, PHONE_TTS_OUTPUT_PEAK_CEILING - 0.02));
+  let sourcePeak = 0;
+  for (let i = 0; i < bytes.byteLength; i += 1) sourcePeak = Math.max(sourcePeak, Math.abs(decodeMuLawByte(bytes[i])));
+  const ceilingLinear = sourcePeak > 0 ? ceilingSample / sourcePeak : requestedLinear;
+  const appliedLinear = Math.max(0, Math.min(requestedLinear, ceilingLinear));
+  const out = new Uint8Array(bytes.byteLength);
+  for (let i = 0; i < bytes.byteLength; i += 1) {
+    const amplified = Math.round(decodeMuLawByte(bytes[i]) * appliedLinear);
+    const bounded = Math.max(-ceilingSample, Math.min(ceilingSample, amplified));
+    out[i] = encodeMuLawSample(bounded);
+  }
+  const metrics = inspectPcmu(out);
+  const appliedDb = appliedLinear > 0 ? 20 * Math.log10(appliedLinear) : -120;
+  return {
+    bytes: out,
+    metadata: {
+      ...metrics,
+      outputGainRequestedDb: Number(requestedDb.toFixed(3)),
+      outputGainAppliedDb: Number(appliedDb.toFixed(3)),
+      outputPeakCeiling: PHONE_TTS_OUTPUT_PEAK_CEILING,
+    },
+  };
+}
+
 export function validatePcmuResponse(input, contentType = '') {
   const extracted = extractMulawPayload(input, contentType);
   return {
@@ -295,10 +334,11 @@ export async function synthesizeGrokPhonePcmu(env, text, options = {}) {
   const primaryKind = logObservedFormat('mulaw', primary.bytes, primary.contentType);
   try {
     const validated = validatePcmuResponse(primary.bytes, primary.contentType);
+    const gained = applyPcmuOutputGain(validated.bytes, env);
     return {
-      ...validated,
+      ...validated, bytes: gained.bytes,
       metadata: {
-        ...validated.metadata, provider: 'cloudflare-ai-gateway', model: PHONE_TTS_MODEL,
+        ...validated.metadata, ...gained.metadata, provider: 'cloudflare-ai-gateway', model: PHONE_TTS_MODEL,
         voice: phoneTtsVoice(env), delivery: phoneTtsDeliveryMode(env), language: 'ja', requestedCodec: 'mulaw', detectedKind: primaryKind,
         fallbackCodec: '', gatewayKeySource: String(primary.result?.gatewayMetadata?.keySource || primary.result?.response?.gatewayMetadata?.keySource || ''),
       },
@@ -312,12 +352,12 @@ export async function synthesizeGrokPhonePcmu(env, text, options = {}) {
   const fallbackKind = logObservedFormat('pcm', fallback.bytes, fallback.contentType, { fallback: true });
   const pcm = extractPcm16LePayload(fallback.bytes, fallback.contentType);
   const mulaw = pcm16LeToMulaw(pcm.bytes);
-  const metrics = inspectPcmu(mulaw);
+  const gained = applyPcmuOutputGain(mulaw, env);
   return {
-    bytes: mulaw,
+    bytes: gained.bytes,
     metadata: {
       codec: 'PCMU', sampleRate: PHONE_TTS_SAMPLE_RATE, channels: 1, container: pcm.container,
-      contentType: normalizedContentType(fallback.contentType), ...metrics,
+      contentType: normalizedContentType(fallback.contentType), ...gained.metadata,
       provider: 'cloudflare-ai-gateway', model: PHONE_TTS_MODEL, voice: phoneTtsVoice(env), delivery: phoneTtsDeliveryMode(env), language: 'ja',
       requestedCodec: 'mulaw', detectedKind: fallbackKind, fallbackCodec: 'pcm',
       gatewayKeySource: String(fallback.result?.gatewayMetadata?.keySource || fallback.result?.response?.gatewayMetadata?.keySource || ''),

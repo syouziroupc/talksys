@@ -4,6 +4,9 @@ import {
   PHONE_TTS_FRAME_BYTES,
   PHONE_TTS_MODEL,
   PHONE_TTS_SAMPLE_RATE,
+  PHONE_TTS_OUTPUT_GAIN_DB_DEFAULT,
+  PHONE_TTS_OUTPUT_PEAK_CEILING,
+  applyPcmuOutputGain,
   detectAudioKind,
   extractMulawPayload,
   inspectPcmu,
@@ -123,4 +126,25 @@ test('20 ms streamer stops before sending more data after cancellation', async (
   const bytes = new Uint8Array(640).fill(0xff); let sends = 0; let cancelled = false;
   const result = await streamPcmu20ms(bytes, { sendPayload: () => { sends += 1; }, sleep: async () => { cancelled = true; }, isCancelled: () => cancelled });
   assert.equal(result.completed, false); assert.equal(result.cancelled, true); assert.equal(sends, 1); assert.equal(result.sentBytes, 160);
+});
+
+
+test('bounded phone output gain raises quiet PCMU without exceeding the peak ceiling', () => {
+  const quiet = pcm16LeToMulaw(pcm16(Array.from({ length: 320 }, (_, i) => (i % 2 ? 1800 : -1800))));
+  const before = inspectPcmu(quiet);
+  const gained = applyPcmuOutputGain(quiet, { TELEPHONY_TTS_OUTPUT_GAIN_DB: '3.0' });
+  const after = inspectPcmu(gained.bytes);
+  assert.equal(PHONE_TTS_OUTPUT_GAIN_DB_DEFAULT, 3);
+  assert.equal(PHONE_TTS_OUTPUT_PEAK_CEILING, 0.94);
+  assert.ok(after.rms > before.rms);
+  assert.ok(after.peak <= 0.94, `peak=${after.peak}`);
+  assert.equal(gained.metadata.outputGainRequestedDb, 3);
+});
+
+test('bounded phone output gain limits hot PCMU rather than clipping it', () => {
+  const hot = pcm16LeToMulaw(pcm16(Array.from({ length: 320 }, (_, i) => (i % 2 ? 30000 : -30000))));
+  const gained = applyPcmuOutputGain(hot, { TELEPHONY_TTS_OUTPUT_GAIN_DB: '3.0' });
+  const after = inspectPcmu(gained.bytes);
+  assert.ok(after.peak <= 0.94, `peak=${after.peak}`);
+  assert.ok(gained.metadata.outputGainAppliedDb < 3);
 });

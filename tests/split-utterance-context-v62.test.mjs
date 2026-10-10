@@ -87,7 +87,7 @@ test('split follow-up preserves the first fragment through the single grounded p
       steps: [
         { type: 'google_search_call', arguments: { queries: ['QCM1250 アダプター この型番 互換'] } },
         { type: 'google_search_result', result: [{ title: '公式互換情報', url: 'https://example.com/qcm1250' }] },
-        { type: 'model_output', content: [{ type: 'text', text: '確認後の回答です。' }] },
+        { type: 'model_output', content: [{ type: 'text', text: '確認後の回答です。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/qcm1250', title: '公式互換情報' }] }] },
       ],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
