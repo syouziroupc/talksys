@@ -65,7 +65,7 @@ if ($needsInstall) {
   Write-Host "[ok] Discord dependencies unchanged; skipping npm install"
 }
 
-$builder = Join-Path $PSScriptRoot 'src\build-talkman-runtime-r6.mjs'
+$builder = Join-Path $PSScriptRoot 'src\build-talkman-runtime-r7.mjs'
 $entry = Join-Path $PSScriptRoot 'src\index-talkman.generated.mjs'
 
 function Build-UnifiedDiscordBridge {
