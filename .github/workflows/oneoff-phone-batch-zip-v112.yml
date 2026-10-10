@@ -1,0 +1,56 @@
+name: One-off phone batch ZIP v112
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/oneoff-phone-batch-zip-v112.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Apply recent-call ZIP export
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/apply-phone-batch-zip-v112.py
+      - name: Validate focused phone export tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/telephony/index.js
+          node --test tests/phone-jsonl-export-v111.test.mjs tests/phone-batch-zip-export-v112.test.mjs
+      - name: Validate full regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Commit verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f .github/workflows/oneoff-phone-batch-zip-v112.yml scripts/apply-phone-batch-zip-v112.py
+          git add src/telephony/index.js tests/phone-batch-zip-export-v112.test.mjs
+          git commit -m 'Add recent phone log ZIP export'
+          git push origin HEAD:main
