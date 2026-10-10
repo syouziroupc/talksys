@@ -19,7 +19,9 @@ jobs:
           ref: feat/phone-energetic-progress-v1
           fetch-depth: 0
       - name: Apply patch
-        run: python3 .diagnostics/apply-phone-energetic-progress-v1.py
+        run: |
+          python3 -c "from pathlib import Path; p=Path('.diagnostics/apply-phone-energetic-progress-v1.py'); s=p.read_text(); s=s.replace('(?:検索|調べ|探して|探す|確認して|確認|見つけて|見つける|教えて|知りたい)', '(?:検索(?:して)?|調べて?|探して|探す|確認して|確認|見つけて|見つける|教えて|知りたい)'); p.write_text(s)"
+          python3 .diagnostics/apply-phone-energetic-progress-v1.py
       - name: Validate focused contracts
         run: |
           node --check src/telephony/index.js
