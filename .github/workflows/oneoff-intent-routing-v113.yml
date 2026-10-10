@@ -1,0 +1,69 @@
+name: One-off intent routing v113
+
+on:
+  push:
+    branches: [fix/intent-routing-v113]
+    paths:
+      - '.github/workflows/oneoff-intent-routing-v113.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Apply v113 routing patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/apply-intent-routing-v113.py
+      - name: Syntax and focused routing tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/intent-routing.js
+          node --check src/grounding-evidence-gate.js
+          node --check src/integrated-entry.js
+          node --check src/telephony/index.js
+          node --test tests/intent-routing-v113.test.mjs
+          node --test tests/grounding-evidence-gate-v110.test.mjs
+          node --test tests/phone-fast-reaction-v2.test.mjs tests/phone-latency-fast-ack-v90.test.mjs tests/phone-jsonl-export-v111.test.mjs
+      - name: Architecture checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run architecture:check
+          npm run architecture:graph
+      - name: Full regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+      - name: Worker dry run
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --dry-run
+      - name: Commit verified runtime patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f scripts/apply-intent-routing-v113.py .github/workflows/oneoff-intent-routing-v113.yml
+          git add src/integrated-entry.js src/grounding-evidence-gate.js src/telephony/index.js src/intent-routing.js tests/intent-routing-v113.test.mjs
+          git commit -m 'Route social safety and phone control intents before search'
+          git push origin HEAD:fix/intent-routing-v113
