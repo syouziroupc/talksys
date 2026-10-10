@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildTalkmanSource } from './build-talkman.mjs';
 
-export const TALKMAN_RUNTIME_HARDENING_REVISION = 'talkman-group-v1-hardening-r4-fast-compact';
+export const TALKMAN_RUNTIME_HARDENING_REVISION = 'talkman-group-v1-hardening-r5-decode-resilience';
 
 function replaceOnce(source, before, after, label) {
   const first = source.indexOf(before);
@@ -63,30 +63,6 @@ function pruneRecentBotSpeech`,
   pendingTurns.splice(0, pendingTurns.length, nextTurn);
 }
 
-function talkmanFastReaction(text = '') {
-  const value = String(text || '').normalize('NFKC').replace(/\\s+/g, ' ').trim();
-  if (!value) return { kind: 'none', text: '', shouldSpeak: false, terminal: false };
-  if (/^(?:もしもし|おはよう(?:ございます)?|こんにちは|こんばんは|やあ|どうも)[。！!？?…\\s]*$/iu.test(value)) {
-    return { kind: 'talkman-greeting', text: 'お、どうも。', shouldSpeak: true, terminal: true };
-  }
-  if (/^(?:ありがとう(?:ございます|ございました)?|ありがと|助かった)[。！!？?…\\s]*$/iu.test(value)) {
-    return { kind: 'talkman-thanks', text: 'どういたしまして。', shouldSpeak: true, terminal: true };
-  }
-  if (/(?:迷う|迷って|どっち|どちら|か[、,].{1,40}か)/u.test(value)) {
-    return { kind: 'talkman-choice', text: 'その二択、悩むな。', shouldSpeak: true, terminal: false };
-  }
-  if (/(?:行こうかな|行ってこようかな|やろうかな|しようかな|アリかな)/u.test(value)) {
-    return { kind: 'talkman-plan', text: 'それアリ。', shouldSpeak: true, terminal: false };
-  }
-  if (/[？?]/u.test(value) || /(?:どう|なぜ|なんで|何|どこ|いつ|誰|どれ|ですか|ますか)$/u.test(value)) {
-    return { kind: 'talkman-question', text: 'お、そこ来たか。', shouldSpeak: true, terminal: false };
-  }
-  if (value.length >= 8) {
-    return { kind: 'talkman-listening', text: 'うん、聞いてる。', shouldSpeak: true, terminal: false };
-  }
-  return { kind: 'none', text: '', shouldSpeak: false, terminal: false };
-}
-
 function normalizeTalkmanAnswer(value = '') {
   let answer = String(value || '').trim();
   if (conversationMode !== 'talkman') return answer;
@@ -100,47 +76,11 @@ function normalizeTalkmanAnswer(value = '') {
 }
 
 function pruneRecentBotSpeech`,
-    'TalkMan fast reaction and final-answer normalizer',
+    'TalkMan final-answer normalizer',
   );
 
-  source = replaceOnce(
-    source,
-    `function triggerWebFastReaction(helper, text, source = 'realtime') {
-  if (conversationMode === 'talkman') return false;
-  const active = helper?.active;`,
-    `function triggerWebFastReaction(helper, text, source = 'realtime') {
-  const active = helper?.active;`,
-    'enable realtime reaction in TalkMan',
-  );
-
-  source = replaceOnce(
-    source,
-    '  const reaction = fastReaction(value);',
-    "  const reaction = conversationMode === 'talkman' ? talkmanFastReaction(value) : fastReaction(value);",
-    'TalkMan realtime reaction policy',
-  );
-
-  source = replaceOnce(
-    source,
-    "  let reaction = conversationMode === 'talkman' ? null : providedFastReaction;",
-    "  let reaction = conversationMode === 'talkman' ? talkmanFastReaction(confirmedTranscript) : providedFastReaction;",
-    'TalkMan confirmed reaction policy',
-  );
-
-  source = replaceOnce(
-    source,
-    "    reaction = conversationMode === 'talkman' ? null : fastReaction(realtimeRescue);",
-    "    reaction = conversationMode === 'talkman' ? talkmanFastReaction(realtimeRescue) : fastReaction(realtimeRescue);",
-    'TalkMan rescued reaction policy',
-  );
-
-  source = replaceOnce(
-    source,
-    "  if (conversationMode !== 'talkman' && answering && captureMetrics?.overlappedBotPlayback) {",
-    '  if (answering && captureMetrics?.overlappedBotPlayback) {',
-    'TalkMan confirmed overlap preemption',
-  );
-
+  // TalkMan is a participant, not an acknowledgement generator. Keep the
+  // build-talkman defaults that disable fast reactions and waiting cues.
   source = replaceOnce(
     source,
     '      console.log(`[queue] TalkMan FIFO user=${userId} queued=${pendingTurns.length}: ${confirmedTranscript}`);',
@@ -155,29 +95,145 @@ function pruneRecentBotSpeech`,
     'TalkMan queue mirror log',
   );
 
+  // Do not speak a connection greeting in TalkMan mode.
   source = replaceOnce(
     source,
-    `  const samples = ['こんにちは', 'ありがとう', '今日の天気を教えて', 'これを調べて', '何時？', 'この内容について詳しく相談したいです'];
-  const texts = [...new Set(samples.map((sample) => fastReaction(sample)).filter((r) => r?.shouldSpeak && r?.text).map((r) => r.text))];`,
-    `  const samples = ['こんにちは', 'ありがとう', '今日の天気を教えて', 'これを調べて', '何時？', 'この内容について詳しく相談したいです'];
-  const talkmanTexts = ['お、どうも。', 'どういたしまして。', 'その二択、悩むな。', 'それアリ。', 'お、そこ来たか。', 'うん、聞いてる。'];
-  const texts = [...new Set([...samples.map((sample) => fastReaction(sample)).filter((r) => r?.shouldSpeak && r?.text).map((r) => r.text), ...talkmanTexts])];`,
-    'warm TalkMan reaction audio',
+    '  if (!options?.suppressGreeting) await playConnectionGreeting();',
+    "  if (!options?.suppressGreeting && conversationMode !== 'talkman') await playConnectionGreeting();",
+    'TalkMan no connection greeting',
+  );
+
+  // TalkMan should be harder to interrupt accidentally. Classic TalkSys keeps
+  // the existing 150 ms threshold; TalkMan requires 600 ms of sustained voice.
+  source = replaceOnce(
+    source,
+    `function updateBargeInVoiceGate(active, pcm16) {
+  if (!active?.startedDuringBotPlayback || active.bargeInTriggered || !pcm16?.length) return;
+  const level = pcm16Level(pcm16);
+  const durationMs = (pcm16.length / 2 / WEB_VOICE_CAPTURE_POLICY.targetRate) * 1000;
+  const voiced = level.rms >= BARGE_IN_RMS_THRESHOLD && level.peak >= BARGE_IN_PEAK_THRESHOLD;
+  active.bargeInVoicedMs = voiced ? Number(active.bargeInVoicedMs || 0) + durationMs : 0;
+  if (!active.bargeInArmed && active.bargeInVoicedMs >= BARGE_IN_CONFIRM_MS) {
+    active.bargeInArmed = true;
+    active.bargeInArmedAt = Date.now();
+    maybeTriggerConfirmedBargeIn(active);
+  }
+}`,
+    `function updateBargeInVoiceGate(active, pcm16) {
+  if (!active?.startedDuringBotPlayback || active.bargeInTriggered || !pcm16?.length) return;
+  const level = pcm16Level(pcm16);
+  const durationMs = (pcm16.length / 2 / WEB_VOICE_CAPTURE_POLICY.targetRate) * 1000;
+  const voiced = level.rms >= BARGE_IN_RMS_THRESHOLD && level.peak >= BARGE_IN_PEAK_THRESHOLD;
+  active.bargeInVoicedMs = voiced ? Number(active.bargeInVoicedMs || 0) + durationMs : 0;
+  const confirmMs = conversationMode === 'talkman' ? 600 : BARGE_IN_CONFIRM_MS;
+  if (!active.bargeInArmed && active.bargeInVoicedMs >= confirmMs) {
+    active.bargeInArmed = true;
+    active.bargeInArmedAt = Date.now();
+    maybeTriggerConfirmedBargeIn(active);
+  }
+}`,
+    'TalkMan relaxed barge-in',
+  );
+
+  // Keep a transient decoder failure from killing voice capture permanently.
+  // A valid PCM frame clears the failure streak. Repeated failures trigger the
+  // bridge's existing full voice reconnect so DAVE/RTP state is rebuilt.
+  source = replaceOnce(
+    source,
+    'const sessions = new Map();\nconst history = [];',
+    'const sessions = new Map();\nconst decoderRecoveryByUser = new Map();\nconst history = [];',
+    'decoder recovery state',
   );
 
   source = replaceOnce(
     source,
-    `    if (conversationMode !== 'talkman' && !timeline.fastReactionRequestedAt) {
-      activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, reaction);
-    }`,
-    `    if (!timeline.fastReactionRequestedAt) {
-      if (conversationMode === 'talkman' && reaction?.shouldSpeak) {
-        playWebFastReaction(reaction, utteranceId, sessionEpoch, timeline, confirmedTranscript);
-      } else if (conversationMode !== 'talkman') {
-        activeWaitCue = startWaitCue(confirmedTranscript, utteranceId, controller.signal, reaction);
+    `  let lastPcmAt = 0;
+  let realtimeHelper = null;`,
+    `  let lastPcmAt = 0;
+  let lastOpusPacketBytes = 0;
+  let lastOpusPacketHead = '';
+  let realtimeHelper = null;`,
+    'decoder diagnostics state',
+  );
+
+  source = replaceOnce(
+    source,
+    `  decoder.on('data', (pcm48) => {
+    if (!resampler.stdin.destroyed && !resampler.stdin.writableEnded) resampler.stdin.write(pcm48);
+  });
+
+  resampler.stdout.on('data', (pcm16) => {`,
+    `  opus.on('data', (packet) => {
+    if (!packet?.length) return;
+    lastOpusPacketBytes = packet.length;
+    lastOpusPacketHead = packet.subarray(0, Math.min(8, packet.length)).toString('hex');
+  });
+
+  decoder.on('data', (pcm48) => {
+    if (!resampler.stdin.destroyed && !resampler.stdin.writableEnded) resampler.stdin.write(pcm48);
+  });
+
+  resampler.stdout.on('data', (pcm16) => {`,
+    'decoder packet diagnostics',
+  );
+
+  source = replaceOnce(
+    source,
+    `  resampler.stdout.on('data', (pcm16) => {
+    if (!pcm16?.length || completed) return;
+    const at = Date.now();`,
+    `  resampler.stdout.on('data', (pcm16) => {
+    if (!pcm16?.length || completed) return;
+    decoderRecoveryByUser.delete(userId);
+    const at = Date.now();`,
+    'decoder recovery reset on PCM',
+  );
+
+  source = replaceOnce(
+    source,
+    `  decoder.on('error', (error) => {
+    console.error('[decode]', error.message);
+    finalize('decoder-error').catch(() => {});
+  });`,
+    `  decoder.on('error', (error) => {
+    const now = Date.now();
+    const previous = decoderRecoveryByUser.get(userId);
+    const sameWindow = previous && now - previous.startedAt <= 2000;
+    const recovery = {
+      startedAt: sameWindow ? previous.startedAt : now,
+      count: sameWindow ? previous.count + 1 : 1,
+    };
+    decoderRecoveryByUser.set(userId, recovery);
+    const message = String(error?.message || error || 'decoder error');
+    console.error(\`[decode] \${message} user=\${userId} recovery=\${recovery.count}/3 opusBytes=\${lastOpusPacketBytes} head=\${lastOpusPacketHead || '-'}\`);
+    mirrorRuntimeLog('DECODE', \`error user=\${userId} recovery=\${recovery.count}/3 bytes=\${lastOpusPacketBytes} message=\${message.slice(0, 120)}\`);
+    const reconnectVoice = recovery.count > 3;
+    finalize('decoder-error').finally(() => {
+      if (sessionEpoch !== voiceEpoch || !connection) return;
+      if (reconnectVoice) {
+        decoderRecoveryByUser.delete(userId);
+        mirrorRuntimeLog('DECODE-RECOVERY', \`full reconnect user=\${userId} after repeated decoder errors\`);
+        scheduleFullReconnect('decoder-invalid-packet', 250);
+        return;
       }
-    }`,
-    'TalkMan confirmed fallback reaction',
+      setTimeout(() => {
+        if (sessionEpoch !== voiceEpoch || !connection || sessions.has(userId)) return;
+        mirrorRuntimeLog('DECODE-RECOVERY', \`rearm user=\${userId} attempt=\${recovery.count}\`);
+        startReceiverSession(userId, false);
+      }, 80);
+    }).catch(() => {});
+  });`,
+    'decoder transient recovery',
+  );
+
+  source = replaceOnce(
+    source,
+    `  sessions.clear();
+  closeRealtimeHelpers();`,
+    `  sessions.clear();
+  decoderRecoveryByUser.clear();
+  closeRealtimeHelpers();`,
+    'decoder recovery reset on disconnect',
   );
 
   source = replaceOnce(
