@@ -9,9 +9,58 @@ export const TELEPHONY_REVISION = 'talksys-telephony-v87-grok-pcmu-paced';
 export const TELEPHONY_OBSERVABILITY_REVISION = 'talksys-phone-latency-v90-fast-ack-r1';
 const FRAME_MS = 20;
 const FAST_ACK_TEXT = 'はい。';
+export const PHONE_FAST_ACK_REVISION = 'talksys-phone-fast-ack-v2-r1';
+const PHONE_ACK_VARIANTS = Object.freeze({
+  lookup: Object.freeze([
+    'はい、少し調べますね。',
+    '関連情報を確認しますね。',
+    '最新の情報を確認してみますね。',
+    '少し検索して確かめますね。',
+  ]),
+  request: Object.freeze([
+    'はい、内容を確認しますね。',
+    'わかりました。少し確認しますね。',
+    '承知しました。内容を見てみますね。',
+  ]),
+  question: Object.freeze([
+    'はい、確認してお答えしますね。',
+    'そうですね。少し確認しますね。',
+    'わかりました。確認してみますね。',
+  ]),
+  listening: Object.freeze([
+    'はい、お話はわかりました。少し確認しますね。',
+    'はい、内容を確認しています。',
+    'わかりました。少し整理してみますね。',
+  ]),
+});
+const PHONE_ACK_PRIMARY_TEXTS = Object.freeze(Object.values(PHONE_ACK_VARIANTS).map((variants) => variants[0]));
 let schemaPromise;
 let fastAckAudioCache = null;
 let fastAckAudioPromise = null;
+const phoneAckAudioCache = new Map();
+const phoneAckAudioPromises = new Map();
+
+function phoneAckVariantsFor(reaction = {}) {
+  if (!reaction?.shouldSpeak || reaction?.terminal) return [FAST_ACK_TEXT];
+  const variants = PHONE_ACK_VARIANTS[reaction?.kind];
+  return Array.isArray(variants) && variants.length ? [...variants] : [FAST_ACK_TEXT];
+}
+
+export function selectPhoneAckText(reaction = {}, cachedTexts = [], recentTexts = []) {
+  const cached = new Set(Array.from(cachedTexts || []).map((value) => String(value || '')).filter(Boolean));
+  const recent = new Set(Array.from(recentTexts || []).slice(-2).map((value) => String(value || '')).filter(Boolean));
+  const variants = phoneAckVariantsFor(reaction);
+  const selected = variants.find((text) => cached.has(text) && !recent.has(text))
+    || variants.find((text) => cached.has(text))
+    || (cached.has(FAST_ACK_TEXT) ? FAST_ACK_TEXT : '');
+  const warmText = variants.find((text) => text !== selected && !cached.has(text)) || '';
+  return {
+    kind: String(reaction?.kind || 'none'),
+    text: selected,
+    warmText,
+    fallbackUsed: Boolean(selected === FAST_ACK_TEXT && variants[0] !== FAST_ACK_TEXT),
+  };
+}
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -231,10 +280,40 @@ async function warmFastAckAudio(env, deps = {}) {
   if (fastAckAudioCache?.bytes?.byteLength) return fastAckAudioCache;
   if (!fastAckAudioPromise) {
     fastAckAudioPromise = synthesizePcmu(env, FAST_ACK_TEXT, deps)
-      .then((audio) => { if (audio?.bytes?.byteLength) fastAckAudioCache = audio; return fastAckAudioCache; })
+      .then((audio) => {
+        if (audio?.bytes?.byteLength) {
+          fastAckAudioCache = audio;
+          phoneAckAudioCache.set(FAST_ACK_TEXT, audio);
+        }
+        return fastAckAudioCache;
+      })
       .finally(() => { fastAckAudioPromise = null; });
   }
   return fastAckAudioPromise;
+}
+
+async function warmPhoneAckAudio(env, text, deps = {}) {
+  const ackText = clean(text, 240);
+  if (!ackText) return null;
+  if (ackText === FAST_ACK_TEXT) return warmFastAckAudio(env, deps);
+  const cached = phoneAckAudioCache.get(ackText);
+  if (cached?.bytes?.byteLength) return cached;
+  if (!phoneAckAudioPromises.has(ackText)) {
+    const promise = synthesizePcmu(env, ackText, deps)
+      .then((audio) => {
+        if (audio?.bytes?.byteLength) phoneAckAudioCache.set(ackText, audio);
+        return phoneAckAudioCache.get(ackText) || null;
+      })
+      .finally(() => { phoneAckAudioPromises.delete(ackText); });
+    phoneAckAudioPromises.set(ackText, promise);
+  }
+  return phoneAckAudioPromises.get(ackText);
+}
+
+async function warmPhoneAckPrimaries(env, deps = {}) {
+  await warmFastAckAudio(env, deps);
+  const settled = await Promise.allSettled(PHONE_ACK_PRIMARY_TEXTS.map((text) => warmPhoneAckAudio(env, text, deps)));
+  return settled.filter((result) => result.status === 'fulfilled' && result.value?.bytes?.byteLength).length;
 }
 
 function dashboardHtml(request) {
@@ -268,7 +347,7 @@ function health(request, env, deps) {
     recording: false, concurrency: '通話ごとに独立WebSocket。確定した追加入力は進行中AIターンを中断。',
     inputAudio: 'Telnyx PCMU 8kHz → 90Hz HPF → 適応VAD → TalkSys STT',
     voiceInterruption: 'STT確定後に旧GeminiターンをAbort。ノイズだけでは中断しない。',
-    fastReaction: `Whisper確定直後の事前生成PCMU受理相槌「${FAST_ACK_TEXT}」 + Gemini本回答 / ${FAST_REACTION_REVISION}`,
+    fastReaction: `Whisper確定直後の分類別PCMU受理相槌 + Gemini本回答 / ${PHONE_FAST_ACK_REVISION} / ${FAST_REACTION_REVISION}`,
     latencyTelemetry: 'speech end estimate → VAD → STT → TalkSys turn → ack → answer ready → TTS → first PCMU → complete',
     outputAudio: 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP', phoneTtsModel: PHONE_TTS_MODEL,
     phoneTtsVoice: phoneTtsVoice(env), phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE,
@@ -330,7 +409,7 @@ function mediaBridge(request, env, deps) {
   const sessionMaxMs = clampInt(env?.TELEPHONY_SESSION_MAX_MINUTES, 30, 5, 180) * 60000;
   const history = [];
   let callId='', from='', to='', speechActive=false, silentFor=0, speechFrames=[], preRoll=[], closed=false, assistantPlaying=false, currentMark='', playbackGeneration=0;
-  let noiseFloor=Math.max(0.0015,Math.min(0.02,speechThreshold*0.45)), speechHits=0, bargeHits=0, captureSeq=0, latestAcceptedCapture=0, turnVersion=0, activeTurnAbort=null, pendingSttCount=0, lastAcceptedUserText='', lastAcceptedUserAt=0;
+  let noiseFloor=Math.max(0.0015,Math.min(0.02,speechThreshold*0.45)), speechHits=0, bargeHits=0, captureSeq=0, latestAcceptedCapture=0, turnVersion=0, activeTurnAbort=null, pendingSttCount=0, lastAcceptedUserText='', lastAcceptedUserAt=0, recentAckTexts=[];
   const pendingTasks=new Set(), hpState={prevX:0,prevY:0};
   const adaptNoise=(rms,fast=false)=>{const value=Math.max(0.0005,Math.min(0.04,Number(rms)||0));const alpha=fast?0.08:(value>noiseFloor?0.01:0.035);noiseFloor=Math.max(0.001,Math.min(0.03,noiseFloor*(1-alpha)+value*alpha));};
   const startThreshold=()=>Math.max(speechThreshold,Math.min(0.055,noiseFloor*2.7));
@@ -392,12 +471,16 @@ function mediaBridge(request, env, deps) {
       const controller=new AbortController();activeTurnAbort=controller;
       try{
         const reaction=fastReaction(stt.text);
-        const ackPrepared=Boolean(fastAckAudioCache?.bytes?.byteLength);
-        const spokenBackchannel=ackPrepared?FAST_ACK_TEXT:'';
-        const turnStartedAt=Date.now();queueLatency(turnId,'turn_start',turnStartedAt-speechEndAt,{reactionKind:reaction.kind||'none',ackPrepared});
+        const ackSelection=selectPhoneAckText(reaction,phoneAckAudioCache.keys(),recentAckTexts);
+        const ackText=ackSelection.text||'';
+        const ackAudio=ackText?(ackText===FAST_ACK_TEXT?fastAckAudioCache:phoneAckAudioCache.get(ackText)):null;
+        const ackPrepared=Boolean(ackAudio?.bytes?.byteLength);
+        const spokenBackchannel=ackPrepared?ackText:'';
+        const turnStartedAt=Date.now();queueLatency(turnId,'turn_start',turnStartedAt-speechEndAt,{reactionKind:reaction.kind||'none',ackPrepared,ackText,ackFallback:ackSelection.fallbackUsed});
         const turnPromise=answerWithTalkSys(deps,stt.text,history,controller.signal,spokenBackchannel,callId,turnId);
-        if(ackPrepared&&myVersion===turnVersion){queueLatency(turnId,'ack_cache_hit',Date.now()-speechEndAt,{text:FAST_ACK_TEXT,bytes:fastAckAudioCache.bytes.byteLength});const reacted=await speak(FAST_ACK_TEXT,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:fastAckAudioCache});if(reacted)console.log(JSON.stringify({type:'phone_fast_reaction',kind:'receipt',sourceKind:reaction.kind,text:FAST_ACK_TEXT,cached:true}));}
-        else queueLatency(turnId,'ack_cache_miss',Date.now()-speechEndAt,{text:FAST_ACK_TEXT});
+        if(ackSelection.warmText){const warmText=ackSelection.warmText;trackTask(warmPhoneAckAudio(env,warmText,deps).then((audio)=>console.log(JSON.stringify({type:'phone_fast_ack_lazy_warm',kind:reaction.kind||'none',text:warmText,ok:Boolean(audio?.bytes?.byteLength)}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_lazy_warm_error',kind:reaction.kind||'none',error:clean(error?.message||error,240)}))));}
+        if(ackPrepared&&myVersion===turnVersion){queueLatency(turnId,'ack_cache_hit',Date.now()-speechEndAt,{text:ackText,bytes:ackAudio.bytes.byteLength,reactionKind:reaction.kind||'none',fallback:ackSelection.fallbackUsed});const reacted=await speak(ackText,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:ackAudio});if(reacted){recentAckTexts=[...recentAckTexts,ackText].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'receipt',sourceKind:reaction.kind,text:ackText,cached:true,fallback:ackSelection.fallbackUsed}));}}
+        else queueLatency(turnId,'ack_cache_miss',Date.now()-speechEndAt,{text:ackText||FAST_ACK_TEXT,reactionKind:reaction.kind||'none'});
         const turn=await turnPromise,answerReadyAt=Date.now();if(myVersion!==turnVersion||turn?.aborted)return;
         queueLatency(turnId,'answer_ready',answerReadyAt-speechEndAt,{stageMs:answerReadyAt-turnStartedAt,route:clean(turn?.payload?.route||'',160),search:Boolean(turn?.payload?.search),searchRetried:Boolean(turn?.payload?.searchRetried),primaryMs:boundedMs(turn?.payload?.timings?.primaryMs),searchRetryMs:boundedMs(turn?.payload?.timings?.searchRetryMs),totalMs:boundedMs(turn?.payload?.timings?.totalMs)});
         if(turn?.payload?.apiUsage)queueLatency(turnId,'api_usage',answerReadyAt-speechEndAt,turn.payload.apiUsage);
@@ -419,7 +502,8 @@ function mediaBridge(request, env, deps) {
     if(message?.event==='start'){
       const start=message.start||{},params=customParameters(start);callId=clean(params.call_id||start.call_sid||start.callSid||start.call_control_id||crypto.randomUUID(),200);from=clean(params.from||start.from||'',80);to=clean(params.to||start.to||'',80);
       await upsertCall(env,{callId,from,to,status:'active'});const greeting=clean(env?.TELEPHONY_GREETING||'お電話ありがとうございます。フォーンズです。ご用件をどうぞ。',240);
-      if(greeting&&await speak(greeting,{purpose:'greeting'})){history.push({role:'assistant',content:greeting});await appendMessage(env,callId,'assistant',greeting);}return;
+      if(greeting&&await speak(greeting,{purpose:'greeting'})){history.push({role:'assistant',content:greeting});await appendMessage(env,callId,'assistant',greeting);}
+      trackTask(warmPhoneAckPrimaries(env,deps).then((count)=>console.log(JSON.stringify({type:'phone_fast_ack_primary_warm',revision:PHONE_FAST_ACK_REVISION,count}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_primary_warm_error',error:clean(error?.message||error,240)}))));return;
     }
     if(message?.event==='mark'){if(currentMark&&message?.mark?.name===currentMark){assistantPlaying=false;currentMark='';}return;}
     if(message?.event==='media'&&message?.media?.payload){
