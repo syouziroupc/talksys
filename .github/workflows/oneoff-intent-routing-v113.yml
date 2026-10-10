@@ -67,3 +67,5 @@ jobs:
           git add src/integrated-entry.js src/grounding-evidence-gate.js src/telephony/index.js src/intent-routing.js tests/intent-routing-v113.test.mjs
           git commit -m 'Route social safety and phone control intents before search'
           git push origin HEAD:fix/intent-routing-v113
+
+# rerun: focused social/meta routing fixes
