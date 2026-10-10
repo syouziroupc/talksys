@@ -1,0 +1,58 @@
+name: One-off phone quality v3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/oneoff-phone-quality-v3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Reuse v2 patch with corrected phone verifier gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          awk '/node <<'"'"'NODE'"'"'/{flag=1;next} /^          NODE$/{flag=0} flag{sub(/^          /,""); print}' .github/workflows/oneoff-phone-quality-v2.yml > /tmp/phone-quality-patch.cjs
+          grep -q "shouldRunGenericVerification(text, body)" /tmp/phone-quality-patch.cjs
+          sed -i "s/shouldRunGenericVerification(text, body)/shouldRunGenericVerification(resolvedUserQuestion(body), body)/" /tmp/phone-quality-patch.cjs
+          node /tmp/phone-quality-patch.cjs
+      - name: Validate patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/integrated-entry.js
+          node --check src/telephony/index.js
+          node --check src/telephony/phone-tts.js
+          node --test tests/phone-quality-v2.test.mjs
+          node --test tests/gemini-generic-verification-v57.test.mjs tests/phone-pcmu-v87.test.mjs tests/phone-accessibility-audio-v1.test.mjs
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Commit verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f .github/workflows/oneoff-phone-quality-v2.yml .github/workflows/oneoff-phone-quality-v3.yml
+          git add src/integrated-entry.js src/telephony/index.js src/telephony/phone-tts.js wrangler.jsonc .deploy/production-trigger.txt tests/phone-quality-v2.test.mjs
+          git commit -m 'Add phone cross-model verification and AI log export'
+          git push origin HEAD:main
