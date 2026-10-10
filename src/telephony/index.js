@@ -62,6 +62,33 @@ export function selectPhoneAckText(reaction = {}, cachedTexts = [], recentTexts 
   };
 }
 
+
+export const PHONE_SEARCH_PROGRESS_REVISION = 'talksys-phone-search-progress-v1-r1';
+const PHONE_PROGRESS_WAIT_MS = 2400;
+const PHONE_PROGRESS_CACHE_MAX = 12;
+const phoneProgressAudioCache = new Map();
+const phoneProgressAudioPromises = new Map();
+
+export function phoneSearchTopic(text = '') {
+  let value = clean(text, 180)
+    .replace(/[「」『』"']/g, '')
+    .replace(/^(?:えーと|えっと|あの|その|じゃあ|では|ちょっと|お願い(?:ですが)?)[、,\s]*/i, '')
+    .replace(/[。！!？?…\s]+$/g, '');
+  value = value
+    .replace(/(?:を)?(?:検索(?:して)?|調べて?|探して|探す|確認して|確認|見つけて|見つける|教えて|知りたい)(?:ください|下さい|ほしい|欲しい|みて|みる|くれる|くれますか|もらえますか|お願い(?:します)?)?$/i, '')
+    .replace(/(?:は)?(?:どう|どこ|誰|いつ|何時|いくら|ありますか|あるの|ある|ですか|なの|なのか)$/i, '')
+    .replace(/(?:について)$/i, '')
+    .replace(/[、,。！!？?…\s]+$/g, '')
+    .trim();
+  if (!value || value.length < 2) return 'ご指定の内容';
+  return value.length > 36 ? `${value.slice(0, 36)}…` : value;
+}
+
+export function phoneSearchProgressText(text = '') {
+  const topic = phoneSearchTopic(text);
+  return `いま、${topic}について調べています。少々お待ちください。`;
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
@@ -316,6 +343,38 @@ async function warmPhoneAckPrimaries(env, deps = {}) {
   return settled.filter((result) => result.status === 'fulfilled' && result.value?.bytes?.byteLength).length;
 }
 
+
+async function warmPhoneProgressAudio(env, text, deps = {}) {
+  const progressText = clean(text, 240);
+  if (!progressText) return null;
+  const cached = phoneProgressAudioCache.get(progressText);
+  if (cached?.bytes?.byteLength) return cached;
+  if (!phoneProgressAudioPromises.has(progressText)) {
+    const promise = synthesizePcmu(env, progressText, deps)
+      .then((audio) => {
+        if (audio?.bytes?.byteLength) {
+          phoneProgressAudioCache.set(progressText, audio);
+          while (phoneProgressAudioCache.size > PHONE_PROGRESS_CACHE_MAX) {
+            const oldest = phoneProgressAudioCache.keys().next().value;
+            phoneProgressAudioCache.delete(oldest);
+          }
+        }
+        return phoneProgressAudioCache.get(progressText) || null;
+      })
+      .finally(() => { phoneProgressAudioPromises.delete(progressText); });
+    phoneProgressAudioPromises.set(progressText, promise);
+  }
+  return phoneProgressAudioPromises.get(progressText);
+}
+
+async function waitForPhoneProgressAudio(promise) {
+  if (!promise) return null;
+  return Promise.race([
+    promise.catch(() => null),
+    new Promise((resolve) => setTimeout(() => resolve(null), PHONE_PROGRESS_WAIT_MS)),
+  ]);
+}
+
 function dashboardHtml(request) {
   const base = publicBaseUrl(request);
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TalkSys 電話管理</title><style>
@@ -326,7 +385,7 @@ function dashboardHtml(request) {
   </main><script>
   let adminToken=sessionStorage.getItem('talksysPhoneToken')||'';let selected='';const auth=()=>({'authorization':'Bearer '+adminToken});
   function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[m]))}
-  function stageName(s){return ({speech_end_estimate:'発話終了推定',vad_finalize:'VAD確定',stt_start:'STT開始',stt_end:'STT完了',stt_rejected:'STT不成立',turn_start:'AI開始',ack_cache_hit:'受理相槌キャッシュ',ack_cache_miss:'受理相槌未準備',ack_audio_ready:'相槌音声準備',ack_first_pcmu:'相槌 first audio',ack_complete:'相槌送信完了',answer_ready:'AI回答確定',pending_stt_wait_start:'追加入力待機開始',pending_stt_wait_end:'追加入力待機終了',answer_tts_start:'本回答TTS開始',answer_audio_ready:'本回答音声準備',answer_first_pcmu:'本回答 first audio',answer_complete:'本回答送信完了',duplicate_suppressed:'重複発話抑制',api_usage:'API使用量',tts_usage:'TTS使用量',turn_error:'AIエラー',tts_error:'TTSエラー'}[s]||s)}
+  function stageName(s){return ({speech_end_estimate:'発話終了推定',vad_finalize:'VAD確定',stt_start:'STT開始',stt_end:'STT完了',stt_rejected:'STT不成立',turn_start:'AI開始',ack_cache_hit:'受理相槌キャッシュ',ack_cache_miss:'受理相槌未準備',ack_audio_ready:'相槌音声準備',ack_first_pcmu:'相槌 first audio',ack_complete:'相槌送信完了',answer_ready:'AI回答確定',pending_stt_wait_start:'追加入力待機開始',pending_stt_wait_end:'追加入力待機終了',answer_tts_start:'本回答TTS開始',answer_audio_ready:'本回答音声準備',answer_first_pcmu:'本回答 first audio',answer_complete:'本回答送信完了',duplicate_suppressed:'重複発話抑制',progress_wait_start:'検索進捗準備',progress_first_pcmu:'検索進捗 first audio',progress_complete:'検索進捗送信完了',progress_spoken:'検索進捗発話',progress_skipped:'検索進捗省略',api_usage:'API使用量',tts_usage:'TTS使用量',turn_error:'AIエラー',tts_error:'TTSエラー'}[s]||s)}
   function detailText(v){if(!v)return'';try{const o=JSON.parse(v);return Object.entries(o).filter(([,x])=>x!==''&&x!==null&&x!==undefined).map(([k,x])=>k+'='+String(typeof x==='object'?JSON.stringify(x):x)).join(' / ')}catch{return String(v)}}
   function renderLatency(events){const root=document.getElementById('latency');if(!events?.length){root.innerHTML='<div class="muted">この通話には詳細遅延ログがありません。新しい計測版の通話から記録されます。</div>';return}const groups=[];for(const e of events){let g=groups.at(-1);if(!g||g.id!==e.turn_id){g={id:e.turn_id,events:[]};groups.push(g)}g.events.push(e)}root.innerHTML=groups.map((g,i)=>'<div class="turn"><div class="turnHead">ターン '+(i+1)+' / '+esc(g.id)+'</div>'+g.events.map(e=>'<div class="event"><div class="ms">+'+Number(e.elapsed_ms||0)+' ms</div><div class="stage">'+esc(stageName(e.stage))+'</div><div class="detail">'+esc(detailText(e.detail))+'</div></div>').join('')+'</div>').join('')}
   async function api(path){const r=await fetch(path,{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');return r.json()}
@@ -347,7 +406,7 @@ function health(request, env, deps) {
     recording: false, concurrency: '通話ごとに独立WebSocket。確定した追加入力は進行中AIターンを中断。',
     inputAudio: 'Telnyx PCMU 8kHz → 90Hz HPF → 適応VAD → TalkSys STT',
     voiceInterruption: 'STT確定後に旧GeminiターンをAbort。ノイズだけでは中断しない。',
-    fastReaction: `Whisper確定直後の分類別PCMU受理相槌 + Gemini本回答 / ${PHONE_FAST_ACK_REVISION} / ${FAST_REACTION_REVISION}`,
+    fastReaction: `Whisper確定直後の分類別PCMU受理相槌 + lookup検索進捗 + Gemini本回答 / ${PHONE_FAST_ACK_REVISION} / ${PHONE_SEARCH_PROGRESS_REVISION} / ${FAST_REACTION_REVISION}`,
     latencyTelemetry: 'speech end estimate → VAD → STT → TalkSys turn → ack → answer ready → TTS → first PCMU → complete',
     outputAudio: 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP', phoneTtsModel: PHONE_TTS_MODEL,
     phoneTtsVoice: phoneTtsVoice(env), phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE,
@@ -476,11 +535,25 @@ function mediaBridge(request, env, deps) {
         const ackAudio=ackText?(ackText===FAST_ACK_TEXT?fastAckAudioCache:phoneAckAudioCache.get(ackText)):null;
         const ackPrepared=Boolean(ackAudio?.bytes?.byteLength);
         const spokenBackchannel=ackPrepared?ackText:'';
-        const turnStartedAt=Date.now();queueLatency(turnId,'turn_start',turnStartedAt-speechEndAt,{reactionKind:reaction.kind||'none',ackPrepared,ackText,ackFallback:ackSelection.fallbackUsed});
+        const progressEnabled=flag(env?.TELEPHONY_SEARCH_PROGRESS_ENABLED,true);
+        const progressText=progressEnabled&&reaction.kind==='lookup'?phoneSearchProgressText(stt.text):'';
+        const progressAudioPromise=progressText?warmPhoneProgressAudio(env,progressText,deps):null;
+        if(progressAudioPromise)trackTask(progressAudioPromise.catch((error)=>{console.warn(JSON.stringify({type:'phone_search_progress_tts_error',turnId,error:clean(error?.message||error,240)}));return null;}));
+        const turnStartedAt=Date.now();queueLatency(turnId,'turn_start',turnStartedAt-speechEndAt,{reactionKind:reaction.kind||'none',ackPrepared,ackText,ackFallback:ackSelection.fallbackUsed,progressPlanned:Boolean(progressText)});
         const turnPromise=answerWithTalkSys(deps,stt.text,history,controller.signal,spokenBackchannel,callId,turnId);
         if(ackSelection.warmText){const warmText=ackSelection.warmText;trackTask(warmPhoneAckAudio(env,warmText,deps).then((audio)=>console.log(JSON.stringify({type:'phone_fast_ack_lazy_warm',kind:reaction.kind||'none',text:warmText,ok:Boolean(audio?.bytes?.byteLength)}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_lazy_warm_error',kind:reaction.kind||'none',error:clean(error?.message||error,240)}))));}
         if(ackPrepared&&myVersion===turnVersion){queueLatency(turnId,'ack_cache_hit',Date.now()-speechEndAt,{text:ackText,bytes:ackAudio.bytes.byteLength,reactionKind:reaction.kind||'none',fallback:ackSelection.fallbackUsed});const reacted=await speak(ackText,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:ackAudio});if(reacted){recentAckTexts=[...recentAckTexts,ackText].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'receipt',sourceKind:reaction.kind,text:ackText,cached:true,fallback:ackSelection.fallbackUsed}));}}
         else queueLatency(turnId,'ack_cache_miss',Date.now()-speechEndAt,{text:ackText||FAST_ACK_TEXT,reactionKind:reaction.kind||'none'});
+        if(progressText&&myVersion===turnVersion){
+          queueLatency(turnId,'progress_wait_start',Date.now()-speechEndAt,{text:progressText,revision:PHONE_SEARCH_PROGRESS_REVISION});
+          const progressAudio=await waitForPhoneProgressAudio(progressAudioPromise);
+          if(progressAudio?.bytes?.byteLength&&myVersion===turnVersion){
+            const progressed=await speak(progressText,{purpose:'progress',turnId,originAt:speechEndAt,preparedAudio:progressAudio});
+            queueLatency(turnId,progressed?'progress_spoken':'progress_skipped',Date.now()-speechEndAt,{text:progressText,reason:progressed?'played':'playback_cancelled'});
+          }else{
+            queueLatency(turnId,'progress_skipped',Date.now()-speechEndAt,{text:progressText,reason:'not_ready_within_budget'});
+          }
+        }
         const turn=await turnPromise,answerReadyAt=Date.now();if(myVersion!==turnVersion||turn?.aborted)return;
         queueLatency(turnId,'answer_ready',answerReadyAt-speechEndAt,{stageMs:answerReadyAt-turnStartedAt,route:clean(turn?.payload?.route||'',160),search:Boolean(turn?.payload?.search),searchRetried:Boolean(turn?.payload?.searchRetried),primaryMs:boundedMs(turn?.payload?.timings?.primaryMs),searchRetryMs:boundedMs(turn?.payload?.timings?.searchRetryMs),totalMs:boundedMs(turn?.payload?.timings?.totalMs)});
         if(turn?.payload?.apiUsage)queueLatency(turnId,'api_usage',answerReadyAt-speechEndAt,turn.payload.apiUsage);
