@@ -22,8 +22,8 @@ test('pure greetings and casual talk never require external search', () => {
 
 test('leading greeting is removed but factual request remains searchable', () => {
   const text = 'こんにちは。今日の別府の天気はどうですか？';
-  assert.equal(stripLeadingSocialPreamble(text), '今日の別府の天気はどうですか？');
-  assert.equal(normalizedSearchRoutingText(text), '今日の別府の天気はどうですか？');
+  assert.equal(stripLeadingSocialPreamble(text), '今日の別府の天気はどうですか?');
+  assert.equal(normalizedSearchRoutingText(text), '今日の別府の天気はどうですか?');
   assert.equal(shouldSuppressExternalSearch(text), false);
 });
 
