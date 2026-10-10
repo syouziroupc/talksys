@@ -1,6 +1,14 @@
 name: Validate grounding evidence gate v110
 
 on:
+  push:
+    branches: [fix/grounding-evidence-gate-v110]
+    paths:
+      - '.github/workflows/oneoff-grounding-evidence-gate-v110.yml'
+      - 'scripts/apply-grounding-evidence-gate-v110.py'
+      - 'src/grounding-evidence-gate.js'
+      - 'tests/grounding-evidence-gate-v110.test.mjs'
+      - 'src/integrated-entry.js'
   workflow_dispatch:
 
 permissions:
