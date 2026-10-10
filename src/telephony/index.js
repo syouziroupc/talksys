@@ -247,7 +247,7 @@ function dashboardHtml(request) {
   </main><script>
   let adminToken=sessionStorage.getItem('talksysPhoneToken')||'';let selected='';const auth=()=>({'authorization':'Bearer '+adminToken});
   function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[m]))}
-  function stageName(s){return ({speech_end_estimate:'発話終了推定',vad_finalize:'VAD確定',stt_start:'STT開始',stt_end:'STT完了',stt_rejected:'STT不成立',turn_start:'AI開始',ack_cache_hit:'受理相槌キャッシュ',ack_cache_miss:'受理相槌未準備',ack_audio_ready:'相槌音声準備',ack_first_pcmu:'相槌 first audio',ack_complete:'相槌送信完了',answer_ready:'AI回答確定',pending_stt_wait_start:'追加入力待機開始',pending_stt_wait_end:'追加入力待機終了',answer_tts_start:'本回答TTS開始',answer_audio_ready:'本回答音声準備',answer_first_pcmu:'本回答 first audio',answer_complete:'本回答送信完了',duplicate_suppressed:'重複発話抑制',turn_error:'AIエラー',tts_error:'TTSエラー'}[s]||s)}
+  function stageName(s){return ({speech_end_estimate:'発話終了推定',vad_finalize:'VAD確定',stt_start:'STT開始',stt_end:'STT完了',stt_rejected:'STT不成立',turn_start:'AI開始',ack_cache_hit:'受理相槌キャッシュ',ack_cache_miss:'受理相槌未準備',ack_audio_ready:'相槌音声準備',ack_first_pcmu:'相槌 first audio',ack_complete:'相槌送信完了',answer_ready:'AI回答確定',pending_stt_wait_start:'追加入力待機開始',pending_stt_wait_end:'追加入力待機終了',answer_tts_start:'本回答TTS開始',answer_audio_ready:'本回答音声準備',answer_first_pcmu:'本回答 first audio',answer_complete:'本回答送信完了',duplicate_suppressed:'重複発話抑制',api_usage:'API使用量',tts_usage:'TTS使用量',turn_error:'AIエラー',tts_error:'TTSエラー'}[s]||s)}
   function detailText(v){if(!v)return'';try{const o=JSON.parse(v);return Object.entries(o).filter(([,x])=>x!==''&&x!==null&&x!==undefined).map(([k,x])=>k+'='+String(typeof x==='object'?JSON.stringify(x):x)).join(' / ')}catch{return String(v)}}
   function renderLatency(events){const root=document.getElementById('latency');if(!events?.length){root.innerHTML='<div class="muted">この通話には詳細遅延ログがありません。新しい計測版の通話から記録されます。</div>';return}const groups=[];for(const e of events){let g=groups.at(-1);if(!g||g.id!==e.turn_id){g={id:e.turn_id,events:[]};groups.push(g)}g.events.push(e)}root.innerHTML=groups.map((g,i)=>'<div class="turn"><div class="turnHead">ターン '+(i+1)+' / '+esc(g.id)+'</div>'+g.events.map(e=>'<div class="event"><div class="ms">+'+Number(e.elapsed_ms||0)+' ms</div><div class="stage">'+esc(stageName(e.stage))+'</div><div class="detail">'+esc(detailText(e.detail))+'</div></div>').join('')+'</div>').join('')}
   async function api(path){const r=await fetch(path,{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');return r.json()}
@@ -361,6 +361,7 @@ function mediaBridge(request, env, deps) {
     if(!streamed.completed||closed||myGeneration!==playbackGeneration)return false;
     safeSend(telnyx,{event:'mark',mark:{name:currentMark}});
     if(turnId)queueLatency(turnId,`${purpose}_complete`,Date.now()-originAt,{streamMs:Date.now()-audioReadyAt,frames:streamed.frames,bytes:streamed.sentBytes});
+    if(turnId)queueLatency(turnId,'tts_usage',Date.now()-originAt,{purpose,provider:audio.metadata?.provider||'',model:audio.metadata?.model||'',durationMs:audio.metadata?.durationMs||0,frames:streamed.frames,bytes:streamed.sentBytes,cached:Boolean(options?.preparedAudio)});
     console.log(JSON.stringify({type:'phone_tts_sent',purpose,turnId,ms:Date.now()-startedAt,frames:streamed.frames,bytes:streamed.sentBytes,provider:audio.metadata?.provider||'',model:audio.metadata?.model||'',voice:audio.metadata?.voice||'',codec:audio.metadata?.codec||'PCMU',sampleRate:audio.metadata?.sampleRate||PHONE_TTS_SAMPLE_RATE,durationMs:audio.metadata?.durationMs||0,rms:audio.metadata?.rms??null,peak:audio.metadata?.peak??null,silenceRatio:audio.metadata?.silenceRatio??null,gatewayKeySource:audio.metadata?.gatewayKeySource||''}));
     return true;
   };
@@ -378,7 +379,7 @@ function mediaBridge(request, env, deps) {
     queueLatency(turnId,'vad_finalize',finalizedAt-speechEndAt,{silenceTargetMs:silenceMs,trailingSilenceMs});
     pendingSttCount+=1;
     const task=(async()=>{
-      const sttStartedAt=Date.now();queueLatency(turnId,'stt_start',sttStartedAt-speechEndAt,{samples:samples.length});let stt;
+      const sttStartedAt=Date.now();queueLatency(turnId,'stt_start',sttStartedAt-speechEndAt,{samples:samples.length,audioMs:Math.round(samples.length/8)});let stt;
       try{stt=await transcribeSamples(env,samples);}catch(error){queueLatency(turnId,'stt_rejected',Date.now()-speechEndAt,{stageMs:Date.now()-sttStartedAt,error:clean(error?.message||error,240)});console.error(JSON.stringify({type:'phone_stt_error',turnId,error:clean(error?.message||error,240)}));return;}finally{pendingSttCount=Math.max(0,pendingSttCount-1);}
       const sttEndedAt=Date.now();
       if(!stt?.ok||!stt.text||myCapture<latestAcceptedCapture){queueLatency(turnId,'stt_rejected',sttEndedAt-speechEndAt,{stageMs:sttEndedAt-sttStartedAt,error:clean(stt?.error||'stale-or-empty',240),retryUsed:Boolean(stt?.payload?.retryUsed)});return;}
@@ -399,6 +400,7 @@ function mediaBridge(request, env, deps) {
         else queueLatency(turnId,'ack_cache_miss',Date.now()-speechEndAt,{text:FAST_ACK_TEXT});
         const turn=await turnPromise,answerReadyAt=Date.now();if(myVersion!==turnVersion||turn?.aborted)return;
         queueLatency(turnId,'answer_ready',answerReadyAt-speechEndAt,{stageMs:answerReadyAt-turnStartedAt,route:clean(turn?.payload?.route||'',160),search:Boolean(turn?.payload?.search),searchRetried:Boolean(turn?.payload?.searchRetried),primaryMs:boundedMs(turn?.payload?.timings?.primaryMs),searchRetryMs:boundedMs(turn?.payload?.timings?.searchRetryMs),totalMs:boundedMs(turn?.payload?.timings?.totalMs)});
+        if(turn?.payload?.apiUsage)queueLatency(turnId,'api_usage',answerReadyAt-speechEndAt,turn.payload.apiUsage);
         if(pendingSttCount>0){const pendingStartedAt=Date.now();queueLatency(turnId,'pending_stt_wait_start',pendingStartedAt-speechEndAt,{pendingSttCount});if(!await waitForPendingSpeechDecision(myVersion))return;queueLatency(turnId,'pending_stt_wait_end',Date.now()-speechEndAt,{waitMs:Date.now()-pendingStartedAt,pendingSttCount});}
         if(myVersion!==turnVersion)return;
         if(!turn.ok){queueLatency(turnId,'turn_error',Date.now()-speechEndAt,{error:clean(turn.error,200)});await setCallStatus(env,callId,'answer-error');console.error(JSON.stringify({type:'phone_turn_error',error:clean(turn.error,200)}));return;}
