@@ -102,7 +102,7 @@ test('classic TalkSys path remains present and unchanged in mode branches', () =
   assert.match(built, /name: 'talkman'/);
   assert.match(built, /if \(conversationMode === 'talkman'\) \{/);
   assert.match(built, /else \{\n      if \(pendingTurns\.length === 0\) pendingTurns\.push\(nextTurn\);/);
-  assert.match(built, /conversationMode !== 'talkman'\) \{\n        activeWaitCue = startWaitCue/);
+  assert.match(built, /conversationMode !== 'talkman' && !timeline\.fastReactionRequestedAt\) \{\n        activeWaitCue = startWaitCue/);
 });
 
 test('clean classic source builds without fallback', () => {
