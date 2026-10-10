@@ -382,7 +382,7 @@ function dashboardHtml(request) {
   :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0e14;color:#f3f6fb}body{margin:0}.wrap{max-width:1240px;margin:auto;padding:28px 18px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.sub,.muted{color:#98a5b7}.panel{border:1px solid #293243;background:#121722;border-radius:14px;padding:16px;margin-top:16px}.grid{display:grid;grid-template-columns:minmax(310px,.8fr) minmax(420px,1.5fr);gap:14px}@media(max-width:800px){.grid{grid-template-columns:1fr}}button,input{font:inherit}button{background:#202a3a;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:8px 12px;cursor:pointer}input{background:#0b0e14;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px;width:min(380px,75vw)}.call{padding:12px;border-bottom:1px solid #283245;cursor:pointer}.call:hover{background:#171e2b}.num{font-weight:700}.meta{font-size:12px;color:#91a0b5;margin-top:4px}.msg{margin:10px 0;padding:10px 12px;border-radius:10px;white-space:pre-wrap}.user{background:#1b2b3a}.assistant{background:#25213a}.role{font-size:11px;color:#9ca8ba;margin-bottom:5px}.warn{color:#ffca72}.ok{color:#7dd69a}code{font-size:12px}.hidden{display:none}.latency{margin-top:18px;border-top:1px solid #2a3344;padding-top:12px}.turn{margin:12px 0;border:1px solid #2a3344;border-radius:10px;overflow:hidden}.turnHead{background:#171e2b;padding:8px 10px;font-size:12px;color:#bec9d8}.event{display:grid;grid-template-columns:82px minmax(130px,.7fr) 1fr;gap:8px;padding:7px 10px;border-top:1px solid #222b3a;font-size:12px;align-items:start}.event:first-child{border-top:0}.ms{font-variant-numeric:tabular-nums;color:#9bd1ff}.stage{font-weight:650}.detail{color:#9ca8ba;overflow-wrap:anywhere}@media(max-width:640px){.event{grid-template-columns:72px 1fr}.detail{grid-column:1/-1}}
   </style></head><body><main class="wrap"><div class="top"><div><h1>TalkSys 電話管理</h1><div class="sub">Telnyx着信をTalkSys本体で処理。電話専用AIは使用しません。</div></div><div><a href="${xmlEscape(base)}/telephony-health" style="color:#a8c7ff">状態JSON</a></div></div>
   <section id="login" class="panel"><b>管理トークン</b><p class="muted">着信番号と会話内容の表示には認証が必要です。</p><input id="token" type="password" autocomplete="current-password"><button id="loginBtn">表示</button><div id="loginErr" class="warn"></div></section>
-  <section id="app" class="hidden"><div class="panel"><div id="health">状態確認中...</div></div><div class="grid"><div class="panel"><h2>着信一覧</h2><div id="calls"></div></div><div class="panel"><div class="top"><h2 id="conversationTitle">会話内容</h2><button id="exportBtn" class="hidden">JSONL保存</button></div><div id="messages" class="muted">左の着信を選択してください。</div><div class="latency"><h3>遅延タイムライン</h3><div class="muted">発話終了推定を0msとして、STT・AI・TTS・最初のPCMU送信までを表示します。</div><div id="latency" class="muted">通話を選択してください。</div></div></div></div></section>
+  <section id="app" class="hidden"><div class="panel"><div id="health">状態確認中...</div></div><div class="grid"><div class="panel"><div class="top"><h2>着信一覧</h2><div><select id="batchCount"><option value="10">直近10件</option><option value="20" selected>直近20件</option><option value="50">直近50件</option></select> <button id="batchExportBtn">ログZIP保存</button></div></div><div id="calls"></div></div><div class="panel"><div class="top"><h2 id="conversationTitle">会話内容</h2><button id="exportBtn" class="hidden">JSONL保存</button></div><div id="messages" class="muted">左の着信を選択してください。</div><div class="latency"><h3>遅延タイムライン</h3><div class="muted">発話終了推定を0msとして、STT・AI・TTS・最初のPCMU送信までを表示します。</div><div id="latency" class="muted">通話を選択してください。</div></div></div></div></section>
   </main><script>
   let adminToken=sessionStorage.getItem('talksysPhoneToken')||'';let selected='';const auth=()=>({'authorization':'Bearer '+adminToken});
   function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[m]))}
@@ -394,8 +394,9 @@ function dashboardHtml(request) {
   async function refreshCalls(){const d=await api('/phone/api/calls');const root=document.getElementById('calls');root.innerHTML=d.calls.length?d.calls.map(c=>'<div class="call" data-id="'+esc(c.call_id)+'"><div class="num">'+esc(c.from_number||'番号不明')+' → '+esc(c.to_number||'着信番号不明')+'</div><div class="meta">'+esc(c.status)+' / '+esc(c.started_at)+' / '+c.message_count+'件</div><div class="meta">'+esc(c.last_user_text||c.last_assistant_text||'会話待ち')+'</div></div>').join(''):'<div class="muted">まだ着信はありません。</div>';root.querySelectorAll('.call').forEach(x=>x.onclick=()=>loadMessages(x.dataset.id));}
   async function loadMessages(id){selected=id;const base='/phone/api/calls/'+encodeURIComponent(id);const [d,l]=await Promise.all([api(base+'/messages'),api(base+'/latency')]);document.getElementById('conversationTitle').textContent=(d.call?.from_number||'番号不明')+' の会話';document.getElementById('exportBtn').classList.remove('hidden');document.getElementById('messages').innerHTML=d.messages.length?d.messages.map(m=>'<div class="msg '+m.role+'"><div class="role">'+(m.role==='user'?'発信者':'TalkSys')+' / '+esc(m.created_at)+'</div>'+esc(m.content)+'</div>').join(''):'<div class="muted">会話はまだありません。</div>';renderLatency(l.events||[])}
   async function downloadExport(){if(!selected)return;const path='/phone/api/calls/'+encodeURIComponent(selected)+'/export.jsonl';const r=await fetch(path,{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');if(!r.ok)throw new Error('JSONLの取得に失敗しました');const blob=await r.blob();const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download='talksys-call-'+selected.replace(/[^A-Za-z0-9._-]+/g,'_')+'.jsonl';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),1000)}
+  async function downloadBatchExport(){const n=Math.max(1,Math.min(50,Number(document.getElementById('batchCount')?.value||20)||20));const r=await fetch('/phone/api/calls/export.zip?limit='+encodeURIComponent(n),{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');if(!r.ok)throw new Error('ZIPの取得に失敗しました');const blob=await r.blob();const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download='talksys-calls-latest-'+n+'.zip';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),1000)}
   async function start(){try{await api('/phone/api/calls');document.getElementById('login').classList.add('hidden');document.getElementById('app').classList.remove('hidden');await refreshHealth();await refreshCalls();setInterval(async()=>{try{await refreshCalls();if(selected)await loadMessages(selected)}catch{}},3000)}catch(e){document.getElementById('loginErr').textContent=e.message}}
-  document.getElementById('loginBtn').onclick=()=>{adminToken=document.getElementById('token').value;sessionStorage.setItem('talksysPhoneToken',adminToken);start()};document.getElementById('exportBtn').onclick=()=>downloadExport().catch(e=>alert(e.message));if(adminToken)start();
+  document.getElementById('loginBtn').onclick=()=>{adminToken=document.getElementById('token').value;sessionStorage.setItem('talksysPhoneToken',adminToken);start()};document.getElementById('exportBtn').onclick=()=>downloadExport().catch(e=>alert(e.message));document.getElementById('batchExportBtn').onclick=()=>downloadBatchExport().catch(e=>alert(e.message));if(adminToken)start();
   </script></body></html>`;
 }
 
@@ -443,6 +444,78 @@ function parsedLatencyDetail(value = '') {
   try { return JSON.parse(raw); } catch { return { raw }; }
 }
 
+function zipU16(value) {
+  const n = Number(value) >>> 0;
+  return Uint8Array.of(n & 0xff, (n >>> 8) & 0xff);
+}
+
+function zipU32(value) {
+  const n = Number(value) >>> 0;
+  return Uint8Array.of(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
+}
+
+function zipConcat(parts) {
+  const list = (parts || []).map((part) => part instanceof Uint8Array ? part : new Uint8Array(part || []));
+  const total = list.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of list) { out.set(part, offset); offset += part.byteLength; }
+  return out;
+}
+
+function zipCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+export function zipStoreFiles(files = []) {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const file of files || []) {
+    const nameBytes = encoder.encode(String(file?.name || 'log.jsonl'));
+    const dataBytes = file?.content instanceof Uint8Array ? file.content : encoder.encode(String(file?.content ?? ''));
+    const crc = zipCrc32(dataBytes);
+    const local = zipConcat([
+      zipU32(0x04034b50), zipU16(20), zipU16(0), zipU16(0), zipU16(0), zipU16(0),
+      zipU32(crc), zipU32(dataBytes.byteLength), zipU32(dataBytes.byteLength),
+      zipU16(nameBytes.byteLength), zipU16(0), nameBytes, dataBytes,
+    ]);
+    const central = zipConcat([
+      zipU32(0x02014b50), zipU16(20), zipU16(20), zipU16(0), zipU16(0), zipU16(0), zipU16(0),
+      zipU32(crc), zipU32(dataBytes.byteLength), zipU32(dataBytes.byteLength),
+      zipU16(nameBytes.byteLength), zipU16(0), zipU16(0), zipU16(0), zipU16(0), zipU32(0), zipU32(offset), nameBytes,
+    ]);
+    localParts.push(local);
+    centralParts.push(central);
+    offset += local.byteLength;
+  }
+  const centralDirectory = zipConcat(centralParts);
+  const end = zipConcat([
+    zipU32(0x06054b50), zipU16(0), zipU16(0), zipU16(files.length), zipU16(files.length),
+    zipU32(centralDirectory.byteLength), zipU32(offset), zipU16(0),
+  ]);
+  return zipConcat([...localParts, centralDirectory, end]);
+}
+
+async function callJsonlContent(env, call) {
+  const callId = String(call?.call_id || '');
+  const messages = await env.TALKSYS_LOG_DB.prepare('SELECT role, content, created_at FROM phone_messages WHERE call_id=? ORDER BY id ASC LIMIT 500').bind(callId).all();
+  const latency = await env.TALKSYS_LOG_DB.prepare('SELECT turn_id, stage, elapsed_ms, detail, created_at FROM phone_latency_events WHERE call_id=? ORDER BY id ASC LIMIT 1200').bind(callId).all();
+  const lines = [JSON.stringify({ type: 'call', call })];
+  for (const message of messages.results || []) lines.push(JSON.stringify({ type: 'message', ...message }));
+  for (const event of latency.results || []) lines.push(JSON.stringify({
+    type: 'latency', turn_id: event.turn_id, stage: event.stage,
+    elapsed_ms: Number(event.elapsed_ms || 0), detail: parsedLatencyDetail(event.detail), created_at: event.created_at,
+  }));
+  return `${lines.join('\n')}\n`;
+}
+
 async function callExportJsonl(request, env, callId) {
   if (!adminAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
   if (!(await ensureSchema(env))) return json({ ok: false, error: 'storage unavailable' }, 503);
@@ -463,6 +536,33 @@ async function callExportJsonl(request, env, callId) {
       'content-type': 'application/x-ndjson; charset=utf-8',
       'content-disposition': `attachment; filename="talksys-call-${safeId}.jsonl"`,
       'cache-control': 'no-store',
+    },
+  });
+}
+
+async function recentCallsZip(request, env) {
+  if (!adminAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+  if (!(await ensureSchema(env))) return json({ ok: false, error: 'storage unavailable' }, 503);
+  const url = new URL(request.url);
+  const requested = Number(url.searchParams.get('limit') || 20);
+  const limit = Math.max(1, Math.min(50, Number.isFinite(requested) ? Math.round(requested) : 20));
+  const result = await env.TALKSYS_LOG_DB.prepare('SELECT * FROM phone_calls ORDER BY updated_at DESC LIMIT ?').bind(limit).all();
+  const calls = result.results || [];
+  if (!calls.length) return json({ ok: false, error: 'no_calls' }, 404);
+  const files = [];
+  for (const call of calls) {
+    const safeId = String(call.call_id || 'call').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'call';
+    files.push({ name: `talksys-call-${safeId}.jsonl`, content: await callJsonlContent(env, call) });
+  }
+  const archive = zipStoreFiles(files);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return new Response(archive, {
+    status: 200,
+    headers: {
+      'content-type': 'application/zip',
+      'content-disposition': `attachment; filename="talksys-calls-latest-${calls.length}-${stamp}.zip"`,
+      'cache-control': 'no-store',
+      'x-talksys-export-count': String(calls.length),
     },
   });
 }
@@ -638,6 +738,7 @@ export async function handleTelephonyRequest(request, env, ctx, deps = {}) {
   const url=new URL(request.url);if(!isTelephonyPath(url.pathname))return null;
   if(request.method==='GET'&&url.pathname==='/phone')return new Response(dashboardHtml(request),{headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store'}});
   if(request.method==='GET'&&url.pathname==='/telephony-health')return health(request,env,deps);
+  if(request.method==='GET'&&url.pathname==='/phone/api/calls/export.zip')return recentCallsZip(request,env);
   if(request.method==='GET'&&url.pathname==='/phone/api/calls')return listCalls(request,env);
   const messageMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/messages$/);if(request.method==='GET'&&messageMatch)return callMessages(request,env,decodeURIComponent(messageMatch[1]));
   const latencyMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/latency$/);if(request.method==='GET'&&latencyMatch)return callLatency(request,env,decodeURIComponent(latencyMatch[1]));
