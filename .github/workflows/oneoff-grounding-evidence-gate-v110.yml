@@ -6,8 +6,14 @@ on:
     paths:
       - '.github/workflows/oneoff-grounding-evidence-gate-v110.yml'
       - 'scripts/apply-grounding-evidence-gate-v110.py'
+      - 'scripts/update-v110-regression-contracts.py'
       - 'src/grounding-evidence-gate.js'
       - 'tests/grounding-evidence-gate-v110.test.mjs'
+      - 'tests/gemini-generic-verification-v57.test.mjs'
+      - 'tests/gemini-personalization-v55.test.mjs'
+      - 'tests/split-utterance-context-v62.test.mjs'
+      - 'tests/temporal-transit-v56.test.mjs'
+      - 'tests/voice-latency-invariants.test.mjs'
       - 'src/integrated-entry.js'
   workflow_dispatch:
 
@@ -29,7 +35,9 @@ jobs:
           node-version: 22
 
       - name: Apply evidence-gated grounding patch
-        run: python scripts/apply-grounding-evidence-gate-v110.py
+        run: |
+          python scripts/apply-grounding-evidence-gate-v110.py
+          python scripts/update-v110-regression-contracts.py
 
       - name: Install dependencies
         run: |
@@ -106,15 +114,20 @@ jobs:
       - name: Worker dry run
         run: npx wrangler deploy --dry-run
 
-      - name: Commit validated runtime change to feature branch
+      - name: Commit validated runtime and regression changes to feature branch
         run: |
           set -euo pipefail
           git config user.name talksys-automation
           git config user.email actions@users.noreply.github.com
-          git add src/integrated-entry.js
+          git add src/integrated-entry.js \
+            tests/gemini-generic-verification-v57.test.mjs \
+            tests/gemini-personalization-v55.test.mjs \
+            tests/split-utterance-context-v62.test.mjs \
+            tests/temporal-transit-v56.test.mjs \
+            tests/voice-latency-invariants.test.mjs
           git diff --cached --check
           if git diff --cached --quiet; then
-            echo 'No runtime change to commit.'
+            echo 'No validated runtime/test changes to commit.'
             exit 0
           fi
           git commit -m 'Gate factual answers on Gemini search evidence'
