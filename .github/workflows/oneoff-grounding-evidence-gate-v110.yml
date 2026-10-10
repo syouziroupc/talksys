@@ -49,15 +49,33 @@ jobs:
         run: node --test tests/grounding-evidence-gate-v110.test.mjs
 
       - name: Phone fast-reaction regression suites
+        id: phone_regressions
         run: |
-          set -euo pipefail
+          set +e
+          : > /tmp/phone-regression.log
           mapfile -t suites < <(find tests -maxdepth 1 -type f \( -iname '*phone*test.mjs' -o -iname '*telephony*test.mjs' -o -iname '*fast*reaction*test.mjs' -o -iname '*fast*ack*test.mjs' \) | sort)
           if (( ${#suites[@]} == 0 )); then
-            echo 'No dedicated phone/telephony regression suites found; full suite remains mandatory.'
-          else
-            printf 'Running %s\n' "${suites[@]}"
-            node --test "${suites[@]}"
+            echo 'No dedicated phone/telephony regression suites found; full suite remains mandatory.' | tee -a /tmp/phone-regression.log
+            exit 0
           fi
+          failed=0
+          for suite in "${suites[@]}"; do
+            echo "===== $suite =====" | tee -a /tmp/phone-regression.log
+            node --test "$suite" 2>&1 | tee -a /tmp/phone-regression.log
+            status=${PIPESTATUS[0]}
+            echo "===== status=$status $suite =====" | tee -a /tmp/phone-regression.log
+            if (( status != 0 )); then failed=1; fi
+          done
+          exit "$failed"
+
+      - name: Upload phone regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone-regression-v110
+          path: /tmp/phone-regression.log
+          if-no-files-found: warn
+          retention-days: 1
 
       - name: Architecture check
         run: npm run architecture:check
