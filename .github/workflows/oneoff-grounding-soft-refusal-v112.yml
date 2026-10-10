@@ -1,0 +1,63 @@
+name: Validate grounding soft refusal v112
+
+on:
+  push:
+    branches: [fix/grounding-soft-refusal-v112]
+    paths:
+      - '.github/workflows/oneoff-grounding-soft-refusal-v112.yml'
+      - 'scripts/apply-grounding-soft-refusal-v112.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Apply v112 patch
+        run: python scripts/apply-grounding-soft-refusal-v112.py
+      - name: Install dependencies
+        run: |
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Syntax checks
+        run: |
+          node --check src/grounding-evidence-gate.js
+          node --check src/integrated-entry.js
+      - name: Grounding v112 targeted tests
+        run: |
+          node --test tests/grounding-evidence-gate-v110.test.mjs tests/grounding-soft-refusal-v112.test.mjs
+      - name: Phone regressions
+        run: |
+          set -euo pipefail
+          mapfile -t suites < <(find tests -maxdepth 1 -type f \( -iname 'phone-*test.mjs' -o -iname 'telephony-*test.mjs' \) | sort)
+          for suite in "${suites[@]}"; do node --test "$suite"; done
+      - name: Architecture checks
+        run: |
+          npm run architecture:check
+          npm run architecture:graph
+      - name: Full regression suite
+        run: npm test
+      - name: Worker dry run
+        run: npx wrangler deploy --dry-run
+      - name: Commit validated v112 runtime changes
+        run: |
+          set -euo pipefail
+          git config user.name talksys-automation
+          git config user.email actions@users.noreply.github.com
+          git add src/grounding-evidence-gate.js src/integrated-entry.js tests/grounding-evidence-gate-v110.test.mjs tests/grounding-soft-refusal-v112.test.mjs
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'No runtime changes to commit.'
+            exit 0
+          fi
+          git commit -m 'Relax overstrict grounding refusal while keeping evidence checks'
+          git push origin HEAD:${{ github.ref_name }}
