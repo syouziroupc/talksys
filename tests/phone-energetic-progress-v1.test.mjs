@@ -16,6 +16,8 @@ test('lookup progress extracts a concise topic locally without another model cal
   assert.equal(phoneSearchTopic('近くの牛丼屋を探して'), '近くの牛丼屋');
   assert.equal(phoneSearchTopic('東京の天気はどう'), '東京の天気');
   assert.equal(phoneSearchTopic('iPhone 17の価格を調べてください'), 'iPhone 17の価格');
+  assert.equal(phoneSearchTopic('次の別府駅の電車は'), '次の別府駅の電車');
+  assert.equal(phoneSearchProgressText('次の別府駅の電車は'), 'いま、次の別府駅の電車について調べています。少々お待ちください。');
   assert.equal(phoneSearchProgressText('東京の天気はどう'), 'いま、東京の天気について調べています。少々お待ちください。');
   assert.equal(PHONE_SEARCH_PROGRESS_REVISION, 'talksys-phone-search-progress-v1-r1');
 });

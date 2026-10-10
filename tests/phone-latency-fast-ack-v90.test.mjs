@@ -20,7 +20,7 @@ test('phone latency v90 persists per-turn stage telemetry and exposes it in the 
 });
 
 test('phone latency v90 uses a prewarmed PCMU receipt acknowledgement only after confirmed STT', () => {
-  assert.match(source, /const\s+FAST_ACK_TEXT\s*=\s*'はい。'/);
+  assert.match(source, /const\s+FAST_ACK_TEXT\s*=\s*'はい、少々お待ちください。'/);
   assert.match(source, /warmFastAckAudio/);
   assert.match(source, /fastAckAudioCache/);
   assert.match(source, /ack_cache_hit/);

@@ -17,6 +17,7 @@
     "TELEPHONY_VAD_RMS": "0.0045",
     "TELEPHONY_TTS_VOICE": "eve",
     "TELEPHONY_TTS_DELIVERY": "loud-bright",
+    "TELEPHONY_TTS_OUTPUT_GAIN_DB": "3.0",
     "TELEPHONY_SEARCH_PROGRESS_ENABLED": "true"
   },
   "ai": { "binding": "AI" },
