@@ -7,8 +7,10 @@ export const PHONE_TTS_SAMPLE_RATE = 8000;
 export const PHONE_TTS_FRAME_MS = 20;
 export const PHONE_TTS_FRAME_BYTES = 160;
 export const PHONE_TTS_MAX_SECONDS = 120;
+export const PHONE_TTS_DELIVERY_DEFAULT = 'loud-bright';
 
 const PHONE_TTS_VOICES = new Set(['eve', 'ara', 'rex', 'sal', 'leo']);
+const PHONE_TTS_DELIVERY_MODES = new Set(['plain', 'loud', 'bright', 'loud-bright']);
 const EXPLICIT_RAW_PCMU_CONTENT_TYPES = new Set(['audio/basic', 'audio/mulaw', 'audio/x-mulaw']);
 const EXPLICIT_RAW_PCM_CONTENT_TYPES = new Set(['audio/pcm', 'audio/l16', 'audio/x-pcm']);
 const AMBIGUOUS_BINARY_CONTENT_TYPES = new Set(['', 'application/octet-stream']);
@@ -120,6 +122,21 @@ function isActualMp3Kind(kind) {
 export function phoneTtsVoice(env = {}) {
   const configured = String(env?.TELEPHONY_TTS_VOICE || '').trim().toLowerCase();
   return PHONE_TTS_VOICES.has(configured) ? configured : PHONE_TTS_DEFAULT_VOICE;
+}
+
+export function phoneTtsDeliveryMode(env = {}) {
+  const configured = String(env?.TELEPHONY_TTS_DELIVERY || '').trim().toLowerCase();
+  return PHONE_TTS_DELIVERY_MODES.has(configured) ? configured : PHONE_TTS_DELIVERY_DEFAULT;
+}
+
+export function phoneTtsDeliveryText(env = {}, text = '') {
+  const spoken = String(text || '').replace(/[<>]/g, '').trim();
+  if (!spoken) return '';
+  const mode = phoneTtsDeliveryMode(env);
+  if (mode === 'plain') return spoken;
+  if (mode === 'loud') return `<loud>${spoken}</loud>`;
+  if (mode === 'bright') return `<higher-pitch>${spoken}</higher-pitch>`;
+  return `<loud><higher-pitch>${spoken}</higher-pitch></loud>`;
 }
 
 export function phoneTtsAudioUrl(result) {
@@ -253,9 +270,10 @@ function gatewayId(env = {}) {
 async function requestGrokAudio(env, spoken, outputFormat, options = {}) {
   const signal = options?.signal;
   const fetchImpl = options?.fetchImpl || fetch;
+  const deliveryText = phoneTtsDeliveryText(env, spoken);
   const result = await env.AI.run(
     PHONE_TTS_MODEL,
-    { text: spoken, voice_id: phoneTtsVoice(env), language: 'ja', output_format: outputFormat, text_normalization: false },
+    { text: deliveryText, voice_id: phoneTtsVoice(env), language: 'ja', output_format: outputFormat, text_normalization: false },
     { gateway: { id: gatewayId(env) }, signal },
   );
   const audioUrl = phoneTtsAudioUrl(result);
@@ -281,7 +299,7 @@ export async function synthesizeGrokPhonePcmu(env, text, options = {}) {
       ...validated,
       metadata: {
         ...validated.metadata, provider: 'cloudflare-ai-gateway', model: PHONE_TTS_MODEL,
-        voice: phoneTtsVoice(env), language: 'ja', requestedCodec: 'mulaw', detectedKind: primaryKind,
+        voice: phoneTtsVoice(env), delivery: phoneTtsDeliveryMode(env), language: 'ja', requestedCodec: 'mulaw', detectedKind: primaryKind,
         fallbackCodec: '', gatewayKeySource: String(primary.result?.gatewayMetadata?.keySource || primary.result?.response?.gatewayMetadata?.keySource || ''),
       },
     };
@@ -300,7 +318,7 @@ export async function synthesizeGrokPhonePcmu(env, text, options = {}) {
     metadata: {
       codec: 'PCMU', sampleRate: PHONE_TTS_SAMPLE_RATE, channels: 1, container: pcm.container,
       contentType: normalizedContentType(fallback.contentType), ...metrics,
-      provider: 'cloudflare-ai-gateway', model: PHONE_TTS_MODEL, voice: phoneTtsVoice(env), language: 'ja',
+      provider: 'cloudflare-ai-gateway', model: PHONE_TTS_MODEL, voice: phoneTtsVoice(env), delivery: phoneTtsDeliveryMode(env), language: 'ja',
       requestedCodec: 'mulaw', detectedKind: fallbackKind, fallbackCodec: 'pcm',
       gatewayKeySource: String(fallback.result?.gatewayMetadata?.keySource || fallback.result?.response?.gatewayMetadata?.keySource || ''),
     },
@@ -314,7 +332,7 @@ export async function synthesizePhonePcmu(env, text, deps = {}) {
     if (typeof provided === 'string') bytes = base64ToBytes(provided.trim());
     else bytes = asBytes(provided);
     const validated = validatePcmuResponse(bytes, 'audio/basic');
-    return { ...validated, metadata: { ...validated.metadata, provider: 'injected-test-tts', model: 'injected', voice: '', language: 'ja', gatewayKeySource: '' } };
+    return { ...validated, metadata: { ...validated.metadata, provider: 'injected-test-tts', model: 'injected', voice: '', delivery: 'injected', language: 'ja', gatewayKeySource: '' } };
   }
   return synthesizeGrokPhonePcmu(env, text, deps);
 }

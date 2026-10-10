@@ -1,6 +1,7 @@
 export const STT_MODEL = '@cf/openai/whisper-large-v3-turbo';
-export const STT_REVISION = 'talksys-v104-phonetic-first-ja';
+export const STT_REVISION = 'talksys-v105-phone-accessibility-gain-beppu-r1';
 const JAPANESE_PHONETIC_FIRST_PROMPT = '日本語音声を発音に忠実に文字起こししてください。意味を推測して漢字を補わないでください。固有名詞、専門用語、数字を含む語、聞き慣れない語で漢字表記に確信がない場合は、ひらがなまたはカタカナのまま転写してください。音から確定できない漢字を推測しないでください。';
+export const PHONE_STT_CONTEXT_PROMPT = `${JAPANESE_PHONETIC_FIRST_PROMPT} 電話では日本の地名、駅名、施設名が含まれることがあります。音声が明確に「べっぷえき」と一致する場合は「別府駅」と転写してください。似ていない音声を別府駅に置き換えないでください。`;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -30,10 +31,10 @@ function ascii(view, offset, length) {
   return out;
 }
 
-export function analyzeWav(buffer) {
+function pcm16WavData(buffer) {
   try {
     const view = new DataView(buffer);
-    if (view.byteLength < 44 || ascii(view, 0, 4) !== 'RIFF' || ascii(view, 8, 4) !== 'WAVE') return { valid: false, durationMs: 0, rms: 0, peak: 0, activeMs: 0, activeRatio: 0 };
+    if (view.byteLength < 44 || ascii(view, 0, 4) !== 'RIFF' || ascii(view, 8, 4) !== 'WAVE') return null;
     let offset = 12, format = 0, channels = 0, sampleRate = 0, bits = 0, dataOffset = -1, dataSize = 0;
     while (offset + 8 <= view.byteLength) {
       const id = ascii(view, offset, 4), size = view.getUint32(offset + 4, true), body = offset + 8;
@@ -44,7 +45,18 @@ export function analyzeWav(buffer) {
       }
       offset = body + size + (size & 1);
     }
-    if (format !== 1 || channels < 1 || bits !== 16 || sampleRate < 8000 || dataOffset < 0 || dataSize < 2 * channels) return { valid: false, durationMs: 0, rms: 0, peak: 0, activeMs: 0, activeRatio: 0 };
+    if (format !== 1 || channels < 1 || bits !== 16 || sampleRate < 8000 || dataOffset < 0 || dataSize < 2 * channels) return null;
+    return { view, channels, sampleRate, dataOffset, dataSize };
+  } catch {
+    return null;
+  }
+}
+
+export function analyzeWav(buffer) {
+  try {
+    const parsed = pcm16WavData(buffer);
+    if (!parsed) return { valid: false, durationMs: 0, rms: 0, peak: 0, activeMs: 0, activeRatio: 0 };
+    const { view, channels, sampleRate, dataOffset, dataSize } = parsed;
     const sampleCount = Math.floor(dataSize / (2 * channels)), frameSamples = Math.max(1, Math.round(sampleRate * .02));
     let sum = 0, peak = 0, activeFrames = 0, totalFrames = 0, frameSum = 0, frameN = 0;
     for (let i = 0; i < sampleCount; i += 1) {
@@ -61,6 +73,32 @@ export function analyzeWav(buffer) {
   } catch {
     return { valid: false, durationMs: 0, rms: 0, peak: 0, activeMs: 0, activeRatio: 0 };
   }
+}
+
+export function normalizeQuietPhoneWav(buffer, metrics = {}) {
+  if (!metrics?.valid) return { buffer, gain: 1, gainDb: 0 };
+  const rms = Number(metrics.rms) || 0;
+  const peak = Number(metrics.peak) || 0;
+  if (rms <= 0 || peak <= 0) return { buffer, gain: 1, gainDb: 0 };
+
+  const targetRms = 0.018;
+  const maxGain = 2.5;
+  const maxPeak = 0.90;
+  const gain = Math.max(1, Math.min(maxGain, targetRms / Math.max(rms, 0.0008), maxPeak / Math.max(peak, 0.001)));
+  if (gain < 1.05) return { buffer, gain: 1, gainDb: 0 };
+
+  const copy = buffer.slice(0);
+  const parsed = pcm16WavData(copy);
+  if (!parsed) return { buffer, gain: 1, gainDb: 0 };
+  const { view, dataOffset, dataSize } = parsed;
+  const sampleCount = Math.floor(dataSize / 2);
+  for (let i = 0; i < sampleCount; i += 1) {
+    const offset = dataOffset + i * 2;
+    const sample = view.getInt16(offset, true);
+    const boosted = Math.max(-32768, Math.min(32767, Math.round(sample * gain)));
+    view.setInt16(offset, boosted, true);
+  }
+  return { buffer: copy, gain, gainDb: Number((20 * Math.log10(gain)).toFixed(2)) };
 }
 
 export function weakSpeechSignal(metrics) {
@@ -116,23 +154,27 @@ export async function transcribeV45(request, env) {
   if (buffer.byteLength < 800) return json({ ok: false, error: 'audio too short', rejected: 'audio-too-short' }, 400);
   if (buffer.byteLength > 8_000_000) return json({ ok: false, error: 'audio too large' }, 413);
 
+  const source = clean(request.headers.get('x-talksys-source') || '', 80).toLowerCase();
   const metrics = analyzeWav(buffer);
+  const phoneNormalized = source === 'telnyx' ? normalizeQuietPhoneWav(buffer, metrics) : { buffer, gain: 1, gainDb: 0 };
   const signal = {
     durationMs: Math.round(metrics.durationMs || 0),
     rms: Number((metrics.rms || 0).toFixed(5)),
     peak: Number((metrics.peak || 0).toFixed(5)),
     activeMs: Math.round(metrics.activeMs || 0),
     activeRatio: Number((metrics.activeRatio || 0).toFixed(3)),
+    inputGainDb: phoneNormalized.gainDb,
   };
   if (weakSpeechSignal(metrics)) return json({ ok: false, error: 'no speech detected', rejected: 'weak-speech-signal', elapsedMs: Date.now() - started, signal }, 422);
 
   try {
-    const audio = base64FromBytes(new Uint8Array(buffer));
+    const audio = base64FromBytes(new Uint8Array(phoneNormalized.buffer));
+    const initialPrompt = source === 'telnyx' ? PHONE_STT_CONTEXT_PROMPT : JAPANESE_PHONETIC_FIRST_PROMPT;
     const result = await env.AI.run(STT_MODEL, {
       audio,
       task: 'transcribe',
       language: 'ja',
-      initial_prompt: JAPANESE_PHONETIC_FIRST_PROMPT,
+      initial_prompt: initialPrompt,
       vad_filter: true,
       beam_size: 3,
       condition_on_previous_text: false,
@@ -149,7 +191,7 @@ export async function transcribeV45(request, env) {
         audio,
         task: 'transcribe',
         language: 'ja',
-        initial_prompt: JAPANESE_PHONETIC_FIRST_PROMPT,
+        initial_prompt: initialPrompt,
         vad_filter: false,
         beam_size: 5,
         condition_on_previous_text: false,
