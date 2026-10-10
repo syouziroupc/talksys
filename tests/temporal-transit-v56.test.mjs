@@ -54,7 +54,8 @@ test('past departure triggers one targeted repair after the single grounded prim
         status: 'completed',
         steps: [
           { type: 'google_search_call', arguments: { queries: ['別府駅 大分駅 2026年9月18日 8時48分 以降 電車'] } },
-          { type: 'model_output', content: [{ type: 'text', text: '次は8時30分発です。' }] },
+          { type: 'google_search_result', result: [{ title: '時刻表', url: 'https://example.com/transit-bad' }] },
+          { type: 'model_output', content: [{ type: 'text', text: '次は8時30分発です。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/transit-bad', title: '時刻表' }] }] },
         ],
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
@@ -67,7 +68,8 @@ test('past departure triggers one targeted repair after the single grounded prim
       status: 'completed',
       steps: [
         { type: 'google_search_call', arguments: { queries: ['別府駅 大分駅 2026年9月18日 8時48分 以降 次の電車'] } },
-        { type: 'model_output', content: [{ type: 'text', text: '次は8時55分発です。' }] },
+        { type: 'google_search_result', result: [{ title: '時刻表', url: 'https://example.com/transit-fixed' }] },
+        { type: 'model_output', content: [{ type: 'text', text: '次は8時55分発です。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/transit-fixed', title: '時刻表' }] }] },
       ],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -109,7 +111,7 @@ test('v105 retries directional transit when one direction is missing or unverifi
         steps: [
           { type: 'google_search_call', arguments: { queries: ['別府駅 下り 列車'] } },
           { type: 'google_search_result', result: [{ title: '時刻表', url: 'https://example.com/down' }] },
-          { type: 'model_output', content: [{ type: 'text', text: '下りは確認できました。上りは確認できませんでした。' }] },
+          { type: 'model_output', content: [{ type: 'text', text: '下りは確認できました。上りは確認できませんでした。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/down', title: '時刻表' }] }] },
         ],
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
@@ -123,7 +125,7 @@ test('v105 retries directional transit when one direction is missing or unverifi
           { title: '上り時刻表', url: 'https://example.com/up' },
           { title: '下り時刻表', url: 'https://example.com/down2' },
         ] },
-        { type: 'model_output', content: [{ type: 'text', text: '上りと下りの両方を確認できました。' }] },
+        { type: 'model_output', content: [{ type: 'text', text: '上りと下りの両方を確認できました。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/up', title: '上り時刻表' }] }] },
       ],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };

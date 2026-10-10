@@ -52,10 +52,11 @@ test('latency metrics preserve the full quality-first pipeline', () => {
 test('dynamic grounding retries once before fail-closed response', () => {
   assert.match(integrated, /export function interactionCitationCount/);
   assert.match(integrated, /export function requiresGroundedEvidence/);
-  assert.match(integrated, /let groundingFailClosed = groundingRequired && !groundingSearchPerformed/);
+  assert.match(integrated, /groundingEvidenceReport/);
+  assert.match(integrated, /groundingEvidencePassed/);
   assert.match(integrated, /createGeminiGenerateContentFallback/);
-  assert.match(integrated, /missing-google-search-recovered/);
-  assert.match(integrated, /Google検索を再試行しても根拠を取得できませんでした/);
+  assert.match(integrated, /gemini-grounding-recovery/);
+  assert.match(integrated, /GROUNDING_FAIL_CLOSED_ANSWER/);
 });
 
 
