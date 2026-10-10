@@ -35,7 +35,7 @@ replace_once(path, "assert.match(result.answer, /再試行/);", "assert.match(re
 # instruction. It now requires the central fact to be supported and permits abstention.
 path = 'tests/gemini-personalization-v55.test.mjs'
 replace_once(path, "assert.match(prompt, /回答全体を「確認できません」で終わらせない/);", "assert.match(prompt, /質問の中心となる事実を検索で確認できない場合/);")
-replace_once(path, "assert.match(prompt, /正しく答えられる他の部分まで捨てない/);", "assert.match(prompt, /根拠不足の部分は推測で埋めない/);")
+replace_once(path, "assert.match(prompt, /正しく答えられる他の部分まで捨てない/);", "assert.match(prompt, /取得根拠の範囲だけで答えて/);")
 replace_all_exact(path, "/Google検索を一度実行し、取得できた根拠だけで答えて/", "/まずGoogle検索を実行し、取得できた根拠だけで答えて/", 2)
 replace_once(
     path,
