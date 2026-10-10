@@ -53,7 +53,7 @@ jobs:
         run: |
           set +e
           : > /tmp/phone-regression.log
-          mapfile -t suites < <(find tests -maxdepth 1 -type f \( -iname '*phone*test.mjs' -o -iname '*telephony*test.mjs' -o -iname '*fast*reaction*test.mjs' -o -iname '*fast*ack*test.mjs' \) | sort)
+          mapfile -t suites < <(find tests -maxdepth 1 -type f \( -iname 'phone-*test.mjs' -o -iname 'telephony-*test.mjs' \) | sort)
           if (( ${#suites[@]} == 0 )); then
             echo 'No dedicated phone/telephony regression suites found; full suite remains mandatory.' | tee -a /tmp/phone-regression.log
             exit 0
