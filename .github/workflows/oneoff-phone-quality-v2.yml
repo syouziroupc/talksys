@@ -1,0 +1,259 @@
+name: One-off phone quality v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/oneoff-phone-quality-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Patch phone quality path
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          function replaceOnce(source, before, after, label) {
+            const count = source.split(before).length - 1;
+            if (count !== 1) throw new Error(`${label}: expected 1 match, got ${count}`);
+            return source.replace(before, after);
+          }
+          function replaceRegexOnce(source, regex, after, label) {
+            const matches = source.match(regex);
+            if (!matches || matches.length !== 1) throw new Error(`${label}: expected 1 match, got ${matches?.length || 0}`);
+            return source.replace(regex, after);
+          }
+          function editSection(source, startNeedle, endNeedle, updater, label) {
+            const start = source.indexOf(startNeedle);
+            const end = source.indexOf(endNeedle, start + startNeedle.length);
+            if (start < 0 || end < 0) throw new Error(`${label}: section anchors missing`);
+            const block = source.slice(start, end);
+            return source.slice(0, start) + updater(block) + source.slice(end);
+          }
+
+          // 1) Phone-only cross-model verifier in the TalkSys core.
+          const integratedPath = 'src/integrated-entry.js';
+          let integrated = fs.readFileSync(integratedPath, 'utf8');
+          integrated = replaceOnce(
+            integrated,
+            "export const GEMINI_MODEL = 'gemini-3.5-flash-lite';",
+            "export const GEMINI_MODEL = 'gemini-3.5-flash-lite';\nexport const GEMINI_VERIFIER_MODEL = 'gemini-3.6-flash';\nexport const PHONE_GEMINI_VERIFIER_REVISION = 'talksys-phone-cross-model-verifier-v1-r1';",
+            'verifier model constants',
+          );
+          integrated = replaceOnce(
+            integrated,
+            "export function shouldRunGenericVerification(_text = '', _payload = {}) {\n  // v84: the normal path is a single grounded Gemini interaction.\n  // A second serial verifier caused ~9-10 s answer latency and duplicate search.\n  return false;\n}",
+            "export function phoneDoubleCheckEnabled(env = {}) {\n  const value = String(env?.TELEPHONY_AI_DOUBLE_CHECK ?? 'true').trim().toLowerCase();\n  return !['false', '0', 'off', 'no'].includes(value);\n}\n\nexport function shouldRunGenericVerification(text = '', body = {}) {\n  const value = compact(text, 4000);\n  if (compact(body?.channel, 40).toLowerCase() !== 'phone') return false;\n  if (!value || TRIVIAL_CONVERSATION_RE.test(value) || SIMPLE_ARITHMETIC_RE.test(value) || LOCAL_TRANSFORM_RE.test(value)) return false;\n  return true;\n}",
+            'phone-only verifier policy',
+          );
+          integrated = replaceOnce(
+            integrated,
+            "    '一次回答のGoogle検索tool contextはprevious interactionとして引き継がれています。まずその証拠を候補回答と照合し、現在性が強い情報、証拠不足、矛盾、別条件の疑いがある場合はGoogle検索を追加してください。',",
+            "    '一次回答とは独立した検証者として、上記の検索語・検索元と候補回答を照合してください。現在性が強い情報、証拠不足、矛盾、別条件の疑いがある場合はGoogle検索を追加してください。',",
+            'independent verifier instruction',
+          );
+          integrated = replaceRegexOnce(
+            integrated,
+            /async function runGenericGeminiVerification\(env, body = \{\}, primary = \{\}, signal, now = new Date\(\)\) \{[\s\S]*?\n\}\n\nfunction searchedInInteraction/,
+            "async function runGenericGeminiVerification(env, body = {}, primary = {}, signal, now = new Date()) {\n  const question = resolvedUserQuestion(body);\n  const verifyBody = {\n    text: buildGenericVerificationInput(body, primary, now),\n    history: [],\n    previousInteractionId: '',\n    channel: 'phone',\n  };\n  return createGeminiInteraction(env, verifyBody, signal, {\n    allowPrevious: false,\n    forceSearch: shouldForceVerifierSearch(question, primary?.payload),\n    verificationContinuation: true,\n    now,\n    immediateTransit: isImmediateTransitQuestion(question),\n    model: GEMINI_VERIFIER_MODEL,\n  });\n}\n\nfunction searchedInInteraction",
+            'independent cross-model verifier call',
+          );
+          integrated = editSection(
+            integrated,
+            'async function createGeminiInteraction',
+            '\nexport async function runGeminiTurn',
+            (block) => {
+              block = replaceOnce(
+                block,
+                "async function createGeminiInteraction(env, body = {}, signal, { allowPrevious = true, forceSearch = false, verificationContinuation = false, now = new Date(), immediateTransit = false } = {}) {",
+                "async function createGeminiInteraction(env, body = {}, signal, { allowPrevious = true, forceSearch = false, verificationContinuation = false, now = new Date(), immediateTransit = false, model = GEMINI_MODEL } = {}) {",
+                'interaction model option',
+              );
+              block = replaceOnce(
+                block,
+                "  if (!key) throw new Error('gemini_api_key_missing');\n  const previousInteractionId",
+                "  if (!key) throw new Error('gemini_api_key_missing');\n  const targetModel = compact(model, 120) || GEMINI_MODEL;\n  const previousInteractionId",
+                'target model',
+              );
+              block = block.replaceAll('model: GEMINI_MODEL', 'model: targetModel');
+              block = replaceOnce(
+                block,
+                "    system_instruction: buildTalkSysSystemInstruction(now, { forceSearch, immediateTransit, verificationContinuation }),\n    ...(searchAllowed ? { tools: [{ type: 'google_search' }] } : {}),",
+                "    system_instruction: buildTalkSysSystemInstruction(now, { forceSearch, immediateTransit, verificationContinuation }),\n    ...(verificationContinuation ? { generation_config: { thinking_level: 'low' } } : {}),\n    ...(searchAllowed ? { tools: [{ type: 'google_search' }] } : {}),",
+                'verifier low thinking',
+              );
+              block = block.replaceAll(
+                '{ allowPrevious: false, forceSearch, verificationContinuation, now, immediateTransit }',
+                '{ allowPrevious: false, forceSearch, verificationContinuation, now, immediateTransit, model: targetModel }',
+              );
+              return block;
+            },
+            'createGeminiInteraction',
+          );
+          integrated = replaceRegexOnce(
+            integrated,
+            /  const primaryInteraction = interaction;\n  const genericVerificationAttempted = false;[\s\S]*?  let temporalRepairRetried = false;/,
+            "  const primaryInteraction = interaction;\n  let genericVerificationAttempted = false;\n  let genericVerificationSucceeded = false;\n  let verificationFailOpen = false;\n  let verifierSearched = false;\n  let verifierMs = 0;\n  const providerCallsBeforeVerifier = usageRecords.reduce((sum, record) => sum + Math.max(0, Number(record?.providerCalls) || 0), 0);\n  const verifierRequested = phoneDoubleCheckEnabled(env)\n    && shouldRunGenericVerification(text, body)\n    && !groundingFailClosed\n    && providerCallsBeforeVerifier < 2;\n  if (verifierRequested) {\n    genericVerificationAttempted = true;\n    const verifierStarted = Date.now();\n    try {\n      const verified = await runGenericGeminiVerification(env, body, { answer: interaction.answer, payload: interaction.payload }, signal, now);\n      verifierMs = Date.now() - verifierStarted;\n      usageRecords.push(normalizeGeminiUsage(verified?.payload || {}, { transport: 'interactions' }));\n      verifierSearched = searchedInInteraction(verified?.payload || {});\n      const verifiedAnswer = compact(verified?.answer, 12000);\n      if (verifiedAnswer) {\n        interaction = { ...verified, transport: 'interactions', verifierModel: GEMINI_VERIFIER_MODEL };\n        genericVerificationSucceeded = true;\n        citationCount = Math.max(citationCount, interactionCitationCount(interaction.payload));\n        groundingSourceCount = Math.max(groundingSourceCount, interactionSources(interaction.payload).length);\n        groundingSearchPerformed = groundingSearchPerformed || verifierSearched;\n      } else {\n        verificationFailOpen = true;\n      }\n      emitLatencyLog('gemini-verifier-complete', body, { durationMs: verifierMs, model: GEMINI_VERIFIER_MODEL, searched: verifierSearched, succeeded: genericVerificationSucceeded, revision: PHONE_GEMINI_VERIFIER_REVISION });\n    } catch (error) {\n      if (error?.name === 'AbortError') throw error;\n      verifierMs = Date.now() - verifierStarted;\n      verificationFailOpen = true;\n      emitLatencyLog('gemini-verifier-failed', body, { durationMs: verifierMs, model: GEMINI_VERIFIER_MODEL, error: compact(error?.message || error, 500), revision: PHONE_GEMINI_VERIFIER_REVISION }, 'warn');\n    }\n  } else {\n    emitLatencyLog('gemini-verifier-skipped', body, {\n      durationMs: 0,\n      model: GEMINI_VERIFIER_MODEL,\n      reason: !phoneDoubleCheckEnabled(env) ? 'phone-double-check-disabled' : (providerCallsBeforeVerifier >= 2 ? 'minimum-two-provider-calls-already-satisfied' : 'non-phone-or-trivial-turn'),\n      revision: PHONE_GEMINI_VERIFIER_REVISION,\n    });\n  }\n\n  let temporalRepairRetried = false;",
+            'phone verifier execution',
+          );
+          integrated = replaceOnce(
+            integrated,
+            "    model: GEMINI_MODEL,\n    generationProvider: 'gemini',\n    generationModel: GEMINI_MODEL,",
+            "    model: genericVerificationSucceeded ? GEMINI_VERIFIER_MODEL : GEMINI_MODEL,\n    generationProvider: 'gemini',\n    generationModel: genericVerificationSucceeded ? GEMINI_VERIFIER_MODEL : GEMINI_MODEL,\n    verifierModel: genericVerificationSucceeded ? GEMINI_VERIFIER_MODEL : '',\n    phoneGeminiVerifierRevision: PHONE_GEMINI_VERIFIER_REVISION,",
+            'final verifier model metadata',
+          );
+          fs.writeFileSync(integratedPath, integrated);
+
+          // 2) Phone acknowledgement, progress wording, AI-log export and observability.
+          const telephonyPath = 'src/telephony/index.js';
+          let telephony = fs.readFileSync(telephonyPath, 'utf8');
+          telephony = replaceOnce(
+            telephony,
+            "import { PHONE_TTS_MODEL, PHONE_TTS_SAMPLE_RATE, phoneTtsVoice, streamPcmu20ms, synthesizePhonePcmu } from './phone-tts.js';",
+            "import { PHONE_TTS_MODEL, PHONE_TTS_SAMPLE_RATE, phoneTtsOutputGainDb, phoneTtsVoice, streamPcmu20ms, synthesizePhonePcmu } from './phone-tts.js';",
+            'phone tts gain import',
+          );
+          telephony = replaceOnce(telephony, "export const TELEPHONY_OBSERVABILITY_REVISION = 'talksys-phone-latency-v90-fast-ack-r1';", "export const TELEPHONY_OBSERVABILITY_REVISION = 'talksys-phone-latency-v91-double-check-export-r1';", 'observability revision');
+          telephony = replaceOnce(telephony, "const FAST_ACK_TEXT = 'はい。';", "const FAST_ACK_TEXT = 'はい、少々お待ちください。';", 'default acknowledgement');
+          telephony = replaceOnce(telephony, "export const PHONE_SEARCH_PROGRESS_REVISION = 'talksys-phone-search-progress-v1-r1';", "export const PHONE_SEARCH_PROGRESS_REVISION = 'talksys-phone-search-progress-v2-r1';", 'progress revision');
+          telephony = replaceOnce(
+            telephony,
+            "    .replace(/(?:について)$/i, '')\n    .replace(/[、,。！!？?…\\s]+$/g, '')",
+            "    .replace(/(?:について)$/i, '')\n    .replace(/[はをが]\\s*$/u, '')\n    .replace(/[、,。！!？?…\\s]+$/g, '')",
+            'progress trailing particle',
+          );
+          telephony = replaceOnce(
+            telephony,
+            "<div class=\"panel\"><h2 id=\"conversationTitle\">会話内容</h2><div id=\"messages\" class=\"muted\">左の着信を選択してください。</div>",
+            "<div class=\"panel\"><div class=\"top\"><h2 id=\"conversationTitle\">会話内容</h2><button id=\"downloadAiLog\" disabled>AIログ(JSONL)</button></div><div id=\"messages\" class=\"muted\">左の着信を選択してください。</div>",
+            'AI log button',
+          );
+          telephony = replaceOnce(
+            telephony,
+            "  async function api(path){const r=await fetch(path,{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');return r.json()}\n",
+            "  async function api(path){const r=await fetch(path,{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');return r.json()}\n  async function downloadAiLog(){if(!selected)return;const r=await fetch('/phone/api/calls/'+encodeURIComponent(selected)+'/export.jsonl',{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');if(!r.ok)throw new Error('AIログの取得に失敗しました');const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='talksys-phone-'+selected.replace(/[^A-Za-z0-9_.-]/g,'_')+'.jsonl';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}\n",
+            'AI log download JS',
+          );
+          telephony = replaceOnce(
+            telephony,
+            "renderLatency(l.events||[])}\n  async function start()",
+            "renderLatency(l.events||[]);document.getElementById('downloadAiLog').disabled=false}\n  async function start()",
+            'enable AI log button',
+          );
+          telephony = replaceOnce(
+            telephony,
+            "  document.getElementById('loginBtn').onclick=()=>{adminToken=document.getElementById('token').value;sessionStorage.setItem('talksysPhoneToken',adminToken);start()};if(adminToken)start();",
+            "  document.getElementById('downloadAiLog').onclick=()=>downloadAiLog().catch(e=>alert(e.message));document.getElementById('loginBtn').onclick=()=>{adminToken=document.getElementById('token').value;sessionStorage.setItem('talksysPhoneToken',adminToken);start()};if(adminToken)start();",
+            'AI log button handler',
+          );
+          telephony = replaceOnce(
+            telephony,
+            "    phoneTtsVoice: phoneTtsVoice(env), phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE,\n    answerEngine: 'TalkSys本体（既存回答経路）',",
+            "    phoneTtsVoice: phoneTtsVoice(env), phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE, phoneTtsOutputGainDb: phoneTtsOutputGainDb(env),\n    phoneAiDoubleCheck: String(env?.TELEPHONY_AI_DOUBLE_CHECK ?? 'true') !== 'false', aiLogExport: '/phone/api/calls/{callId}/export.jsonl',\n    answerEngine: 'TalkSys本体（電話の実質Gemini回答は最低2パス）',",
+            'health quality metadata',
+          );
+          const exportFunction = `async function callAiLogExport(request, env, callId) {\n  if (!adminAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);\n  if (!(await ensureSchema(env))) return json({ ok: false, error: 'storage unavailable' }, 503);\n  const call = await env.TALKSYS_LOG_DB.prepare('SELECT * FROM phone_calls WHERE call_id=?').bind(callId).first();\n  if (!call) return json({ ok: false, error: 'call not found' }, 404);\n  const messages = await env.TALKSYS_LOG_DB.prepare('SELECT id, role, content, created_at FROM phone_messages WHERE call_id=? ORDER BY id ASC LIMIT 1000').bind(callId).all();\n  const latency = await env.TALKSYS_LOG_DB.prepare('SELECT id, turn_id, stage, elapsed_ms, detail, created_at FROM phone_latency_events WHERE call_id=? ORDER BY id ASC LIMIT 3000').bind(callId).all();\n  const parseDetail = (value) => { try { return JSON.parse(String(value || '{}')); } catch { return { raw: String(value || '') }; } };\n  const records = [\n    { type: 'talksys_phone_call', schema: 'talksys-phone-ai-log-v1', exported_at: new Date().toISOString(), call },\n    ...(messages.results || []).map((message, index) => ({ type: 'message', sequence: index + 1, ...message })),\n    ...(latency.results || []).map((event, index) => ({ type: 'latency_event', sequence: index + 1, ...event, detail: parseDetail(event.detail) })),\n  ];\n  const safeName = clean(callId, 120).replace(/[^A-Za-z0-9_.-]/g, '_') || 'call';\n  return new Response(records.map((record) => JSON.stringify(record)).join('\\n') + '\\n', {\n    status: 200,\n    headers: {\n      'content-type': 'application/x-ndjson; charset=utf-8',\n      'content-disposition': 'attachment; filename=\"talksys-phone-' + safeName + '.jsonl\"',\n      'cache-control': 'no-store',\n    },\n  });\n}\n\n`;
+          telephony = replaceOnce(telephony, '\nasync function texmlResponse(request, env) {', '\n' + exportFunction + 'async function texmlResponse(request, env) {', 'AI log export endpoint');
+          telephony = replaceOnce(
+            telephony,
+            "    || /^\\/phone\\/api\\/calls\\/[^/]+\\/messages$/.test(pathname) || /^\\/phone\\/api\\/calls\\/[^/]+\\/latency$/.test(pathname)",
+            "    || /^\\/phone\\/api\\/calls\\/[^/]+\\/messages$/.test(pathname) || /^\\/phone\\/api\\/calls\\/[^/]+\\/latency$/.test(pathname) || /^\\/phone\\/api\\/calls\\/[^/]+\\/export\\.jsonl$/.test(pathname)",
+            'AI log path matcher',
+          );
+          telephony = replaceOnce(
+            telephony,
+            "  const latencyMatch=url.pathname.match(/^\\/phone\\/api\\/calls\\/([^/]+)\\/latency$/);if(request.method==='GET'&&latencyMatch)return callLatency(request,env,decodeURIComponent(latencyMatch[1]));\n",
+            "  const latencyMatch=url.pathname.match(/^\\/phone\\/api\\/calls\\/([^/]+)\\/latency$/);if(request.method==='GET'&&latencyMatch)return callLatency(request,env,decodeURIComponent(latencyMatch[1]));\n  const exportMatch=url.pathname.match(/^\\/phone\\/api\\/calls\\/([^/]+)\\/export\\.jsonl$/);if(request.method==='GET'&&exportMatch)return callAiLogExport(request,env,decodeURIComponent(exportMatch[1]));\n",
+            'AI log route handler',
+          );
+          telephony = replaceOnce(
+            telephony,
+            "queueLatency(turnId,'answer_ready',answerReadyAt-speechEndAt,{stageMs:answerReadyAt-turnStartedAt,route:clean(turn?.payload?.route||'',160),search:Boolean(turn?.payload?.search),searchRetried:Boolean(turn?.payload?.searchRetried),primaryMs:boundedMs(turn?.payload?.timings?.primaryMs),searchRetryMs:boundedMs(turn?.payload?.timings?.searchRetryMs),totalMs:boundedMs(turn?.payload?.timings?.totalMs)});",
+            "queueLatency(turnId,'answer_ready',answerReadyAt-speechEndAt,{stageMs:answerReadyAt-turnStartedAt,route:clean(turn?.payload?.route||'',160),search:Boolean(turn?.payload?.search),searchRetried:Boolean(turn?.payload?.searchRetried),doubleCheck:Boolean(turn?.payload?.genericVerificationAttempted),doubleCheckSucceeded:Boolean(turn?.payload?.genericVerificationSucceeded),verifierModel:clean(turn?.payload?.verifierModel||'',120),primaryMs:boundedMs(turn?.payload?.timings?.primaryMs),verifierMs:boundedMs(turn?.payload?.timings?.verifierMs),searchRetryMs:boundedMs(turn?.payload?.timings?.searchRetryMs),totalMs:boundedMs(turn?.payload?.timings?.totalMs)});",
+            'answer double-check telemetry',
+          );
+          telephony = replaceOnce(
+            telephony,
+            "gatewayKeySource:audio.metadata?.gatewayKeySource||''}));",
+            "outputGainDb:audio.metadata?.outputGainDb??0,gatewayKeySource:audio.metadata?.gatewayKeySource||''}));",
+            'TTS gain telemetry',
+          );
+          fs.writeFileSync(telephonyPath, telephony);
+
+          // 3) Add bounded post-PCMU gain without changing RTP framing or codec.
+          const ttsPath = 'src/telephony/phone-tts.js';
+          let tts = fs.readFileSync(ttsPath, 'utf8');
+          const gainFunctions = `export function phoneTtsOutputGainDb(env = {}) {\n  const configured = Number(env?.TELEPHONY_TTS_OUTPUT_GAIN_DB ?? 0);\n  return Number.isFinite(configured) ? Math.max(0, Math.min(6, configured)) : 0;\n}\n\nexport function boostPcmuOutput(input, requestedGainDb = 0, peakCeiling = 0.94) {\n  const bytes = asBytes(input);\n  const before = inspectPcmu(bytes);\n  const safeGainDb = Math.max(0, Math.min(6, Number(requestedGainDb) || 0));\n  const requestedLinear = Math.pow(10, safeGainDb / 20);\n  const ceiling = Math.max(0.5, Math.min(0.98, Number(peakCeiling) || 0.94));\n  const headroomLinear = before.peak > 0 ? ceiling / before.peak : 1;\n  const gain = Math.max(1, Math.min(requestedLinear, headroomLinear));\n  if (gain <= 1.001) return { bytes: bytes.slice(), gain: 1, gainDb: 0, before, after: before };\n  const out = new Uint8Array(bytes.byteLength);\n  for (let i = 0; i < bytes.byteLength; i += 1) {\n    const sample = decodeMuLawByte(bytes[i]);\n    const boosted = Math.max(-32768, Math.min(32767, Math.round(sample * gain)));\n    out[i] = encodeMuLawSample(boosted);\n  }\n  const after = inspectPcmu(out);\n  return { bytes: out, gain, gainDb: Number((20 * Math.log10(gain)).toFixed(2)), before, after };\n}\n\n`;
+          tts = replaceOnce(tts, 'export function validatePcmuResponse(input, contentType = \'\') {', gainFunctions + 'export function validatePcmuResponse(input, contentType = \'\') {', 'PCMU output gain functions');
+          tts = editSection(
+            tts,
+            'export async function synthesizeGrokPhonePcmu',
+            '\nexport async function synthesizePhonePcmu',
+            (block) => {
+              block = replaceOnce(block, "    const validated = validatePcmuResponse(primary.bytes, primary.contentType);\n    return {\n      ...validated,", "    const validated = validatePcmuResponse(primary.bytes, primary.contentType);\n    const boosted = boostPcmuOutput(validated.bytes, phoneTtsOutputGainDb(env));\n    return {\n      ...validated,\n      bytes: boosted.bytes,", 'primary PCMU gain');
+              block = replaceOnce(block, "        ...validated.metadata, provider: 'cloudflare-ai-gateway', model: PHONE_TTS_MODEL,", "        ...validated.metadata, ...boosted.after, outputGainDb: boosted.gainDb, provider: 'cloudflare-ai-gateway', model: PHONE_TTS_MODEL,", 'primary gain metadata');
+              block = replaceOnce(block, "  const mulaw = pcm16LeToMulaw(pcm.bytes);\n  const metrics = inspectPcmu(mulaw);\n  return {\n    bytes: mulaw,", "  const mulaw = pcm16LeToMulaw(pcm.bytes);\n  const boosted = boostPcmuOutput(mulaw, phoneTtsOutputGainDb(env));\n  const metrics = boosted.after;\n  return {\n    bytes: boosted.bytes,", 'fallback PCMU gain');
+              block = replaceOnce(block, "      contentType: normalizedContentType(fallback.contentType), ...metrics,\n      provider:", "      contentType: normalizedContentType(fallback.contentType), ...metrics, outputGainDb: boosted.gainDb,\n      provider:", 'fallback gain metadata');
+              return block;
+            },
+            'Grok TTS output gain',
+          );
+          fs.writeFileSync(ttsPath, tts);
+
+          // 4) Production switches and deploy trigger.
+          const wranglerPath = 'wrangler.jsonc';
+          let wrangler = fs.readFileSync(wranglerPath, 'utf8');
+          wrangler = replaceOnce(
+            wrangler,
+            '    "TELEPHONY_TTS_DELIVERY": "loud-bright",\n    "TELEPHONY_SEARCH_PROGRESS_ENABLED": "true"',
+            '    "TELEPHONY_TTS_DELIVERY": "loud-bright",\n    "TELEPHONY_TTS_OUTPUT_GAIN_DB": "3.0",\n    "TELEPHONY_AI_DOUBLE_CHECK": "true",\n    "TELEPHONY_SEARCH_PROGRESS_ENABLED": "true"',
+            'production phone quality vars',
+          );
+          fs.writeFileSync(wranglerPath, wrangler);
+          fs.writeFileSync('.deploy/production-trigger.txt', 'phone-cross-model-ai-log-v2-20261010\n');
+
+          // 5) Regression coverage.
+          fs.writeFileSync('tests/phone-quality-v2.test.mjs', `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport {\n  GEMINI_MODEL, GEMINI_VERIFIER_MODEL, PHONE_GEMINI_VERIFIER_REVISION,\n  phoneDoubleCheckEnabled, runGeminiTurn, shouldRunGenericVerification,\n} from '../src/integrated-entry.js';\nimport { isTelephonyPath, phoneSearchProgressText, selectPhoneAckText } from '../src/telephony/index.js';\nimport { boostPcmuOutput, inspectPcmu, pcm16LeToMulaw } from '../src/telephony/phone-tts.js';\n\nfunction usage(tokens = 10) { return { total_input_tokens: tokens, total_output_tokens: 5, total_tokens: tokens + 5 }; }\nfunction searchedInteraction(id, text) { return { id, status: 'completed', usage: usage(), steps: [\n  { type: 'google_search_call', arguments: { queries: ['A店 営業時間'] } },\n  { type: 'google_search_result', result: [{ title: 'A店公式', url: 'https://example.test/a' }] },\n  { type: 'model_output', content: [{ type: 'text', text }] },\n] }; }\n\ntest('phone substantive Gemini turn is cross-model verified exactly once', async () => {\n  const originalFetch = globalThis.fetch;\n  const requests = [];\n  globalThis.fetch = async (_url, options) => {\n    const body = JSON.parse(options.body); requests.push(body);\n    const payload = requests.length === 1\n      ? searchedInteraction('primary', 'A店は現在営業中です。')\n      : searchedInteraction('verifier', 'A店は現在は閉店しています。');\n    return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });\n  };\n  try {\n    const result = await runGeminiTurn({ text: 'A店は今営業していますか？', history: [], channel: 'phone' }, { GEMINI_API_KEY: 'test', TELEPHONY_AI_DOUBLE_CHECK: 'true' }, undefined, { now: new Date('2026-10-10T07:40:00Z') });\n    assert.equal(requests.length, 2);\n    assert.equal(requests[0].model, GEMINI_MODEL);\n    assert.equal(requests[1].model, GEMINI_VERIFIER_MODEL);\n    assert.equal(requests[1].generation_config?.thinking_level, 'low');\n    assert.equal(requests[1].previous_interaction_id, undefined);\n    assert.equal(result.genericVerificationAttempted, true);\n    assert.equal(result.genericVerificationSucceeded, true);\n    assert.equal(result.verifierModel, GEMINI_VERIFIER_MODEL);\n    assert.equal(result.apiUsage.providerCalls, 2);\n    assert.match(result.answer, /閉店/);\n  } finally { globalThis.fetch = originalFetch; }\n});\n\ntest('phone double-check policy excludes trivial and non-phone turns', () => {\n  assert.equal(phoneDoubleCheckEnabled({ TELEPHONY_AI_DOUBLE_CHECK: 'true' }), true);\n  assert.equal(phoneDoubleCheckEnabled({ TELEPHONY_AI_DOUBLE_CHECK: 'false' }), false);\n  assert.equal(shouldRunGenericVerification('富士山の高さは？', { channel: 'phone' }), true);\n  assert.equal(shouldRunGenericVerification('こんにちは', { channel: 'phone' }), false);\n  assert.equal(shouldRunGenericVerification('富士山の高さは？', { channel: 'web' }), false);\n  assert.match(PHONE_GEMINI_VERIFIER_REVISION, /cross-model-verifier/);\n});\n\ntest('default acknowledgement and lookup progress wording are natural', () => {\n  const text = 'はい、少々お待ちください。';\n  assert.equal(selectPhoneAckText({ shouldSpeak: false }, [text], []).text, text);\n  assert.equal(phoneSearchProgressText('次の別府駅の電車は?'), 'いま、次の別府駅の電車について調べています。少々お待ちください。');\n});\n\ntest('bounded PCMU output gain raises low-level RMS without clipping or length change', () => {\n  const samples = Array.from({ length: 8000 }, (_, i) => Math.round(Math.sin(i / 8) * 3500));\n  const pcm = new Uint8Array(samples.length * 2); const view = new DataView(pcm.buffer); samples.forEach((x, i) => view.setInt16(i * 2, x, true));\n  const input = pcm16LeToMulaw(pcm); const before = inspectPcmu(input); const boosted = boostPcmuOutput(input, 3.0); const after = inspectPcmu(boosted.bytes);\n  assert.equal(boosted.bytes.length, input.length);\n  assert.ok(after.rms > before.rms);\n  assert.ok(after.peak <= 0.95);\n  assert.ok(boosted.gainDb > 0 && boosted.gainDb <= 3.01);\n});\n\ntest('AI-friendly JSONL export route and production switches are present', () => {\n  assert.equal(isTelephonyPath('/phone/api/calls/call-1/export.jsonl'), true);\n  const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');\n  const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');\n  assert.match(source, /application\\/x-ndjson/);\n  assert.match(source, /talksys-phone-ai-log-v1/);\n  assert.match(wrangler, /"TELEPHONY_TTS_OUTPUT_GAIN_DB"\\s*:\\s*"3\\.0"/);\n  assert.match(wrangler, /"TELEPHONY_AI_DOUBLE_CHECK"\\s*:\\s*"true"/);\n});\n`);
+          NODE
+      - name: Validate patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/integrated-entry.js
+          node --check src/telephony/index.js
+          node --check src/telephony/phone-tts.js
+          node --test tests/phone-quality-v2.test.mjs
+          node --test tests/gemini-generic-verification-v57.test.mjs tests/phone-pcmu-v87.test.mjs tests/phone-accessibility-audio-v1.test.mjs
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Commit verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f .github/workflows/oneoff-phone-quality-v2.yml
+          git add src/integrated-entry.js src/telephony/index.js src/telephony/phone-tts.js wrangler.jsonc .deploy/production-trigger.txt tests/phone-quality-v2.test.mjs
+          git commit -m 'Add phone cross-model verification and AI log export'
+          git push origin HEAD:main
