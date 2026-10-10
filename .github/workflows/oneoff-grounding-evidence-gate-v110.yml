@@ -5,16 +5,15 @@ on:
     branches: [fix/grounding-evidence-gate-v110]
     paths:
       - '.github/workflows/oneoff-grounding-evidence-gate-v110.yml'
-      - 'scripts/apply-grounding-evidence-gate-v110.py'
-      - 'scripts/update-v110-regression-contracts.py'
+      - 'scripts/apply-phone-quality-v111.py'
       - 'src/grounding-evidence-gate.js'
-      - 'tests/grounding-evidence-gate-v110.test.mjs'
-      - 'tests/gemini-generic-verification-v57.test.mjs'
-      - 'tests/gemini-personalization-v55.test.mjs'
-      - 'tests/split-utterance-context-v62.test.mjs'
-      - 'tests/temporal-transit-v56.test.mjs'
-      - 'tests/voice-latency-invariants.test.mjs'
       - 'src/integrated-entry.js'
+      - 'src/telephony/index.js'
+      - 'src/telephony/phone-tts.js'
+      - 'wrangler.jsonc'
+      - 'tests/grounding-evidence-gate-v110.test.mjs'
+      - 'tests/phone-*test.mjs'
+      - 'tests/telephony-*test.mjs'
   workflow_dispatch:
 
 permissions:
@@ -34,10 +33,8 @@ jobs:
         with:
           node-version: 22
 
-      - name: Apply evidence-gated grounding patch
-        run: |
-          python scripts/apply-grounding-evidence-gate-v110.py
-          python scripts/update-v110-regression-contracts.py
+      - name: Apply phone quality v111 patch
+        run: python scripts/apply-phone-quality-v111.py
 
       - name: Install dependencies
         run: |
@@ -52,11 +49,13 @@ jobs:
           set -euo pipefail
           node --check src/grounding-evidence-gate.js
           node --check src/integrated-entry.js
+          node --check src/telephony/index.js
+          node --check src/telephony/phone-tts.js
 
       - name: Grounding gate tests
         run: node --test tests/grounding-evidence-gate-v110.test.mjs
 
-      - name: Phone fast-reaction regression suites
+      - name: Phone regression suites
         id: phone_regressions
         run: |
           set +e
@@ -80,7 +79,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phone-regression-v110
+          name: phone-regression-v111
           path: /tmp/phone-regression.log
           if-no-files-found: warn
           retention-days: 1
@@ -98,7 +97,7 @@ jobs:
           status=${PIPESTATUS[0]}
           if (( status != 0 )); then
             echo '--- concise failing-test diagnostics ---'
-            grep -E -C 4 '(^not ok|ERR_ASSERTION|AssertionError|Error:|fail [0-9]+|# fail)' /tmp/talksys-full-test.log | tail -n 240 || true
+            grep -E -C 4 '(^not ok|ERR_ASSERTION|AssertionError|Error:|fail [0-9]+|# fail)' /tmp/talksys-full-test.log | tail -n 260 || true
             exit "$status"
           fi
 
@@ -106,7 +105,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: full-test-v110
+          name: full-test-v111
           path: /tmp/talksys-full-test.log
           if-no-files-found: warn
           retention-days: 1
@@ -114,21 +113,20 @@ jobs:
       - name: Worker dry run
         run: npx wrangler deploy --dry-run
 
-      - name: Commit validated runtime and regression changes to feature branch
+      - name: Commit validated phone quality changes to feature branch
         run: |
           set -euo pipefail
           git config user.name talksys-automation
           git config user.email actions@users.noreply.github.com
-          git add src/integrated-entry.js \
-            tests/gemini-generic-verification-v57.test.mjs \
-            tests/gemini-personalization-v55.test.mjs \
-            tests/split-utterance-context-v62.test.mjs \
-            tests/temporal-transit-v56.test.mjs \
-            tests/voice-latency-invariants.test.mjs
+          git add src/telephony/index.js src/telephony/phone-tts.js wrangler.jsonc \
+            tests/phone-fast-reaction-v2.test.mjs \
+            tests/phone-energetic-progress-v1.test.mjs \
+            tests/phone-pcmu-v87.test.mjs \
+            tests/phone-jsonl-export-v111.test.mjs
           git diff --cached --check
           if git diff --cached --quiet; then
-            echo 'No validated runtime/test changes to commit.'
+            echo 'No validated phone quality changes to commit.'
             exit 0
           fi
-          git commit -m 'Gate factual answers on Gemini search evidence'
+          git commit -m 'Improve phone acknowledgement audio and call exports'
           git push origin HEAD:${{ github.ref_name }}
