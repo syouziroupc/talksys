@@ -34,16 +34,26 @@ jobs:
             npm install --no-audit --no-fund
           fi
 
-      - name: Validate evidence gate
+      - name: Syntax checks
         run: |
           set -euo pipefail
           node --check src/grounding-evidence-gate.js
           node --check src/integrated-entry.js
-          node --test tests/grounding-evidence-gate-v110.test.mjs
-          npm run architecture:check
-          npm run architecture:graph
-          npm test
-          npx wrangler deploy --dry-run
+
+      - name: Grounding gate tests
+        run: node --test tests/grounding-evidence-gate-v110.test.mjs
+
+      - name: Architecture check
+        run: npm run architecture:check
+
+      - name: Architecture graph
+        run: npm run architecture:graph
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Worker dry run
+        run: npx wrangler deploy --dry-run
 
       - name: Commit validated runtime change
         run: |
@@ -58,3 +68,5 @@ jobs:
           fi
           git commit -m 'Gate factual answers on Gemini search evidence'
           git push origin HEAD:main
+
+# retry: v110 validation split r2
