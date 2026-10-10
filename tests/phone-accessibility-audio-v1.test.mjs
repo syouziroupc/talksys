@@ -58,7 +58,7 @@ test('Grok phone request carries expressive tags without changing PCMU transport
   assert.equal(result.metadata.delivery, 'loud-bright');
 });
 
-test('quiet phone speech is boosted before Whisper with bounded gain', () => {
+test('quiet phone speech is boosted before Whisper with bounded gain and peak ceiling', () => {
   const samples = Array.from({ length: 4000 }, (_, i) => Math.round(Math.sin(i / 7) * 180));
   const wav = pcm16Wav(samples);
   const metrics = analyzeWav(wav);
@@ -69,7 +69,7 @@ test('quiet phone speech is boosted before Whisper with bounded gain', () => {
   assert.ok(boosted.gainDb > 0 && boosted.gainDb <= 8.0);
   const boostedMetrics = analyzeWav(boosted.buffer);
   assert.ok(boostedMetrics.rms > metrics.rms);
-  assert.ok(boostedMetrics.peak < 1);
+  assert.ok(boostedMetrics.peak <= 0.901);
 });
 
 test('phone STT prompt contains guarded Beppu Station proper-noun context', () => {
