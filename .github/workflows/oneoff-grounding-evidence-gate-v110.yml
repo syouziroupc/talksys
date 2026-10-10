@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/oneoff-grounding-evidence-gate-v110.yml'
       - 'scripts/apply-phone-quality-v111.py'
+      - 'scripts/fix-phone-quality-v111.py'
       - 'src/grounding-evidence-gate.js'
       - 'src/integrated-entry.js'
       - 'src/telephony/index.js'
@@ -34,7 +35,9 @@ jobs:
           node-version: 22
 
       - name: Apply phone quality v111 patch
-        run: python scripts/apply-phone-quality-v111.py
+        run: |
+          python scripts/apply-phone-quality-v111.py
+          python scripts/fix-phone-quality-v111.py
 
       - name: Install dependencies
         run: |
@@ -120,6 +123,7 @@ jobs:
           git config user.email actions@users.noreply.github.com
           git add src/telephony/index.js src/telephony/phone-tts.js wrangler.jsonc \
             tests/phone-fast-reaction-v2.test.mjs \
+            tests/phone-latency-fast-ack-v90.test.mjs \
             tests/phone-energetic-progress-v1.test.mjs \
             tests/phone-pcmu-v87.test.mjs \
             tests/phone-jsonl-export-v111.test.mjs
