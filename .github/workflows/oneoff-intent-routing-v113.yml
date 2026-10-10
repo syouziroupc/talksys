@@ -68,4 +68,4 @@ jobs:
           git commit -m 'Route social safety and phone control intents before search'
           git push origin HEAD:fix/intent-routing-v113
 
-# rerun: focused social/meta routing fixes
+# rerun: phased grounding coverage
