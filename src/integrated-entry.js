@@ -5,6 +5,7 @@ import { fastReaction, FAST_REACTION_REVISION } from './voice-fast-reaction.js';
 import { CloudflareJapaneseTTS } from './cloudflare-japanese-tts.js';
 import { persistTalkLog, listTalkLogs, listArchivedTalkLogs, archiveTalkLogs, collapseTalkLogs } from './log-v42.js';
 import { WEB_VOICE_CAPTURE_POLICY } from './voice-capture-policy.js';
+import { mergeProviderUsage, normalizeGeminiUsage, USAGE_TELEMETRY_REVISION } from './usage-telemetry.js';
 
 export const INTEGRATED_ENTRY_REVISION = 'talksys-integrated-entry-v106-grounding-recovery-r1';
 export const PERSONALIZATION_REVISION = 'talksys-v87-jst-location-personalization-r1';
@@ -1051,6 +1052,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     throw error;
   }
   let interactionsRegionFallback = Boolean(interaction?.regionFallback);
+  const usageRecords = [normalizeGeminiUsage(interaction?.payload || {}, { transport: interaction?.transport || 'interactions' })];
   const primaryMs = Date.now() - primaryStarted;
   const groundingRequired = requiresGroundedEvidence(text);
   let citationCount = interactionCitationCount(interaction.payload);
@@ -1077,6 +1079,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
         { forceSearch: true, now, immediateTransit },
       );
       searchRetryMs = Date.now() - retryStarted;
+      usageRecords.push(normalizeGeminiUsage(recovery?.payload || {}, { transport: recovery?.transport || 'generateContent' }));
       const recoverySearched = searchedInInteraction(recovery.payload);
       emitLatencyLog('gemini-grounding-recovery', body, {
         durationMs: searchRetryMs,
@@ -1158,6 +1161,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
       now,
       immediateTransit,
     });
+    usageRecords.push(normalizeGeminiUsage(interaction?.payload || {}, { transport: interaction?.transport || 'interactions' }));
     interactionsRegionFallback = interactionsRegionFallback || Boolean(interaction?.regionFallback);
     searchRetried = true;
   }
@@ -1168,6 +1172,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
       temporalRepairAttempts += 1;
       const repair = temporalRepairBody(body, interaction.answer, now);
       interaction = await createGeminiTurnWithRegionFallback(env, repair, signal, { allowPrevious: false, forceSearch: true, now, immediateTransit: true });
+      usageRecords.push(normalizeGeminiUsage(interaction?.payload || {}, { transport: interaction?.transport || 'interactions' }));
       interactionsRegionFallback = interactionsRegionFallback || Boolean(interaction?.regionFallback);
     }
   }
@@ -1191,6 +1196,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     answer = '検索結果に発車済みの時刻しか残ったため、その時刻は案内しません。現在時刻より後の便だけを案内します。';
   }
   if (!answer) throw new Error('empty_spoken_answer');
+  const apiUsage = mergeProviderUsage(usageRecords);
 
   return {
     ok: true,
@@ -1223,6 +1229,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     queries,
     sources,
     apiSources: [],
+    apiUsage,
     interactionId: (interactionsRegionFallback || groundingRecoveryUsed) ? '' : compact(interaction.payload?.id, 400),
     interactionStatus: compact(interaction.payload?.status || ((interactionsRegionFallback || groundingRecoveryUsed) ? 'completed' : ''), 80),
     interactionReset: interactionsRegionFallback || groundingRecoveryUsed,
@@ -1371,6 +1378,14 @@ async function runTalkSysTurn(request, env, body, signal = request.signal, ctx =
       model: result?.generationModel || GEMINI_MODEL,
       searched: Boolean(result?.search),
       verified: Boolean(result?.genericVerificationSucceeded),
+      usageRevision: result?.apiUsage?.revision || USAGE_TELEMETRY_REVISION,
+      providerCalls: Number(result?.apiUsage?.providerCalls || 0),
+      searchCalls: Number(result?.apiUsage?.searchCalls || 0),
+      inputTokens: Number(result?.apiUsage?.inputTokens || 0),
+      outputTokens: Number(result?.apiUsage?.outputTokens || 0),
+      totalTokens: Number(result?.apiUsage?.totalTokens || 0),
+      cachedTokens: Number(result?.apiUsage?.cachedTokens || 0),
+      usageAvailable: Boolean(result?.apiUsage?.usageAvailable),
     });
     writeLatencyAnalytics(env, commonBody, timings, {
       stage: 'answer-complete',

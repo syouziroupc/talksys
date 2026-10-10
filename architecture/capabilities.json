@@ -13,7 +13,8 @@
       "status": "production",
       "responsibility": "Unified production HTTP entry point that routes Telnyx phone traffic, exposes stable /call and /line-voice Web voice fallbacks, and delegates all answer generation to the existing TalkSys answer boundary",
       "companions": [
-        "src/entry.js"
+        "src/entry.js",
+        "src/usage-telemetry.js"
       ],
       "migrationNote": "The wrapper contains no answer model of its own. Web fallback aliases rewrite to the canonical Web UI, and phone turns are delegated back into the same TalkSys answer path."
     },
