@@ -14,7 +14,9 @@
     "TELEPHONY_MIN_SPEECH_MS": "320",
     "TELEPHONY_MAX_UTTERANCE_MS": "15000",
     "TELEPHONY_MAX_SPOKEN_CHARS": "1200",
+    "TELEPHONY_VAD_RMS": "0.0045",
     "TELEPHONY_TTS_VOICE": "eve",
+    "TELEPHONY_TTS_DELIVERY": "loud-bright",
     "TELEPHONY_SEARCH_PROGRESS_ENABLED": "true"
   },
   "ai": { "binding": "AI" },
