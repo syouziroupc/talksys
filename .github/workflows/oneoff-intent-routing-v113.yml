@@ -47,6 +47,22 @@ jobs:
           set -euo pipefail
           npm run architecture:check
           npm run architecture:graph
+      - name: Diagnose remaining historical regression contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '--- matching test paths ---'
+          find . -type f \( -name 'edge-cases-v33.test.mjs' -o -name 'single-pass-v84.test.mjs' -o -name 'generic-factual-grounding-v108.test.mjs' -o -name 'hard-facts-v46.test.mjs' -o -name 'phone-search-progress-v1.test.mjs' \) -print || true
+          echo '--- region fallback contract ---'
+          grep -R -n -F 'Region retry errors are caught and replaced by a concise fallback answer' . --exclude-dir=node_modules || true
+          echo '--- v84 contract ---'
+          grep -R -n -F 'factual answer without grounding does not fail closed under v84' . --exclude-dir=node_modules || true
+          echo '--- generic grounding contract ---'
+          grep -R -n -F 'generic external fact without sources fails closed' . --exclude-dir=node_modules || true
+          echo '--- hard facts contract ---'
+          grep -R -n -F 'Gemini region fallback still passes the final truth gate before exposing claims' . --exclude-dir=node_modules || true
+          echo '--- phone progress contract ---'
+          grep -R -n -F 'search progress script still skips playback when the answer finishes during ack' . --exclude-dir=node_modules || true
       - name: Full regression suite
         shell: bash
         run: |
@@ -68,4 +84,4 @@ jobs:
           git commit -m 'Route social safety and phone control intents before search'
           git push origin HEAD:fix/intent-routing-v113
 
-# rerun: phased grounding coverage
+# diagnostics: remaining historical contracts
