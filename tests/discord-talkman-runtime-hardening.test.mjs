@@ -47,22 +47,43 @@ test('mode switch renews session only when reset cleared it', () => {
   assert.match(built, /mode-switch renewed/);
 });
 
-test('TalkMan reactions are local, cached and enabled while Whisper stays authoritative', () => {
+test('TalkMan has no connection greeting or fast reaction chatter', () => {
   const built = buildTalkmanRuntimeSource(source);
-  assert.match(built, /function talkmanFastReaction/);
-  assert.match(built, /conversationMode === 'talkman' \? talkmanFastReaction\(value\) : fastReaction\(value\)/);
-  assert.match(built, /talkmanTexts = \['お、どうも。'/);
-  assert.doesNotMatch(built, /if \(conversationMode === 'talkman'\) return false;/);
+  assert.match(built, /if \(!options\?\.suppressGreeting && conversationMode !== 'talkman'\) await playConnectionGreeting\(\)/);
+  assert.match(built, /if \(conversationMode === 'talkman'\) return false;\n  const active = helper\?\.active;/);
+  assert.match(built, /let reaction = conversationMode === 'talkman' \? null : providedFastReaction/);
+  assert.doesNotMatch(built, /function talkmanFastReaction/);
+  assert.doesNotMatch(built, /talkmanTexts = \['お、どうも。'/);
   assert.match(built, /final STT: Whisper Large v3 Turbo/);
   assert.match(built, /const stt = await transcribeCapturedUtterance/);
 });
 
-test('TalkMan preempts stale answers and coalesces backlog to latest only', () => {
+test('TalkMan reduces accidental barge-in while preserving explicit stop policy', () => {
+  const built = buildTalkmanRuntimeSource(source);
+  assert.match(built, /const confirmMs = conversationMode === 'talkman' \? 600 : BARGE_IN_CONFIRM_MS/);
+  assert.match(built, /active\.bargeInVoicedMs >= confirmMs/);
+  assert.match(built, /conversationMode !== 'talkman' && answering && captureMetrics\?\.overlappedBotPlayback/);
+  assert.match(built, /if \(policy\.action === 'interrupt'\)/);
+  assert.match(built, /interruptActiveAnswer\('explicit-user-stop'\)/);
+});
+
+test('decoder errors rearm capture and repeated failures rebuild voice state', () => {
+  const built = buildTalkmanRuntimeSource(source);
+  assert.match(built, /const decoderRecoveryByUser = new Map\(\)/);
+  assert.match(built, /decoderRecoveryByUser\.delete\(userId\)/);
+  assert.match(built, /DECODE-RECOVERY/);
+  assert.match(built, /startReceiverSession\(userId, false\)/);
+  assert.match(built, /scheduleFullReconnect\('decoder-invalid-packet', 250\)/);
+  assert.match(built, /opusBytes=/);
+  assert.match(built, /lastOpusPacketHead/);
+  assert.match(built, /decoderRecoveryByUser\.clear\(\)/);
+});
+
+test('TalkMan coalesces backlog to latest only without generic overlap preemption', () => {
   const built = buildTalkmanRuntimeSource(source);
   assert.match(built, /const TALKMAN_QUEUE_LIMIT = 1/);
   assert.match(built, /pendingTurns\.splice\(0, pendingTurns\.length, nextTurn\)/);
-  assert.match(built, /if \(answering && captureMetrics\?\.overlappedBotPlayback\)/);
-  assert.doesNotMatch(built, /conversationMode !== 'talkman' && answering && captureMetrics\?\.overlappedBotPlayback/);
+  assert.match(built, /conversationMode !== 'talkman' && answering && captureMetrics\?\.overlappedBotPlayback/);
   assert.match(built, /TalkMan latest user=/);
   assert.doesNotMatch(built, /TalkMan FIFO user=/);
 });
