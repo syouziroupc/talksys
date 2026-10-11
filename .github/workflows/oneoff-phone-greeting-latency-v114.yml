@@ -1,0 +1,53 @@
+name: Apply phone greeting latency v114
+
+on:
+  push:
+    branches: [fix/phone-greeting-latency-v114]
+    paths:
+      - '.github/workflows/oneoff-phone-greeting-latency-v114.yml'
+      - 'scripts/apply-phone-greeting-latency-v114.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Apply v114 patch
+        run: python scripts/apply-phone-greeting-latency-v114.py
+      - name: Install dependencies
+        run: |
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Syntax check
+        run: node --check src/telephony/index.js
+      - name: Focused phone tests
+        run: |
+          node --test tests/phone-greeting-latency-v114.test.mjs tests/phone-latency-fast-ack-v90.test.mjs tests/phone-pcmu-v87.test.mjs tests/telephony-integration.test.mjs
+      - name: Architecture checks
+        run: |
+          npm run architecture:check
+          npm run architecture:graph
+      - name: Full active test suite
+        run: npm test
+      - name: Worker dry run
+        run: npx wrangler deploy --dry-run
+      - name: Commit verified patch
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f .github/workflows/oneoff-phone-greeting-latency-v114.yml scripts/apply-phone-greeting-latency-v114.py
+          git add src/telephony/index.js tests/phone-greeting-latency-v114.test.mjs
+          git diff --cached --check
+          git commit -m 'Reduce phone greeting startup latency v114'
+          git push origin HEAD:${{ github.ref_name }}
