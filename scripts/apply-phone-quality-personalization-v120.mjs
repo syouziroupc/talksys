@@ -76,7 +76,7 @@ v115 = replaceOnce(
 );
 fs.writeFileSync(v115Path, v115);
 
-const v120Test = `import test from 'node:test';
+const v120Test = String.raw`import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { gateTurnPayload } from '../src/entry.js';
