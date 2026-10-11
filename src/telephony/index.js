@@ -9,6 +9,7 @@ export const TELEPHONY_REVISION = 'talksys-telephony-v87-grok-pcmu-paced';
 export const TELEPHONY_OBSERVABILITY_REVISION = 'talksys-phone-latency-v90-fast-ack-r1';
 export const PHONE_GREETING_LATENCY_REVISION = 'talksys-phone-greeting-latency-v114-r1';
 export const PHONE_PROFILE_REVISION = 'talksys-phone-profile-v115-r1';
+export const PHONE_PROFILE_PRELOAD_REVISION = 'talksys-phone-profile-preload-v116a-r1';
 const FRAME_MS = 20;
 const FAST_ACK_TEXT = 'はい、少々お待ちください。';
 export const PHONE_FAST_ACK_REVISION = 'talksys-phone-fast-ack-v2-r1';
@@ -464,6 +465,22 @@ function profilePhone(value = '') {
 function profileDefaults(phoneNumber = '') {
   return { phone_number: profilePhone(phoneNumber), display_name: '', personalization_text: '', memory_text: '', enabled: 1, version: 0, created_at: '', updated_at: '' };
 }
+async function loadCallerProfileForSession(env, phoneNumber) {
+  const phone = profilePhone(phoneNumber);
+  if (!phone || !(await ensureSchema(env))) return null;
+  const row = await env.TALKSYS_LOG_DB.prepare(`SELECT display_name, personalization_text, memory_text, enabled, version FROM phone_profiles WHERE phone_number=?`).bind(phone).first();
+  if (!row) return null;
+  const enabledValue = row?.enabled;
+  const versionRaw = Number(row?.version || 0);
+  return Object.freeze({
+    displayName: clean(row?.display_name || '', 80).trim(),
+    personalizationText: clean(row?.personalization_text || '', 4000).trim(),
+    memoryText: clean(row?.memory_text || '', 8000).trim(),
+    enabled: !(enabledValue === false || enabledValue === 0 || enabledValue === '0'),
+    version: Number.isFinite(versionRaw) ? Math.max(0, Math.round(versionRaw)) : 0,
+  });
+}
+
 function profileInput(body = {}) {
   const displayName = String(body?.display_name ?? body?.displayName ?? '');
   const personalizationText = String(body?.personalization_text ?? body?.personalizationText ?? '');
@@ -698,6 +715,7 @@ function mediaBridge(request, env, deps) {
   let callId='', from='', to='', speechActive=false, silentFor=0, speechFrames=[], preRoll=[], closed=false, assistantPlaying=false, currentMark='', playbackGeneration=0;
   let noiseFloor=Math.max(0.0015,Math.min(0.02,speechThreshold*0.45)), speechHits=0, bargeHits=0, captureSeq=0, latestAcceptedCapture=0, turnVersion=0, activeTurnAbort=null, pendingSttCount=0, lastAcceptedUserText='', lastAcceptedUserAt=0, recentAckTexts=[];
   const pendingTasks=new Set(), hpState={prevX:0,prevY:0};
+  const callerProfileSession={status:'idle',phoneNumber:'',profile:null};
   const adaptNoise=(rms,fast=false)=>{const value=Math.max(0.0005,Math.min(0.04,Number(rms)||0));const alpha=fast?0.08:(value>noiseFloor?0.01:0.035);noiseFloor=Math.max(0.001,Math.min(0.03,noiseFloor*(1-alpha)+value*alpha));};
   const startThreshold=()=>Math.max(speechThreshold,Math.min(0.055,noiseFloor*2.7));
   const trackTask=(promise)=>{pendingTasks.add(promise);promise.finally(()=>pendingTasks.delete(promise));return promise;};
@@ -805,6 +823,21 @@ function mediaBridge(request, env, deps) {
     let message;try{message=JSON.parse(await messageText(event.data));}catch{return;}
     if(message?.event==='start'){
       const start=message.start||{},params=customParameters(start);callId=clean(params.call_id||start.call_sid||start.callSid||start.call_control_id||crypto.randomUUID(),200);from=clean(params.from||start.from||'',80);to=clean(params.to||start.to||'',80);
+      const profilePhoneAtStart=from,profileLoadStartedAt=Date.now(),profileTurnId=`${clean(callId||'call',120)}-profile`;
+      callerProfileSession.status='loading';callerProfileSession.phoneNumber=profilePhoneAtStart;callerProfileSession.profile=null;
+      queueLatency(profileTurnId,'profile_load_start',0,{revision:PHONE_PROFILE_PRELOAD_REVISION});
+      trackTask(loadCallerProfileForSession(env,profilePhoneAtStart).then((profile)=>{
+        if(from!==profilePhoneAtStart)return;
+        callerProfileSession.status='ready';callerProfileSession.profile=profile;
+        const elapsedMs=Date.now()-profileLoadStartedAt;
+        queueLatency(profileTurnId,'profile_load_end',elapsedMs,{revision:PHONE_PROFILE_PRELOAD_REVISION,found:Boolean(profile),enabled:Boolean(profile?.enabled),profileVersion:Number(profile?.version||0)});
+        console.log(JSON.stringify({type:'phone_profile_preload',revision:PHONE_PROFILE_PRELOAD_REVISION,status:'ready',elapsedMs:boundedMs(elapsedMs),found:Boolean(profile),enabled:Boolean(profile?.enabled),profileVersion:Number(profile?.version||0)}));
+      }).catch((error)=>{
+        if(from===profilePhoneAtStart){callerProfileSession.status='error';callerProfileSession.profile=null;}
+        const elapsedMs=Date.now()-profileLoadStartedAt;
+        queueLatency(profileTurnId,'profile_load_error',elapsedMs,{revision:PHONE_PROFILE_PRELOAD_REVISION});
+        console.warn(JSON.stringify({type:'phone_profile_preload',revision:PHONE_PROFILE_PRELOAD_REVISION,status:'error',elapsedMs:boundedMs(elapsedMs),error:clean(error?.message||error,240)}));
+      }));
       const greetingStartedAt=Date.now(),greetingTurnId=`${clean(callId||'call',120)}-greeting`;
       trackTask(upsertCall(env,{callId,from,to,status:'active'}).catch((error)=>console.error(JSON.stringify({type:'phone_call_upsert_error',stage:'start',error:clean(error?.message||error,240)}))));
       queueLatency(greetingTurnId,'greeting_start',0,{revision:PHONE_GREETING_LATENCY_REVISION,prewarm:true});
