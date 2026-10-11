@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   patch-and-validate:
-    if: ${{ !contains(github.event.head_commit.message, '[v116r applied]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,13 +28,17 @@ jobs:
           s = p.read_text(encoding='utf-8')
           old_ack = "const FAST_ACK_TEXT = 'はい、少々お待ちください。';"
           new_ack = "const FAST_ACK_TEXT = 'はい。';"
-          if s.count(old_ack) != 1:
-              raise SystemExit(f'expected exactly one current FAST_ACK_TEXT, got {s.count(old_ack)}')
-          s = s.replace(old_ack, new_ack, 1)
+          if old_ack in s:
+              if s.count(old_ack) != 1:
+                  raise SystemExit('unexpected FAST_ACK_TEXT multiplicity')
+              s = s.replace(old_ack, new_ack, 1)
+          elif new_ack not in s:
+              raise SystemExit('FAST_ACK_TEXT contract not recognized')
           warm_call = "trackTask(warmPhoneAckPrimaries(env,deps).then((count)=>console.log(JSON.stringify({type:'phone_fast_ack_primary_warm',revision:PHONE_FAST_ACK_REVISION,count}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_primary_warm_error',error:clean(error?.message||error,240)}))));return;"
-          if s.count(warm_call) != 1:
-              raise SystemExit(f'expected exactly one startup primary warm call, got {s.count(warm_call)}')
-          s = s.replace(warm_call, "return;", 1)
+          if warm_call in s:
+              if s.count(warm_call) != 1:
+                  raise SystemExit('unexpected startup primary warm multiplicity')
+              s = s.replace(warm_call, 'return;', 1)
           p.write_text(s, encoding='utf-8')
 
           t = Path('tests/phone-fast-ack-recovery-v116r.test.mjs')
@@ -52,7 +55,7 @@ test('v116r restores the known-good short fallback acknowledgement', () => {
   assert.equal(selected.text, 'はい。');
 });
 
-test('v116r does not prewarm category acknowledgement TTS at call start', () => {
+test('v116r removes category TTS warmup from call startup but retains lazy category warming', () => {
   assert.doesNotMatch(source, /trackTask\\(warmPhoneAckPrimaries\\(env,deps\\)/);
   assert.match(source, /if\\(ackSelection\\.warmText\\)/);
 });
@@ -75,11 +78,15 @@ test('v116r leaves the core answer function contract unchanged', () => {
           npm run reuse:check
       - name: Wrangler dry run
         run: npx wrangler deploy --dry-run --outdir /tmp/talksys-v116r-dryrun
-      - name: Commit validated recovery
+      - name: Commit validated recovery if changed
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add src/telephony/index.js tests/phone-fast-ack-recovery-v116r.test.mjs
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit.'
+            exit 0
+          fi
           git diff --cached --check
-          git commit -m "Restore fast phone acknowledgement without touching answer path [v116r applied]"
+          git commit -m 'Restore fast phone acknowledgement without touching answer path [v116r applied]'
           git push origin HEAD:fix/phone-fast-ack-restore-v116r
