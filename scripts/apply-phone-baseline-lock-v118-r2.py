@@ -64,14 +64,115 @@ i = i.replace(string_anchor, '${profileLead}${transitPrefix}${speechAlternativeP
 
 integrated_path.write_text(i, encoding='utf-8')
 
-# Restore the 10/10 acknowledgement contracts. These explicitly prevent the
-# pre-STT "always はい" rewrite from being reintroduced unnoticed.
+# Restore the 10/10 acknowledgement contract itself, but update the regression
+# assertion so it permits the new text-only profile argument. Audio timing and
+# transport semantics remain the old contract.
 Path('tests/phone-fast-reaction-v2.test.mjs').write_text(
     git_show(REACTION_BASELINE, 'tests/phone-fast-reaction-v2.test.mjs'), encoding='utf-8'
 )
-Path('tests/phone-latency-fast-ack-v90.test.mjs').write_text(
-    git_show(REACTION_BASELINE, 'tests/phone-latency-fast-ack-v90.test.mjs'), encoding='utf-8'
-)
+
+Path('tests/phone-latency-fast-ack-v90.test.mjs').write_text(r'''import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+
+test('phone latency v90 persists per-turn stage telemetry and exposes it in the admin UI', () => {
+  assert.match(source, /phone_latency_events/);
+  assert.match(source, /appendLatencyEvent/);
+  assert.match(source, /speech_end_estimate/);
+  assert.match(source, /stt_start/);
+  assert.match(source, /stt_end/);
+  assert.match(source, /turn_start/);
+  assert.match(source, /answer_ready/);
+  assert.match(source, /answer_first_pcmu/);
+  assert.match(source, /pending_stt_wait_start/);
+  assert.match(source, /pending_stt_wait_end/);
+  assert.match(source, /\/latency/);
+  assert.match(source, /遅延タイムライン/);
+});
+
+test('phone latency v90 uses a prewarmed PCMU receipt acknowledgement only after confirmed STT', () => {
+  assert.match(source, /const\s+FAST_ACK_TEXT\s*=\s*'はい、少々お待ちください。'/);
+  assert.match(source, /warmFastAckAudio/);
+  assert.match(source, /fastAckAudioCache/);
+  assert.match(source, /ack_cache_hit/);
+  assert.match(source, /ack_cache_miss/);
+  const sttEnd = source.search(/queueLatency\(turnId,\s*'stt_end'/);
+  const ackHit = source.search(/queueLatency\(turnId,\s*'ack_cache_hit'/);
+  assert.ok(sttEnd >= 0 && ackHit > sttEnd, 'receipt ack must only occur after successful STT');
+});
+
+test('phone latency v90 correlates phone turns with the shared TalkSys latency logger', () => {
+  assert.match(source, /utteranceId:\s*clean\(utteranceId,\s*200\)/);
+  assert.match(source, /answerWithTalkSys\(deps,\s*stt\.text,\s*history,\s*controller\.signal,\s*spokenBackchannel,\s*callId,\s*turnId,\s*callerProfileSession\.status==='ready'\?callerProfileSession\.profile:null\)/);
+});
+
+test('phone latency v90 preserves the proven PCMU Telnyx transport and answer quality path', () => {
+  assert.match(source, /talksys-telephony-v87-grok-pcmu-paced/);
+  assert.match(source, /streamPcmu20ms\(audio\.bytes/);
+  assert.match(source, /synthesizePhonePcmu\(env,\s*spoken,\s*deps\)/);
+  assert.match(source, /channel:\s*'phone'/);
+  assert.doesNotMatch(source, /gemini-3\.8-live/i);
+  assert.doesNotMatch(source, /bidirectionalMode="mp3"/);
+});
+''', encoding='utf-8')
+
+# v116a originally asserted that preload was unused. v118 deliberately consumes
+# the already-loaded profile as text context only, without adding any await to
+# the media/STT/audio path. Replace the obsolete negative contract accordingly.
+Path('tests/phone-profile-preload-v116a.test.mjs').write_text(r'''import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { PHONE_PROFILE_PRELOAD_REVISION } from '../src/telephony/index.js';
+
+const telephony = await readFile(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+const integrated = await readFile(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
+
+test('v116a revision remains explicit', () => {
+  assert.match(PHONE_PROFILE_PRELOAD_REVISION, /v116a/);
+});
+
+test('profile preload reads once from the caller number and is background tracked', () => {
+  assert.match(telephony, /async function loadCallerProfileForSession\(env, phoneNumber\)/);
+  assert.match(telephony, /SELECT display_name, personalization_text, memory_text, enabled, version FROM phone_profiles WHERE phone_number=\?/);
+  assert.match(telephony, /trackTask\(loadCallerProfileForSession\(env,profilePhoneAtStart\)\.then/);
+  assert.doesNotMatch(telephony, /await\s+loadCallerProfileForSession\(/);
+});
+
+test('profile preload is session-local and observable without logging profile contents', () => {
+  assert.match(telephony, /callerProfileSession=\{status:'idle',phoneNumber:'',profile:null\}/);
+  assert.match(telephony, /'profile_load_start'/);
+  assert.match(telephony, /'profile_load_end'/);
+  assert.match(telephony, /'profile_load_error'/);
+  const preloadLog = telephony.match(/console\.log\(JSON\.stringify\(\{type:'phone_profile_preload'[\s\S]*?\}\)\);/u)?.[0] || '';
+  assert.ok(preloadLog);
+  assert.doesNotMatch(preloadLog, /displayName|personalizationText|memoryText/);
+});
+
+test('v118 sends only sanitized preloaded profile text into TalkSys', () => {
+  const answerStart = telephony.indexOf('async function answerWithTalkSys');
+  const answerEnd = telephony.indexOf('async function warmFastAckAudio', answerStart);
+  const answerBlock = telephony.slice(answerStart, answerEnd);
+  assert.ok(answerStart >= 0 && answerEnd > answerStart);
+  assert.match(answerBlock, /callerProfile = null/);
+  assert.match(answerBlock, /displayName: clean\(callerProfile\?\.displayName \|\| '', 80\)/);
+  assert.match(answerBlock, /personalizationText: clean\(callerProfile\?\.personalizationText \|\| '', 4000\)/);
+  assert.match(answerBlock, /memoryText: clean\(callerProfile\?\.memoryText \|\| '', 8000\)/);
+  assert.match(answerBlock, /\.\.\.\(phoneProfile \? \{ phoneProfile \} : \{\}\)/);
+  assert.match(integrated, /function phoneProfileContext\(body = \{\}\)/);
+});
+
+test('v118 profile usage remains outside the audio pipeline', () => {
+  assert.match(telephony, /callerProfileSession\.status==='ready'\?callerProfileSession\.profile:null/);
+  assert.match(telephony, /const turnPromise=answerWithTalkSys/);
+  assert.doesNotMatch(telephony, /await\s+loadCallerProfileForSession\(/);
+  const mediaStart = telephony.indexOf("if(message?.event==='media'");
+  const finish = telephony.indexOf('const finishUtterance');
+  const audioRegion = telephony.slice(finish, mediaStart);
+  assert.doesNotMatch(audioRegion, /await\s+loadCallerProfileForSession/);
+});
+''', encoding='utf-8')
 
 # The accessibility experiment is intentionally rolled back. Keeping its test
 # would require the very Telnyx-only input gain and sensitivity change we are
