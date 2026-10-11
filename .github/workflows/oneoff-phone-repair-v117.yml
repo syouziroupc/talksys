@@ -34,7 +34,9 @@ jobs:
             npm install --no-audit --no-fund
           fi
       - name: Apply phone repair v117
-        run: python scripts/oneoff_phone_repair_v117.py
+        run: |
+          python scripts/oneoff_phone_repair_v117.py
+          python scripts/oneoff_phone_repair_v117_testfix.py
       - name: Focused validation
         shell: bash
         run: |
@@ -54,11 +56,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm .github/workflows/oneoff-phone-repair-v117.yml scripts/oneoff_phone_repair_v117.py
+          rm .github/workflows/oneoff-phone-repair-v117.yml scripts/oneoff_phone_repair_v117.py scripts/oneoff_phone_repair_v117_testfix.py
           git add -A
           changed="$(git diff --name-only c8a1aec52398d2db88981f13da8c7655e8baffae)"
           printf '%s\n' "$changed"
-          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(src/telephony/index\.js|tests/phone-latency-fast-ack-v90\.test\.mjs|tests/phone-repair-v117\.test\.mjs)$' || true)"
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(src/telephony/index\.js|tests/phone-latency-fast-ack-v90\.test\.mjs|tests/phone-fast-reaction-v2\.test\.mjs|tests/phone-repair-v117\.test\.mjs)$' || true)"
           test -z "$unexpected"
       - name: Commit and push verified repair
         shell: bash
