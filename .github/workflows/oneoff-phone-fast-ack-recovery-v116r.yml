@@ -31,18 +31,33 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-          p = Path('src/telephony/index.js')
-          s = p.read_text(encoding='utf-8')
+
+          source = Path('src/telephony/index.js')
+          s = source.read_text(encoding='utf-8')
           old_ack = "const FAST_ACK_TEXT = 'はい、少々お待ちください。';"
           new_ack = "const FAST_ACK_TEXT = 'はい。';"
           if s.count(old_ack) != 1:
               raise SystemExit(f'expected exactly one current FAST_ACK_TEXT, got {s.count(old_ack)}')
           s = s.replace(old_ack, new_ack, 1)
+
           warm_call = "trackTask(warmPhoneAckPrimaries(env,deps).then((count)=>console.log(JSON.stringify({type:'phone_fast_ack_primary_warm',revision:PHONE_FAST_ACK_REVISION,count}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_primary_warm_error',error:clean(error?.message||error,240)}))));return;"
           if s.count(warm_call) != 1:
               raise SystemExit(f'expected exactly one startup primary warm call, got {s.count(warm_call)}')
           s = s.replace(warm_call, 'return;', 1)
-          p.write_text(s, encoding='utf-8')
+          source.write_text(s, encoding='utf-8')
+
+          test = Path('tests/phone-fast-reaction-v2.test.mjs')
+          t = test.read_text(encoding='utf-8')
+          old_literal = 'はい、少々お待ちください。'
+          if t.count(old_literal) < 5:
+              raise SystemExit(f'expected existing fallback assertions, got {t.count(old_literal)}')
+          t = t.replace(old_literal, 'はい。')
+          anchor = "  assert.match(source, /phone_fast_ack_lazy_warm/);\n"
+          if anchor not in t:
+              raise SystemExit('lazy warm assertion anchor missing')
+          t = t.replace(anchor, anchor + "  assert.doesNotMatch(source, /trackTask\\(warmPhoneAckPrimaries\\(env,deps\\)/);\n", 1)
+          test.write_text(t, encoding='utf-8')
+
           Path('.deploy/production-trigger.txt').write_text('phone-fast-ack-recovery-v116r-20261011\n', encoding='utf-8')
           PY
       - name: Validate recovery invariants
@@ -79,7 +94,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git rm -f .github/workflows/oneoff-phone-fast-ack-recovery-v116r.yml
-          git add src/telephony/index.js .deploy/production-trigger.txt
+          git add src/telephony/index.js tests/phone-fast-reaction-v2.test.mjs .deploy/production-trigger.txt
           git diff --cached --check
           git commit -m 'Restore phone fast acknowledgement without changing answer quality v116r'
           git push origin HEAD:main
