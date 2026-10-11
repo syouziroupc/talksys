@@ -1,0 +1,67 @@
+name: One-off phone quality and personalization v120
+
+on:
+  push:
+    branches: [fix/phone-quality-personalization-v120]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies without generating a lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund --package-lock=false
+      - name: Apply guarded v120 patch
+        run: node scripts/apply-phone-quality-personalization-v120.mjs
+      - name: Syntax check
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/entry.js
+          node --check src/telephony/index.js
+          node --check src/integrated-entry.js
+      - name: Focused quality and personalization regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            tests/phone-quality-personalization-v120.test.mjs \
+            tests/phone-second-turn-ack-zip-v119.test.mjs \
+            tests/phone-conversation-baseline-lock-v118.test.mjs \
+            tests/phone-profile-preload-v116a.test.mjs \
+            tests/phone-personalization-profile-v115.test.mjs \
+            tests/phone-latency-fast-ack-v90.test.mjs \
+            tests/v46-hard-facts-gate.test.mjs \
+            tests/evidence-first-v54.test.mjs
+      - name: Architecture and full regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run architecture:check
+          npm run architecture:graph
+          npm run reuse:check
+          npm test
+      - name: Wrangler dry run
+        run: npx wrangler deploy --dry-run
+      - name: Remove one-off tooling and commit verified repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm scripts/apply-phone-quality-personalization-v120.mjs .github/workflows/oneoff-phone-quality-personalization-v120.yml
+          git add src/entry.js src/telephony/index.js tests/phone-latency-fast-ack-v90.test.mjs tests/phone-conversation-baseline-lock-v118.test.mjs tests/phone-personalization-profile-v115.test.mjs tests/phone-quality-personalization-v120.test.mjs
+          git config user.name syouziroupc
+          git config user.email syouziroupc@gmail.com
+          git commit -m "Fix phone quality boundaries and lock personalization v120"
+          git push origin HEAD:fix/phone-quality-personalization-v120
