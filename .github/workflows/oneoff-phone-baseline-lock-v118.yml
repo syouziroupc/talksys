@@ -1,0 +1,114 @@
+name: One-off phone baseline lock v118
+
+on:
+  push:
+    branches: [fix/phone-conversation-baseline-lock-v118]
+    paths:
+      - '.github/workflows/oneoff-phone-baseline-lock-v118.yml'
+      - 'scripts/apply-phone-baseline-lock-v118.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phone-baseline-lock-v118
+  cancel-in-progress: false
+
+jobs:
+  apply-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then
+            npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Apply baseline restoration and management integration
+        run: python scripts/apply-phone-baseline-lock-v118.py
+
+      - name: Syntax check
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/stt-v45.js
+          node --check src/telephony/index.js
+          node --check src/integrated-entry.js
+
+      - name: Focused phone baseline regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            tests/phone-conversation-baseline-lock-v118.test.mjs \
+            tests/phone-fast-reaction-v2.test.mjs \
+            tests/phone-latency-fast-ack-v90.test.mjs \
+            tests/phone-personalization-profile-v115.test.mjs \
+            tests/phone-profile-preload-v116a.test.mjs \
+            tests/phone-batch-zip-export-v112.test.mjs \
+            tests/phone-pcmu-v87.test.mjs
+
+      - name: Architecture checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run architecture:check
+          npm run architecture:graph
+          TALKSYS_REUSE_BASE_SHA=f81830c0d15d6dbc32623a1acd362c0bbae1110e npm run reuse:check
+
+      - name: Full regression suite
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p .diagnostics
+          set +e
+          npm test 2>&1 | tee .diagnostics/npm-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          exit "$status"
+
+      - name: Upload full regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone-baseline-v118-full-regression
+          path: .diagnostics/npm-test.log
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Wrangler dry run
+        run: npx wrangler deploy --dry-run
+
+      - name: Remove one-off repair tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/oneoff-phone-baseline-lock-v118.yml \
+            scripts/apply-phone-baseline-lock-v118.py \
+            .github/workflows/oneoff-phone-repair-v117.yml \
+            scripts/oneoff_phone_repair_v117.py \
+            scripts/oneoff_phone_repair_v117_testfix.py
+          git add -A
+          git diff --cached --check
+
+      - name: Commit validated baseline restoration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Restore and lock phone conversation baseline v118'
+          git push origin HEAD:fix/phone-conversation-baseline-lock-v118
