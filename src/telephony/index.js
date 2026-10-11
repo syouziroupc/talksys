@@ -7,6 +7,7 @@ import { WEB_VOICE_CAPTURE_POLICY } from '../voice-capture-policy.js';
 
 export const TELEPHONY_REVISION = 'talksys-telephony-v87-grok-pcmu-paced';
 export const TELEPHONY_OBSERVABILITY_REVISION = 'talksys-phone-latency-v90-fast-ack-r1';
+export const PHONE_GREETING_LATENCY_REVISION = 'talksys-phone-greeting-latency-v114-r1';
 const FRAME_MS = 20;
 const FAST_ACK_TEXT = 'はい、少々お待ちください。';
 export const PHONE_FAST_ACK_REVISION = 'talksys-phone-fast-ack-v2-r1';
@@ -39,6 +40,8 @@ let fastAckAudioCache = null;
 let fastAckAudioPromise = null;
 const phoneAckAudioCache = new Map();
 const phoneAckAudioPromises = new Map();
+const phoneGreetingAudioCache = new Map();
+const phoneGreetingAudioPromises = new Map();
 
 function phoneAckVariantsFor(reaction = {}) {
   if (!reaction?.shouldSpeak || reaction?.terminal) return [FAST_ACK_TEXT];
@@ -318,6 +321,29 @@ async function warmFastAckAudio(env, deps = {}) {
       .finally(() => { fastAckAudioPromise = null; });
   }
   return fastAckAudioPromise;
+}
+
+async function warmPhoneGreetingAudio(env, text, deps = {}) {
+  const greetingText = clean(text, 240);
+  if (!greetingText) return null;
+  const cached = phoneGreetingAudioCache.get(greetingText);
+  if (cached?.bytes?.byteLength) return cached;
+  if (!phoneGreetingAudioPromises.has(greetingText)) {
+    const promise = synthesizePcmu(env, greetingText, deps)
+      .then((audio) => {
+        if (audio?.bytes?.byteLength) {
+          phoneGreetingAudioCache.set(greetingText, audio);
+          while (phoneGreetingAudioCache.size > 4) {
+            const oldest = phoneGreetingAudioCache.keys().next().value;
+            phoneGreetingAudioCache.delete(oldest);
+          }
+        }
+        return phoneGreetingAudioCache.get(greetingText) || null;
+      })
+      .finally(() => { phoneGreetingAudioPromises.delete(greetingText); });
+    phoneGreetingAudioPromises.set(greetingText, promise);
+  }
+  return phoneGreetingAudioPromises.get(greetingText);
 }
 
 async function warmPhoneAckAudio(env, text, deps = {}) {
@@ -636,6 +662,9 @@ function mediaBridge(request, env, deps) {
     return true;
   };
 
+  const greetingText=clean(env?.TELEPHONY_GREETING||'お電話ありがとうございます。フォーンズです。ご用件をどうぞ。',240);
+  const greetingAudioPromise=warmPhoneGreetingAudio(env,greetingText,deps).catch((error)=>{console.warn(JSON.stringify({type:'phone_greeting_prewarm_error',error:clean(error?.message||error,240)}));return null;});
+  trackTask(greetingAudioPromise);
   trackTask(warmFastAckAudio(env,deps).then(audio=>console.log(JSON.stringify({type:'phone_fast_ack_warm',ok:Boolean(audio?.bytes?.byteLength),bytes:audio?.bytes?.byteLength||0}))).catch(error=>console.warn(JSON.stringify({type:'phone_fast_ack_warm_error',error:clean(error?.message||error,240)}))));
 
   const finishUtterance=()=>{
@@ -706,8 +735,12 @@ function mediaBridge(request, env, deps) {
     let message;try{message=JSON.parse(await messageText(event.data));}catch{return;}
     if(message?.event==='start'){
       const start=message.start||{},params=customParameters(start);callId=clean(params.call_id||start.call_sid||start.callSid||start.call_control_id||crypto.randomUUID(),200);from=clean(params.from||start.from||'',80);to=clean(params.to||start.to||'',80);
-      await upsertCall(env,{callId,from,to,status:'active'});const greeting=clean(env?.TELEPHONY_GREETING||'お電話ありがとうございます。フォーンズです。ご用件をどうぞ。',240);
-      if(greeting&&await speak(greeting,{purpose:'greeting'})){history.push({role:'assistant',content:greeting});await appendMessage(env,callId,'assistant',greeting);}
+      const greetingStartedAt=Date.now(),greetingTurnId=`${clean(callId||'call',120)}-greeting`;
+      trackTask(upsertCall(env,{callId,from,to,status:'active'}).catch((error)=>console.error(JSON.stringify({type:'phone_call_upsert_error',stage:'start',error:clean(error?.message||error,240)}))));
+      queueLatency(greetingTurnId,'greeting_start',0,{revision:PHONE_GREETING_LATENCY_REVISION,prewarm:true});
+      const preparedGreeting=await greetingAudioPromise;
+      queueLatency(greetingTurnId,'greeting_prepared',Date.now()-greetingStartedAt,{cached:Boolean(preparedGreeting?.bytes?.byteLength),bytes:preparedGreeting?.bytes?.byteLength||0});
+      if(greetingText&&await speak(greetingText,{purpose:'greeting',turnId:greetingTurnId,originAt:greetingStartedAt,preparedAudio:preparedGreeting||undefined})){history.push({role:'assistant',content:greetingText});queueMessageLog('assistant',greetingText);}
       trackTask(warmPhoneAckPrimaries(env,deps).then((count)=>console.log(JSON.stringify({type:'phone_fast_ack_primary_warm',revision:PHONE_FAST_ACK_REVISION,count}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_primary_warm_error',error:clean(error?.message||error,240)}))));return;
     }
     if(message?.event==='mark'){if(currentMark&&message?.mark?.name===currentMark){assistantPlaying=false;currentMark='';}return;}
