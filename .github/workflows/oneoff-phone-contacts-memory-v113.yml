@@ -1,0 +1,55 @@
+name: Apply phone contacts memory v113
+
+on:
+  push:
+    branches: [fix/phone-contacts-memory-v113]
+    paths:
+      - '.github/workflows/oneoff-phone-contacts-memory-v113.yml'
+      - 'scripts/apply-phone-contacts-memory-v113.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Apply v113 patch
+        run: python scripts/apply-phone-contacts-memory-v113.py
+      - name: Install dependencies
+        run: |
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Syntax checks
+        run: |
+          node --check src/telephony/index.js
+          node --check src/integrated-entry.js
+      - name: Focused phone tests
+        run: |
+          node --test tests/phone-contact-memory-v113.test.mjs tests/phone-batch-zip-export-v112.test.mjs tests/phone-jsonl-export-v111.test.mjs
+      - name: Architecture checks
+        run: |
+          npm run architecture:check
+          npm run architecture:graph
+      - name: Full test suite
+        run: npm test
+      - name: Worker dry run
+        run: npx wrangler deploy --dry-run
+      - name: Commit verified patch
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f .github/workflows/oneoff-phone-contacts-memory-v113.yml scripts/apply-phone-contacts-memory-v113.py
+          git add src/telephony/index.js src/integrated-entry.js tests/phone-contact-memory-v113.test.mjs
+          git diff --cached --check
+          git commit -m 'Add phone contacts memory and fix ZIP route v113'
+          git push origin HEAD:${{ github.ref_name }}
