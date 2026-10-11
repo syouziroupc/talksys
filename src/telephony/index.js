@@ -11,7 +11,7 @@ export const PHONE_GREETING_LATENCY_REVISION = 'talksys-phone-greeting-latency-v
 export const PHONE_PROFILE_REVISION = 'talksys-phone-profile-v115-r1';
 export const PHONE_PROFILE_PRELOAD_REVISION = 'talksys-phone-profile-preload-v116a-r1';
 const FRAME_MS = 20;
-const FAST_ACK_TEXT = 'はい、少々お待ちください。';
+const FAST_ACK_TEXT = 'はい。';
 export const PHONE_FAST_ACK_REVISION = 'talksys-phone-fast-ack-v2-r1';
 const PHONE_ACK_VARIANTS = Object.freeze({
   lookup: Object.freeze([
@@ -844,7 +844,7 @@ function mediaBridge(request, env, deps) {
       const preparedGreeting=await greetingAudioPromise;
       queueLatency(greetingTurnId,'greeting_prepared',Date.now()-greetingStartedAt,{cached:Boolean(preparedGreeting?.bytes?.byteLength),bytes:preparedGreeting?.bytes?.byteLength||0});
       if(greetingText&&await speak(greetingText,{purpose:'greeting',turnId:greetingTurnId,originAt:greetingStartedAt,preparedAudio:preparedGreeting||undefined})){history.push({role:'assistant',content:greetingText});queueMessageLog('assistant',greetingText);}
-      trackTask(warmPhoneAckPrimaries(env,deps).then((count)=>console.log(JSON.stringify({type:'phone_fast_ack_primary_warm',revision:PHONE_FAST_ACK_REVISION,count}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_primary_warm_error',error:clean(error?.message||error,240)}))));return;
+      return;
     }
     if(message?.event==='mark'){if(currentMark&&message?.mark?.name===currentMark){assistantPlaying=false;currentMark='';}return;}
     if(message?.event==='media'&&message?.media?.payload){
