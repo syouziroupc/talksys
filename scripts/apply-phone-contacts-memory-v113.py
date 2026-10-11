@@ -30,8 +30,8 @@ if 'CREATE TABLE IF NOT EXISTS phone_contacts' not in s:
     s = s.replace(marker, addition + marker, 1)
 
 # Ensure every observed caller number has a contact record without double-counting calls.
-old = """      updated_at=excluded.updated_at`).bind(callId, from, to, status, now, now).run();\n}\nasync function setCallStatus"""
-new = """      updated_at=excluded.updated_at`).bind(callId, from, to, status, now, now).run();\n  if (from) {\n    await env.TALKSYS_LOG_DB.prepare(`INSERT INTO phone_contacts\n      (phone_number, display_name, memory, created_at, updated_at) VALUES (?, '', '', ?, ?)\n      ON CONFLICT(phone_number) DO NOTHING`).bind(from, now, now).run();\n  }\n}\nasync function setCallStatus"""
+old = """      updated_at=excluded.updated_at`).bind(callId, from, to, status, now, now).run();\n}\n\nasync function setCallStatus"""
+new = """      updated_at=excluded.updated_at`).bind(callId, from, to, status, now, now).run();\n  if (from) {\n    await env.TALKSYS_LOG_DB.prepare(`INSERT INTO phone_contacts\n      (phone_number, display_name, memory, created_at, updated_at) VALUES (?, '', '', ?, ?)\n      ON CONFLICT(phone_number) DO NOTHING`).bind(from, now, now).run();\n  }\n}\n\nasync function setCallStatus"""
 if old in s:
     s = s.replace(old, new, 1)
 elif 'INSERT INTO phone_contacts' not in s:
