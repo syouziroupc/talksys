@@ -593,14 +593,18 @@ async function recentCallsZip(request, env) {
   });
 }
 
-async function texmlResponse(request, env) {
+async function texmlResponse(request, env, ctx) {
   if (!enabled(env)) return new Response('telephony_disabled', { status: 503 });
   if (!sharedToken(env)) return new Response('telephony_shared_token_missing', { status: 503 });
   if (!tokenAuthorized(request, env)) return new Response('unauthorized', { status: 401 });
   const params = await requestParams(request);
   const callId = clean(params.get('CallSid') || params.get('call_sid') || crypto.randomUUID(), 200);
   const from = clean(params.get('From') || params.get('from') || '', 80), to = clean(params.get('To') || params.get('to') || '', 80);
-  await upsertCall(env, { callId, from, to, status: 'connecting' });
+  const persistCall = upsertCall(env, { callId, from, to, status: 'connecting' }).catch((error) => {
+    console.error(JSON.stringify({ type: 'phone_call_upsert_error', stage: 'voice-webhook', error: clean(error?.message || error, 240) }));
+  });
+  if (ctx?.waitUntil) ctx.waitUntil(persistCall);
+  else persistCall.catch(() => {});
   const url = new URL(request.url);
   const xml = buildTexml({ host: url.host, protocol: url.protocol, token: sharedToken(env), callId, from, to });
   return new Response(xml, { status: 200, headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'no-store' } });
@@ -776,7 +780,7 @@ export async function handleTelephonyRequest(request, env, ctx, deps = {}) {
   const messageMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/messages$/);if(request.method==='GET'&&messageMatch)return callMessages(request,env,decodeURIComponent(messageMatch[1]));
   const latencyMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/latency$/);if(request.method==='GET'&&latencyMatch)return callLatency(request,env,decodeURIComponent(latencyMatch[1]));
   const exportMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/export\.jsonl$/);if(request.method==='GET'&&exportMatch)return callExportJsonl(request,env,decodeURIComponent(exportMatch[1]));
-  if((request.method==='GET'||request.method==='POST')&&url.pathname==='/telnyx/voice')return texmlResponse(request,env);
+  if((request.method==='GET'||request.method==='POST')&&url.pathname==='/telnyx/voice')return texmlResponse(request,env,ctx);
   if((request.method==='GET'||request.method==='POST')&&url.pathname==='/telnyx/stream-status')return streamStatus(request,env);
   if(request.method==='GET'&&url.pathname==='/telnyx/media')return mediaBridge(request,env,deps);
   return new Response('Method Not Allowed',{status:405});

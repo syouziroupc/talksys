@@ -7,6 +7,13 @@ test('v114 marks the greeting latency change', () => {
   assert.match(PHONE_GREETING_LATENCY_REVISION, /v114/);
 });
 
+test('Telnyx voice webhook returns TeXML without waiting for D1 persistence', async () => {
+  const source = await readFile(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /await upsertCall\(env, \{ callId, from, to, status: 'connecting' \}\)/);
+  assert.match(source, /ctx\?\.waitUntil/);
+  assert.match(source, /texmlResponse\(request,env,ctx\)/);
+});
+
 test('phone start event does not await D1 before greeting playback', async () => {
   const source = await readFile(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /await upsertCall\(env,\{callId,from,to,status:'active'\}\)/);
