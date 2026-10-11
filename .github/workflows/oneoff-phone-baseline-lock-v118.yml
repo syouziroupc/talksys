@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/oneoff-phone-baseline-lock-v118.yml'
       - 'scripts/apply-phone-baseline-lock-v118.py'
+      - 'scripts/apply-phone-baseline-lock-v118-r2.py'
 
 permissions:
   contents: write
@@ -37,7 +38,20 @@ jobs:
           fi
 
       - name: Apply baseline restoration and management integration
-        run: python scripts/apply-phone-baseline-lock-v118.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          first_output="$(python scripts/apply-phone-baseline-lock-v118.py 2>&1)"
+          first_status=$?
+          set -e
+          if [[ "$first_status" -eq 0 ]]; then
+            echo 'Primary guarded patch completed without fallback.'
+          else
+            printf '%s\n' "$first_output"
+            grep -Fq 'profile interaction prefix: expected exactly one match, found 0' <<<"$first_output"
+            python scripts/apply-phone-baseline-lock-v118-r2.py
+          fi
 
       - name: Syntax check
         shell: bash
@@ -98,6 +112,7 @@ jobs:
           rm -f \
             .github/workflows/oneoff-phone-baseline-lock-v118.yml \
             scripts/apply-phone-baseline-lock-v118.py \
+            scripts/apply-phone-baseline-lock-v118-r2.py \
             .github/workflows/oneoff-phone-repair-v117.yml \
             scripts/oneoff_phone_repair_v117.py \
             scripts/oneoff_phone_repair_v117_testfix.py
