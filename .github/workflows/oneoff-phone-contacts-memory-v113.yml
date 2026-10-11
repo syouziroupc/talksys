@@ -53,3 +53,5 @@ jobs:
           git diff --cached --check
           git commit -m 'Add phone contacts memory and fix ZIP route v113'
           git push origin HEAD:${{ github.ref_name }}
+
+# retry 2
