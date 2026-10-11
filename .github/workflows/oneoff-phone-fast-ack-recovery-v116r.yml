@@ -31,7 +31,6 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-
           source = Path('src/telephony/index.js')
           s = source.read_text(encoding='utf-8')
           old_ack = "const FAST_ACK_TEXT = 'はい、少々お待ちください。';"
@@ -39,13 +38,11 @@ jobs:
           if s.count(old_ack) != 1:
               raise SystemExit(f'expected exactly one current FAST_ACK_TEXT, got {s.count(old_ack)}')
           s = s.replace(old_ack, new_ack, 1)
-
           warm_call = "trackTask(warmPhoneAckPrimaries(env,deps).then((count)=>console.log(JSON.stringify({type:'phone_fast_ack_primary_warm',revision:PHONE_FAST_ACK_REVISION,count}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_primary_warm_error',error:clean(error?.message||error,240)}))));return;"
           if s.count(warm_call) != 1:
               raise SystemExit(f'expected exactly one startup primary warm call, got {s.count(warm_call)}')
           s = s.replace(warm_call, 'return;', 1)
           source.write_text(s, encoding='utf-8')
-
           test = Path('tests/phone-fast-reaction-v2.test.mjs')
           t = test.read_text(encoding='utf-8')
           old_literal = 'はい、少々お待ちください。'
@@ -57,7 +54,6 @@ jobs:
               raise SystemExit('lazy warm assertion anchor missing')
           t = t.replace(anchor, anchor + "  assert.doesNotMatch(source, /trackTask\\(warmPhoneAckPrimaries\\(env,deps\\)/);\n", 1)
           test.write_text(t, encoding='utf-8')
-
           Path('.deploy/production-trigger.txt').write_text('phone-fast-ack-recovery-v116r-20261011\n', encoding='utf-8')
           PY
       - name: Validate recovery invariants
@@ -70,17 +66,20 @@ jobs:
           grep -Fq "async function answerWithTalkSys(deps, text, history, signal, spokenBackchannel = '', sessionId = '', utteranceId = '')" src/telephony/index.js
           grep -Fq "const turnPromise=answerWithTalkSys(deps,stt.text,history,controller.signal,spokenBackchannel,callId,turnId)" src/telephony/index.js
           node --input-type=module -e "import('./src/telephony/index.js').then(m=>{const r=m.selectPhoneAckText({kind:'lookup',shouldSpeak:true,terminal:false},['はい。'],[]);if(r.text!=='はい。')process.exit(1)})"
-      - name: Validate full regression
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --check src/telephony/index.js
-          node --test tests/phone-fast-reaction-v2.test.mjs tests/phone-greeting-latency-v114.test.mjs tests/phone-profile-preload-v116a.test.mjs
-          npm run architecture:check
-          npm run architecture:graph
-          npm run reuse:check
-          npm test
-          npx wrangler deploy --dry-run
+      - name: Syntax check
+        run: node --check src/telephony/index.js
+      - name: Focused phone regressions
+        run: node --test tests/phone-fast-reaction-v2.test.mjs tests/phone-greeting-latency-v114.test.mjs tests/phone-profile-preload-v116a.test.mjs
+      - name: Architecture check
+        run: npm run architecture:check
+      - name: Architecture graph
+        run: npm run architecture:graph
+      - name: Reuse check
+        run: npm run reuse:check
+      - name: Full active regression
+        run: npm test
+      - name: Wrangler dry run
+        run: npx wrangler deploy --dry-run
       - name: Verify source scope
         shell: bash
         run: |
