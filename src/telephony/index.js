@@ -14,6 +14,8 @@ export const PHONE_CONVERSATION_BASELINE_REVISION = 'talksys-phone-conversation-
 const FRAME_MS = 20;
 const FAST_ACK_TEXT = 'はい、少々お待ちください。';
 export const PHONE_FAST_ACK_REVISION = 'talksys-phone-fast-ack-v2-r1';
+export const PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v119-r1';
+const PHONE_ACK_STT_GRACE_MS = 250;
 const PHONE_ACK_VARIANTS = Object.freeze({
   lookup: Object.freeze([
     'はい、少し調べますね。',
@@ -38,6 +40,12 @@ const PHONE_ACK_VARIANTS = Object.freeze({
   ]),
 });
 const PHONE_ACK_PRIMARY_TEXTS = Object.freeze(Object.values(PHONE_ACK_VARIANTS).map((variants) => variants[0]));
+const PHONE_SLOW_STT_ACK_TEXTS = Object.freeze([
+  FAST_ACK_TEXT,
+  PHONE_ACK_VARIANTS.request[0],
+  PHONE_ACK_VARIANTS.question[0],
+  PHONE_ACK_VARIANTS.listening[0],
+]);
 let schemaPromise;
 let fastAckAudioCache = null;
 let fastAckAudioPromise = null;
@@ -66,6 +74,14 @@ export function selectPhoneAckText(reaction = {}, cachedTexts = [], recentTexts 
     warmText,
     fallbackUsed: Boolean(selected === FAST_ACK_TEXT && variants[0] !== FAST_ACK_TEXT),
   };
+}
+
+function selectPreparedSlowSttAck(cachedTexts = [], recentTexts = []) {
+  const cached = new Set(Array.from(cachedTexts || []).map((value) => String(value || '')).filter(Boolean));
+  const recent = new Set(Array.from(recentTexts || []).slice(-2).map((value) => String(value || '')).filter(Boolean));
+  return PHONE_SLOW_STT_ACK_TEXTS.find((text) => cached.has(text) && !recent.has(text))
+    || PHONE_SLOW_STT_ACK_TEXTS.find((text) => cached.has(text))
+    || '';
 }
 
 
@@ -457,14 +473,14 @@ function dashboardHtml(request) {
   function stageName(s){return ({speech_end_estimate:'発話終了推定',vad_finalize:'VAD確定',stt_start:'STT開始',stt_end:'STT完了',stt_rejected:'STT不成立',turn_start:'AI開始',ack_cache_hit:'受理相槌キャッシュ',ack_cache_miss:'受理相槌未準備',ack_audio_ready:'相槌音声準備',ack_first_pcmu:'相槌 first audio',ack_complete:'相槌送信完了',answer_ready:'AI回答確定',pending_stt_wait_start:'追加入力待機開始',pending_stt_wait_end:'追加入力待機終了',answer_tts_start:'本回答TTS開始',answer_audio_ready:'本回答音声準備',answer_first_pcmu:'本回答 first audio',answer_complete:'本回答送信完了',duplicate_suppressed:'重複発話抑制',progress_wait_start:'検索進捗準備',progress_first_pcmu:'検索進捗 first audio',progress_complete:'検索進捗送信完了',progress_spoken:'検索進捗発話',progress_skipped:'検索進捗省略',api_usage:'API使用量',tts_usage:'TTS使用量',turn_error:'AIエラー',tts_error:'TTSエラー'}[s]||s)}
   function detailText(v){if(!v)return'';try{const o=JSON.parse(v);return Object.entries(o).filter(([,x])=>x!==''&&x!==null&&x!==undefined).map(([k,x])=>k+'='+String(typeof x==='object'?JSON.stringify(x):x)).join(' / ')}catch{return String(v)}}
   function renderLatency(events){const root=document.getElementById('latency');if(!events?.length){root.innerHTML='<div class="muted">この通話には詳細遅延ログがありません。新しい計測版の通話から記録されます。</div>';return}const groups=[];for(const e of events){let g=groups.at(-1);if(!g||g.id!==e.turn_id){g={id:e.turn_id,events:[]};groups.push(g)}g.events.push(e)}root.innerHTML=groups.map((g,i)=>'<div class="turn"><div class="turnHead">ターン '+(i+1)+' / '+esc(g.id)+'</div>'+g.events.map(e=>'<div class="event"><div class="ms">+'+Number(e.elapsed_ms||0)+' ms</div><div class="stage">'+esc(stageName(e.stage))+'</div><div class="detail">'+esc(detailText(e.detail))+'</div></div>').join('')+'</div>').join('')}
-  async function api(path){const r=await fetch(path,{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');return r.json()}
+  async function api(path,options={}){const r=await fetch(path,{...options,headers:{...auth(),...(options.headers||{})},cache:'no-store'});const d=await r.json().catch(()=>({}));if(r.status===401){const e=new Error('認証に失敗しました');e.status=401;throw e}if(!r.ok||d.ok===false){const e=new Error(d.error||('HTTP '+r.status));e.status=r.status;throw e}return d}
   async function refreshHealth(){const h=await fetch('/telephony-health',{cache:'no-store'}).then(r=>r.json());document.getElementById('health').innerHTML='電話受付: <b class="'+(h.enabled?'ok':'warn')+'">'+(h.enabled?'有効':'無効')+'</b> / TalkSys本体接続: <b class="'+(h.integrated?'ok':'warn')+'">'+(h.integrated?'統合済み':'未統合')+'</b> / 音声返送: <b>'+esc(h.outputAudio)+'</b> / 計測: <b>'+esc(h.observabilityRevision||'なし')+'</b>'}
   async function refreshCalls(){const d=await api('/phone/api/calls');const root=document.getElementById('calls');root.innerHTML=d.calls.length?d.calls.map(c=>'<div class="call" data-id="'+esc(c.call_id)+'"><div class="num">'+esc(c.profile_display_name?c.profile_display_name+' ('+(c.from_number||'番号不明')+')':(c.from_number||'番号不明'))+' → '+esc(c.to_number||'着信番号不明')+'</div><div class="meta">'+esc(c.status)+' / '+esc(c.started_at)+' / '+c.message_count+'件</div><div class="meta">'+esc(c.last_user_text||c.last_assistant_text||'会話待ち')+'</div></div>').join(''):'<div class="muted">まだ着信はありません。</div>';root.querySelectorAll('.call').forEach(x=>x.onclick=()=>loadMessages(x.dataset.id));}
   async function loadProfile(phone){selectedPhone=String(phone||'');const box=document.getElementById('profileBox');if(!selectedPhone){box.classList.add('hidden');selectedProfileVersion=0;return}const d=await api('/phone/api/profiles/'+encodeURIComponent(selectedPhone));const p=d.profile||{};selectedProfileVersion=Number(p.version||0);box.classList.remove('hidden');document.getElementById('profilePhone').textContent=selectedPhone;document.getElementById('profileName').value=p.display_name||'';document.getElementById('profilePersonalization').value=p.personalization_text||'';document.getElementById('profileMemory').value=p.memory_text||'';document.getElementById('profileEnabled').value=String(p.enabled===0?0:1);document.getElementById('profileStatus').textContent=d.exists?'保存済み':'未登録'}
   async function saveProfile(){if(!selectedPhone)return;const status=document.getElementById('profileStatus');status.textContent='保存中...';try{const d=await api('/phone/api/profiles/'+encodeURIComponent(selectedPhone),{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({display_name:document.getElementById('profileName').value,personalization_text:document.getElementById('profilePersonalization').value,memory_text:document.getElementById('profileMemory').value,enabled:Number(document.getElementById('profileEnabled').value),version:selectedProfileVersion})});selectedProfileVersion=Number(d.profile?.version||selectedProfileVersion);status.textContent='保存しました';await refreshCalls()}catch(e){if(e.status===409){status.textContent='他の更新と競合しました。再読込します。';await loadProfile(selectedPhone);return}status.textContent='保存失敗: '+e.message}}
   async function loadMessages(id){selected=id;const base='/phone/api/calls/'+encodeURIComponent(id);const [d,l]=await Promise.all([api(base+'/messages'),api(base+'/latency')]);document.getElementById('conversationTitle').textContent=(d.call?.from_number||'番号不明')+' の会話';document.getElementById('exportBtn').classList.remove('hidden');await loadProfile(d.call?.from_number||'');document.getElementById('messages').innerHTML=d.messages.length?d.messages.map(m=>'<div class="msg '+m.role+'"><div class="role">'+(m.role==='user'?'発信者':'TalkSys')+' / '+esc(m.created_at)+'</div>'+esc(m.content)+'</div>').join(''):'<div class="muted">会話はまだありません。</div>';renderLatency(l.events||[])}
   async function downloadExport(){if(!selected)return;const path='/phone/api/calls/'+encodeURIComponent(selected)+'/export.jsonl';const r=await fetch(path,{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');if(!r.ok)throw new Error('JSONLの取得に失敗しました');const blob=await r.blob();const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download='talksys-call-'+selected.replace(/[^A-Za-z0-9._-]+/g,'_')+'.jsonl';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),1000)}
-  async function downloadBatchExport(){const n=Math.max(1,Math.min(50,Number(document.getElementById('batchCount')?.value||20)||20));const r=await fetch('/phone/api/calls/export.zip?limit='+encodeURIComponent(n),{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');if(!r.ok)throw new Error('ZIPの取得に失敗しました');const blob=await r.blob();const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download='talksys-calls-latest-'+n+'.zip';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),1000)}
+  async function downloadBatchExport(){const button=document.getElementById('batchExportBtn');const original=button.textContent;button.disabled=true;button.textContent='ZIP作成中...';try{const n=Math.max(1,Math.min(50,Number(document.getElementById('batchCount')?.value||20)||20));const r=await fetch('/phone/api/calls/export.zip?limit='+encodeURIComponent(n),{headers:auth(),cache:'no-store'});if(r.status===401)throw new Error('認証に失敗しました');if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error('ZIP取得失敗: '+(e.error||('HTTP '+r.status)))}const buffer=await r.arrayBuffer();const bytes=new Uint8Array(buffer);if(bytes.byteLength<22||bytes[0]!==0x50||bytes[1]!==0x4b)throw new Error('ZIP応答が破損しています');const disposition=r.headers.get('content-disposition')||'';const match=disposition.match(/filename=\"?([^\";]+)\"?/i);const filename=match?.[1]||('talksys-calls-latest-'+n+'.zip');const blob=new Blob([bytes],{type:'application/zip'});const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),5000)}finally{button.disabled=false;button.textContent=original}}
   async function start(){try{await api('/phone/api/calls');document.getElementById('login').classList.add('hidden');document.getElementById('app').classList.remove('hidden');await refreshHealth();await refreshCalls();setInterval(async()=>{try{await refreshCalls();if(selected)await loadMessages(selected)}catch{}},3000)}catch(e){document.getElementById('loginErr').textContent=e.message}}
   document.getElementById('loginBtn').onclick=()=>{adminToken=document.getElementById('token').value;sessionStorage.setItem('talksysPhoneToken',adminToken);start()};document.getElementById('exportBtn').onclick=()=>downloadExport().catch(e=>alert(e.message));document.getElementById('batchExportBtn').onclick=()=>downloadBatchExport().catch(e=>alert(e.message));document.getElementById('profileSaveBtn').onclick=()=>saveProfile();if(adminToken)start();
   </script></body></html>`;
@@ -716,11 +732,23 @@ async function recentCallsZip(request, env) {
   const result = await env.TALKSYS_LOG_DB.prepare('SELECT * FROM phone_calls ORDER BY updated_at DESC LIMIT ?').bind(limit).all();
   const calls = result.results || [];
   if (!calls.length) return json({ ok: false, error: 'no_calls' }, 404);
-  const files = [];
-  for (const call of calls) {
-    const safeId = String(call.call_id || 'call').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'call';
-    files.push({ name: `talksys-call-${safeId}.jsonl`, content: await callJsonlContent(env, call) });
-  }
+  const callIds = calls.map((call) => String(call.call_id || '')).filter(Boolean);
+  const placeholders = callIds.map(() => '?').join(',');
+  const [messageRows, latencyRows] = await env.TALKSYS_LOG_DB.batch([
+    env.TALKSYS_LOG_DB.prepare(`SELECT call_id, role, content, created_at FROM phone_messages WHERE call_id IN (${placeholders}) ORDER BY call_id, id ASC`).bind(...callIds),
+    env.TALKSYS_LOG_DB.prepare(`SELECT call_id, turn_id, stage, elapsed_ms, detail, created_at FROM phone_latency_events WHERE call_id IN (${placeholders}) ORDER BY call_id, id ASC`).bind(...callIds),
+  ]);
+  const messagesByCall = new Map(), latencyByCall = new Map();
+  for (const row of messageRows.results || []) { const list = messagesByCall.get(row.call_id) || []; list.push(row); messagesByCall.set(row.call_id, list); }
+  for (const row of latencyRows.results || []) { const list = latencyByCall.get(row.call_id) || []; list.push(row); latencyByCall.set(row.call_id, list); }
+  const files = calls.map((call) => {
+    const callId = String(call.call_id || '');
+    const safeId = String(callId || 'call').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'call';
+    const lines = [JSON.stringify({ type: 'call', call })];
+    for (const message of messagesByCall.get(callId) || []) lines.push(JSON.stringify({ type: 'message', role: message.role, content: message.content, created_at: message.created_at }));
+    for (const event of latencyByCall.get(callId) || []) lines.push(JSON.stringify({ type: 'latency', turn_id: event.turn_id, stage: event.stage, elapsed_ms: Number(event.elapsed_ms || 0), detail: parsedLatencyDetail(event.detail), created_at: event.created_at }));
+    return { name: `talksys-call-${safeId}.jsonl`, content: `${lines.join('\n')}\n` };
+  });
   const archive = zipStoreFiles(files);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   return new Response(archive, {
@@ -730,6 +758,7 @@ async function recentCallsZip(request, env) {
       'content-disposition': `attachment; filename="talksys-calls-latest-${calls.length}-${stamp}.zip"`,
       'cache-control': 'no-store',
       'x-talksys-export-count': String(calls.length),
+      'x-talksys-export-bytes': String(archive.byteLength),
     },
   });
 }
@@ -823,23 +852,38 @@ function mediaBridge(request, env, deps) {
     queueLatency(turnId,'speech_end_estimate',0,{captureDurationMs:Math.round(durationMs),trailingSilenceMs});
     queueLatency(turnId,'vad_finalize',finalizedAt-speechEndAt,{silenceTargetMs:silenceMs,trailingSilenceMs});
     pendingSttCount+=1;
+    const sttStartedAt=Date.now();queueLatency(turnId,'stt_start',sttStartedAt-speechEndAt,{samples:samples.length,audioMs:Math.round(samples.length/8)});
+    let sttSettled=false,slowAckStarted=false,slowAckText='',slowAckAudio=null,slowAckPromise=Promise.resolve(false);
+    const sttPromise=transcribeSamples(env,samples);
+    const slowAckTimer=setTimeout(()=>{
+      if(sttSettled||closed)return;
+      const selected=selectPreparedSlowSttAck(phoneAckAudioCache.keys(),recentAckTexts);
+      const prepared=selected?(selected===FAST_ACK_TEXT?fastAckAudioCache:phoneAckAudioCache.get(selected)):null;
+      if(!selected||!prepared?.bytes?.byteLength){queueLatency(turnId,'ack_slow_stt_unprepared',Date.now()-speechEndAt,{revision:PHONE_ACK_LATENCY_REVISION,graceMs:PHONE_ACK_STT_GRACE_MS});return;}
+      slowAckStarted=true;slowAckText=selected;slowAckAudio=prepared;
+      queueLatency(turnId,'ack_slow_stt_fallback',Date.now()-speechEndAt,{revision:PHONE_ACK_LATENCY_REVISION,graceMs:PHONE_ACK_STT_GRACE_MS,text:selected,bytes:prepared.bytes.byteLength});
+      slowAckPromise=speak(selected,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:prepared}).then((reacted)=>{if(reacted){recentAckTexts=[...recentAckTexts,selected].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'slow-stt-receipt',text:selected,cached:true,revision:PHONE_ACK_LATENCY_REVISION}));}return reacted;});
+      trackTask(slowAckPromise.catch((error)=>{console.warn(JSON.stringify({type:'phone_slow_stt_ack_error',turnId,error:clean(error?.message||error,240)}));return false;}));
+    },PHONE_ACK_STT_GRACE_MS);
     const task=(async()=>{
-      const sttStartedAt=Date.now();queueLatency(turnId,'stt_start',sttStartedAt-speechEndAt,{samples:samples.length,audioMs:Math.round(samples.length/8)});let stt;
-      try{stt=await transcribeSamples(env,samples);}catch(error){queueLatency(turnId,'stt_rejected',Date.now()-speechEndAt,{stageMs:Date.now()-sttStartedAt,error:clean(error?.message||error,240)});console.error(JSON.stringify({type:'phone_stt_error',turnId,error:clean(error?.message||error,240)}));return;}finally{pendingSttCount=Math.max(0,pendingSttCount-1);}
+      let stt;
+      try{stt=await sttPromise;}catch(error){queueLatency(turnId,'stt_rejected',Date.now()-speechEndAt,{stageMs:Date.now()-sttStartedAt,error:clean(error?.message||error,240)});console.error(JSON.stringify({type:'phone_stt_error',turnId,error:clean(error?.message||error,240)}));return;}finally{sttSettled=true;clearTimeout(slowAckTimer);pendingSttCount=Math.max(0,pendingSttCount-1);}
       const sttEndedAt=Date.now();
       if(!stt?.ok||!stt.text||myCapture<latestAcceptedCapture){queueLatency(turnId,'stt_rejected',sttEndedAt-speechEndAt,{stageMs:sttEndedAt-sttStartedAt,error:clean(stt?.error||'stale-or-empty',240),retryUsed:Boolean(stt?.payload?.retryUsed)});return;}
       queueLatency(turnId,'stt_end',sttEndedAt-speechEndAt,{stageMs:sttEndedAt-sttStartedAt,textChars:stt.text.length,retryUsed:Boolean(stt?.payload?.retryUsed),model:clean(stt?.payload?.model||'',120)});
       const now=Date.now(),duplicateRecent=lastAcceptedUserText&&sameUtterance(stt.text,lastAcceptedUserText)&&now-lastAcceptedUserAt<12000&&(assistantPlaying||Boolean(activeTurnAbort));
       if(duplicateRecent){queueLatency(turnId,'duplicate_suppressed',now-speechEndAt,{text:clean(stt.text,160)});console.log(JSON.stringify({type:'phone_duplicate_suppressed',text:clean(stt.text,160)}));return;}
-      latestAcceptedCapture=myCapture;lastAcceptedUserText=stt.text;lastAcceptedUserAt=now;const myVersion=++turnVersion;abortActiveTurn();interruptPlayback();
+      latestAcceptedCapture=myCapture;lastAcceptedUserText=stt.text;lastAcceptedUserAt=now;const myVersion=++turnVersion;abortActiveTurn();if(!slowAckStarted)interruptPlayback();
       queueMessageLog('user', stt.text);
       history.push({ role: 'user', content: stt.text });
       const controller=new AbortController();activeTurnAbort=controller;
       try{
         const reaction=fastReaction(stt.text);
         const ackSelection=selectPhoneAckText(reaction,phoneAckAudioCache.keys(),recentAckTexts);
-        const ackText=ackSelection.text||'';
-        const ackAudio=ackText?(ackText===FAST_ACK_TEXT?fastAckAudioCache:phoneAckAudioCache.get(ackText)):null;
+        const categoryAckText=ackSelection.text||'';
+        const categoryAckAudio=categoryAckText?(categoryAckText===FAST_ACK_TEXT?fastAckAudioCache:phoneAckAudioCache.get(categoryAckText)):null;
+        const ackText=slowAckStarted?slowAckText:categoryAckText;
+        const ackAudio=slowAckStarted?slowAckAudio:categoryAckAudio;
         const ackPrepared=Boolean(ackAudio?.bytes?.byteLength);
         const spokenBackchannel=ackPrepared?ackText:'';
         const progressEnabled=flag(env?.TELEPHONY_SEARCH_PROGRESS_ENABLED,true);
@@ -849,7 +893,8 @@ function mediaBridge(request, env, deps) {
         const turnStartedAt=Date.now();queueLatency(turnId,'turn_start',turnStartedAt-speechEndAt,{reactionKind:reaction.kind||'none',ackPrepared,ackText,ackFallback:ackSelection.fallbackUsed,progressPlanned:Boolean(progressText)});
         const turnPromise=answerWithTalkSys(deps,stt.text,history,controller.signal,spokenBackchannel,callId,turnId,callerProfileSession.status==='ready'?callerProfileSession.profile:null);
         if(ackSelection.warmText){const warmText=ackSelection.warmText;trackTask(warmPhoneAckAudio(env,warmText,deps).then((audio)=>console.log(JSON.stringify({type:'phone_fast_ack_lazy_warm',kind:reaction.kind||'none',text:warmText,ok:Boolean(audio?.bytes?.byteLength)}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_lazy_warm_error',kind:reaction.kind||'none',error:clean(error?.message||error,240)}))));}
-        if(ackPrepared&&myVersion===turnVersion){queueLatency(turnId,'ack_cache_hit',Date.now()-speechEndAt,{text:ackText,bytes:ackAudio.bytes.byteLength,reactionKind:reaction.kind||'none',fallback:ackSelection.fallbackUsed});const reacted=await speak(ackText,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:ackAudio});if(reacted){recentAckTexts=[...recentAckTexts,ackText].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'receipt',sourceKind:reaction.kind,text:ackText,cached:true,fallback:ackSelection.fallbackUsed}));}}
+        if(slowAckStarted){queueLatency(turnId,'ack_already_started',Date.now()-speechEndAt,{text:ackText,revision:PHONE_ACK_LATENCY_REVISION,reactionKind:reaction.kind||'none'});}
+        else if(ackPrepared&&myVersion===turnVersion){queueLatency(turnId,'ack_cache_hit',Date.now()-speechEndAt,{text:ackText,bytes:ackAudio.bytes.byteLength,reactionKind:reaction.kind||'none',fallback:ackSelection.fallbackUsed});const reacted=await speak(ackText,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:ackAudio});if(reacted){recentAckTexts=[...recentAckTexts,ackText].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'receipt',sourceKind:reaction.kind,text:ackText,cached:true,fallback:ackSelection.fallbackUsed}));}}
         else queueLatency(turnId,'ack_cache_miss',Date.now()-speechEndAt,{text:ackText||FAST_ACK_TEXT,reactionKind:reaction.kind||'none'});
         if(progressText&&myVersion===turnVersion){
           queueLatency(turnId,'progress_wait_start',Date.now()-speechEndAt,{text:progressText,revision:PHONE_SEARCH_PROGRESS_REVISION});
