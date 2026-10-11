@@ -1,0 +1,87 @@
+name: One-off phone second-turn ack and ZIP v119
+
+on:
+  push:
+    branches: [fix/phone-second-turn-ack-zip-v119]
+    paths:
+      - '.github/workflows/oneoff-phone-second-turn-ack-zip-v119.yml'
+      - 'scripts/apply-phone-second-turn-ack-zip-v119.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phone-second-turn-ack-zip-v119
+  cancel-in-progress: false
+
+jobs:
+  apply-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install dependencies without generating a lockfile
+        run: npm install --no-audit --no-fund --package-lock=false
+
+      - name: Apply guarded v119 patch
+        run: python scripts/apply-phone-second-turn-ack-zip-v119.py
+
+      - name: Syntax check
+        run: node --check src/telephony/index.js
+
+      - name: Focused phone regressions
+        run: |
+          node --test \
+            tests/phone-second-turn-ack-zip-v119.test.mjs \
+            tests/phone-conversation-baseline-lock-v118.test.mjs \
+            tests/phone-fast-reaction-v2.test.mjs \
+            tests/phone-latency-fast-ack-v90.test.mjs \
+            tests/phone-batch-zip-export-v112.test.mjs \
+            tests/phone-pcmu-v87.test.mjs \
+            tests/phone-profile-preload-v116a.test.mjs
+
+      - name: Validate generated ZIP with Python zipfile
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          import { zipStoreFiles } from './src/telephony/index.js';
+          fs.writeFileSync('/tmp/talksys-v119.zip', zipStoreFiles([
+            { name: 'talksys-call-a.jsonl', content: '{"type":"call","id":"a"}\n' },
+            { name: 'talksys-call-b.jsonl', content: '{"type":"call","id":"b"}\n' },
+          ]));
+          NODE
+          python - <<'PY'
+          import zipfile
+          p='/tmp/talksys-v119.zip'
+          with zipfile.ZipFile(p, 'r') as z:
+              assert z.testzip() is None
+              assert z.namelist() == ['talksys-call-a.jsonl','talksys-call-b.jsonl']
+              assert b'"id":"a"' in z.read('talksys-call-a.jsonl')
+          PY
+
+      - name: Architecture and full regression
+        run: |
+          npm run architecture:check
+          npm run architecture:graph
+          npm run reuse:check
+          npm test
+
+      - name: Wrangler dry run
+        run: npx wrangler deploy --dry-run
+
+      - name: Remove one-off tooling and commit verified repair
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/oneoff-phone-second-turn-ack-zip-v119.yml scripts/apply-phone-second-turn-ack-zip-v119.py
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Fix repeated phone acknowledgement latency and ZIP export v119'
+          git push origin HEAD:fix/phone-second-turn-ack-zip-v119
