@@ -1,0 +1,104 @@
+name: One-off phone fast ack recovery v116r
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/oneoff-phone-fast-ack-recovery-v116r.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Apply minimal phone fast-ack recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/telephony/index.js')
+          s = p.read_text(encoding='utf-8')
+
+          old_ack = "const FAST_ACK_TEXT = 'はい、少々お待ちください。';"
+          new_ack = "const FAST_ACK_TEXT = 'はい。';"
+          if s.count(old_ack) != 1:
+              raise SystemExit(f'expected exactly one current FAST_ACK_TEXT, got {s.count(old_ack)}')
+          s = s.replace(old_ack, new_ack, 1)
+
+          warm_call = "trackTask(warmPhoneAckPrimaries(env,deps).then((count)=>console.log(JSON.stringify({type:'phone_fast_ack_primary_warm',revision:PHONE_FAST_ACK_REVISION,count}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_primary_warm_error',error:clean(error?.message||error,240)}))));return;"
+          if s.count(warm_call) != 1:
+              raise SystemExit(f'expected exactly one startup primary warm call, got {s.count(warm_call)}')
+          s = s.replace(warm_call, 'return;', 1)
+          p.write_text(s, encoding='utf-8')
+
+          Path('tests/phone-fast-ack-recovery-v116r.test.mjs').write_text("""import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { selectPhoneAckText } from '../src/telephony/index.js';
+
+const source = await readFile(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+
+test('v116r restores the known-good short fallback acknowledgement', () => {
+  assert.match(source, /const FAST_ACK_TEXT = 'はい。';/);
+  const selected = selectPhoneAckText({ kind: 'lookup', shouldSpeak: true, terminal: false }, ['はい。'], []);
+  assert.equal(selected.text, 'はい。');
+});
+
+test('v116r removes category TTS warmup from call startup but retains lazy category warming', () => {
+  assert.doesNotMatch(source, /trackTask\\(warmPhoneAckPrimaries\\(env,deps\\)/);
+  assert.match(source, /if\\(ackSelection\\.warmText\\)/);
+});
+
+test('v116r leaves STT, answer and playback contracts intact', () => {
+  assert.match(source, /async function answerWithTalkSys\\(deps, text, history, signal, spokenBackchannel = '', sessionId = '', utteranceId = ''\\)/);
+  assert.match(source, /const turnPromise=answerWithTalkSys\\(deps,stt\\.text,history,controller\\.signal,spokenBackchannel,callId,turnId\\)/);
+  assert.match(source, /try\{stt=await transcribeSamples\\(env,samples\\)/);
+  assert.match(source, /streamPcmu20ms\\(audio\\.bytes/);
+});
+""", encoding='utf-8')
+
+          Path('.deploy/production-trigger.txt').write_text('phone-fast-ack-recovery-v116r-20261011\n', encoding='utf-8')
+          PY
+      - name: Validate recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/telephony/index.js
+          node --test tests/phone-fast-ack-recovery-v116r.test.mjs tests/phone-fast-reaction-v2.test.mjs tests/phone-greeting-latency-v114.test.mjs tests/phone-profile-preload-v116a.test.mjs
+          npm run architecture:check
+          npm run architecture:graph
+          npm run reuse:check
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Verify source scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-only --exit-code -- src/integrated-entry.js src/stt-v45.js src/telephony/phone-tts.js src/telephony/codec.js src/telephony/protocol.js wrangler.jsonc
+          git diff --check
+      - name: Commit verified recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f .github/workflows/oneoff-phone-fast-ack-recovery-v116r.yml
+          git add src/telephony/index.js tests/phone-fast-ack-recovery-v116r.test.mjs .deploy/production-trigger.txt
+          git diff --cached --check
+          git commit -m 'Restore phone fast acknowledgement without changing answer quality v116r'
+          git push origin HEAD:main
