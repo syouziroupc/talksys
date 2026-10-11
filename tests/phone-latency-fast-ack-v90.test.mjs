@@ -20,7 +20,7 @@ test('phone latency v90 persists per-turn stage telemetry and exposes it in the 
 });
 
 test('phone latency v90 uses a prewarmed PCMU receipt acknowledgement only after confirmed STT', () => {
-  assert.match(source, /const\s+FAST_ACK_TEXT\s*=\s*'はい。'/);
+  assert.match(source, /const\s+FAST_ACK_TEXT\s*=\s*'はい、少々お待ちください。'/);
   assert.match(source, /warmFastAckAudio/);
   assert.match(source, /fastAckAudioCache/);
   assert.match(source, /ack_cache_hit/);
@@ -32,7 +32,7 @@ test('phone latency v90 uses a prewarmed PCMU receipt acknowledgement only after
 
 test('phone latency v90 correlates phone turns with the shared TalkSys latency logger', () => {
   assert.match(source, /utteranceId:\s*clean\(utteranceId,\s*200\)/);
-  assert.match(source, /answerWithTalkSys\(deps,\s*stt\.text,\s*history,\s*controller\.signal,\s*spokenBackchannel,\s*callId,\s*turnId\)/);
+  assert.match(source, /answerWithTalkSys\(deps,\s*stt\.text,\s*history,\s*controller\.signal,\s*spokenBackchannel,\s*callId,\s*turnId,\s*callerProfileSession\.status==='ready'\?callerProfileSession\.profile:null\)/);
 });
 
 test('phone latency v90 preserves the proven PCMU Telnyx transport and answer quality path', () => {

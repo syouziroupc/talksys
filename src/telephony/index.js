@@ -10,8 +10,9 @@ export const TELEPHONY_OBSERVABILITY_REVISION = 'talksys-phone-latency-v90-fast-
 export const PHONE_GREETING_LATENCY_REVISION = 'talksys-phone-greeting-latency-v114-r1';
 export const PHONE_PROFILE_REVISION = 'talksys-phone-profile-v115-r1';
 export const PHONE_PROFILE_PRELOAD_REVISION = 'talksys-phone-profile-preload-v116a-r1';
+export const PHONE_CONVERSATION_BASELINE_REVISION = 'talksys-phone-conversation-baseline-v118-r1';
 const FRAME_MS = 20;
-const FAST_ACK_TEXT = 'はい。';
+const FAST_ACK_TEXT = 'はい、少々お待ちください。';
 export const PHONE_FAST_ACK_REVISION = 'talksys-phone-fast-ack-v2-r1';
 const PHONE_ACK_VARIANTS = Object.freeze({
   lookup: Object.freeze([
@@ -283,14 +284,21 @@ async function transcribeSamples(env, samples) {
   return { ok: true, text: clean(payload.text, 1800), payload };
 }
 
-async function answerWithTalkSys(deps, text, history, signal, spokenBackchannel = '', sessionId = '', utteranceId = '') {
+async function answerWithTalkSys(deps, text, history, signal, spokenBackchannel = '', sessionId = '', utteranceId = '', callerProfile = null) {
   if (typeof deps?.turn !== 'function') return { ok: false, error: 'talksys_turn_not_connected' };
   try {
     const current = clean(text, 1800);
     const last = history.at(-1);
     const lastIsCurrent = last?.role === 'user' && clean(last?.content, 1800) === current;
     const priorHistory = (lastIsCurrent ? history.slice(0, -1) : history).slice(-16);
-    const payload = await deps.turn({ text: current, history: priorHistory, channel: 'phone', sessionId: clean(sessionId, 200), utteranceId: clean(utteranceId, 200), spokenBackchannel }, signal);
+    const phoneProfile = callerProfile?.enabled ? {
+      displayName: clean(callerProfile?.displayName || '', 80),
+      personalizationText: clean(callerProfile?.personalizationText || '', 4000),
+      memoryText: clean(callerProfile?.memoryText || '', 8000),
+      enabled: true,
+      version: Number(callerProfile?.version || 0),
+    } : null;
+    const payload = await deps.turn({ text: current, history: priorHistory, channel: 'phone', sessionId: clean(sessionId, 200), utteranceId: clean(utteranceId, 200), spokenBackchannel, ...(phoneProfile ? { phoneProfile } : {}) }, signal);
     const answer = clean(payload?.answer || payload?.response || payload?.text || '', 9000);
     if (!answer) return { ok: false, error: payload?.error || 'empty_answer' };
     return { ok: true, answer, payload };
@@ -415,11 +423,32 @@ async function waitForPhoneProgressAudio(promise) {
   ]);
 }
 
+function profilesDashboardHtml(request) {
+  const base = publicBaseUrl(request);
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TalkSys 電話番号プロフィール</title><style>
+  :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0e14;color:#f3f6fb}body{margin:0}.wrap{max-width:1180px;margin:auto;padding:28px 18px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.sub,.muted{color:#98a5b7}.panel{border:1px solid #293243;background:#121722;border-radius:14px;padding:16px;margin-top:16px}.grid{display:grid;grid-template-columns:minmax(300px,.8fr) minmax(420px,1.35fr);gap:14px}@media(max-width:820px){.grid{grid-template-columns:1fr}}button,input,textarea,select{font:inherit}button{background:#202a3a;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px 12px;cursor:pointer}input,textarea,select{box-sizing:border-box;width:100%;background:#0b0e14;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px}textarea{min-height:110px;resize:vertical}.row{padding:11px;border-bottom:1px solid #283245;cursor:pointer}.row:hover{background:#171e2b}.num{font-weight:750}.meta{font-size:12px;color:#91a0b5;margin-top:4px}.form{display:grid;gap:11px}.form label{font-size:12px;color:#bec8d7}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.warn{color:#ffca72}.ok{color:#7dd69a}.hidden{display:none}a{color:#a8c7ff}.newrow{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}
+  </style></head><body><main class="wrap"><div class="top"><div><h1>電話番号プロフィール</h1><div class="sub">通話履歴とは分離して、発信者番号ごとの呼び名・応答方針・継続メモを管理します。</div></div><div><a href="${xmlEscape(base)}/phone">通話管理へ</a></div></div>
+  <section id="login" class="panel"><b>管理トークン</b><p class="muted">/phone と同じ管理トークンを使用します。</p><input id="token" type="password" autocomplete="current-password"><button id="loginBtn">表示</button><div id="loginErr" class="warn"></div></section>
+  <section id="app" class="hidden"><div class="grid"><div class="panel"><input id="filter" placeholder="電話番号・表示名で絞り込み"><div class="newrow"><input id="newPhone" placeholder="新しい電話番号"><button id="newBtn">開く</button></div><div id="list" style="margin-top:12px"></div></div><div class="panel"><h2 id="editorTitle">電話番号を選択</h2><div id="editor" class="hidden"><div class="form"><label>電話番号<input id="profilePhone" readonly></label><label>表示名<input id="profileName" maxlength="80"></label><label>応答方針<textarea id="profilePersonalization" maxlength="4000"></textarea></label><label>継続メモ<textarea id="profileMemory" maxlength="8000"></textarea></label><label>有効<select id="profileEnabled"><option value="1">有効</option><option value="0">無効</option></select></label></div><div class="actions" style="margin-top:12px"><button id="saveBtn">保存</button><span id="status" class="muted"></span></div><p class="muted">電話番号は本人確認には使用しません。秘密情報は保存しないでください。</p></div></div></div></section>
+  </main><script>
+  let adminToken=sessionStorage.getItem('talksysPhoneToken')||'',rows=[],selectedPhone='',selectedVersion=0;
+  const auth=()=>adminToken?{'authorization':'Bearer '+adminToken}:{};
+  const esc=s=>String(s??'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
+  async function api(path,options={}){const r=await fetch(path,{...options,headers:{...auth(),...(options.headers||{})},cache:'no-store'});const d=await r.json().catch(()=>({}));if(r.status===401){const e=new Error('認証に失敗しました');e.status=401;throw e}if(!r.ok||d.ok===false){const e=new Error(d.error||('HTTP '+r.status));e.status=r.status;throw e}return d}
+  function render(){const q=String(document.getElementById('filter').value||'').toLowerCase();const shown=rows.filter(x=>(String(x.phone_number||'')+' '+String(x.display_name||'')).toLowerCase().includes(q));document.getElementById('list').innerHTML=shown.length?shown.map(x=>'<div class="row" data-phone="'+esc(x.phone_number)+'"><div class="num">'+esc(x.display_name||x.phone_number)+'</div><div class="meta">'+esc(x.display_name?x.phone_number:'')+' / '+Number(x.call_count||0)+'通話 / '+(Number(x.enabled)===0?'無効':'有効')+'</div><div class="meta">最終通話 '+esc(x.last_call_at||'なし')+'</div></div>').join(''):'<div class="muted">該当なし</div>';document.querySelectorAll('.row').forEach(el=>el.onclick=()=>loadProfile(el.dataset.phone))}
+  async function refresh(){const d=await api('/phone/api/profiles');rows=d.profiles||[];render()}
+  async function loadProfile(phone){selectedPhone=String(phone||'').trim();if(!selectedPhone)return;const d=await api('/phone/api/profiles/'+encodeURIComponent(selectedPhone));const p=d.profile||{};selectedVersion=Number(p.version||0);document.getElementById('editor').classList.remove('hidden');document.getElementById('editorTitle').textContent=p.display_name?String(p.display_name)+' のプロフィール':selectedPhone+' のプロフィール';document.getElementById('profilePhone').value=selectedPhone;document.getElementById('profileName').value=p.display_name||'';document.getElementById('profilePersonalization').value=p.personalization_text||'';document.getElementById('profileMemory').value=p.memory_text||'';document.getElementById('profileEnabled').value=String(Number(p.enabled)===0?0:1);document.getElementById('status').textContent=d.exists?'保存済み':'未登録';history.replaceState(null,'','/phone-profiles?phone='+encodeURIComponent(selectedPhone))}
+  async function save(){if(!selectedPhone)return;const status=document.getElementById('status');status.textContent='保存中...';status.className='muted';try{const d=await api('/phone/api/profiles/'+encodeURIComponent(selectedPhone),{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({display_name:document.getElementById('profileName').value,personalization_text:document.getElementById('profilePersonalization').value,memory_text:document.getElementById('profileMemory').value,enabled:Number(document.getElementById('profileEnabled').value),version:selectedVersion})});selectedVersion=Number(d.profile?.version||selectedVersion);status.textContent='保存しました';status.className='ok';await refresh();await loadProfile(selectedPhone)}catch(e){status.className='warn';if(e.status===409){status.textContent='更新競合。再読込しました。';await loadProfile(selectedPhone);return}status.textContent='保存失敗: '+e.message}}
+  async function start(){try{await refresh();document.getElementById('login').classList.add('hidden');document.getElementById('app').classList.remove('hidden');const q=new URL(location.href).searchParams.get('phone');if(q)await loadProfile(q)}catch(e){document.getElementById('loginErr').textContent=e.message}}
+  document.getElementById('loginBtn').onclick=()=>{adminToken=document.getElementById('token').value;sessionStorage.setItem('talksysPhoneToken',adminToken);start()};document.getElementById('filter').oninput=render;document.getElementById('newBtn').onclick=()=>loadProfile(document.getElementById('newPhone').value).catch(e=>alert(e.message));document.getElementById('saveBtn').onclick=()=>save();if(adminToken)start();
+  </script></body></html>`;
+}
+
 function dashboardHtml(request) {
   const base = publicBaseUrl(request);
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TalkSys 電話管理</title><style>
   :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0e14;color:#f3f6fb}body{margin:0}.wrap{max-width:1240px;margin:auto;padding:28px 18px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.sub,.muted{color:#98a5b7}.panel{border:1px solid #293243;background:#121722;border-radius:14px;padding:16px;margin-top:16px}.grid{display:grid;grid-template-columns:minmax(310px,.8fr) minmax(420px,1.5fr);gap:14px}@media(max-width:800px){.grid{grid-template-columns:1fr}}button,input{font:inherit}button{background:#202a3a;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:8px 12px;cursor:pointer}input{background:#0b0e14;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px;width:min(380px,75vw)}.call{padding:12px;border-bottom:1px solid #283245;cursor:pointer}.call:hover{background:#171e2b}.num{font-weight:700}.meta{font-size:12px;color:#91a0b5;margin-top:4px}.msg{margin:10px 0;padding:10px 12px;border-radius:10px;white-space:pre-wrap}.user{background:#1b2b3a}.assistant{background:#25213a}.role{font-size:11px;color:#9ca8ba;margin-bottom:5px}.warn{color:#ffca72}.ok{color:#7dd69a}code{font-size:12px}.hidden{display:none}.latency{margin-top:18px;border-top:1px solid #2a3344;padding-top:12px}.turn{margin:12px 0;border:1px solid #2a3344;border-radius:10px;overflow:hidden}.turnHead{background:#171e2b;padding:8px 10px;font-size:12px;color:#bec9d8}.event{display:grid;grid-template-columns:82px minmax(130px,.7fr) 1fr;gap:8px;padding:7px 10px;border-top:1px solid #222b3a;font-size:12px;align-items:start}.event:first-child{border-top:0}.ms{font-variant-numeric:tabular-nums;color:#9bd1ff}.stage{font-weight:650}.detail{color:#9ca8ba;overflow-wrap:anywhere}@media(max-width:640px){.event{grid-template-columns:72px 1fr}.detail{grid-column:1/-1}}.profileBox{border:1px solid #2a3344;border-radius:10px;padding:12px;margin:10px 0 16px}.profileGrid{display:grid;gap:9px}.profileGrid label{font-size:12px;color:#b8c3d2}.profileGrid input[type=text],.profileGrid textarea,.profileGrid select{box-sizing:border-box;width:100%;margin-top:4px;background:#0b0e14;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px;font:inherit}.profileGrid textarea{min-height:82px;resize:vertical}.profileActions{display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap}
-  </style></head><body><main class="wrap"><div class="top"><div><h1>TalkSys 電話管理</h1><div class="sub">Telnyx着信をTalkSys本体で処理。電話専用AIは使用しません。</div></div><div><a href="${xmlEscape(base)}/telephony-health" style="color:#a8c7ff">状態JSON</a></div></div>
+  </style></head><body><main class="wrap"><div class="top"><div><h1>TalkSys 電話管理</h1><div class="sub">Telnyx着信をTalkSys本体で処理。電話専用AIは使用しません。</div></div><div><a href="${xmlEscape(base)}/phone-profiles" style="color:#a8c7ff">電話番号プロフィール</a> · <a href="${xmlEscape(base)}/telephony-health" style="color:#a8c7ff">状態JSON</a></div></div>
   <section id="login" class="panel"><b>管理トークン</b><p class="muted">着信番号と会話内容の表示には認証が必要です。</p><input id="token" type="password" autocomplete="current-password"><button id="loginBtn">表示</button><div id="loginErr" class="warn"></div></section>
   <section id="app" class="hidden"><div class="panel"><div id="health">状態確認中...</div></div><div class="grid"><div class="panel"><div class="top"><h2>着信一覧</h2><div><select id="batchCount"><option value="10">直近10件</option><option value="20" selected>直近20件</option><option value="50">直近50件</option></select> <button id="batchExportBtn">ログZIP保存</button></div></div><div id="calls"></div></div><div class="panel"><div class="top"><h2 id="conversationTitle">会話内容</h2><button id="exportBtn" class="hidden">JSONL保存</button></div><div id="profileBox" class="profileBox hidden"><div class="top"><h3>発信者プロフィール</h3><span id="profilePhone" class="muted"></span></div><div class="muted">電話番号は本人確認ではありません。パスワード・カード番号などの秘密情報は保存しないでください。</div><div class="profileGrid"><label>表示名<input id="profileName" type="text" maxlength="80"></label><label>パーソナライズ<textarea id="profilePersonalization" maxlength="4000" placeholder="例: 丁寧で簡潔な説明を好む。呼び方は○○さん。"></textarea></label><label>メモリ<textarea id="profileMemory" maxlength="8000" placeholder="次回以降の通話で参照したい安定した情報"></textarea></label><label>利用<select id="profileEnabled"><option value="1">有効</option><option value="0">無効</option></select></label></div><div class="profileActions"><button id="profileSaveBtn">プロフィール保存</button><span id="profileStatus" class="muted"></span></div></div><div id="messages" class="muted">左の着信を選択してください。</div><div class="latency"><h3>遅延タイムライン</h3><div class="muted">発話終了推定を0msとして、STT・AI・TTS・最初のPCMU送信までを表示します。</div><div id="latency" class="muted">通話を選択してください。</div></div></div></div></section>
   </main><script>
@@ -532,6 +561,35 @@ async function listCalls(request, env) {
   if (!(await ensureSchema(env))) return json({ ok: false, error: 'storage unavailable' }, 503);
   const result = await env.TALKSYS_LOG_DB.prepare(`SELECT c.*, p.display_name AS profile_display_name, p.enabled AS profile_enabled, p.version AS profile_version FROM phone_calls c LEFT JOIN phone_profiles p ON p.phone_number=c.from_number ORDER BY c.updated_at DESC LIMIT 100`).all();
   return json({ ok: true, calls: result.results || [] });
+}
+
+
+async function listPhoneProfiles(request, env) {
+  if (!adminAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+  if (!(await ensureSchema(env))) return json({ ok: false, error: 'storage unavailable' }, 503);
+  const result = await env.TALKSYS_LOG_DB.prepare(`WITH callers AS (
+      SELECT from_number AS phone_number, MAX(updated_at) AS last_call_at, COUNT(*) AS call_count
+      FROM phone_calls WHERE COALESCE(from_number, '') <> '' GROUP BY from_number
+    ), numbers AS (
+      SELECT phone_number FROM phone_profiles
+      UNION
+      SELECT phone_number FROM callers
+    )
+    SELECT n.phone_number,
+      COALESCE(p.display_name, '') AS display_name,
+      COALESCE(p.personalization_text, '') AS personalization_text,
+      COALESCE(p.memory_text, '') AS memory_text,
+      COALESCE(p.enabled, 1) AS enabled,
+      COALESCE(p.version, 0) AS version,
+      p.updated_at AS profile_updated_at,
+      c.last_call_at,
+      COALESCE(c.call_count, 0) AS call_count
+    FROM numbers n
+    LEFT JOIN phone_profiles p ON p.phone_number=n.phone_number
+    LEFT JOIN callers c ON c.phone_number=n.phone_number
+    ORDER BY COALESCE(c.last_call_at, p.updated_at, '') DESC, n.phone_number ASC
+    LIMIT 500`).all();
+  return json({ ok: true, profiles: result.results || [] });
 }
 async function callMessages(request, env, callId) {
   if (!adminAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
@@ -789,7 +847,7 @@ function mediaBridge(request, env, deps) {
         const progressAudioPromise=progressText?warmPhoneProgressAudio(env,progressText,deps):null;
         if(progressAudioPromise)trackTask(progressAudioPromise.catch((error)=>{console.warn(JSON.stringify({type:'phone_search_progress_tts_error',turnId,error:clean(error?.message||error,240)}));return null;}));
         const turnStartedAt=Date.now();queueLatency(turnId,'turn_start',turnStartedAt-speechEndAt,{reactionKind:reaction.kind||'none',ackPrepared,ackText,ackFallback:ackSelection.fallbackUsed,progressPlanned:Boolean(progressText)});
-        const turnPromise=answerWithTalkSys(deps,stt.text,history,controller.signal,spokenBackchannel,callId,turnId);
+        const turnPromise=answerWithTalkSys(deps,stt.text,history,controller.signal,spokenBackchannel,callId,turnId,callerProfileSession.status==='ready'?callerProfileSession.profile:null);
         if(ackSelection.warmText){const warmText=ackSelection.warmText;trackTask(warmPhoneAckAudio(env,warmText,deps).then((audio)=>console.log(JSON.stringify({type:'phone_fast_ack_lazy_warm',kind:reaction.kind||'none',text:warmText,ok:Boolean(audio?.bytes?.byteLength)}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_lazy_warm_error',kind:reaction.kind||'none',error:clean(error?.message||error,240)}))));}
         if(ackPrepared&&myVersion===turnVersion){queueLatency(turnId,'ack_cache_hit',Date.now()-speechEndAt,{text:ackText,bytes:ackAudio.bytes.byteLength,reactionKind:reaction.kind||'none',fallback:ackSelection.fallbackUsed});const reacted=await speak(ackText,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:ackAudio});if(reacted){recentAckTexts=[...recentAckTexts,ackText].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'receipt',sourceKind:reaction.kind,text:ackText,cached:true,fallback:ackSelection.fallbackUsed}));}}
         else queueLatency(turnId,'ack_cache_miss',Date.now()-speechEndAt,{text:ackText||FAST_ACK_TEXT,reactionKind:reaction.kind||'none'});
@@ -844,7 +902,7 @@ function mediaBridge(request, env, deps) {
       const preparedGreeting=await greetingAudioPromise;
       queueLatency(greetingTurnId,'greeting_prepared',Date.now()-greetingStartedAt,{cached:Boolean(preparedGreeting?.bytes?.byteLength),bytes:preparedGreeting?.bytes?.byteLength||0});
       if(greetingText&&await speak(greetingText,{purpose:'greeting',turnId:greetingTurnId,originAt:greetingStartedAt,preparedAudio:preparedGreeting||undefined})){history.push({role:'assistant',content:greetingText});queueMessageLog('assistant',greetingText);}
-      return;
+      trackTask(warmPhoneAckPrimaries(env,deps).then((count)=>console.log(JSON.stringify({type:'phone_fast_ack_primary_warm',revision:PHONE_FAST_ACK_REVISION,count}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_primary_warm_error',error:clean(error?.message||error,240)}))));return;
     }
     if(message?.event==='mark'){if(currentMark&&message?.mark?.name===currentMark){assistantPlaying=false;currentMark='';}return;}
     if(message?.event==='media'&&message?.media?.payload){
@@ -864,7 +922,7 @@ function mediaBridge(request, env, deps) {
 }
 
 export function isTelephonyPath(pathname = '') {
-  return pathname === '/phone' || pathname === '/telephony-health' || pathname === '/phone/api/calls'
+  return pathname === '/phone' || pathname === '/phone-profiles' || pathname === '/telephony-health' || pathname === '/phone/api/calls' || pathname === '/phone/api/calls/export.zip' || pathname === '/phone/api/profiles'
     || /^\/phone\/api\/calls\/[^/]+\/messages$/.test(pathname) || /^\/phone\/api\/calls\/[^/]+\/latency$/.test(pathname)
     || /^\/phone\/api\/calls\/[^/]+\/export\.jsonl$/.test(pathname) || /^\/phone\/api\/profiles\/[^/]+$/.test(pathname)
     || pathname === '/telnyx/voice' || pathname === '/telnyx/media' || pathname === '/telnyx/stream-status';
@@ -873,9 +931,11 @@ export function isTelephonyPath(pathname = '') {
 export async function handleTelephonyRequest(request, env, ctx, deps = {}) {
   const url=new URL(request.url);if(!isTelephonyPath(url.pathname))return null;
   if(request.method==='GET'&&url.pathname==='/phone')return new Response(dashboardHtml(request),{headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store'}});
+  if(request.method==='GET'&&url.pathname==='/phone-profiles')return new Response(profilesDashboardHtml(request),{headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store'}});
   if(request.method==='GET'&&url.pathname==='/telephony-health')return health(request,env,deps);
   if(request.method==='GET'&&url.pathname==='/phone/api/calls/export.zip')return recentCallsZip(request,env);
   if(request.method==='GET'&&url.pathname==='/phone/api/calls')return listCalls(request,env);
+  if(request.method==='GET'&&url.pathname==='/phone/api/profiles')return listPhoneProfiles(request,env);
   const messageMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/messages$/);if(request.method==='GET'&&messageMatch)return callMessages(request,env,decodeURIComponent(messageMatch[1]));
   const latencyMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/latency$/);if(request.method==='GET'&&latencyMatch)return callLatency(request,env,decodeURIComponent(latencyMatch[1]));
   const exportMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/export\.jsonl$/);if(request.method==='GET'&&exportMatch)return callExportJsonl(request,env,decodeURIComponent(exportMatch[1]));
