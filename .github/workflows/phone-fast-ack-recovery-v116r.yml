@@ -1,0 +1,85 @@
+name: Phone fast ack recovery v116r
+
+on:
+  push:
+    branches:
+      - fix/phone-fast-ack-restore-v116r
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    if: ${{ !contains(github.event.head_commit.message, '[v116r applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/phone-fast-ack-restore-v116r
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Apply minimal fast-ack recovery
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/telephony/index.js')
+          s = p.read_text(encoding='utf-8')
+          old_ack = "const FAST_ACK_TEXT = 'はい、少々お待ちください。';"
+          new_ack = "const FAST_ACK_TEXT = 'はい。';"
+          if s.count(old_ack) != 1:
+              raise SystemExit(f'expected exactly one current FAST_ACK_TEXT, got {s.count(old_ack)}')
+          s = s.replace(old_ack, new_ack, 1)
+          warm_call = "trackTask(warmPhoneAckPrimaries(env,deps).then((count)=>console.log(JSON.stringify({type:'phone_fast_ack_primary_warm',revision:PHONE_FAST_ACK_REVISION,count}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_primary_warm_error',error:clean(error?.message||error,240)}))));return;"
+          if s.count(warm_call) != 1:
+              raise SystemExit(f'expected exactly one startup primary warm call, got {s.count(warm_call)}')
+          s = s.replace(warm_call, "return;", 1)
+          p.write_text(s, encoding='utf-8')
+
+          t = Path('tests/phone-fast-ack-recovery-v116r.test.mjs')
+          t.write_text("""import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { selectPhoneAckText } from '../src/telephony/index.js';
+
+const source = await readFile(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+
+test('v116r restores the known-good short fallback acknowledgement', () => {
+  assert.match(source, /const FAST_ACK_TEXT = 'はい。';/);
+  const selected = selectPhoneAckText({ kind: 'lookup', shouldSpeak: true, terminal: false }, ['はい。'], []);
+  assert.equal(selected.text, 'はい。');
+});
+
+test('v116r does not prewarm category acknowledgement TTS at call start', () => {
+  assert.doesNotMatch(source, /trackTask\\(warmPhoneAckPrimaries\\(env,deps\\)/);
+  assert.match(source, /if\\(ackSelection\\.warmText\\)/);
+});
+
+test('v116r leaves the core answer function contract unchanged', () => {
+  assert.match(source, /async function answerWithTalkSys\\(deps, text, history, signal, spokenBackchannel = '', sessionId = '', utteranceId = ''\\)/);
+  assert.match(source, /const turnPromise=answerWithTalkSys\\(deps,stt\\.text,history,controller\\.signal,spokenBackchannel,callId,turnId\\)/);
+});
+""", encoding='utf-8')
+          PY
+      - run: npm ci
+      - name: Focused recovery regression
+        run: node --test tests/phone-fast-ack-recovery-v116r.test.mjs tests/phone-fast-reaction-v2.test.mjs tests/phone-greeting-latency-v114.test.mjs tests/phone-profile-preload-v116a.test.mjs
+      - name: Full active regression
+        run: npm test
+      - name: Architecture checks
+        run: |
+          npm run architecture:check
+          npm run architecture:graph
+          npm run reuse:check
+      - name: Wrangler dry run
+        run: npx wrangler deploy --dry-run --outdir /tmp/talksys-v116r-dryrun
+      - name: Commit validated recovery
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/telephony/index.js tests/phone-fast-ack-recovery-v116r.test.mjs
+          git diff --cached --check
+          git commit -m "Restore fast phone acknowledgement without touching answer path [v116r applied]"
+          git push origin HEAD:fix/phone-fast-ack-restore-v116r
