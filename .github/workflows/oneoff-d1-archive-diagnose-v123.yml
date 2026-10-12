@@ -9,6 +9,7 @@ on:
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
+    environment: production
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
@@ -41,6 +42,64 @@ jobs:
           npx wrangler d1 execute talksys-conversation-logs --remote --command "PRAGMA table_info(conversation_logs);"
           echo '=== conversation_logs_archive ==='
           npx wrangler d1 execute talksys-conversation-logs --remote --command "PRAGMA table_info(conversation_logs_archive);"
+      - name: Summarize recent phone ACK latency without PII
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute talksys-conversation-logs --remote --json --command "SELECT turn_id, stage, elapsed_ms, created_at FROM phone_latency_events WHERE stage IN ('vad_finalize','stt_end','ack_cache_hit','ack_cache_miss','ack_first_pcmu') ORDER BY id DESC LIMIT 1000;" > phone-latency-raw.json
+          node <<'NODE'
+          const fs = require('fs');
+          const raw = JSON.parse(fs.readFileSync('phone-latency-raw.json', 'utf8'));
+          const blocks = Array.isArray(raw) ? raw : [raw];
+          const rows = blocks.flatMap((block) => Array.isArray(block?.results) ? block.results : []);
+          const turns = new Map();
+          for (const row of rows) {
+            const turnId = String(row?.turn_id || '');
+            const stage = String(row?.stage || '');
+            const elapsed = Number(row?.elapsed_ms);
+            if (!turnId || !stage || !Number.isFinite(elapsed)) continue;
+            const current = turns.get(turnId) || { createdAt: '', values: {}, cacheHit: false, cacheMiss: false };
+            if (!current.createdAt || String(row?.created_at || '') > current.createdAt) current.createdAt = String(row?.created_at || '');
+            if (stage === 'ack_cache_hit') current.cacheHit = true;
+            else if (stage === 'ack_cache_miss') current.cacheMiss = true;
+            else current.values[stage] = elapsed;
+            turns.set(turnId, current);
+          }
+          const completed = [...turns.values()]
+            .filter((turn) => Number.isFinite(turn.values.ack_first_pcmu))
+            .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+          const ack = completed.map((turn) => turn.values.ack_first_pcmu).sort((a, b) => a - b);
+          const percentile = (values, p) => {
+            if (!values.length) return null;
+            const index = Math.max(0, Math.min(values.length - 1, Math.ceil(values.length * p) - 1));
+            return values[index];
+          };
+          const latest = completed[0] || null;
+          const summary = {
+            type: 'phone_ack_latency_summary',
+            metric: 'estimated speech end to first outbound ACK PCMU frame',
+            sampleCount: ack.length,
+            latestAt: latest?.createdAt || null,
+            latestAckFirstPcmuMs: latest?.values?.ack_first_pcmu ?? null,
+            latestVadFinalizeMs: latest?.values?.vad_finalize ?? null,
+            latestSttEndMs: latest?.values?.stt_end ?? null,
+            latestAckCacheHit: latest?.cacheHit ?? null,
+            latestAckCacheMiss: latest?.cacheMiss ?? null,
+            p50AckFirstPcmuMs: percentile(ack, 0.50),
+            p95AckFirstPcmuMs: percentile(ack, 0.95),
+            maxAckFirstPcmuMs: ack.length ? ack[ack.length - 1] : null,
+            recent: completed.slice(0, 10).map((turn) => ({
+              observedAt: turn.createdAt || null,
+              ackFirstPcmuMs: turn.values.ack_first_pcmu ?? null,
+              vadFinalizeMs: turn.values.vad_finalize ?? null,
+              sttEndMs: turn.values.stt_end ?? null,
+              ackCacheHit: turn.cacheHit,
+              ackCacheMiss: turn.cacheMiss
+            }))
+          };
+          console.log(JSON.stringify(summary, null, 2));
+          NODE
+          rm -f phone-latency-raw.json
       - name: Call signed archive endpoint
         shell: bash
         run: |
