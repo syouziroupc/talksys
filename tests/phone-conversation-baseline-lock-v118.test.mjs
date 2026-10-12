@@ -18,7 +18,7 @@ test('phone conversation baseline locks conservative capture and output settings
 });
 
 test('phone acknowledgement behavior is the 10/10 Fast Reaction v2 contract', () => {
-  assert.match(telephony, /const FAST_ACK_TEXT = 'はい、少々お待ちください。'/);
+  assert.match(telephony, /const FAST_ACK_TEXT = 'はい、確認しますね。'/);
   assert.match(telephony, /trackTask\(warmPhoneAckPrimaries\(env,deps\)/);
   assert.doesNotMatch(telephony, /earlyAckPromise/);
   const sttEnd = telephony.search(/queueLatency\(turnId,\s*'stt_end'/);

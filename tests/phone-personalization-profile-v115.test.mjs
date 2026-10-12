@@ -32,7 +32,7 @@ test('profile API remains behind admin authorization and supports conflict detec
   assert.match(source, /memory_text_too_long/);
 });
 
-test('phase one does not inject profile data into the live TalkSys turn', async () => {
+test('profile storage is not queried synchronously inside the live TalkSys turn', async () => {
   const source = await readFile(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
   const finishStart = source.indexOf('const finishUtterance=()=>');
   const deadline = source.indexOf('const deadline=', finishStart);
