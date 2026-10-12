@@ -1,0 +1,43 @@
+name: One-off verify v121 grounding live
+
+on:
+  push:
+    branches: [fix/grounding-profile-v121]
+    paths: ['.github/workflows/oneoff-verify-v121-grounding-live.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify live dynamic answers do not use generic refusal
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://talksys.syouziroupc.workers.dev'
+          weather="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data '{"text":"別府市の今日の天気は？","history":[]}' "$base/api/turn")"
+          train="$(curl -fsS --max-time 120 -H 'content-type: application/json' --data '{"text":"次の別府駅の電車の時間は？","history":[]}' "$base/api/turn")"
+          printf '%s\n' "$weather" > live-weather.json
+          printf '%s\n' "$train" > live-train.json
+          WEATHER="$weather" TRAIN="$train" node - <<'NODE'
+          for (const [name, raw] of [['weather', process.env.WEATHER], ['train', process.env.TRAIN]]) {
+            const d = JSON.parse(raw || '{}');
+            const answer = String(d.answer || '');
+            if (d.ok !== true) throw new Error(`${name}: not ok ${raw}`);
+            if (d.search !== true) throw new Error(`${name}: search was not used ${raw}`);
+            if (!answer.trim()) throw new Error(`${name}: empty answer`);
+            if (/推測では答えません|確認できる根拠を十分に取得できなかったため/.test(answer)) throw new Error(`${name}: legacy fixed refusal ${answer}`);
+            if (d.route === 'grounding-evidence-fail-closed') throw new Error(`${name}: legacy fail-closed route`);
+            if (d.groundingRequired !== true) throw new Error(`${name}: grounding not required`);
+          }
+          NODE
+      - name: Upload live grounding evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: v121-live-grounding-evidence
+          path: |
+            live-weather.json
+            live-train.json
