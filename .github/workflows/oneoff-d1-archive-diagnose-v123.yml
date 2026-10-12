@@ -25,23 +25,29 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
-      - name: Resolve Cloudflare account
+      - name: Resolve Cloudflare account by D1 access
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
-            account_id="$(curl -fsSL -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json' https://api.cloudflare.com/client/v4/accounts?per_page=1 | node -e "let d=JSON.parse(require('fs').readFileSync(0,'utf8'));process.stdout.write(d.result?.[0]?.id||'')")"
-            test -n "$account_id"
-            echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
-          fi
-      - name: Inspect remote D1 schemas
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo '=== conversation_logs ==='
-          npx wrangler d1 execute talksys-conversation-logs --remote --command "PRAGMA table_info(conversation_logs);"
-          echo '=== conversation_logs_archive ==='
-          npx wrangler d1 execute talksys-conversation-logs --remote --command "PRAGMA table_info(conversation_logs_archive);"
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          accounts_json="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json' 'https://api.cloudflare.com/client/v4/accounts?per_page=50')"
+          mapfile -t account_ids < <(ACCOUNTS_JSON="$accounts_json" EXISTING_ID="${CLOUDFLARE_ACCOUNT_ID:-}" node <<'NODE'
+          const d = JSON.parse(process.env.ACCOUNTS_JSON || '{}');
+          const ids = [process.env.EXISTING_ID || '', ...(d.result || []).map((x) => x?.id || '')].filter(Boolean);
+          process.stdout.write([...new Set(ids)].join('\n'));
+          NODE
+          )
+          for account_id in "${account_ids[@]}"; do
+            if CLOUDFLARE_ACCOUNT_ID="$account_id" npx wrangler d1 execute talksys-conversation-logs --remote --json --command "SELECT 1 AS ok;" >/tmp/d1-probe.json 2>/dev/null; then
+              echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
+              echo 'Resolved Cloudflare account by successful D1 probe.'
+              rm -f /tmp/d1-probe.json
+              exit 0
+            fi
+          done
+          rm -f /tmp/d1-probe.json
+          echo 'No accessible Cloudflare account could query the TalkSys D1 database.'
+          exit 1
       - name: Summarize recent phone ACK latency without PII
         shell: bash
         run: |
@@ -100,7 +106,17 @@ jobs:
           console.log(JSON.stringify(summary, null, 2));
           NODE
           rm -f phone-latency-raw.json
+      - name: Inspect remote D1 schemas
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== conversation_logs ==='
+          npx wrangler d1 execute talksys-conversation-logs --remote --command "PRAGMA table_info(conversation_logs);"
+          echo '=== conversation_logs_archive ==='
+          npx wrangler d1 execute talksys-conversation-logs --remote --command "PRAGMA table_info(conversation_logs_archive);"
       - name: Call signed archive endpoint
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
