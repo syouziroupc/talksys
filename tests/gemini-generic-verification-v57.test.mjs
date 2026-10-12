@@ -113,7 +113,7 @@ test('dynamic fact retries through generateContent when Interactions skips requi
   }
 });
 
-test('dynamic fact fails closed only after both grounding attempts return no search evidence', async () => {
+test('dynamic fact asks for specific clarification only after both grounding attempts return no search evidence', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async () => {
@@ -145,8 +145,8 @@ test('dynamic fact fails closed only after both grounding attempts return no sea
     assert.equal(result.groundingFailClosed, true);
     assert.equal(result.groundingRecoveryUsed, false);
     assert.equal(result.searchRetried, true);
-    assert.doesNotMatch(result.answer, /5点2|5点4/);
-    assert.match(result.answer, /推測では答えません/);
+    assert.doesNotMatch(result.answer, /5点2|5点4|推測では答えません/);
+    assert.match(result.answer, /正確に確認するため/);
   } finally {
     globalThis.fetch = originalFetch;
   }
