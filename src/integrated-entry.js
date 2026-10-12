@@ -17,6 +17,7 @@ export const SEARCH_PREFACE_REVISION = 'talksys-v63-search-preface-r1';
 export const REALTIME_VOICE_REVISION = 'talksys-v64-discord-realtime-stt-r1';
 export const DISCORD_PIPELINE_REVISION = 'talksys-v97-region-rescue-d1-archive-r1';
 export const FALLBACK_CHANNEL_REVISION = 'talksys-v109-fallback-voice-entry-r1';
+export const GROUNDING_ANSWER_REVISION = 'talksys-grounding-answer-v121-r1';
 export const REALTIME_STT_MODEL = '@cf/deepgram/nova-3';
 export const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts';
@@ -819,6 +820,30 @@ function searchedInInteraction(payload = {}) {
     || (Array.isArray(payload?.steps) && payload.steps.some((step) => /^google_search_/.test(String(step?.type || ''))));
 }
 
+export function groundingEvidenceUsable(report = {}) {
+  if (report?.required !== true) return true;
+  if (report?.searched !== true || Number(report?.sourceCount || 0) < 1) return false;
+  // Missing citation metadata is not the same as missing retrieved evidence.
+  // Keep blocking an explicitly detected unsupported hard claim when citation
+  // spans exist, but do not discard the whole answer merely because Gemini
+  // omitted citation annotations for otherwise sourced search output.
+  if (Number(report?.citationSpanCount || 0) > 0 && Number(report?.unsupportedHardClaimCount || 0) > 0) return false;
+  return true;
+}
+
+export function evidenceFailureClarification(text = '') {
+  const value = compact(text, 4000);
+  if (isImmediateTransitQuestion(value)) {
+    const hasDirection = /(?:方面|行き|上り|下り|から.{1,50}(?:まで|へ)|(?:まで|へ).{0,20}(?:行|乗))/i.test(value);
+    if (!hasDirection) return '次の電車は行き先によって変わります。どちら方面か、行き先を教えてください。';
+    return '正しい発車時刻を確認するため、出発駅と行き先をもう一度お願いします。';
+  }
+  if (LOCATION_DEPENDENT_RE.test(value)) {
+    return '場所を正確に確認したいです。駅名か市町村名をもう一度お願いします。';
+  }
+  return '正確に確認するため、対象の名前や地域をもう少し具体的に教えてください。';
+}
+
 function isGeminiInteractionsRegionUnavailable(error) {
   const message = compact(error?.message || error, 1200);
   return /gemini_interactions_http_400/i.test(message)
@@ -1104,7 +1129,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   let citationCount = groundingEvidence.citationCount;
   let groundingSourceCount = groundingEvidence.sourceCount;
   let groundingSearchPerformed = groundingEvidence.searched;
-  let groundingFailClosed = groundingRequired && !groundingEvidence.passed;
+  let groundingFailClosed = groundingRequired && !groundingEvidenceUsable(groundingEvidence);
   let groundingRecoveryUsed = false;
   let searchRetried = false;
   let searchRetryMs = 0;
@@ -1141,8 +1166,8 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
         evidencePassed: recoveryEvidence.passed,
         evidenceReasons: recoveryEvidence.reasons,
         transport: 'generateContent',
-      }, recoveryEvidence.passed ? 'log' : 'warn');
-      if (recoveryEvidence.passed) {
+      }, groundingEvidenceUsable(recoveryEvidence) ? 'log' : 'warn');
+      if (groundingEvidenceUsable(recoveryEvidence)) {
         interaction = {
           ...recovery,
           fallbackReason: 'insufficient-grounding-evidence-recovered',
@@ -1173,7 +1198,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   if (groundingFailClosed) {
     interaction = {
       ...interaction,
-      answer: GROUNDING_FAIL_CLOSED_ANSWER,
+      answer: evidenceFailureClarification(text),
     };
   }
   emitLatencyLog('gemini-primary-complete', body, {
@@ -1256,7 +1281,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   citationCount = finalGroundingEvidence.citationCount;
   groundingSourceCount = finalGroundingEvidence.sourceCount;
   groundingSearchPerformed = finalGroundingEvidence.searched;
-  groundingFailClosed = groundingRequired && !finalGroundingEvidence.passed;
+  groundingFailClosed = groundingRequired && !groundingEvidenceUsable(finalGroundingEvidence);
 
   const finalQueries = interactionQueries(interaction.payload);
   const primaryQueries = interactionQueries(primaryInteraction.payload);
@@ -1273,7 +1298,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
   const searched = searchedInInteraction(interaction.payload) || searchedInInteraction(primaryInteraction.payload);
   let answer = simplifyForSenior(normalizeSpokenJapanese(interaction.answer));
   if (groundingFailClosed) {
-    answer = GROUNDING_FAIL_CLOSED_ANSWER;
+    answer = evidenceFailureClarification(text);
   } else if (remainingPastDepartures.length > 0) {
     answer = '検索結果に発車済みの時刻しか残ったため、その時刻は案内しません。現在時刻より後の便だけを案内します。';
   }
@@ -1284,12 +1309,12 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     ok: true,
     answer,
     route: groundingFailClosed
-      ? 'grounding-evidence-fail-closed'
+      ? 'grounding-evidence-clarification'
       : (groundingRecoveryUsed
         ? 'gemini-generate-content-grounding-recovery'
         : (interactionsRegionFallback ? 'gemini-generate-content-region-fallback' : 'gemini-native-interactions')),
     planner: groundingFailClosed
-      ? 'gemini-grounding-evidence-v110'
+      ? 'gemini-grounding-evidence-v121'
       : (groundingRecoveryUsed
         ? 'gemini-grounding-recovery-v84'
         : (interactionsRegionFallback ? 'gemini-generate-content-region-fallback-v96' : 'gemini-native-personalized-v55')),
@@ -1305,6 +1330,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     groundingRequired,
     groundingHighRisk,
     groundingEvidenceRevision: GROUNDING_EVIDENCE_REVISION,
+    groundingAnswerRevision: GROUNDING_ANSWER_REVISION,
     groundingEvidencePassed: groundingEvidence.passed,
     groundingEvidenceReasons: groundingEvidence.reasons,
     groundingCitationCount: citationCount,
@@ -1314,6 +1340,7 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
     groundingUnsupportedClaimCount: groundingEvidence.unsupportedClaimCount,
     groundingUnsupportedHardClaimCount: groundingEvidence.unsupportedHardClaimCount,
     groundingFailClosed,
+    groundingClarification: groundingFailClosed,
     temporalTransitGuard: immediateTransit,
     temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
     temporalRepairRetried,
@@ -2364,6 +2391,8 @@ export const __test = {
   interactionSources,
   interactionCitationCount,
   groundingEvidenceReport,
+  groundingEvidenceUsable,
+  evidenceFailureClarification,
   isGeminiInteractionsRegionUnavailable,
   isGeminiRegionUnavailable,
   createGeminiGenerateContentFallback,
