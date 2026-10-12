@@ -1,18 +1,20 @@
-name: One-off v122 production smoke artifact
+name: One-off v122 production smoke repair
 
 on:
   push:
     branches: [fix/v122-production-smoke]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
+  repair:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -26,7 +28,13 @@ jobs:
           grep -F "d.generationProvider!=='jma'" .github/workflows/deploy.yml
           grep -F "www.jma.go.jp" .github/workflows/deploy.yml
           git diff --check
-      - uses: actions/upload-artifact@v6
-        with:
-          name: v122-patched-deploy-workflow
-          path: .github/workflows/deploy.yml
+      - name: Commit repair and remove one-off tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm scripts/patch-v122-production-smoke.mjs .github/workflows/oneoff-v122-production-smoke.yml
+          git add .github/workflows/deploy.yml
+          git config user.name syouziroupc
+          git config user.email syouziroupc@gmail.com
+          git commit -m "Fix v122 production weather smoke for JMA route"
+          git push origin HEAD:fix/v122-production-smoke
