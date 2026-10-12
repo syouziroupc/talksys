@@ -1,1 +1,1 @@
-phone-grounding-profile-history-v121-deploy-20261012
+phone-official-jma-weather-v122-deploy-20261012
