@@ -83,8 +83,8 @@ jobs:
             .github/workflows/oneoff-v123-repair-r3.yml \
             scripts/apply-v123-stability-repair.py \
             scripts/fix-v123-patcher-r2.py \
-            scripts/finalize-v123-r3.py
-          git restore --source=HEAD -- package-lock.json
+            scripts/finalize-v123-r3.py \
+            package-lock.json
           git add -A
           git diff --cached --check
           changed="$(git diff --cached --name-only)"
