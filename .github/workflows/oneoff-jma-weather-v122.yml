@@ -53,7 +53,17 @@ jobs:
       - name: Reuse gate check
         run: npm run reuse:check
       - name: Full active regression
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee v122-full.log
+      - name: Upload v122 full diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: v122-full-diagnostics
+          path: v122-full.log
+          if-no-files-found: ignore
       - name: Wrangler dry run
         run: npx wrangler deploy --dry-run
       - name: Commit verified v122 repair
