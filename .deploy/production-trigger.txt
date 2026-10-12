@@ -1,1 +1,1 @@
-phone-official-jma-weather-v122-deploy-20261012
+phone-search-audio-adaptive-vad-v123-deploy-20261012
