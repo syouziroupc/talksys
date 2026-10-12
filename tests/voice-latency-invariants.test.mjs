@@ -49,14 +49,17 @@ test('latency metrics preserve the full quality-first pipeline', () => {
 });
 
 
-test('dynamic grounding retries once before fail-closed response', () => {
+test('dynamic grounding retries once and only falls back on a true search outage', () => {
   assert.match(integrated, /export function interactionCitationCount/);
   assert.match(integrated, /export function requiresGroundedEvidence/);
   assert.match(integrated, /groundingEvidenceReport/);
   assert.match(integrated, /groundingEvidencePassed/);
   assert.match(integrated, /createGeminiGenerateContentFallback/);
   assert.match(integrated, /gemini-grounding-recovery/);
-  assert.match(integrated, /GROUNDING_FAIL_CLOSED_ANSWER/);
+  assert.match(integrated, /recoverySearched \|\| recoveryAnswer/);
+  assert.match(integrated, /search-unavailable-after-retry/);
+  assert.match(integrated, /検索サービスから結果を取得できませんでした/);
+  assert.doesNotMatch(integrated, /GROUNDING_FAIL_CLOSED_ANSWER/);
 });
 
 

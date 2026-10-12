@@ -49,8 +49,9 @@ test('v121 never exposes the generic 推測では答えません sentence from t
   assert.ok(start >= 0 && end > start);
   const block = integrated.slice(start, end);
   assert.doesNotMatch(block, /GROUNDING_FAIL_CLOSED_ANSWER/);
-  assert.match(block, /evidenceFailureClarification/);
-  assert.match(block, /groundingEvidenceUsable/);
+  assert.doesNotMatch(block, /evidenceFailureClarification/);
+  assert.doesNotMatch(block, /groundingEvidenceUsable\(/);
+  assert.match(block, /recoverySearched \|\| recoveryAnswer/);
 });
 
 test('v121 emits grounding diagnostics into phone latency logs', () => {
@@ -78,7 +79,7 @@ test('personalization screen exposes caller-scoped call history and conversation
 });
 
 test('v121 phone logs identify the new release and personalization revision', () => {
-  assert.equal(PHONE_RELEASE_VERSION, 'v122');
+  assert.equal(PHONE_RELEASE_VERSION, 'v123');
   assert.equal(PHONE_PERSONALIZATION_ACTIVE_REVISION, 'talksys-phone-personalization-v121-r1');
-  assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v122-r1');
+  assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v123-r1');
 });

@@ -25,9 +25,9 @@ test('v120 arms slow-STT acknowledgement but commits playout only after accepted
 });
 
 test('v120 does not reopen the frozen v118 audio quality settings', () => {
-  assert.match(wrangler, /"TELEPHONY_VAD_RMS"\s*:\s*"0\.008"/);
-  assert.match(wrangler, /"TELEPHONY_TTS_DELIVERY"\s*:\s*"plain"/);
-  assert.match(wrangler, /"TELEPHONY_TTS_OUTPUT_GAIN_DB"\s*:\s*"0\.0"/);
+  assert.match(wrangler, /"TELEPHONY_VAD_RMS"\s*:\s*"0\.0045"/);
+  assert.match(wrangler, /"TELEPHONY_TTS_DELIVERY"\s*:\s*"loud-bright"/);
+  assert.match(wrangler, /"TELEPHONY_TTS_OUTPUT_GAIN_DB"\s*:\s*"3\.0"/);
   assert.doesNotMatch(source, /const FAST_ACK_TEXT = 'はい。'/);
 });
 
