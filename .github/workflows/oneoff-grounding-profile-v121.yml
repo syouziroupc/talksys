@@ -1,0 +1,57 @@
+name: One-off grounding and profile v121
+
+on:
+  push:
+    branches: [fix/grounding-profile-v121]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund --package-lock=false
+      - name: Apply guarded v121 repair
+        run: node scripts/apply-grounding-profile-v121.mjs
+      - name: Syntax check
+        run: |
+          node --check src/integrated-entry.js
+          node --check src/telephony/index.js
+      - name: Focused v121 regressions
+        run: |
+          node --test \
+            tests/phone-grounding-profile-v121.test.mjs \
+            tests/grounding-evidence-gate-v110.test.mjs \
+            tests/phone-quality-personalization-v120.test.mjs \
+            tests/phone-second-turn-ack-zip-v119.test.mjs \
+            tests/phone-conversation-baseline-lock-v118.test.mjs \
+            tests/phone-personalization-profile-v115.test.mjs
+      - name: Architecture registry check
+        run: npm run architecture:check
+      - name: Architecture graph check
+        run: npm run architecture:graph
+      - name: Reuse gate check
+        run: npm run reuse:check
+      - name: Full active regression
+        run: npm test
+      - name: Wrangler dry run
+        run: npx wrangler deploy --dry-run
+      - name: Commit verified v121 repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm scripts/apply-grounding-profile-v121.mjs .github/workflows/oneoff-grounding-profile-v121.yml
+          git add src/integrated-entry.js src/telephony/index.js tests/phone-quality-personalization-v120.test.mjs tests/phone-grounding-profile-v121.test.mjs
+          git config user.name syouziroupc
+          git config user.email syouziroupc@gmail.com
+          git commit -m "Fix grounded phone answers and profile history v121"
+          git push origin HEAD:fix/grounding-profile-v121
