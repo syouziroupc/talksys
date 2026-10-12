@@ -1,0 +1,50 @@
+name: One-off verify v121 production
+
+on:
+  push:
+    branches: [fix/grounding-profile-v121]
+    paths: ['.github/workflows/oneoff-verify-v121-production.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify live v121 health and phone UIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://talksys.syouziroupc.workers.dev'
+          health="$(curl -fsS --max-time 20 "$base/telephony-health")"
+          phone="$(curl -fsS --max-time 20 "$base/phone")"
+          profiles="$(curl -fsS --max-time 20 "$base/phone-profiles")"
+          printf '%s\n' "$health" > live-health.json
+          printf '%s\n' "$phone" > live-phone.html
+          printf '%s\n' "$profiles" > live-phone-profiles.html
+          HEALTH="$health" node - <<'NODE'
+          const d = JSON.parse(process.env.HEALTH || '{}');
+          if (d.ok !== true) throw new Error('telephony health not ok');
+          if (d.releaseVersion !== 'v121') throw new Error(`releaseVersion=${d.releaseVersion}`);
+          if (d.runtimeLogRevision !== 'talksys-phone-runtime-log-v121-r1') throw new Error(`runtimeLogRevision=${d.runtimeLogRevision}`);
+          if (d.personalizationRevision !== 'talksys-phone-personalization-v121-r1') throw new Error(`personalizationRevision=${d.personalizationRevision}`);
+          if (!String(d.workerVersionId || '').trim()) throw new Error('workerVersionId missing');
+          NODE
+          grep -Fq 'profileDirty=false' live-phone.html
+          grep -Fq 'refreshProfile:false' live-phone.html
+          grep -Fq 'profileCallHistory' live-phone-profiles.html
+          grep -Fq 'profileCallMessages' live-phone-profiles.html
+          grep -Fq 'loadProfileCalls(selectedPhone)' live-phone-profiles.html
+          status="$(curl -sS -o unauthorized.json -w '%{http_code}' --max-time 20 "$base/phone/api/profiles/%2B810000000000/calls?limit=1")"
+          test "$status" = '401'
+      - name: Upload live v121 evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: v121-live-production-evidence
+          path: |
+            live-health.json
+            live-phone.html
+            live-phone-profiles.html
+            unauthorized.json
