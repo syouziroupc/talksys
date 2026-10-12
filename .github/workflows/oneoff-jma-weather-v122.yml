@@ -60,7 +60,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git rm scripts/apply-jma-weather-v122.mjs .github/workflows/oneoff-jma-weather-v122.yml .github/workflows/oneoff-inspect-jma-v122.yml
+          git rm scripts/apply-jma-weather-v122.mjs scripts/jma-weather-v122-snippet.txt .github/workflows/oneoff-jma-weather-v122.yml .github/workflows/oneoff-inspect-jma-v122.yml
           git add src/integrated-entry.js src/telephony/index.js \
             tests/phone-jma-weather-v122.test.mjs \
             tests/phone-quality-personalization-v120.test.mjs \
