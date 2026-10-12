@@ -1,0 +1,34 @@
+name: One-off verify v120 production metadata
+
+on:
+  push:
+    branches: [fix/phone-quality-personalization-v120]
+    paths: ['.github/workflows/oneoff-verify-v120-production-metadata.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fetch and assert live telephony health
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(curl -fsS --max-time 20 https://talksys.syouziroupc.workers.dev/telephony-health)"
+          printf '%s\n' "$body" | tee telephony-health.json
+          BODY="$body" node - <<'NODE'
+          const d = JSON.parse(process.env.BODY || '{}');
+          if (d.ok !== true) throw new Error('telephony-health not ok');
+          if (d.releaseVersion !== 'v120') throw new Error(`releaseVersion=${d.releaseVersion}`);
+          if (d.runtimeLogRevision !== 'talksys-phone-runtime-log-v120-r1') throw new Error(`runtimeLogRevision=${d.runtimeLogRevision}`);
+          if (!String(d.workerVersionId || '').trim()) throw new Error('workerVersionId missing');
+          if (d.personalizationRevision !== 'talksys-phone-personalization-v120-r1') throw new Error(`personalizationRevision=${d.personalizationRevision}`);
+          NODE
+      - name: Upload live health evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: v120-live-telephony-health
+          path: telephony-health.json
