@@ -16,8 +16,8 @@ const FAST_ACK_TEXT = 'はい、確認しますね。';
 export const PHONE_FAST_ACK_REVISION = 'talksys-phone-fast-ack-v2-r1';
 export const PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v120-r1';
 export const PHONE_PERSONALIZATION_ACTIVE_REVISION = 'talksys-phone-personalization-v121-r1';
-export const PHONE_RUNTIME_LOG_REVISION = 'talksys-phone-runtime-log-v121-r1';
-export const PHONE_RELEASE_VERSION = 'v121';
+export const PHONE_RUNTIME_LOG_REVISION = 'talksys-phone-runtime-log-v122-r1';
+export const PHONE_RELEASE_VERSION = 'v122';
 const PHONE_ACK_STT_GRACE_MS = 250;
 const PHONE_ACK_VARIANTS = Object.freeze({
   lookup: Object.freeze([

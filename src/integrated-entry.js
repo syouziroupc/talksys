@@ -25,6 +25,11 @@ export const GEMINI_TTS_FALLBACK_MODEL = 'gemini-3.1-flash-tts-preview';
 
 const GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 const GEMINI_GENERATE_CONTENT_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
+const JMA_AREA_ENDPOINT = 'https://www.jma.go.jp/bosai/common/const/area.json';
+const JMA_FORECAST_BASE = 'https://www.jma.go.jp/bosai/forecast/data/forecast';
+export const JMA_WEATHER_REVISION = 'talksys-jma-weather-v122-r1';
+let jmaAreaCache = null;
+let jmaAreaCacheAt = 0;
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const JST_WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -264,6 +269,156 @@ function deterministicCurrentTimeResult(text = '', now = new Date(), started = D
   };
 }
 
+
+export function isJmaWeatherQuestion(text = '') {
+  const value = compact(text, 500);
+  return Boolean(value && /(?:天気|天候|降水|雨|雪)/i.test(value));
+}
+
+function jmaTargetDateKey(text = '', now = new Date()) {
+  const shifted = new Date(now.getTime() + JST_OFFSET_MS);
+  const base = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate());
+  const offsetDays = /明日/.test(compact(text, 500)) ? 1 : 0;
+  return new Date(base + offsetDays * 86400000).toISOString().slice(0, 10);
+}
+
+export function resolveJmaWeatherArea(areaMap = {}, text = '') {
+  const value = compact(text, 1000);
+  if (!value) return null;
+  const matches = Object.entries(areaMap?.class20s || {})
+    .filter(([, item]) => item?.name && value.includes(String(item.name)))
+    .sort((a, b) => String(b[1]?.name || '').length - String(a[1]?.name || '').length);
+  if (!matches.length) return null;
+  const [locationCode, location] = matches[0];
+  const class15Code = String(location?.parent || '');
+  const class15 = areaMap?.class15s?.[class15Code] || {};
+  const class10Code = String(class15?.parent || class15Code);
+  const class10 = areaMap?.class10s?.[class10Code] || areaMap?.class10s?.[class15Code] || {};
+  const weatherAreaCode = String(class10Code || class15Code);
+  const officeCode = String(class10?.parent || '');
+  const office = areaMap?.offices?.[officeCode] || {};
+  if (!weatherAreaCode || !officeCode || !office?.name) return null;
+  return {
+    locationCode: String(locationCode),
+    locationName: compact(location?.name, 120),
+    weatherAreaCode,
+    weatherAreaName: compact(class10?.name || class15?.name, 120),
+    officeCode,
+    officeName: compact(office?.name, 120),
+    publishingOffice: compact(office?.officeName, 160),
+  };
+}
+
+export function jmaWeatherAnswer(forecastPayload = [], resolved = null, text = '', now = new Date()) {
+  if (!resolved?.weatherAreaCode) throw new Error('jma_weather_area_missing');
+  const document = Array.isArray(forecastPayload) ? forecastPayload[0] : null;
+  if (!document || !Array.isArray(document?.timeSeries)) throw new Error('jma_forecast_document_missing');
+  const series = document.timeSeries.find((item) => Array.isArray(item?.areas) && item.areas.some((area) => String(area?.area?.code || '') === resolved.weatherAreaCode && Array.isArray(area?.weathers)));
+  if (!series) throw new Error('jma_weather_series_missing');
+  const area = series.areas.find((item) => String(item?.area?.code || '') === resolved.weatherAreaCode && Array.isArray(item?.weathers));
+  if (!area) throw new Error('jma_weather_area_series_missing');
+  const targetDate = jmaTargetDateKey(text, now);
+  const index = (series.timeDefines || []).findIndex((value) => String(value || '').slice(0, 10) === targetDate);
+  if (index < 0 || !area.weathers[index]) throw new Error('jma_weather_date_missing');
+  const weather = compact(String(area.weathers[index] || '').replace(/[　 ]+/g, ' '), 500);
+  if (!weather) throw new Error('jma_weather_text_missing');
+  const dayLabel = /明日/.test(compact(text, 500)) ? '明日は' : '今日は';
+  const regionLabel = compact(`${resolved.officeName || ''}${resolved.weatherAreaName || ''}`, 180);
+  return {
+    answer: `気象庁の予報では、${resolved.locationName}を含む${regionLabel}は${dayLabel}${weather}です。`,
+    reportDatetime: compact(document?.reportDatetime || '', 120),
+    targetDate,
+    publishingOffice: compact(document?.publishingOffice || resolved.publishingOffice || '', 160),
+  };
+}
+
+async function fetchJmaJson(url, signal) {
+  const response = await fetch(url, { headers: { accept: 'application/json' }, signal });
+  if (!response.ok) throw new Error(`jma_http_${response.status}`);
+  return response.json();
+}
+
+async function loadJmaAreaMap(signal) {
+  const now = Date.now();
+  if (jmaAreaCache && now - jmaAreaCacheAt < 6 * 60 * 60 * 1000) return jmaAreaCache;
+  const value = await fetchJmaJson(JMA_AREA_ENDPOINT, signal);
+  jmaAreaCache = value;
+  jmaAreaCacheAt = now;
+  return value;
+}
+
+export async function deterministicJmaWeatherResult(text = '', now = new Date(), signal) {
+  const started = Date.now();
+  if (!isJmaWeatherQuestion(text) || !EXPLICIT_LOCATION_RE.test(compact(text, 1000))) return null;
+  const areaMap = await loadJmaAreaMap(signal);
+  const resolved = resolveJmaWeatherArea(areaMap, text);
+  if (!resolved) return null;
+  const sourceUrl = `${JMA_FORECAST_BASE}/${encodeURIComponent(resolved.officeCode)}.json`;
+  const forecast = await fetchJmaJson(sourceUrl, signal);
+  const weather = jmaWeatherAnswer(forecast, resolved, text, now);
+  const answer = simplifyForSenior(normalizeSpokenJapanese(weather.answer));
+  const source = { title: `${weather.publishingOffice || resolved.publishingOffice || '気象庁'} 天気予報`, url: sourceUrl, engine: 'jma-official-forecast' };
+  return {
+    ok: true,
+    answer,
+    route: 'structured-jma-weather',
+    planner: JMA_WEATHER_REVISION,
+    search: true,
+    searchUseful: true,
+    searchPolicy: 'official-jma-forecast-json',
+    searchRetried: false,
+    genericVerificationAttempted: false,
+    genericVerificationSucceeded: false,
+    genericVerificationRevision: GENERIC_VERIFICATION_REVISION,
+    verifierSearched: false,
+    verificationFailOpen: false,
+    groundingRequired: true,
+    groundingHighRisk: true,
+    groundingEvidenceRevision: GROUNDING_EVIDENCE_REVISION,
+    groundingAnswerRevision: GROUNDING_ANSWER_REVISION,
+    groundingEvidencePassed: true,
+    groundingEvidenceReasons: [],
+    groundingCitationCount: 0,
+    groundingCitationSpanCount: 0,
+    groundingSourceCount: 1,
+    groundingSearchPerformed: true,
+    groundingUnsupportedClaimCount: 0,
+    groundingUnsupportedHardClaimCount: 0,
+    groundingFailClosed: false,
+    groundingClarification: false,
+    groundingRecoveryUsed: true,
+    temporalTransitGuard: false,
+    temporalTransitRevision: TEMPORAL_TRANSIT_REVISION,
+    temporalRepairRetried: false,
+    temporalRepairAttempts: 0,
+    authoritativeJst: currentJstIso(now),
+    queries: [],
+    sources: [source],
+    apiSources: [source],
+    interactionId: '',
+    interactionStatus: 'completed',
+    interactionReset: true,
+    interactionsRegionFallback: false,
+    generationTransport: 'jma-json',
+    fallbackReason: 'official-weather-source',
+    model: 'jma-forecast-json',
+    generationProvider: 'jma',
+    generationModel: 'jma-forecast-json',
+    personalizationRevision: PERSONALIZATION_REVISION,
+    languageMode: 'ja-spoken',
+    speechOptimized: true,
+    nativeGeminiAnswerPath: false,
+    nativeGoogleSearch: false,
+    groundingEvidenceGate: true,
+    customTruthGateApplied: false,
+    blanketFailClosed: false,
+    legacyGlmExecution: false,
+    jmaWeatherRevision: JMA_WEATHER_REVISION,
+    jmaReportDatetime: weather.reportDatetime,
+    jmaTargetDate: weather.targetDate,
+    timings: { totalMs: Date.now() - started, primaryMs: Date.now() - started, searchRetryMs: 0, verifierMs: 0, searchMs: Date.now() - started },
+  };
+}
 
 function deterministicLocationClarificationResult(text = '', body = {}, started = Date.now()) {
   const value = compact(text, 500);
@@ -1077,6 +1232,19 @@ export async function runGeminiTurn(body = {}, env = {}, signal, options = {}) {
 
   const locationClarification = deterministicLocationClarificationResult(text, body, started);
   if (locationClarification) return locationClarification;
+
+  if (isJmaWeatherQuestion(text) && EXPLICIT_LOCATION_RE.test(text)) {
+    try {
+      const officialWeather = await deterministicJmaWeatherResult(text, now, signal);
+      if (officialWeather) return officialWeather;
+    } catch (error) {
+      emitLatencyLog('jma-weather-fallback-failed', body, {
+        revision: JMA_WEATHER_REVISION,
+        durationMs: Date.now() - started,
+        error: compact(error?.message || error, 400),
+      }, 'warn');
+    }
+  }
 
   const immediateTransit = isImmediateTransitQuestion(text);
   const searchText = searchRoutingQuestion(body);
@@ -2386,6 +2554,10 @@ export const __test = {
   simplifyForSenior,
   deterministicCurrentTimeResult,
   deterministicLocationClarificationResult,
+  isJmaWeatherQuestion,
+  resolveJmaWeatherArea,
+  jmaWeatherAnswer,
+  deterministicJmaWeatherResult,
   interactionOutputText,
   interactionQueries,
   interactionSources,

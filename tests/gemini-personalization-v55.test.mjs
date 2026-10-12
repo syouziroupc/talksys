@@ -111,14 +111,14 @@ test('factual question searches on a single grounded primary call', async () => 
       id: 'interaction-search',
       status: 'completed',
       steps: [
-        { type: 'google_search_call', arguments: { queries: ['別府 今日 天気'] } },
-        { type: 'google_search_result', result: [{ title: '天気情報', url: 'https://example.com/weather' }] },
-        { type: 'model_output', content: [{ type: 'text', text: '検索して確認した情報を案内します。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/weather', title: '天気情報' }] }] },
+        { type: 'google_search_call', arguments: { queries: ['富士山 高さ'] } },
+        { type: 'google_search_result', result: [{ title: '富士山情報', url: 'https://example.com/fuji' }] },
+        { type: 'model_output', content: [{ type: 'text', text: '富士山の標高は3776メートルです。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/fuji', title: '富士山情報' }] }] },
       ],
     }), { status: 200 });
   };
   try {
-    const result = await runGeminiTurn({ text: '別府の今日の天気は？' }, { GEMINI_API_KEY: 'test-key' });
+    const result = await runGeminiTurn({ text: '富士山の高さは？' }, { GEMINI_API_KEY: 'test-key' });
     assert.equal(calls, 1);
     assert.equal(result.search, true);
     assert.equal(result.searchRetried, false);
