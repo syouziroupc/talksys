@@ -58,4 +58,13 @@ for (const path of ['tests/phone-quality-personalization-v120.test.mjs', 'tests/
     .replace("assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v121-r1');", "assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v122-r1');"));
 }
 
+write('tests/gemini-personalization-v55.test.mjs', (source) => {
+  let s = source;
+  s = replaceOnce(s, "        { type: 'google_search_call', arguments: { queries: ['別府 今日 天気'] } },", "        { type: 'google_search_call', arguments: { queries: ['富士山 高さ'] } },", 'generic factual search fixture query');
+  s = replaceOnce(s, "        { type: 'google_search_result', result: [{ title: '天気情報', url: 'https://example.com/weather' }] },", "        { type: 'google_search_result', result: [{ title: '富士山情報', url: 'https://example.com/fuji' }] },", 'generic factual search fixture source');
+  s = replaceOnce(s, "        { type: 'model_output', content: [{ type: 'text', text: '検索して確認した情報を案内します。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/weather', title: '天気情報' }] }] },", "        { type: 'model_output', content: [{ type: 'text', text: '富士山の標高は3776メートルです。', annotations: [{ type: 'url_citation', start_index: 0, end_index: 999, url: 'https://example.com/fuji', title: '富士山情報' }] }] },", 'generic factual search fixture answer');
+  s = replaceOnce(s, "    const result = await runGeminiTurn({ text: '別府の今日の天気は？' }, { GEMINI_API_KEY: 'test-key' });", "    const result = await runGeminiTurn({ text: '富士山の高さは？' }, { GEMINI_API_KEY: 'test-key' });", 'generic factual search prompt');
+  return s;
+});
+
 console.log('v122 JMA weather patch applied');
