@@ -21,23 +21,9 @@ def replace_all(path, old, new, label):
 # Make the runtime fallback match the deployed v123 sensitivity, not only Wrangler config.
 replace_once(
     'src/telephony/index.js',
-    "const speechThreshold=Number(env?.TELEPHONY_VAD_RMS||0.008);",
-    "const speechThreshold=Number(env?.TELEPHONY_VAD_RMS||0.0045);",
+    "const speechThreshold = Number(env?.TELEPHONY_VAD_RMS || 0.008);",
+    "const speechThreshold = Number(env?.TELEPHONY_VAD_RMS || 0.0045);",
     'VAD runtime fallback',
-)
-
-# Keep search telemetry honest when the forced second search returns an answer but omits metadata.
-replace_once(
-    'src/integrated-entry.js',
-    "searched: searchedInInteraction(interaction.payload),",
-    "searched: groundingRecoveryUsed || searchedInInteraction(interaction.payload),",
-    'primary latency search telemetry',
-)
-replace_once(
-    'src/integrated-entry.js',
-    "fallbackReason: groundingRecoveryUsed ? 'missing-google-search-recovered' : compact(interaction?.fallbackReason || '', 160),",
-    "fallbackReason: groundingRecoveryUsed ? compact(interaction?.fallbackReason || 'missing-google-search-recovered', 160) : compact(interaction?.fallbackReason || '', 160),",
-    'search recovery fallback reason',
 )
 
 # v57: restored 10/10 prompt wording and second-search answer contract.
