@@ -60,10 +60,10 @@ jobs:
           npm test > full-active.log 2>&1
           status=$?
           set -e
-          echo '=== condensed full-active diagnostics ==='
-          grep -E '(^not ok|^# Subtest:|AssertionError|ERR_ASSERTION|Expected|actual:|expected:|at .*tests/|fail [0-9]+|pass [0-9]+|tests [0-9]+)' full-active.log | tail -n 260 || true
-          echo '=== final summary ==='
-          tail -n 60 full-active.log || true
+          echo '=== exact failing TAP contexts ==='
+          grep -n -B 20 -A 35 '^not ok ' full-active.log || true
+          echo '=== summary ==='
+          grep -E '^# (tests|pass|fail|cancelled|skipped|todo) ' full-active.log | tail -n 8 || true
           exit "$status"
       - name: Wrangler dry run
         run: npx wrangler deploy --dry-run
