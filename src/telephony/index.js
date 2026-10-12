@@ -1,7 +1,7 @@
 import { transcribeV45 } from '../stt-v45.js';
 import { pcmuBase64ToSamples, rmsOfSamples, samplesToWav } from './codec.js';
 import { buildTexml, clampInt, clean, flag, xmlEscape } from './protocol.js';
-import { PHONE_TTS_MODEL, PHONE_TTS_SAMPLE_RATE, phoneTtsVoice, streamPcmu20ms, synthesizePhonePcmu } from './phone-tts.js';
+import { PHONE_TTS_MODEL, PHONE_TTS_SAMPLE_RATE, phoneTtsDeliveryMode, phoneTtsOutputGainDb, phoneTtsVoice, streamPcmu20ms, synthesizePhonePcmu } from './phone-tts.js';
 import { fastReaction, sameUtterance, FAST_REACTION_REVISION } from '../voice-fast-reaction.js';
 import { WEB_VOICE_CAPTURE_POLICY } from '../voice-capture-policy.js';
 
@@ -16,9 +16,25 @@ const FAST_ACK_TEXT = 'はい、確認しますね。';
 export const PHONE_FAST_ACK_REVISION = 'talksys-phone-fast-ack-v2-r1';
 export const PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v120-r1';
 export const PHONE_PERSONALIZATION_ACTIVE_REVISION = 'talksys-phone-personalization-v121-r1';
-export const PHONE_RUNTIME_LOG_REVISION = 'talksys-phone-runtime-log-v122-r1';
-export const PHONE_RELEASE_VERSION = 'v122';
+export const PHONE_RUNTIME_LOG_REVISION = 'talksys-phone-runtime-log-v123-r1';
+export const PHONE_RELEASE_VERSION = 'v123';
+export const PHONE_ADAPTIVE_VAD_REVISION = 'talksys-phone-adaptive-vad-v123-r1';
+export const PHONE_VAD_START_NOISE_RATIO = 2.7;
+export const PHONE_VAD_START_HITS = 3;
+export const PHONE_VAD_PREROLL_FRAMES = 12;
 const PHONE_ACK_STT_GRACE_MS = 250;
+
+export function phoneVadStartThreshold(baseThreshold = 0.0045, noiseFloor = 0.0015) {
+  const base = Math.max(0.001, Math.min(0.05, Number(baseThreshold) || 0.0045));
+  const noise = Math.max(0.0005, Math.min(0.03, Number(noiseFloor) || 0.0015));
+  return Math.max(base, Math.min(0.055, noise * PHONE_VAD_START_NOISE_RATIO));
+}
+
+export function phoneVadFrameIsSpeech(rms = 0, noiseFloor = 0.0015, baseThreshold = 0.0045) {
+  const level = Math.max(0, Number(rms) || 0);
+  const noise = Math.max(0.001, Number(noiseFloor) || 0.0015);
+  return level >= phoneVadStartThreshold(baseThreshold, noiseFloor) && level / noise >= 1.6;
+}
 const PHONE_ACK_VARIANTS = Object.freeze({
   lookup: Object.freeze([
     'はい、少し調べますね。',
@@ -518,7 +534,8 @@ function health(request, env, deps) {
     fastReaction: `Whisper確定直後の分類別PCMU受理相槌 + lookup検索進捗 + Gemini本回答 / ${PHONE_FAST_ACK_REVISION} / ${PHONE_SEARCH_PROGRESS_REVISION} / ${FAST_REACTION_REVISION}`,
     latencyTelemetry: 'speech end estimate → VAD → STT → TalkSys turn → ack → answer ready → TTS → first PCMU → complete',
     outputAudio: 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP', phoneTtsModel: PHONE_TTS_MODEL,
-    phoneTtsVoice: phoneTtsVoice(env), phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE,
+    phoneTtsVoice: phoneTtsVoice(env), phoneTtsDelivery: phoneTtsDeliveryMode(env), phoneTtsOutputGainDb: phoneTtsOutputGainDb(env), phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE,
+    adaptiveVadRevision: PHONE_ADAPTIVE_VAD_REVISION, phoneVadBaseRms: Number(env?.TELEPHONY_VAD_RMS || 0.0045), phoneVadStartNoiseRatio: PHONE_VAD_START_NOISE_RATIO, phoneVadStartHits: PHONE_VAD_START_HITS, phoneVadPreRollMs: PHONE_VAD_PREROLL_FRAMES * FRAME_MS,
     answerEngine: 'TalkSys本体（既存回答経路）', routes: { management: '/phone', health: '/telephony-health', voice: '/telnyx/voice', media: '/telnyx/media' },
     origin: publicBaseUrl(request),
   });
@@ -826,7 +843,7 @@ function mediaBridge(request, env, deps) {
   if (!tokenAuthorized(request, env)) return new Response('unauthorized', { status: 401 });
   if ((request.headers.get('upgrade') || '').toLowerCase() !== 'websocket') return new Response('Expected Upgrade: websocket', { status: 426 });
   const pair = new WebSocketPair(), [client, telnyx] = Object.values(pair); telnyx.accept();
-  const speechThreshold = Number(env?.TELEPHONY_VAD_RMS || 0.008);
+  const speechThreshold = Number(env?.TELEPHONY_VAD_RMS || 0.0045);
   const silenceMs = clampInt(env?.TELEPHONY_END_SILENCE_MS, WEB_VOICE_CAPTURE_POLICY.silenceMs, 300, 2000);
   const minSpeechMs = clampInt(env?.TELEPHONY_MIN_SPEECH_MS, 320, 200, 2000);
   const maxUtteranceMs = clampInt(env?.TELEPHONY_MAX_UTTERANCE_MS, 15000, 3000, 30000);
@@ -837,7 +854,7 @@ function mediaBridge(request, env, deps) {
   const pendingTasks=new Set(), hpState={prevX:0,prevY:0};
   const callerProfileSession={status:'idle',phoneNumber:'',profile:null};
   const adaptNoise=(rms,fast=false)=>{const value=Math.max(0.0005,Math.min(0.04,Number(rms)||0));const alpha=fast?0.08:(value>noiseFloor?0.01:0.035);noiseFloor=Math.max(0.001,Math.min(0.03,noiseFloor*(1-alpha)+value*alpha));};
-  const startThreshold=()=>Math.max(speechThreshold,Math.min(0.055,noiseFloor*2.7));
+  const startThreshold=()=>phoneVadStartThreshold(speechThreshold,noiseFloor);
   const trackTask=(promise)=>{pendingTasks.add(promise);promise.finally(()=>pendingTasks.delete(promise));return promise;};
   const queueMessageLog = (role, content) => trackTask(
     appendMessage(env, callId, role, content).catch((error) => {
@@ -986,9 +1003,9 @@ function mediaBridge(request, env, deps) {
     if(message?.event==='media'&&message?.media?.payload){
       const decoded=pcmuBase64ToSamples(message.media.payload),samples=highPassPcmFrame(decoded,hpState,8000,90),rms=rmsOfSamples(samples),threshold=startThreshold(),snr=rms/Math.max(0.001,noiseFloor);
       if(!speechActive){
-        preRoll.push(samples);if(preRoll.length>12)preRoll.shift();
+        preRoll.push(samples);if(preRoll.length>PHONE_VAD_PREROLL_FRAMES)preRoll.shift();
         if(assistantPlaying){const bargeThreshold=Math.max(threshold*1.25,noiseFloor*3.2,0.010);if(rms>=bargeThreshold&&snr>=1.8)bargeHits+=1;else bargeHits=Math.max(0,bargeHits-1);if(bargeHits>=5){interruptPlayback();speechActive=true;speechFrames=[...preRoll];preRoll=[];silentFor=0;speechHits=0;bargeHits=0;}else adaptNoise(rms,false);return;}
-        if(rms>=threshold&&snr>=1.6)speechHits+=1;else{speechHits=0;adaptNoise(rms,false);}if(speechHits>=3){speechActive=true;speechFrames=[...preRoll];preRoll=[];silentFor=0;speechHits=0;}return;
+        if(phoneVadFrameIsSpeech(rms,noiseFloor,speechThreshold))speechHits+=1;else{speechHits=0;adaptNoise(rms,false);}if(speechHits>=PHONE_VAD_START_HITS){speechActive=true;speechFrames=[...preRoll];preRoll=[];silentFor=0;speechHits=0;}return;
       }
       speechFrames.push(samples);if(rms>=Math.max(noiseFloor*1.8,speechThreshold*0.75))silentFor=0;else silentFor+=FRAME_MS;const durationMs=speechFrames.length*FRAME_MS;if(silentFor>=silenceMs||durationMs>=maxUtteranceMs)finishUtterance();return;
     }

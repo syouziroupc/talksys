@@ -35,7 +35,7 @@ test('dynamic factual turn uses one grounded Gemini interaction', async () => {
     const req = JSON.parse(options.body);
     assert.equal(req.model, 'gemini-3.5-flash-lite');
     assert.deepEqual(req.tools, [{ type: 'google_search' }]);
-    assert.match(req.system_instruction, /まずGoogle検索を実行/);
+    assert.match(req.system_instruction, /Google検索を一度実行/);
     return new Response(JSON.stringify({
       id: 'primary-grounded',
       status: 'completed',
@@ -113,7 +113,7 @@ test('dynamic fact retries through generateContent when Interactions skips requi
   }
 });
 
-test('dynamic fact asks for specific clarification only after both grounding attempts return no search evidence', async () => {
+test('dynamic fact keeps the second forced-search answer when grounding metadata is omitted', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async () => {
@@ -142,11 +142,13 @@ test('dynamic fact asks for specific clarification only after both grounding att
     );
     assert.equal(calls, 2);
     assert.equal(result.groundingRequired, true);
-    assert.equal(result.groundingFailClosed, true);
-    assert.equal(result.groundingRecoveryUsed, false);
+    assert.equal(result.groundingFailClosed, false);
+    assert.equal(result.groundingRecoveryUsed, true);
     assert.equal(result.searchRetried, true);
-    assert.doesNotMatch(result.answer, /5点2|5点4|推測では答えません/);
-    assert.match(result.answer, /正確に確認するため/);
+    assert.equal(result.search, true);
+    assert.equal(result.groundingMetadataComplete, false);
+    assert.match(result.answer, /5点4/);
+    assert.doesNotMatch(result.answer, /推測では答えません|正確に確認するため/);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -9,12 +9,12 @@ const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 
 const stt = fs.readFileSync(new URL('../src/stt-v45.js', import.meta.url), 'utf8');
 
 test('phone conversation baseline locks conservative capture and output settings', () => {
-  assert.match(wrangler, /"TELEPHONY_VAD_RMS"\s*:\s*"0\.008"/);
-  assert.match(wrangler, /"TELEPHONY_TTS_DELIVERY"\s*:\s*"plain"/);
-  assert.match(wrangler, /"TELEPHONY_TTS_OUTPUT_GAIN_DB"\s*:\s*"0\.0"/);
-  assert.equal(STT_REVISION, 'talksys-v104-phonetic-first-ja');
-  assert.doesNotMatch(stt, /normalizeQuietPhoneWav/);
-  assert.doesNotMatch(stt, /PHONE_STT_CONTEXT_PROMPT/);
+  assert.match(wrangler, /"TELEPHONY_VAD_RMS"\s*:\s*"0\.0045"/);
+  assert.match(wrangler, /"TELEPHONY_TTS_DELIVERY"\s*:\s*"loud-bright"/);
+  assert.match(wrangler, /"TELEPHONY_TTS_OUTPUT_GAIN_DB"\s*:\s*"3\.0"/);
+  assert.equal(STT_REVISION, 'talksys-v123-phone-accessibility-phonetic-r1');
+  assert.match(stt, /normalizeQuietPhoneWav/);
+  assert.match(stt, /PHONE_STT_CONTEXT_PROMPT/);
 });
 
 test('phone acknowledgement behavior is the 10/10 Fast Reaction v2 contract', () => {

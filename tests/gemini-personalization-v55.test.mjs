@@ -24,7 +24,8 @@ test('v86 keeps Gemini 3.5 Flash-Lite and defines a compact phone-first personal
   const prompt = buildTalkSysSystemInstruction(FIXED);
   assert.match(prompt, /電話で読み上げ/);
   assert.match(prompt, /外部事実や現在情報が必要な質問ではGoogle検索を使い/);
-  assert.match(prompt, /質問の中心となる事実を検索で確認できない場合/);
+  assert.match(prompt, /検索で一部しか確認できなくても/);
+  assert.match(prompt, /正しく答えられる他の部分まで捨てない/);
   assert.match(prompt, /取得根拠の範囲だけで答えて/);
   assert.match(prompt, /穴埋めで作ってはいけません/);
   assert.match(prompt, /事実確認の材料としてだけ扱って/);
@@ -68,7 +69,7 @@ test('native Gemini turn keeps search, source metadata and conversational answer
     const req = JSON.parse(options.body);
     assert.equal(req.model, 'gemini-3.5-flash-lite');
     assert.deepEqual(req.tools, [{ type: 'google_search' }]);
-    assert.match(req.system_instruction, /まずGoogle検索を実行し、取得できた根拠だけで答えて/);
+    assert.match(req.system_instruction, /Google検索を一度実行し、取得できた根拠だけで答えて/);
     return new Response(JSON.stringify({
       id: 'interaction-1',
       status: 'completed',
@@ -105,7 +106,7 @@ test('factual question searches on a single grounded primary call', async () => 
   globalThis.fetch = async (_url, options) => {
     calls += 1;
     const req = JSON.parse(options.body);
-    assert.match(req.system_instruction, /まずGoogle検索を実行し、取得できた根拠だけで答えて/);
+    assert.match(req.system_instruction, /Google検索を一度実行し、取得できた根拠だけで答えて/);
     assert.match(req.input, /Google検索を実行して事実確認/);
     return new Response(JSON.stringify({
       id: 'interaction-search',

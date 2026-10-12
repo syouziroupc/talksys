@@ -47,7 +47,8 @@ test('phone path uses adaptive VAD, debounce, and confirmed-speech cancellation'
   assert.match(source, /noiseFloor/);
   assert.match(source, /startThreshold/);
   assert.match(source, /bargeHits\s*>=\s*5/);
-  assert.match(source, /speechHits\s*>=\s*3/);
+  assert.match(source, /PHONE_VAD_START_HITS = 3/);
+  assert.match(source, /speechHits>=PHONE_VAD_START_HITS/);
   assert.match(source, /pendingSttCount/);
   assert.match(source, /controller\.abort\('confirmed-voice-interrupt'\)/);
   assert.match(source, /myCapture\s*<\s*latestAcceptedCapture/);
