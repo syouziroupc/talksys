@@ -54,9 +54,9 @@ test('v121 never exposes the generic 推測では答えません sentence from t
 });
 
 test('v121 emits grounding diagnostics into phone latency logs', () => {
-  assert.match(telephony, /groundingEvidenceReasons: Array\.isArray\(turn\?\.payload\?\.groundingEvidenceReasons\)/);
-  assert.match(telephony, /groundingSourceCount: Number\(turn\?\.payload\?\.groundingSourceCount\|\|0\)/);
-  assert.match(telephony, /groundingCitationCount: Number\(turn\?\.payload\?\.groundingCitationCount\|\|0\)/);
+  assert.match(telephony, /groundingEvidenceReasons:Array\.isArray\(turn\?\.payload\?\.groundingEvidenceReasons\)/);
+  assert.match(telephony, /groundingSourceCount:Number\(turn\?\.payload\?\.groundingSourceCount\|\|0\)/);
+  assert.match(telephony, /groundingCitationCount:Number\(turn\?\.payload\?\.groundingCitationCount\|\|0\)/);
 });
 
 test('phone history profile editing is dirty-safe while the 3 second call poll remains active', () => {
@@ -70,7 +70,7 @@ test('phone history profile editing is dirty-safe while the 3 second call poll r
 test('personalization screen exposes caller-scoped call history and conversation drill-down', () => {
   assert.match(telephony, /async function profileCalls\(request, env, phoneNumber\)/);
   assert.match(telephony, /WHERE from_number=\?/);
-  assert.match(telephony, /\/phone\/api\/profiles\/\[\^\/\]\+\/calls/);
+  assert.match(telephony, /profileCallsMatch=url\.pathname\.match/);
   assert.match(telephony, /id="profileCallHistory"/);
   assert.match(telephony, /id="profileCallMessages"/);
   assert.match(telephony, /loadProfileCalls\(selectedPhone\)/);
