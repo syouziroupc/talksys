@@ -1,0 +1,40 @@
+name: One-off v123 D1 archive diagnose
+
+on:
+  push:
+    branches: [ops/v123-d1-diagnose]
+    paths: ['.github/workflows/oneoff-v123-d1-diagnose.yml']
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: Call archive endpoint and print exact response
+        shell: bash
+        run: |
+          set +e
+          token="$(node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update(process.env.GEMINI_API_KEY+':talksys-tts-diagnostic-v1').digest('hex'))")"
+          body_file="$(mktemp)"
+          code="$(curl --silent --show-error --max-time 60 -X POST -o "$body_file" -w '%{http_code}' -H "x-talksys-diagnostic: $token" "$PRODUCTION_URL/api/internal/archive-conversation-logs")"
+          rc=$?
+          echo "ARCHIVE_CURL_RC=$rc HTTP=$code"
+          cat "$body_file"
+          echo
+          rm -f "$body_file"
+          exit 0
+      - name: Inspect remote D1 schemas and revision counts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute talksys-conversation-logs --remote --command "PRAGMA table_info(conversation_logs); PRAGMA table_info(conversation_logs_archive); SELECT revision, COUNT(*) AS n FROM conversation_logs GROUP BY revision ORDER BY n DESC LIMIT 20;" --json
