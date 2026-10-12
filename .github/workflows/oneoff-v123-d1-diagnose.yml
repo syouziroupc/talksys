@@ -9,6 +9,7 @@ on:
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
+    environment: production
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
