@@ -19,7 +19,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - run: npm ci --no-audit --no-fund
       - name: Call archive endpoint and print exact response
         shell: bash
         run: |
@@ -37,4 +36,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx wrangler d1 execute talksys-conversation-logs --remote --command "PRAGMA table_info(conversation_logs); PRAGMA table_info(conversation_logs_archive); SELECT revision, COUNT(*) AS n FROM conversation_logs GROUP BY revision ORDER BY n DESC LIMIT 20;" --json
+          npx --yes wrangler@4.45.0 d1 execute talksys-conversation-logs --remote --command "PRAGMA table_info(conversation_logs); PRAGMA table_info(conversation_logs_archive); SELECT revision, COUNT(*) AS n FROM conversation_logs GROUP BY revision ORDER BY n DESC LIMIT 20;" --json
