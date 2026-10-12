@@ -21,7 +21,17 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund --package-lock=false
       - name: Apply guarded v122 repair
-        run: node scripts/apply-jma-weather-v122.mjs
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/apply-jma-weather-v122.mjs 2>&1 | tee v122-patch.log
+      - name: Upload v122 patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: v122-patch-diagnostics
+          path: v122-patch.log
+          if-no-files-found: ignore
       - name: Syntax check
         run: |
           node --check src/integrated-entry.js
