@@ -94,4 +94,34 @@ replace_once(
     'profile history route assertion',
 )
 
+# v55-era prompt tests must assert the current generalized evidence contract, not removed wording.
+replace_once(
+    'tests/gemini-personalization-v55.test.mjs',
+    "assert.match(prompt, /質問の中心となる事実を検索で確認できない場合/);",
+    "assert.match(prompt, /検索で一部しか確認できなくても/);\n  assert.match(prompt, /正しく答えられる他の部分まで捨てない/);",
+    'v55 partial evidence prompt contract',
+)
+replace_all(
+    'tests/gemini-personalization-v55.test.mjs',
+    "/まずGoogle検索を実行し、取得できた根拠だけで答えて/",
+    "/Google検索を一度実行し、取得できた根拠だけで答えて/",
+    'v55 search prompt wording',
+)
+
+# v58 debounce test must lock the semantic three-frame threshold after the literal became a named v123 constant.
+replace_once(
+    'tests/voice-cancel-noise-v58.test.mjs',
+    "assert.match(source, /speechHits\\s*>=\\s*3/);",
+    "assert.match(source, /PHONE_VAD_START_HITS = 3/);\n  assert.match(source, /speechHits>=PHONE_VAD_START_HITS/);",
+    'v58 named VAD debounce constant',
+)
+
+# Latency invariant must preserve retry/no-fabrication without reintroducing the removed blanket fail-closed answer.
+replace_once(
+    'tests/voice-latency-invariants.test.mjs',
+    "test('dynamic grounding retries once before fail-closed response', () => {\n  assert.match(integrated, /export function interactionCitationCount/);\n  assert.match(integrated, /export function requiresGroundedEvidence/);\n  assert.match(integrated, /groundingEvidenceReport/);\n  assert.match(integrated, /groundingEvidencePassed/);\n  assert.match(integrated, /createGeminiGenerateContentFallback/);\n  assert.match(integrated, /gemini-grounding-recovery/);\n  assert.match(integrated, /GROUNDING_FAIL_CLOSED_ANSWER/);\n});",
+    "test('dynamic grounding retries once and only falls back on a true search outage', () => {\n  assert.match(integrated, /export function interactionCitationCount/);\n  assert.match(integrated, /export function requiresGroundedEvidence/);\n  assert.match(integrated, /groundingEvidenceReport/);\n  assert.match(integrated, /groundingEvidencePassed/);\n  assert.match(integrated, /createGeminiGenerateContentFallback/);\n  assert.match(integrated, /gemini-grounding-recovery/);\n  assert.match(integrated, /recoverySearched \\|\\| recoveryAnswer/);\n  assert.match(integrated, /search-unavailable-after-retry/);\n  assert.match(integrated, /検索サービスから結果を取得できませんでした/);\n  assert.doesNotMatch(integrated, /GROUNDING_FAIL_CLOSED_ANSWER/);\n});",
+    'v123 true search outage invariant',
+)
+
 print('v123 r3 regression contracts finalized')
