@@ -26,7 +26,9 @@ jobs:
           set -euo pipefail
           if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
       - name: Apply guarded v123 repair
-        run: python scripts/apply-v123-stability-repair.py
+        run: |
+          python scripts/fix-v123-patcher-r2.py
+          python scripts/apply-v123-stability-repair.py
       - name: Syntax and focused stability checks
         shell: bash
         run: |
@@ -61,7 +63,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -f .github/workflows/oneoff-v123-analysis.yml .github/workflows/oneoff-v123-repair.yml scripts/apply-v123-stability-repair.py
+          rm -f .github/workflows/oneoff-v123-analysis.yml .github/workflows/oneoff-v123-repair.yml scripts/apply-v123-stability-repair.py scripts/fix-v123-patcher-r2.py
           git add -A
           git diff --cached --check
           changed="$(git diff --cached --name-only)"
@@ -76,3 +78,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'Restore phone search audio and noise stability v123'
           git push origin HEAD:repair/phone-stability-v123
+
+# retry: corrected baseline runtime evidence anchor r2
