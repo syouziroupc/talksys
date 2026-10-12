@@ -1,0 +1,61 @@
+name: One-off JMA weather v122
+
+on:
+  push:
+    branches: [fix/jma-weather-v122]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund --package-lock=false
+      - name: Apply guarded v122 repair
+        run: node scripts/apply-jma-weather-v122.mjs
+      - name: Syntax check
+        run: |
+          node --check src/integrated-entry.js
+          node --check src/telephony/index.js
+      - name: Focused v122 regressions
+        run: |
+          node --test \
+            tests/phone-jma-weather-v122.test.mjs \
+            tests/phone-grounding-profile-v121.test.mjs \
+            tests/gemini-generic-verification-v57.test.mjs \
+            tests/grounding-evidence-gate-v110.test.mjs \
+            tests/phone-quality-personalization-v120.test.mjs \
+            tests/phone-second-turn-ack-zip-v119.test.mjs \
+            tests/phone-conversation-baseline-lock-v118.test.mjs
+      - name: Architecture registry check
+        run: npm run architecture:check
+      - name: Architecture graph check
+        run: npm run architecture:graph
+      - name: Reuse gate check
+        run: npm run reuse:check
+      - name: Full active regression
+        run: npm test
+      - name: Wrangler dry run
+        run: npx wrangler deploy --dry-run
+      - name: Commit verified v122 repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm scripts/apply-jma-weather-v122.mjs .github/workflows/oneoff-jma-weather-v122.yml .github/workflows/oneoff-inspect-jma-v122.yml
+          git add src/integrated-entry.js src/telephony/index.js \
+            tests/phone-jma-weather-v122.test.mjs \
+            tests/phone-quality-personalization-v120.test.mjs \
+            tests/phone-grounding-profile-v121.test.mjs
+          git config user.name syouziroupc
+          git config user.email syouziroupc@gmail.com
+          git commit -m "Use official JMA weather fallback v122"
+          git push origin HEAD:fix/jma-weather-v122
