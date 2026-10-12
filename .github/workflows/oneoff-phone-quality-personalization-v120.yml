@@ -45,14 +45,24 @@ jobs:
             tests/phone-latency-fast-ack-v90.test.mjs \
             tests/v46-hard-facts-gate.test.mjs \
             tests/evidence-first-v54.test.mjs
-      - name: Architecture and full regression
+      - name: Architecture registry check
+        run: npm run architecture:check
+      - name: Architecture graph check
+        run: npm run architecture:graph
+      - name: Reuse gate check
+        run: npm run reuse:check
+      - name: Full active regression
         shell: bash
         run: |
-          set -euo pipefail
-          npm run architecture:check
-          npm run architecture:graph
-          npm run reuse:check
-          npm test
+          set -o pipefail
+          npm test 2>&1 | tee full-regression.log
+      - name: Upload full regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: v120-full-regression-diagnostics
+          path: full-regression.log
+          if-no-files-found: ignore
       - name: Wrangler dry run
         run: npx wrangler deploy --dry-run
       - name: Remove one-off tooling and commit verified repair
