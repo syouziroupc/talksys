@@ -1,0 +1,61 @@
+name: One-off v123 regression diagnose r4
+
+on:
+  push:
+    branches:
+      - repair/phone-stability-v123
+    paths:
+      - '.github/workflows/oneoff-v123-regression-diagnose-r4.yml'
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: repair/phone-stability-v123
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Apply v123 repair
+        run: |
+          python3 scripts/apply-v123-stability-repair.py
+          python3 scripts/fix-v123-patcher-r2.py
+          python3 scripts/finalize-v123-r3.py
+      - name: Run full regression without truncating diagnostics
+        shell: bash
+        run: |
+          set +e
+          npm test > /tmp/npm-test.log 2>&1
+          status=$?
+          echo "$status" > /tmp/npm-status
+          exit 0
+      - name: Build compact failure summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '=== TEST STATUS ==='
+            cat /tmp/npm-status 2>/dev/null || true
+            echo '=== STALE CONTRACT CANDIDATES ==='
+            grep -R -n -E '0\.008|TELEPHONY_TTS_DELIVERY.*plain|OUTPUT_GAIN_DB.*0\.0|v122|phone-runtime-log-v122|structured-jma-weather|evidenceFailureClarification|groundingEvidenceUsable|まずGoogle検索を実行' tests 2>/dev/null || true
+            echo '=== FAILURE MATCHES ==='
+            grep -n -E 'not ok|AssertionError|ERR_ASSERTION|FAIL|failed|Error:|# fail' /tmp/npm-test.log | tail -n 400 || true
+            echo '=== LOG TAIL ==='
+            tail -n 700 /tmp/npm-test.log || true
+          } > /tmp/fail-summary.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v123-r4-fail-summary
+          path: /tmp/fail-summary.txt
+          retention-days: 1
+      - name: Preserve regression status
+        if: always()
+        shell: bash
+        run: |
+          test "$(cat /tmp/npm-status 2>/dev/null || echo 1)" = "0"
