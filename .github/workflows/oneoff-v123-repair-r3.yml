@@ -56,8 +56,15 @@ jobs:
       - name: Full active regression
         shell: bash
         run: |
-          set -euo pipefail
-          npm test
+          set +e
+          npm test > full-active.log 2>&1
+          status=$?
+          set -e
+          echo '=== condensed full-active diagnostics ==='
+          grep -E '(^not ok|^# Subtest:|AssertionError|ERR_ASSERTION|Expected|actual:|expected:|at .*tests/|fail [0-9]+|pass [0-9]+|tests [0-9]+)' full-active.log | tail -n 260 || true
+          echo '=== final summary ==='
+          tail -n 60 full-active.log || true
+          exit "$status"
       - name: Wrangler dry run
         run: npx wrangler deploy --dry-run
       - name: Clean one-off helpers and verify production scope
@@ -86,5 +93,3 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'Restore phone search audio and noise stability v123'
           git push origin HEAD:repair/phone-stability-v123
-
-# retry exact current source formatting
