@@ -86,3 +86,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'Restore phone search audio and noise stability v123'
           git push origin HEAD:repair/phone-stability-v123
+
+# retry exact current source formatting
