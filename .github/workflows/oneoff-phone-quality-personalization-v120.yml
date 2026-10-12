@@ -39,6 +39,7 @@ jobs:
           node --test \
             tests/phone-quality-personalization-v120.test.mjs \
             tests/phone-second-turn-ack-zip-v119.test.mjs \
+            tests/phone-fast-reaction-v2.test.mjs \
             tests/phone-conversation-baseline-lock-v118.test.mjs \
             tests/phone-profile-preload-v116a.test.mjs \
             tests/phone-personalization-profile-v115.test.mjs \
@@ -70,8 +71,14 @@ jobs:
         run: |
           set -euo pipefail
           git rm scripts/apply-phone-quality-personalization-v120.mjs .github/workflows/oneoff-phone-quality-personalization-v120.yml
-          git add src/entry.js src/telephony/index.js tests/phone-latency-fast-ack-v90.test.mjs tests/phone-conversation-baseline-lock-v118.test.mjs tests/phone-personalization-profile-v115.test.mjs tests/phone-quality-personalization-v120.test.mjs
+          git add src/entry.js src/telephony/index.js wrangler.jsonc \
+            tests/phone-latency-fast-ack-v90.test.mjs \
+            tests/phone-conversation-baseline-lock-v118.test.mjs \
+            tests/phone-fast-reaction-v2.test.mjs \
+            tests/phone-second-turn-ack-zip-v119.test.mjs \
+            tests/phone-personalization-profile-v115.test.mjs \
+            tests/phone-quality-personalization-v120.test.mjs
           git config user.name syouziroupc
           git config user.email syouziroupc@gmail.com
-          git commit -m "Fix phone quality boundaries and lock personalization v120"
+          git commit -m "Fix phone quality, validated acknowledgements, personalization, and runtime logs v120"
           git push origin HEAD:fix/phone-quality-personalization-v120
