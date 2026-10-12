@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 
+// Guarded one-off patch: only the obsolete weather smoke assertion is replaced.
 const path = '.github/workflows/deploy.yml';
 const before = fs.readFileSync(path, 'utf8');
 const oldLine = `          OUT="$out" node -e "const d=JSON.parse(process.env.OUT||'{}');const rescue=String(d.route||'').startsWith('cloudflare-region-rescue:');const groundingRecovery=d.route==='gemini-generate-content-grounding-recovery';if(!d.ok||!(d.route==='gemini-native-interactions'||groundingRecovery||rescue)||d.search!==true||d.personalizationRevision!=='talksys-v87-jst-location-personalization-r1'||!String(d.answer||'').trim()||(!rescue&&(d.nativeGoogleSearch!==true||d.generationProvider!=='gemini'||d.generationModel!=='gemini-3.5-flash-lite'))||(groundingRecovery&&d.generationTransport!=='generateContent')||(rescue&&d.generationProvider!=='workers-ai'))throw new Error(process.env.OUT);"`;
