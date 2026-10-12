@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "talksys-phone-latency-health",
+  "main": "src/phone-latency-health-worker.js",
+  "compatibility_date": "2026-09-09",
+  "d1_databases": [{
+    "binding": "TALKSYS_LOG_DB",
+    "database_name": "talksys-conversation-logs",
+    "database_id": "4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a"
+  }],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 }
+  }
+}
