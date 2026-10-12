@@ -1,0 +1,32 @@
+name: One-off v122 production smoke artifact
+
+on:
+  push:
+    branches: [fix/v122-production-smoke]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Apply guarded weather smoke patch
+        run: node scripts/patch-v122-production-smoke.mjs
+      - name: Verify exact smoke contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F "d.route!=='structured-jma-weather'" .github/workflows/deploy.yml
+          grep -F "d.generationProvider!=='jma'" .github/workflows/deploy.yml
+          grep -F "www.jma.go.jp" .github/workflows/deploy.yml
+          git diff --check
+      - uses: actions/upload-artifact@v6
+        with:
+          name: v122-patched-deploy-workflow
+          path: .github/workflows/deploy.yml
