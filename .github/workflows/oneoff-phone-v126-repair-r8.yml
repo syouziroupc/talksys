@@ -1,0 +1,54 @@
+name: Repair phone ack and Worker Speex v126 r8
+
+on:
+  push:
+    branches: [repair/phone-v126]
+    paths:
+      - '.github/workflows/oneoff-phone-v126-repair-r8.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oneoff-phone-v126-repair-r8
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: repair/phone-v126
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Guard production baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "PHONE_RELEASE_VERSION = 'v125'" src/telephony/index.js
+          grep -q "ack_slow_stt_armed" src/telephony/index.js
+          grep -q "SPEEX_WASM_BASE64" src/telephony/phone-noise-suppressor.js
+          grep -q "talksys-phone-noise-vad-v125-r1" src/telephony/index.js
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build Worker-native pinned SpeexDSP
+        run: bash scripts/build-speex-worker-v126.sh
+      - name: Apply guarded phone repair
+        run: python scripts/apply-phone-v126-r2.py
+      - name: Validate real local workerd and all regressions
+        run: bash scripts/validate-phone-v126.sh
+      - name: Commit validated repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json src/telephony tests
+          git diff --cached --check
+          git status --short
+          git commit -m 'Restore pre-STT ack and Worker-native Speex v126'
+          git push origin HEAD:repair/phone-v126
