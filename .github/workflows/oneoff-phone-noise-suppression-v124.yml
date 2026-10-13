@@ -55,7 +55,11 @@ jobs:
           npm install --save-exact --no-audit --no-fund @sapphi-red/speex-preprocess-wasm@0.4.0
 
       - name: Apply guarded v124 patch
-        run: python scripts/apply-phone-noise-suppression-v124.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/apply-phone-noise-suppression-v124.py
+          python scripts/fix-phone-noise-suppression-v124-wasm.py
 
       - name: Syntax checks
         shell: bash
@@ -63,6 +67,7 @@ jobs:
           set -euo pipefail
           node --check src/telephony/index.js
           node --check src/telephony/phone-noise-suppressor.js
+          node --check src/telephony/speex-wasm-binary.js
 
       - name: Noise suppression latency and fail-open regression
         run: node --test tests/phone-noise-suppression-v124.test.mjs
@@ -109,7 +114,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add package.json package-lock.json src/telephony/index.js src/telephony/phone-noise-suppressor.js tests/phone-noise-suppression-v124.test.mjs wrangler.jsonc .deploy/production-trigger.txt
+          git add package.json package-lock.json src/telephony/index.js src/telephony/phone-noise-suppressor.js src/telephony/speex-wasm-binary.js tests/phone-noise-suppression-v124.test.mjs wrangler.jsonc .deploy/production-trigger.txt
           git diff --cached --check
           git diff --cached --name-only
           git commit -m 'Add fail-open Speex phone noise suppression v124'
