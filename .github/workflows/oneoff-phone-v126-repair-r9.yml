@@ -41,18 +41,35 @@ jobs:
         run: python scripts/apply-phone-v126-r2.py
       - name: Validate real local workerd and all regressions
         run: bash scripts/validate-phone-v126.sh
+      - name: Stage validated repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A package.json src/telephony tests
+          git status --short
+      - name: Check hand-maintained whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --cached --check -- . ':(exclude)src/telephony/vendor/speex-worker.js'
+      - name: Verify staged repair exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --cached --quiet; then
+            echo 'No validated repair changes staged'
+            exit 1
+          fi
+          git diff --cached --stat
       - name: Commit validated repair
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A package.json src/telephony tests
-          # Generated Emscripten vendor output is machine-generated and may contain
-          # whitespace that git diff --check flags even though the validated runtime
-          # is correct. Keep whitespace validation for all hand-maintained files.
-          git diff --cached --check -- . ':(exclude)src/telephony/vendor/speex-worker.js'
-          git status --short
-          git diff --cached --quiet && { echo 'No validated repair changes staged'; exit 1; }
           git commit --no-verify -m 'Restore pre-STT ack and Worker-native Speex v126'
+      - name: Push validated repair
+        shell: bash
+        run: |
+          set -euo pipefail
           git push origin HEAD:repair/phone-v126
