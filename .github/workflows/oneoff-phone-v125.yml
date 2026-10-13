@@ -48,6 +48,21 @@ jobs:
       - name: Apply guarded v125 patch
         run: python scripts/apply-phone-v125.py
 
+      - name: Refresh superseded v124 source-shape assertion
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tests/phone-noise-suppression-v124.test.mjs')
+          s=p.read_text()
+          old="  assert.match(source, /phoneNoiseSuppressor\\?\\(speexSpeech\\|\\|cleanSpeech\\|\\|\\(rawSpeech&&rawSnr>=3\\.2\\)\\):rawSpeech/);"
+          new="  assert.match(source, /const speechCandidate=noiseProcessed\\?\\(speexSpeech\\|\\|cleanSpeech\\|\\|\\(rawSpeech&&rawSnr>=3\\.2\\)\\):rawSpeech/);\n  assert.match(source, /phoneActiveVoiceEvidence/);"
+          if s.count(old)!=1:
+              raise SystemExit(f'expected one v124 source assertion, got {s.count(old)}')
+          p.write_text(s.replace(old,new,1))
+          PY
+
       - name: Syntax checks
         shell: bash
         run: |
@@ -110,7 +125,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/telephony/index.js src/telephony/phone-noise-suppressor.js src/integrated-entry.js tests/phone-stability-baseline-v123.test.mjs tests/phone-noise-vad-v125.test.mjs tests/answer-courtesy-v125.test.mjs
+          git add src/telephony/index.js src/telephony/phone-noise-suppressor.js src/integrated-entry.js tests/phone-stability-baseline-v123.test.mjs tests/phone-noise-suppression-v124.test.mjs tests/phone-noise-vad-v125.test.mjs tests/answer-courtesy-v125.test.mjs
           git diff --cached --check
           git diff --cached --name-only
           git commit -m 'Fix noisy phone VAD and deterministic courtesy v125'
