@@ -9,7 +9,7 @@ test('v120 arms slow-STT acknowledgement but commits playout only after accepted
   assert.match(source, /PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v120-r1'/);
   assert.match(source, /const PHONE_ACK_STT_GRACE_MS = 250/);
   assert.match(source, /PHONE_SLOW_STT_ACK_TEXTS/);
-  assert.match(source, /const sttPromise=transcribeSamples\(env,samples\)/);
+  assert.match(source, /const sttPromise=transcribeSamples\(env,samples(?:,\{[^}]+\})?\)/);
   assert.match(source, /ack_slow_stt_armed/);
   assert.match(source, /ack_slow_stt_committed/);
   assert.match(source, /if\(sttSettled\|\|closed\|\|latestAcceptedCapture===0\)return/);
