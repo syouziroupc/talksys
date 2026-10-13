@@ -1,0 +1,112 @@
+name: Apply phone noise suppression v124
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/oneoff-phone-noise-suppression-v124.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oneoff-phone-noise-suppression-v124
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Require exact v123 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "PHONE_RELEASE_VERSION = 'v123'" src/telephony/index.js
+          grep -q "talksys-phone-adaptive-vad-v123-r1" src/telephony/index.js
+          grep -q '"TELEPHONY_VAD_RMS": "0.0045"' wrangler.jsonc
+          grep -q 'gemini-3.5-flash-lite' src/integrated-entry.js
+          grep -q 'TELEPHONY_TTS_VOICE.*eve\|"TELEPHONY_TTS_VOICE": "eve"' wrangler.jsonc
+
+      - name: Install existing dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+
+      - name: Add pinned SpeexDSP WebAssembly preprocessor
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --save-exact --no-audit --no-fund @sapphi-red/speex-preprocess-wasm@0.4.0
+
+      - name: Apply guarded v124 patch
+        run: python scripts/apply-phone-noise-suppression-v124.py
+
+      - name: Syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/telephony/index.js
+          node --check src/telephony/phone-noise-suppressor.js
+
+      - name: Noise suppression latency and fail-open regression
+        run: node --test tests/phone-noise-suppression-v124.test.mjs
+
+      - name: Existing phone regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t suites < <(find tests -maxdepth 1 -type f \( -iname 'phone-*test.mjs' -o -iname 'telephony-*test.mjs' \) | sort)
+          printf 'Running %s phone/telephony suites\n' "${#suites[@]}"
+          node --test "${suites[@]}"
+
+      - name: Architecture and reuse gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run architecture:check
+          npm run architecture:graph
+          npm run reuse:check
+
+      - name: Full active test suite
+        run: npm test
+
+      - name: Worker bundle dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --dry-run 2>&1 | tee /tmp/v124-wrangler-dry-run.log
+          ! grep -Eqi '(error|failed|unsupported wasm|unresolved import)' /tmp/v124-wrangler-dry-run.log
+
+      - name: Verify frozen response path
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- src/integrated-entry.js src/telephony/phone-tts.js || true
+          test -z "$(git diff --name-only -- src/integrated-entry.js src/telephony/phone-tts.js)"
+          grep -q 'answerWithTalkSys(deps,stt.text,history,controller.signal,spokenBackchannel' src/telephony/index.js
+          grep -q "speak(turn.answer, { purpose: 'answer'" src/telephony/index.js
+          grep -q 'CloudflareJapaneseTTS\|synthesizePcmu' src/telephony/index.js
+
+      - name: Commit validated v124 to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json src/telephony/index.js src/telephony/phone-noise-suppressor.js tests/phone-noise-suppression-v124.test.mjs wrangler.jsonc .deploy/production-trigger.txt
+          git diff --cached --check
+          git diff --cached --name-only
+          git commit -m 'Add fail-open Speex phone noise suppression v124'
+          git push origin HEAD:main
