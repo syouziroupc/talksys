@@ -59,8 +59,8 @@ test('phone-number personalization is an active text-only TalkSys feature, not a
 });
 
 test('v120 records the executable phone version in every new call log', () => {
-  assert.equal(PHONE_RELEASE_VERSION, 'v123');
-  assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v123-r1');
+  assert.equal(PHONE_RELEASE_VERSION, 'v125');
+  assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v125-r1');
   assert.match(wrangler, /"version_metadata"\s*:\s*\{\s*"binding"\s*:\s*"CF_VERSION_METADATA"\s*\}/);
   assert.match(telephony, /workerVersionId: clean\(meta\?\.id \|\| '', 200\)/);
   assert.match(telephony, /workerVersionTag: clean\(meta\?\.tag \|\| '', 200\)/);

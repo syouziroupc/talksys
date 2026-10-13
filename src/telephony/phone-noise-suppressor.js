@@ -40,7 +40,8 @@ export async function createPhoneNoiseSuppressor({ frameSize = 160, sampleRate =
       try {
         const samples = Int16Array.from(frame);
         const speech = pre.processInt16(samples);
-        return { ok: true, samples, speech, elapsedMs: nowMs() - started, fallback: '' };
+        const probability = Math.max(0, Math.min(100, Number(pre.prob) || 0));
+        return { ok: true, samples, speech, probability, elapsedMs: nowMs() - started, fallback: '' };
       } catch (error) {
         return { ok: false, samples: frame, speech: false, elapsedMs: nowMs() - started, fallback: String(error?.message || error || 'speex-error').slice(0, 120) };
       }

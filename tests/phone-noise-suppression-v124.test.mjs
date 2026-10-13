@@ -52,5 +52,6 @@ test('telephony source keeps answer/TTS path untouched and isolates suppression 
   assert.match(source, /answerWithTalkSys\(deps,stt\.text,history,controller\.signal,spokenBackchannel/);
   assert.match(source, /speak\(turn\.answer, \{ purpose: 'answer'/);
   assert.match(source, /if\(assistantPlaying\).*bargeThreshold/);
-  assert.match(source, /phoneNoiseSuppressor\?\(speexSpeech\|\|cleanSpeech\|\|\(rawSpeech&&rawSnr>=3\.2\)\):rawSpeech/);
+  assert.match(source, /const speechCandidate=noiseProcessed\?\(speexSpeech\|\|cleanSpeech\|\|\(rawSpeech&&rawSnr>=3\.2\)\):rawSpeech/);
+  assert.match(source, /phoneActiveVoiceEvidence/);
 });
