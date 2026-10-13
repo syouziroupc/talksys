@@ -1,1 +1,1 @@
-phone-adaptive-input-v127-production-20261013-r2
+v128-personalization-memory-stt-guard-production-20261014-b3fffa56
