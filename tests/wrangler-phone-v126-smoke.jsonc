@@ -1,0 +1,5 @@
+{
+  "name": "talksys-phone-v126-speex-smoke",
+  "main": "./phone-v126-workerd-smoke-worker.mjs",
+  "compatibility_date": "2026-10-13"
+}
