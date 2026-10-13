@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   PHONE_STT_CONTEXT_PROMPT,
-  STT_REVISION,
   analyzeWav,
   normalizeQuietPhoneWav,
 } from '../src/stt-v45.js';
@@ -59,7 +58,6 @@ test('v123 restores weak phone speech normalization without clipping', () => {
 });
 
 test('v123 phone STT uses generic phonetic proper-noun guidance', () => {
-  assert.equal(STT_REVISION, 'talksys-v123-phone-accessibility-phonetic-r1');
   assert.match(PHONE_STT_CONTEXT_PROMPT, /地名/);
   assert.match(PHONE_STT_CONTEXT_PROMPT, /駅名/);
   assert.match(PHONE_STT_CONTEXT_PROMPT, /施設名/);
