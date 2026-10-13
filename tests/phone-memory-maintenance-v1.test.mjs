@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  PHONE_MEMORY_MODEL,
+  PHONE_MEMORY_PRIMARY_MODEL,
+  PHONE_MEMORY_SHADOW_MODEL,
   PHONE_MEMORY_REVISION,
   buildTranscript,
   evidenceAppearsInUserText,
@@ -15,8 +16,9 @@ const runtimeSource = fs.readFileSync(new URL('../src/runtime-entry.js', import.
 const telephonySource = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
 const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
-test('background memory uses the cheap Workers AI extractor and remains kill-switchable', () => {
-  assert.equal(PHONE_MEMORY_MODEL, '@cf/ibm-granite/granite-4.0-h-micro');
+test('background memory uses Gemini primary with Granite shadow and remains kill-switchable', () => {
+  assert.equal(PHONE_MEMORY_PRIMARY_MODEL, 'gemini-3.5-flash-lite');
+  assert.equal(PHONE_MEMORY_SHADOW_MODEL, '@cf/ibm-granite/granite-4.0-h-micro');
   assert.match(PHONE_MEMORY_REVISION, /phone-memory-maintenance/);
   assert.equal(phoneMemoryEnabled({ PHONE_MEMORY_ENABLED: 'true' }), true);
   assert.equal(phoneMemoryEnabled({ PHONE_MEMORY_ENABLED: 'false' }), false);
