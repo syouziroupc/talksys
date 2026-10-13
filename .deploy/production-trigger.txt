@@ -1,1 +1,1 @@
-phone-noise-vad-v125-production-20261013-r1
+phone-adaptive-input-v127-production-20261013-r1
