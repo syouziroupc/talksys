@@ -25,5 +25,11 @@
   },
   "overrides": {
     "@ai-sdk/provider": "4.0.17"
+  },
+  "imports": {
+    "#speex-runtime-loader": {
+      "workerd": "./src/telephony/speex-worker-loader.js",
+      "default": "./src/telephony/speex-node-loader.js"
+    }
   }
 }

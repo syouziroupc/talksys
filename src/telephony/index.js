@@ -4,7 +4,7 @@ import { buildTexml, clampInt, clean, flag, xmlEscape } from './protocol.js';
 import { PHONE_TTS_MODEL, PHONE_TTS_SAMPLE_RATE, phoneTtsDeliveryMode, phoneTtsOutputGainDb, phoneTtsVoice, streamPcmu20ms, synthesizePhonePcmu } from './phone-tts.js';
 import { fastReaction, sameUtterance, FAST_REACTION_REVISION } from '../voice-fast-reaction.js';
 import { WEB_VOICE_CAPTURE_POLICY } from '../voice-capture-policy.js';
-import { createPhoneNoiseSuppressor, PHONE_NOISE_SUPPRESSION_REVISION } from './phone-noise-suppressor.js';
+import { createPhoneNoiseSuppressor, phoneNoiseSuppressionSelfTest, PHONE_NOISE_SUPPRESSION_REVISION } from './phone-noise-suppressor.js';
 
 export const TELEPHONY_REVISION = 'talksys-telephony-v87-grok-pcmu-paced';
 export const TELEPHONY_OBSERVABILITY_REVISION = 'talksys-phone-latency-v90-fast-ack-r1';
@@ -15,15 +15,15 @@ export const PHONE_CONVERSATION_BASELINE_REVISION = 'talksys-phone-conversation-
 const FRAME_MS = 20;
 const FAST_ACK_TEXT = 'はい、確認しますね。';
 export const PHONE_FAST_ACK_REVISION = 'talksys-phone-fast-ack-v2-r1';
-export const PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v120-r1';
+export const PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v126-restored-r1';
 export const PHONE_PERSONALIZATION_ACTIVE_REVISION = 'talksys-phone-personalization-v121-r1';
-export const PHONE_RUNTIME_LOG_REVISION = 'talksys-phone-runtime-log-v125-r1';
-export const PHONE_RELEASE_VERSION = 'v125';
+export const PHONE_RUNTIME_LOG_REVISION = 'talksys-phone-runtime-log-v126-r1';
+export const PHONE_RELEASE_VERSION = 'v126';
 export const PHONE_ADAPTIVE_VAD_REVISION = 'talksys-phone-adaptive-vad-v123-r1';
 export const PHONE_VAD_START_NOISE_RATIO = 2.7;
 export const PHONE_VAD_START_HITS = 3;
 export const PHONE_VAD_PREROLL_FRAMES = 12;
-export const PHONE_NOISE_VAD_REVISION = 'talksys-phone-noise-vad-v125-r1';
+export const PHONE_NOISE_VAD_REVISION = 'talksys-phone-noise-vad-v126-r1';
 export const PHONE_VAD_RAW_RESCUE_MS = 240;
 export const PHONE_VAD_CLEAN_PROB_FLOOR = 30;
 const PHONE_ACK_STT_GRACE_MS = 250;
@@ -536,7 +536,10 @@ function dashboardHtml(request) {
   </script></body></html>`;
 }
 
-function health(request, env, deps) {
+async function health(request, env, deps) {
+  const noiseSuppressionRuntime = flag(env?.TELEPHONY_NOISE_SUPPRESSION_ENABLED, true)
+    ? await phoneNoiseSuppressionSelfTest()
+    : { ok: false, disabled: true, revision: PHONE_NOISE_SUPPRESSION_REVISION };
   return json({
     ok: true, revision: TELEPHONY_REVISION, observabilityRevision: TELEPHONY_OBSERVABILITY_REVISION, releaseVersion: PHONE_RELEASE_VERSION, runtimeLogRevision: PHONE_RUNTIME_LOG_REVISION, workerVersionId: clean(env?.CF_VERSION_METADATA?.id || '', 200), personalizationRevision: PHONE_PERSONALIZATION_ACTIVE_REVISION, integrated: true,
     role: 'telnyx-entry-for-talksys-main', enabled: enabled(env), webhookTokenConfigured: Boolean(sharedToken(env)),
@@ -545,11 +548,11 @@ function health(request, env, deps) {
     recording: false, concurrency: '通話ごとに独立WebSocket。確定した追加入力は進行中AIターンを中断。',
     inputAudio: 'Telnyx PCMU 8kHz → 90Hz HPF → SpeexDSP NS/VAD → hangover判定 → TalkSys STT',
     voiceInterruption: 'STT確定後に旧GeminiターンをAbort。ノイズだけでは中断しない。',
-    fastReaction: `Whisper確定直後の分類別PCMU受理相槌 + lookup検索進捗 + Gemini本回答 / ${PHONE_FAST_ACK_REVISION} / ${PHONE_SEARCH_PROGRESS_REVISION} / ${FAST_REACTION_REVISION}`,
+    fastReaction: `発話終了後のキャッシュ済みPCMU受理相槌（slow-STT時はWhisperと並列） + lookup検索進捗 + Gemini本回答 / ${PHONE_FAST_ACK_REVISION} / ${PHONE_SEARCH_PROGRESS_REVISION} / ${FAST_REACTION_REVISION}`,
     latencyTelemetry: 'speech end estimate → VAD → STT → TalkSys turn → ack → answer ready → TTS → first PCMU → complete',
     outputAudio: 'Cloudflare Grok TTS G.711 μ-law 8kHz → Telnyx PCMU RTP', phoneTtsModel: PHONE_TTS_MODEL,
     phoneTtsVoice: phoneTtsVoice(env), phoneTtsDelivery: phoneTtsDeliveryMode(env), phoneTtsOutputGainDb: phoneTtsOutputGainDb(env), phoneTtsSampleRate: PHONE_TTS_SAMPLE_RATE,
-    adaptiveVadRevision: PHONE_ADAPTIVE_VAD_REVISION, noiseSuppressionRevision: PHONE_NOISE_SUPPRESSION_REVISION, noiseVadRevision: PHONE_NOISE_VAD_REVISION, phoneVadBaseRms: Number(env?.TELEPHONY_VAD_RMS || 0.0045), phoneVadStartNoiseRatio: PHONE_VAD_START_NOISE_RATIO, phoneVadStartHits: PHONE_VAD_START_HITS, phoneVadPreRollMs: PHONE_VAD_PREROLL_FRAMES * FRAME_MS, phoneVadRawRescueMs: PHONE_VAD_RAW_RESCUE_MS,
+    adaptiveVadRevision: PHONE_ADAPTIVE_VAD_REVISION, noiseSuppressionRevision: PHONE_NOISE_SUPPRESSION_REVISION, noiseSuppressionRuntime, noiseVadRevision: PHONE_NOISE_VAD_REVISION, phoneVadBaseRms: Number(env?.TELEPHONY_VAD_RMS || 0.0045), phoneVadStartNoiseRatio: PHONE_VAD_START_NOISE_RATIO, phoneVadStartHits: PHONE_VAD_START_HITS, phoneVadPreRollMs: PHONE_VAD_PREROLL_FRAMES * FRAME_MS, phoneVadRawRescueMs: PHONE_VAD_RAW_RESCUE_MS,
     answerEngine: 'TalkSys本体（既存回答経路）', routes: { management: '/phone', health: '/telephony-health', voice: '/telnyx/voice', media: '/telnyx/media' },
     origin: publicBaseUrl(request),
   });
@@ -867,20 +870,20 @@ function mediaBridge(request, env, deps) {
   let noiseFloor=Math.max(0.0015,Math.min(0.02,speechThreshold*0.45)), speechHits=0, bargeHits=0, captureSeq=0, latestAcceptedCapture=0, turnVersion=0, activeTurnAbort=null, pendingSttCount=0, lastAcceptedUserText='', lastAcceptedUserAt=0, recentAckTexts=[];
   const pendingTasks=new Set(), hpState={prevX:0,prevY:0};
   const noiseSuppressionEnabled=flag(env?.TELEPHONY_NOISE_SUPPRESSION_ENABLED,true);
-  let phoneNoiseSuppressor=null, noiseCleanFloor=Math.max(0.001,speechThreshold*0.35), noiseFrames=0, noiseCpuMs=0, noiseCpuMaxMs=0, noiseFallbackFrames=0, noiseSummaryLogged=false;
+  let phoneNoiseSuppressor=null, noiseInitError='', noiseCleanFloor=Math.max(0.001,speechThreshold*0.35), noiseFrames=0, noiseCpuMs=0, noiseCpuMaxMs=0, noiseFallbackFrames=0, noiseSummaryLogged=false;
   let activeDenoisedSpeechAgeMs=Number.POSITIVE_INFINITY, captureVoiceFrames=0, captureRawRescueFrames=0, captureHighRmsNonspeechFrames=0;
   const callerProfileSession={status:'idle',phoneNumber:'',profile:null};
   const adaptNoise=(rms,fast=false)=>{const value=Math.max(0.0005,Math.min(0.04,Number(rms)||0));const alpha=fast?0.08:(value>noiseFloor?0.01:0.035);noiseFloor=Math.max(0.001,Math.min(0.03,noiseFloor*(1-alpha)+value*alpha));};
   const startThreshold=()=>phoneVadStartThreshold(speechThreshold,noiseFloor);
   const trackTask=(promise)=>{pendingTasks.add(promise);promise.finally(()=>pendingTasks.delete(promise));return promise;};
-  if(noiseSuppressionEnabled){trackTask(createPhoneNoiseSuppressor({frameSize:160,sampleRate:8000,noiseSuppressDb:-12,probStart:42,probContinue:20}).then((processor)=>{phoneNoiseSuppressor=processor;console.log(JSON.stringify({type:'phone_noise_suppression_ready',revision:PHONE_NOISE_SUPPRESSION_REVISION}));}).catch((error)=>{phoneNoiseSuppressor=null;console.warn(JSON.stringify({type:'phone_noise_suppression_fallback',revision:PHONE_NOISE_SUPPRESSION_REVISION,error:clean(error?.message||error,240)}));}));}
+  if(noiseSuppressionEnabled){trackTask(createPhoneNoiseSuppressor({frameSize:160,sampleRate:8000,noiseSuppressDb:-12,probStart:42,probContinue:20}).then((processor)=>{phoneNoiseSuppressor=processor;noiseInitError='';console.log(JSON.stringify({type:'phone_noise_suppression_ready',revision:PHONE_NOISE_SUPPRESSION_REVISION,runtimeKind:processor?.runtimeKind||''}));}).catch((error)=>{phoneNoiseSuppressor=null;noiseInitError=clean(error?.message||error,240);console.warn(JSON.stringify({type:'phone_noise_suppression_fallback',revision:PHONE_NOISE_SUPPRESSION_REVISION,error:noiseInitError}));}));}
   const queueMessageLog = (role, content) => trackTask(
     appendMessage(env, callId, role, content).catch((error) => {
       console.error(JSON.stringify({ type: 'phone_message_log_error', role, error: clean(error?.message || error, 240) }));
     }),
   );
   const queueLatency=(turnId,stage,elapsedMs=0,detail={})=>{const record={type:'phone_latency',callId,turnId,stage,elapsedMs:boundedMs(elapsedMs),...detail};console.log(JSON.stringify(record));return trackTask(appendLatencyEvent(env,{callId,turnId,stage,elapsedMs,detail}).catch((error)=>console.error(JSON.stringify({type:'phone_latency_log_error',stage,error:clean(error?.message||error,240)}))));};
-  const emitNoiseSummary=(reason='unknown')=>{if(noiseSummaryLogged)return;noiseSummaryLogged=true;const detail={revision:PHONE_NOISE_SUPPRESSION_REVISION,noiseVadRevision:PHONE_NOISE_VAD_REVISION,reason,enabled:noiseSuppressionEnabled,ready:Boolean(phoneNoiseSuppressor),frames:noiseFrames,avgCpuMs:noiseFrames?Number((noiseCpuMs/noiseFrames).toFixed(4)):0,maxCpuMs:Number(noiseCpuMaxMs.toFixed(4)),fallbackFrames:noiseFallbackFrames};console.log(JSON.stringify({type:'phone_noise_suppression_summary',...detail}));if(callId)queueLatency(`${clean(callId||'call',120)}-noise`,'noise_suppression_summary',0,detail);};
+  const emitNoiseSummary=(reason='unknown')=>{if(noiseSummaryLogged)return;noiseSummaryLogged=true;const detail={revision:PHONE_NOISE_SUPPRESSION_REVISION,noiseVadRevision:PHONE_NOISE_VAD_REVISION,reason,enabled:noiseSuppressionEnabled,ready:Boolean(phoneNoiseSuppressor),frames:noiseFrames,avgCpuMs:noiseFrames?Number((noiseCpuMs/noiseFrames).toFixed(4)):0,maxCpuMs:Number(noiseCpuMaxMs.toFixed(4)),fallbackFrames:noiseFallbackFrames,runtimeKind:phoneNoiseSuppressor?.runtimeKind||'',initError:noiseInitError};console.log(JSON.stringify({type:'phone_noise_suppression_summary',...detail}));if(callId)queueLatency(`${clean(callId||'call',120)}-noise`,'noise_suppression_summary',0,detail);};
   const abortActiveTurn=()=>{const controller=activeTurnAbort;activeTurnAbort=null;if(controller){try{controller.abort('confirmed-voice-interrupt');}catch{}}};
   const waitForPendingSpeechDecision=async(version)=>{const until=Date.now()+2800;while(pendingSttCount>0&&version===turnVersion&&Date.now()<until)await new Promise(resolve=>setTimeout(resolve,35));return version===turnVersion;};
   const interruptPlayback=()=>{playbackGeneration+=1;if(assistantPlaying||currentMark)safeSend(telnyx,{event:'clear'});assistantPlaying=false;currentMark='';};
@@ -923,15 +926,17 @@ function mediaBridge(request, env, deps) {
     queueLatency(turnId,'vad_finalize',finalizedAt-speechEndAt,{silenceTargetMs:silenceMs,trailingSilenceMs});
     pendingSttCount+=1;
     const sttStartedAt=Date.now();queueLatency(turnId,'stt_start',sttStartedAt-speechEndAt,{samples:samples.length,audioMs:Math.round(samples.length/8)});
-    let sttSettled=false,slowAckArmed=false,slowAckText='',slowAckAudio=null;
+    let sttSettled=false,slowAckStarted=false,slowAckText='',slowAckAudio=null,slowAckPromise=Promise.resolve(false);
     const sttPromise=transcribeSamples(env,samples);
     const slowAckTimer=setTimeout(()=>{
-      if(sttSettled||closed||latestAcceptedCapture===0)return;
+      if(sttSettled||closed)return;
       const selected=selectPreparedSlowSttAck(phoneAckAudioCache.keys(),recentAckTexts);
       const prepared=selected?(selected===FAST_ACK_TEXT?fastAckAudioCache:phoneAckAudioCache.get(selected)):null;
       if(!selected||!prepared?.bytes?.byteLength){queueLatency(turnId,'ack_slow_stt_unprepared',Date.now()-speechEndAt,{revision:PHONE_ACK_LATENCY_REVISION,graceMs:PHONE_ACK_STT_GRACE_MS});return;}
-      slowAckArmed=true;slowAckText=selected;slowAckAudio=prepared;
-      queueLatency(turnId,'ack_slow_stt_armed',Date.now()-speechEndAt,{revision:PHONE_ACK_LATENCY_REVISION,graceMs:PHONE_ACK_STT_GRACE_MS,text:selected,bytes:prepared.bytes.byteLength});
+      slowAckStarted=true;slowAckText=selected;slowAckAudio=prepared;
+      queueLatency(turnId,'ack_slow_stt_fallback',Date.now()-speechEndAt,{revision:PHONE_ACK_LATENCY_REVISION,graceMs:PHONE_ACK_STT_GRACE_MS,text:selected,bytes:prepared.bytes.byteLength});
+      slowAckPromise=speak(selected,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:prepared}).then((reacted)=>{if(reacted){recentAckTexts=[...recentAckTexts,selected].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'slow-stt-receipt',text:selected,cached:true,revision:PHONE_ACK_LATENCY_REVISION}));}return reacted;});
+      trackTask(slowAckPromise.catch((error)=>{console.warn(JSON.stringify({type:'phone_slow_stt_ack_error',turnId,error:clean(error?.message||error,240)}));return false;}));
     },PHONE_ACK_STT_GRACE_MS);
     const task=(async()=>{
       let stt;
@@ -941,7 +946,7 @@ function mediaBridge(request, env, deps) {
       queueLatency(turnId,'stt_end',sttEndedAt-speechEndAt,{stageMs:sttEndedAt-sttStartedAt,textChars:stt.text.length,retryUsed:Boolean(stt?.payload?.retryUsed),model:clean(stt?.payload?.model||'',120)});
       const now=Date.now(),duplicateRecent=lastAcceptedUserText&&sameUtterance(stt.text,lastAcceptedUserText)&&now-lastAcceptedUserAt<12000&&(assistantPlaying||Boolean(activeTurnAbort));
       if(duplicateRecent){queueLatency(turnId,'duplicate_suppressed',now-speechEndAt,{text:clean(stt.text,160)});console.log(JSON.stringify({type:'phone_duplicate_suppressed',text:clean(stt.text,160)}));return;}
-      latestAcceptedCapture=myCapture;lastAcceptedUserText=stt.text;lastAcceptedUserAt=now;const myVersion=++turnVersion;abortActiveTurn();interruptPlayback();
+      latestAcceptedCapture=myCapture;lastAcceptedUserText=stt.text;lastAcceptedUserAt=now;const myVersion=++turnVersion;abortActiveTurn();if(!slowAckStarted)interruptPlayback();
       queueMessageLog('user', stt.text);
       history.push({ role: 'user', content: stt.text });
       const controller=new AbortController();activeTurnAbort=controller;
@@ -950,8 +955,8 @@ function mediaBridge(request, env, deps) {
         const ackSelection=selectPhoneAckText(reaction,phoneAckAudioCache.keys(),recentAckTexts);
         const categoryAckText=ackSelection.text||'';
         const categoryAckAudio=categoryAckText?(categoryAckText===FAST_ACK_TEXT?fastAckAudioCache:phoneAckAudioCache.get(categoryAckText)):null;
-        const ackText=slowAckArmed?slowAckText:categoryAckText;
-        const ackAudio=slowAckArmed?slowAckAudio:categoryAckAudio;
+        const ackText=slowAckStarted?slowAckText:categoryAckText;
+        const ackAudio=slowAckStarted?slowAckAudio:categoryAckAudio;
         const ackPrepared=Boolean(ackAudio?.bytes?.byteLength);
         const spokenBackchannel=ackPrepared?ackText:'';
         const progressEnabled=flag(env?.TELEPHONY_SEARCH_PROGRESS_ENABLED,true);
@@ -961,7 +966,7 @@ function mediaBridge(request, env, deps) {
         const turnStartedAt=Date.now();queueLatency(turnId,'turn_start',turnStartedAt-speechEndAt,{reactionKind:reaction.kind||'none',ackPrepared,ackText,ackFallback:ackSelection.fallbackUsed,progressPlanned:Boolean(progressText)});
         const turnPromise=answerWithTalkSys(deps,stt.text,history,controller.signal,spokenBackchannel,callId,turnId,callerProfileSession.status==='ready'?callerProfileSession.profile:null);
         if(ackSelection.warmText){const warmText=ackSelection.warmText;trackTask(warmPhoneAckAudio(env,warmText,deps).then((audio)=>console.log(JSON.stringify({type:'phone_fast_ack_lazy_warm',kind:reaction.kind||'none',text:warmText,ok:Boolean(audio?.bytes?.byteLength)}))).catch((error)=>console.warn(JSON.stringify({type:'phone_fast_ack_lazy_warm_error',kind:reaction.kind||'none',error:clean(error?.message||error,240)}))));}
-        if(slowAckArmed&&ackPrepared&&myVersion===turnVersion){queueLatency(turnId,'ack_slow_stt_committed',Date.now()-speechEndAt,{text:ackText,revision:PHONE_ACK_LATENCY_REVISION,reactionKind:reaction.kind||'none'});const reacted=await speak(ackText,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:ackAudio});if(reacted){recentAckTexts=[...recentAckTexts,ackText].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'slow-stt-receipt',text:ackText,cached:true,revision:PHONE_ACK_LATENCY_REVISION}));}}
+        if(slowAckStarted){queueLatency(turnId,'ack_already_started',Date.now()-speechEndAt,{text:ackText,revision:PHONE_ACK_LATENCY_REVISION,reactionKind:reaction.kind||'none'});}
         else if(ackPrepared&&myVersion===turnVersion){queueLatency(turnId,'ack_cache_hit',Date.now()-speechEndAt,{text:ackText,bytes:ackAudio.bytes.byteLength,reactionKind:reaction.kind||'none',fallback:ackSelection.fallbackUsed});const reacted=await speak(ackText,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:ackAudio});if(reacted){recentAckTexts=[...recentAckTexts,ackText].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'receipt',sourceKind:reaction.kind,text:ackText,cached:true,fallback:ackSelection.fallbackUsed}));}}
         else queueLatency(turnId,'ack_cache_miss',Date.now()-speechEndAt,{text:ackText||FAST_ACK_TEXT,reactionKind:reaction.kind||'none'});
         if(progressText&&myVersion===turnVersion){

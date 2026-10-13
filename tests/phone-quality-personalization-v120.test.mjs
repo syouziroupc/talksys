@@ -22,17 +22,17 @@ test('v120 distinguishes stable knowledge from current or externally verified fa
   assert.ok(dynamic.truthGate.applied);
 });
 
-test('v120 removes wait-language from receipt ack and never preplays an unvalidated slow-STT capture', () => {
+test('v126 restores the proven v119 slow-STT acknowledgement while keeping wait-language removed', () => {
   assert.match(telephony, /const FAST_ACK_TEXT = 'はい、確認しますね。'/);
   assert.doesNotMatch(telephony.slice(0, telephony.indexOf('export const PHONE_SEARCH_PROGRESS_REVISION')), /FAST_ACK_TEXT = 'はい、少々お待ちください。'/);
-  assert.match(telephony, /if\(sttSettled\|\|closed\|\|latestAcceptedCapture===0\)return/);
+  assert.match(telephony, /if\(sttSettled\|\|closed\)return/);
   assert.match(telephony, /const PHONE_ACK_STT_GRACE_MS = 250/);
   const timerStart = telephony.indexOf('const slowAckTimer=setTimeout');
   const timerEnd = telephony.indexOf('},PHONE_ACK_STT_GRACE_MS);', timerStart);
   assert.ok(timerStart >= 0 && timerEnd > timerStart);
-  assert.doesNotMatch(telephony.slice(timerStart, timerEnd), /\bspeak\s*\(/);
-  assert.match(telephony, /ack_slow_stt_armed/);
-  assert.match(telephony, /ack_slow_stt_committed/);
+  assert.match(telephony.slice(timerStart, timerEnd), /\bspeak\s*\(/);
+  assert.match(telephony, /ack_slow_stt_fallback/);
+  assert.match(telephony, /ack_already_started/);
 });
 
 test('v120 keeps the frozen phone audio and answer-quality baseline intact', () => {
@@ -59,8 +59,8 @@ test('phone-number personalization is an active text-only TalkSys feature, not a
 });
 
 test('v120 records the executable phone version in every new call log', () => {
-  assert.equal(PHONE_RELEASE_VERSION, 'v125');
-  assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v125-r1');
+  assert.equal(PHONE_RELEASE_VERSION, 'v126');
+  assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v126-r1');
   assert.match(wrangler, /"version_metadata"\s*:\s*\{\s*"binding"\s*:\s*"CF_VERSION_METADATA"\s*\}/);
   assert.match(telephony, /workerVersionId: clean\(meta\?\.id \|\| '', 200\)/);
   assert.match(telephony, /workerVersionTag: clean\(meta\?\.tag \|\| '', 200\)/);

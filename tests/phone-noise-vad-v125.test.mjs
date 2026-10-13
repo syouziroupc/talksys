@@ -40,8 +40,8 @@ test('v125 exposes bounded Speex speech probability within the existing CPU budg
 });
 
 test('v125 active VAD cannot be held open indefinitely by raw high-RMS noise', () => {
-  assert.equal(PHONE_RELEASE_VERSION, 'v125');
-  assert.equal(PHONE_NOISE_VAD_REVISION, 'talksys-phone-noise-vad-v125-r1');
+  assert.equal(PHONE_RELEASE_VERSION, 'v126');
+  assert.equal(PHONE_NOISE_VAD_REVISION, 'talksys-phone-noise-vad-v126-r1');
   assert.equal(PHONE_VAD_RAW_RESCUE_MS, 240);
   assert.equal(phoneActiveVoiceEvidence({ speexSpeech: true, speechProbability: 60 }).voice, true);
   assert.equal(phoneActiveVoiceEvidence({ cleanSpeech: true, speechProbability: 45 }).denoisedSpeech, true);

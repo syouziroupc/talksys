@@ -5,22 +5,20 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
 const wrangler = fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
 
-test('v120 arms slow-STT acknowledgement but commits playout only after accepted STT', () => {
-  assert.match(source, /PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v120-r1'/);
+test('v126 restores v119 pre-STT acknowledgement playout after the bounded grace', () => {
+  assert.match(source, /PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v126-restored-r1'/);
   assert.match(source, /const PHONE_ACK_STT_GRACE_MS = 250/);
   assert.match(source, /PHONE_SLOW_STT_ACK_TEXTS/);
   assert.match(source, /const sttPromise=transcribeSamples\(env,samples\)/);
-  assert.match(source, /ack_slow_stt_armed/);
-  assert.match(source, /ack_slow_stt_committed/);
-  assert.match(source, /if\(sttSettled\|\|closed\|\|latestAcceptedCapture===0\)return/);
+  assert.match(source, /ack_slow_stt_fallback/);
+  assert.match(source, /ack_already_started/);
+  assert.match(source, /if\(sttSettled\|\|closed\)return/);
   const timerStart = source.indexOf('const slowAckTimer=setTimeout');
   const timerEnd = source.indexOf('},PHONE_ACK_STT_GRACE_MS);', timerStart);
   const timerBlock = source.slice(timerStart, timerEnd);
   assert.ok(timerStart >= 0 && timerEnd > timerStart);
-  assert.doesNotMatch(timerBlock, /\bspeak\s*\(/, 'slow-STT timer must never play audio before STT acceptance');
-  const rejectGate = source.indexOf("if(!stt?.ok||!stt.text||myCapture<latestAcceptedCapture)");
-  const commit = source.indexOf("ack_slow_stt_committed");
-  assert.ok(rejectGate >= 0 && commit > rejectGate, 'slow acknowledgement commit must be downstream of STT rejection gate');
+  assert.match(timerBlock, /\bspeak\s*\(/, 'slow-STT acknowledgement must start while STT is still pending');
+  assert.match(source, /if\(!slowAckStarted\)interruptPlayback\(\)/);
   assert.match(source, /selectPhoneAckText\(reaction,phoneAckAudioCache\.keys\(\),recentAckTexts\)/);
 });
 
