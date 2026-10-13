@@ -1,0 +1,58 @@
+name: Build and validate phone adaptive input v127
+
+on:
+  push:
+    branches: [repair/phone-v127]
+    paths:
+      - '.github/workflows/oneoff-phone-v127-adaptive-input.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oneoff-phone-v127-adaptive-input
+  cancel-in-progress: false
+
+jobs:
+  build-validate-persist:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: repair/phone-v127
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Guard exact production phone baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "PHONE_RELEASE_VERSION = 'v125'" src/telephony/index.js
+          grep -q "PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v120-r1'" src/telephony/index.js
+          grep -q "slowAckArmed" src/telephony/index.js
+          grep -q "SPEEX_WASM_BASE64" src/telephony/phone-noise-suppressor.js
+          grep -q "talksys-phone-noise-vad-v125-r1" src/telephony/index.js
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build Worker-native pinned SpeexDSP
+        run: bash scripts/build-speex-worker-v127.sh
+      - name: Apply isolated adaptive input patch
+        run: python scripts/apply-phone-v127.py
+      - name: Validate workerd, phone regressions, full repository, and production bundle
+        run: bash scripts/validate-phone-v127.sh
+      - name: Persist validated runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A package.json src/stt-v45.js src/telephony
+          if git diff --cached --quiet; then
+            echo 'No runtime changes staged'
+            exit 1
+          fi
+          git diff --cached --stat
+          git commit --no-verify -m 'Add safe adaptive phone input calibration v127'
+          git push origin HEAD:repair/phone-v127
