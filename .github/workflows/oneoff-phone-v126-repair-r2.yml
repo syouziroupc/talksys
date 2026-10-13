@@ -1,0 +1,165 @@
+name: Repair phone ack and Worker Speex v126 r2
+
+on:
+  push:
+    branches: [repair/phone-v126]
+    paths:
+      - '.github/workflows/oneoff-phone-v126-repair-r2.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oneoff-phone-v126-repair-r2
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: repair/phone-v126
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Require v125 production baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "PHONE_RELEASE_VERSION = 'v125'" src/telephony/index.js
+          grep -q "ack_slow_stt_armed" src/telephony/index.js
+          grep -q "SPEEX_WASM_BASE64" src/telephony/phone-noise-suppressor.js
+          grep -q '"TELEPHONY_VAD_RMS": "0.0045"' wrangler.jsonc
+          grep -q '"TELEPHONY_TTS_VOICE": "eve"' wrangler.jsonc
+
+      - name: Install TalkSys dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build pinned SpeexDSP for Cloudflare Worker modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/talksys-speex-worker
+          git clone --branch v0.4.0 --depth 1 https://github.com/sapphi-red/speex-preprocess-wasm.git /tmp/talksys-speex-worker
+          git -C /tmp/talksys-speex-worker config -f .gitmodules submodule.build/speexdsp.url https://github.com/xiph/speexdsp.git
+          git -C /tmp/talksys-speex-worker submodule sync --recursive
+          git -C /tmp/talksys-speex-worker submodule update --init --depth 1 --recursive
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/talksys-speex-worker/build/build-wasm.sh')
+          s=p.read_text()
+          old="-s INCOMING_MODULE_JS_API=\"['wasmBinary']\""
+          new="-s INCOMING_MODULE_JS_API=\"['wasmBinary','instantiateWasm']\""
+          if s.count(old)!=1:
+              raise SystemExit(f'expected one Emscripten incoming API declaration, got {s.count(old)}')
+          p.write_text(s.replace(old,new,1))
+          PY
+          docker run --rm \
+            -v /tmp/talksys-speex-worker:/src \
+            -w /src \
+            emscripten/emsdk:3.1.74 \
+            bash -lc 'bash build/build-wasm.sh'
+          test -s /tmp/talksys-speex-worker/wasm-out/speex.js
+          test -s /tmp/talksys-speex-worker/wasm-out/speex.wasm
+          mkdir -p src/telephony/vendor
+          cp /tmp/talksys-speex-worker/wasm-out/speex.js src/telephony/vendor/speex-worker.js
+          cp /tmp/talksys-speex-worker/wasm-out/speex.wasm src/telephony/vendor/speex-worker.wasm
+          cat > src/telephony/vendor/SPEEX_WORKER_NOTICE.md <<'EOF'
+          # SpeexDSP Worker build
+          Source: sapphi-red/speex-preprocess-wasm v0.4.0 and its pinned SpeexDSP submodule.
+          DSP code is unchanged. Emscripten INCOMING_MODULE_JS_API adds instantiateWasm so Cloudflare's precompiled WebAssembly.Module can be supplied without runtime byte compilation.
+          EOF
+
+      - name: Apply guarded v126 repair
+        run: python scripts/apply-phone-v126.py
+
+      - name: Focused syntax and regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/telephony/index.js
+          node --check src/telephony/phone-noise-suppressor.js
+          node --check src/telephony/speex-node-loader.js
+          node --check src/telephony/speex-worker-loader.js
+          node --test \
+            tests/phone-noise-suppression-v124.test.mjs \
+            tests/phone-noise-vad-v125.test.mjs \
+            tests/phone-second-turn-ack-zip-v119.test.mjs \
+            tests/phone-quality-personalization-v120.test.mjs \
+            tests/phone-v126-worker-runtime.test.mjs
+
+      - name: Prove Speex inside real workerd runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler dev --ip 127.0.0.1 --port 8799 > /tmp/v126-workerd.log 2>&1 &
+          pid=$!
+          cleanup(){ kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+          trap cleanup EXIT
+          ready=0
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8799/telephony-health -o /tmp/v126-health.json; then ready=1; break; fi
+            sleep 1
+          done
+          if [[ "$ready" != 1 ]]; then cat /tmp/v126-workerd.log; exit 1; fi
+          cat /tmp/v126-health.json
+          node - <<'NODE'
+          const fs=require('fs');
+          const h=JSON.parse(fs.readFileSync('/tmp/v126-health.json','utf8'));
+          if(h.releaseVersion!=='v126') throw new Error(`unexpected release: ${h.releaseVersion}`);
+          if(!h.noiseSuppressionRuntime?.ok) throw new Error(`Speex self-test failed: ${JSON.stringify(h.noiseSuppressionRuntime)}`);
+          if(h.noiseSuppressionRuntime.runtimeKind!=='workerd-compiled-wasm') throw new Error(`wrong runtime: ${JSON.stringify(h.noiseSuppressionRuntime)}`);
+          if(Number(h.noiseSuppressionRuntime.processedFrames||0)<1) throw new Error('Speex processed zero frames');
+          NODE
+
+      - name: Run all phone and repository regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t suites < <(find tests -maxdepth 1 -type f \( -iname 'phone-*test.mjs' -o -iname 'telephony-*test.mjs' \) | sort)
+          node --test "${suites[@]}"
+          npm run architecture:check
+          npm run architecture:graph
+          npm run reuse:check
+          npm test
+
+      - name: Check production bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v126-dist
+          npx wrangler deploy --dry-run --outdir /tmp/v126-dist 2>&1 | tee /tmp/v126-dry-run.log
+          ! grep -Eqi '(error|failed|unsupported wasm|unresolved import)' /tmp/v126-dry-run.log
+          find /tmp/v126-dist -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Enforce frozen STT TTS answer and phone settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git diff --name-only -- src/telephony/phone-tts.js wrangler.jsonc src/stt-v45.js src/integrated-entry.js)"
+          grep -q "noiseSuppressDb: -12" src/telephony/phone-noise-suppressor.js
+          grep -q "pre.agc = false" src/telephony/phone-noise-suppressor.js
+          grep -q '"TELEPHONY_VAD_RMS": "0.0045"' wrangler.jsonc
+          grep -q '"TELEPHONY_TTS_OUTPUT_GAIN_DB": "3.0"' wrangler.jsonc
+          grep -q "slowAckPromise=speak" src/telephony/index.js
+          grep -q "if(!slowAckStarted)interruptPlayback()" src/telephony/index.js
+          grep -q "workerd-compiled-wasm" src/telephony/speex-worker-loader.js
+          grep -q "noiseSuppressionRuntime" src/telephony/index.js
+          git diff --check
+
+      - name: Commit validated repair to branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json src/telephony tests
+          git diff --cached --check
+          git status --short
+          git commit -m 'Restore pre-STT ack and Worker-native Speex v126'
+          git push origin HEAD:repair/phone-v126
