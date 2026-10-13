@@ -3,6 +3,12 @@
   "version": "1.1.0",
   "private": true,
   "type": "module",
+  "imports": {
+    "#speex-runtime-loader": {
+      "workerd": "./src/telephony/speex-worker-loader.js",
+      "default": "./src/telephony/speex-node-loader.js"
+    }
+  },
   "scripts": {
     "dev": "wrangler dev",
     "test": "node scripts/run-active-tests.mjs",

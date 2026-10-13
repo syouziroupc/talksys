@@ -75,21 +75,32 @@ export function analyzeWav(buffer) {
   }
 }
 
-export function normalizeQuietPhoneWav(buffer, metrics = {}) {
-  if (!metrics?.valid) return { buffer, gain: 1, gainDb: 0 };
+export function normalizeQuietPhoneWav(buffer, metrics = {}, options = {}) {
+  if (!metrics?.valid) return { buffer, gain: 1, gainDb: 0, snrDb: null };
   const rms = Number(metrics.rms) || 0;
   const peak = Number(metrics.peak) || 0;
-  if (rms <= 0 || peak <= 0) return { buffer, gain: 1, gainDb: 0 };
+  if (rms <= 0 || peak <= 0) return { buffer, gain: 1, gainDb: 0, snrDb: null };
 
   const targetRms = 0.018;
-  const maxGain = 2.5;
+  const legacyMaxGain = 2.5;
   const maxPeak = 0.90;
+  const inputMode = String(options?.inputMode || '').toLowerCase();
+  const noiseFloor = Math.max(0, Number(options?.noiseFloor) || 0);
+  let maxGain = legacyMaxGain;
+  let snrDb = null;
+  if (inputMode === 'noisy' && noiseFloor > 0) {
+    snrDb = 20 * Math.log10(Math.max(rms, 0.0001) / Math.max(noiseFloor, 0.0001));
+    // Noise-dominated captures must never have their background amplified.
+    if (snrDb < 10) maxGain = 1;
+    else if (snrDb < 16) maxGain = Math.pow(10, 3 / 20);
+    else maxGain = Math.pow(10, 6 / 20);
+  }
   const gain = Math.max(1, Math.min(maxGain, targetRms / Math.max(rms, 0.0008), maxPeak / Math.max(peak, 0.001)));
-  if (gain < 1.05) return { buffer, gain: 1, gainDb: 0 };
+  if (gain < 1.05) return { buffer, gain: 1, gainDb: 0, snrDb: Number.isFinite(snrDb) ? Number(snrDb.toFixed(2)) : null };
 
   const copy = buffer.slice(0);
   const parsed = pcm16WavData(copy);
-  if (!parsed) return { buffer, gain: 1, gainDb: 0 };
+  if (!parsed) return { buffer, gain: 1, gainDb: 0, snrDb: Number.isFinite(snrDb) ? Number(snrDb.toFixed(2)) : null };
   const { view, dataOffset, dataSize } = parsed;
   const sampleCount = Math.floor(dataSize / 2);
   for (let i = 0; i < sampleCount; i += 1) {
@@ -98,7 +109,7 @@ export function normalizeQuietPhoneWav(buffer, metrics = {}) {
     const boosted = Math.max(-32768, Math.min(32767, Math.round(sample * gain)));
     view.setInt16(offset, boosted, true);
   }
-  return { buffer: copy, gain, gainDb: Number((20 * Math.log10(gain)).toFixed(2)) };
+  return { buffer: copy, gain, gainDb: Number((20 * Math.log10(gain)).toFixed(2)), snrDb: Number.isFinite(snrDb) ? Number(snrDb.toFixed(2)) : null };
 }
 
 export function weakSpeechSignal(metrics) {
@@ -155,8 +166,13 @@ export async function transcribeV45(request, env) {
   if (buffer.byteLength > 8_000_000) return json({ ok: false, error: 'audio too large' }, 413);
 
   const source = clean(request.headers.get('x-talksys-source') || '', 80).toLowerCase();
+  const inputMode = clean(request.headers.get('x-talksys-phone-input-mode') || '', 20).toLowerCase();
+  const inputNoiseFloorRaw = Number(request.headers.get('x-talksys-phone-noise-floor') || 0);
+  const inputNoiseFloor = Number.isFinite(inputNoiseFloorRaw) ? Math.max(0, inputNoiseFloorRaw) : 0;
   const metrics = analyzeWav(buffer);
-  const phoneNormalized = source === 'telnyx' ? normalizeQuietPhoneWav(buffer, metrics) : { buffer, gain: 1, gainDb: 0 };
+  const phoneNormalized = source === 'telnyx'
+    ? normalizeQuietPhoneWav(buffer, metrics, { inputMode, noiseFloor: inputNoiseFloor })
+    : { buffer, gain: 1, gainDb: 0, snrDb: null };
   const signal = {
     durationMs: Math.round(metrics.durationMs || 0),
     rms: Number((metrics.rms || 0).toFixed(5)),
@@ -164,6 +180,9 @@ export async function transcribeV45(request, env) {
     activeMs: Math.round(metrics.activeMs || 0),
     activeRatio: Number((metrics.activeRatio || 0).toFixed(3)),
     inputGainDb: phoneNormalized.gainDb,
+    inputMode: inputMode || 'legacy',
+    inputNoiseFloor: Number(inputNoiseFloor.toFixed(5)),
+    inputSnrDb: phoneNormalized.snrDb,
   };
   if (weakSpeechSignal(metrics)) return json({ ok: false, error: 'no speech detected', rejected: 'weak-speech-signal', elapsedMs: Date.now() - started, signal }, 422);
 

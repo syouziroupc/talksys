@@ -1,37 +1,81 @@
-import { loadSpeexModule, SpeexPreprocessor } from '@sapphi-red/speex-preprocess-wasm';
-import { SPEEX_WASM_BASE64 } from './speex-wasm-binary.js';
+import { SpeexPreprocessor } from '@sapphi-red/speex-preprocess-wasm';
+import { loadSpeexRuntimeModule, SPEEX_RUNTIME_KIND } from '#speex-runtime-loader';
 
-export const PHONE_NOISE_SUPPRESSION_REVISION = 'talksys-phone-speex-v124-r1';
-
-let modulePromise = null;
+export const PHONE_NOISE_SUPPRESSION_REVISION = 'talksys-phone-speex-v127-adaptive-r1';
 
 function nowMs() {
   return globalThis.performance?.now ? globalThis.performance.now() : Date.now();
 }
 
-async function speexModule() {
-  if (!modulePromise) {
-    const decoded = atob(SPEEX_WASM_BASE64);
-    const wasmBinary = new Uint8Array(decoded.length);
-    for (let i = 0; i < decoded.length; i += 1) wasmBinary[i] = decoded.charCodeAt(i);
-    modulePromise = loadSpeexModule({ wasmBinary });
-  }
-  return modulePromise;
-}
-
-export async function createPhoneNoiseSuppressor({ frameSize = 160, sampleRate = 8000, noiseSuppressDb = -12, probStart = 42, probContinue = 20 } = {}) {
-  const mod = await speexModule();
-  const pre = new SpeexPreprocessor(mod, frameSize, sampleRate);
+function configure(pre, { noiseSuppressDb, probStart, probContinue }) {
   pre.denoise = true;
-  pre.agc = false; // Keep TalkSys' existing post-capture weak-speech normalization unchanged.
+  pre.agc = false;
   pre.vad = true;
   pre.noiseSuppress = noiseSuppressDb;
   pre.probStart = probStart;
   pre.probContinue = probContinue;
+}
+
+function destroyPreprocessor(pre, mod) {
+  if (!pre) return;
+  const state = pre.state;
+  if (state && typeof mod?._speex_preprocess_state_destroy === 'function') {
+    mod._speex_preprocess_state_destroy(state);
+    pre.state = 0;
+  }
+  pre.destroy();
+}
+
+let selfTestPromise = null;
+export function phoneNoiseSuppressionSelfTest() {
+  if (!selfTestPromise) {
+    selfTestPromise = (async () => {
+      const mod = await loadSpeexRuntimeModule();
+      const pre = new SpeexPreprocessor(mod, 160, 8000);
+      try {
+        configure(pre, { noiseSuppressDb: -12, probStart: 42, probContinue: 20 });
+        let x = 0x12345678;
+        let processedFrames = 0;
+        for (let f = 0; f < 24; f += 1) {
+          const samples = new Int16Array(160);
+          for (let i = 0; i < samples.length; i += 1) {
+            x = (1664525 * x + 1013904223) >>> 0;
+            const noise = ((x / 0xffffffff) * 2 - 1) * 420;
+            const voice = f >= 12 ? Math.sin(2 * Math.PI * 220 * i / 8000) * 900 : 0;
+            samples[i] = Math.round(noise + voice);
+          }
+          pre.processInt16(samples);
+          processedFrames += 1;
+        }
+        return {
+          ok: true,
+          revision: PHONE_NOISE_SUPPRESSION_REVISION,
+          runtimeKind: SPEEX_RUNTIME_KIND,
+          processedFrames,
+          probability: Math.max(0, Math.min(100, Number(pre.prob) || 0)),
+        };
+      } finally {
+        destroyPreprocessor(pre, mod);
+      }
+    })().catch((error) => ({
+      ok: false,
+      revision: PHONE_NOISE_SUPPRESSION_REVISION,
+      runtimeKind: SPEEX_RUNTIME_KIND,
+      error: String(error?.message || error || 'speex-self-test-failed').slice(0, 240),
+    }));
+  }
+  return selfTestPromise;
+}
+
+export async function createPhoneNoiseSuppressor({ frameSize = 160, sampleRate = 8000, noiseSuppressDb = -12, probStart = 42, probContinue = 20 } = {}) {
+  const mod = await loadSpeexRuntimeModule();
+  const pre = new SpeexPreprocessor(mod, frameSize, sampleRate);
+  configure(pre, { noiseSuppressDb, probStart, probContinue });
   let destroyed = false;
 
   return {
     revision: PHONE_NOISE_SUPPRESSION_REVISION,
+    runtimeKind: SPEEX_RUNTIME_KIND,
     process(frame) {
       const started = nowMs();
       if (destroyed || !(frame instanceof Int16Array) || frame.length !== frameSize) {
@@ -49,7 +93,7 @@ export async function createPhoneNoiseSuppressor({ frameSize = 160, sampleRate =
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      pre.destroy();
+      destroyPreprocessor(pre, mod);
     },
   };
 }
