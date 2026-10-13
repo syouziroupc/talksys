@@ -1,0 +1,117 @@
+name: Apply phone noise/VAD v125
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/oneoff-phone-v125.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oneoff-phone-v125
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Require exact v124 runtime baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "PHONE_RELEASE_VERSION = 'v123'" src/telephony/index.js
+          grep -q "talksys-phone-runtime-log-v123-r1" src/telephony/index.js
+          grep -q "talksys-phone-speex-v124-r1" src/telephony/phone-noise-suppressor.js
+          grep -q "noiseSuppressDb = -12" src/telephony/phone-noise-suppressor.js
+          grep -q "pre.agc = false" src/telephony/phone-noise-suppressor.js
+          grep -q "speechFrames.push(samples);if(rms>=Math.max" src/telephony/index.js
+          grep -q "gemini-3.5-flash-lite" src/integrated-entry.js
+          grep -q '"TELEPHONY_VAD_RMS": "0.0045"' wrangler.jsonc
+          grep -q '"TELEPHONY_TTS_VOICE": "eve"' wrangler.jsonc
+
+      - name: Install pinned dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Apply guarded v125 patch
+        run: python scripts/apply-phone-v125.py
+
+      - name: Syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/telephony/index.js
+          node --check src/telephony/phone-noise-suppressor.js
+          node --check src/integrated-entry.js
+
+      - name: v125 noise/VAD and courtesy regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/phone-noise-suppression-v124.test.mjs tests/phone-noise-vad-v125.test.mjs tests/answer-courtesy-v125.test.mjs tests/phone-stability-baseline-v123.test.mjs tests/phone-second-turn-ack-zip-v119.test.mjs
+
+      - name: Existing phone regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t suites < <(find tests -maxdepth 1 -type f \( -iname 'phone-*test.mjs' -o -iname 'telephony-*test.mjs' \) | sort)
+          printf 'Running %s phone/telephony suites\n' "${#suites[@]}"
+          node --test "${suites[@]}"
+
+      - name: Architecture and reuse gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run architecture:check
+          npm run architecture:graph
+          npm run reuse:check
+
+      - name: Full active test suite
+        run: npm test
+
+      - name: Worker bundle dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --dry-run 2>&1 | tee /tmp/v125-wrangler-dry-run.log
+          ! grep -Eqi '(error|failed|unsupported wasm|unresolved import)' /tmp/v125-wrangler-dry-run.log
+
+      - name: Verify frozen TTS and deployment settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git diff --name-only -- src/telephony/phone-tts.js wrangler.jsonc)"
+          grep -q "PHONE_NOISE_SUPPRESSION_REVISION = 'talksys-phone-speex-v124-r1'" src/telephony/phone-noise-suppressor.js
+          grep -q "noiseSuppressDb = -12" src/telephony/phone-noise-suppressor.js
+          grep -q "pre.agc = false" src/telephony/phone-noise-suppressor.js
+          grep -q "answerWithTalkSys(deps,stt.text,history,controller.signal,spokenBackchannel" src/telephony/index.js
+          grep -q "speak(turn.answer, { purpose: 'answer'" src/telephony/index.js
+          grep -q "GEMINI_MODEL = 'gemini-3.5-flash-lite'" src/integrated-entry.js
+          git diff --check
+
+      - name: Show validated diff
+        run: git diff --stat && git diff -- src/telephony/phone-noise-suppressor.js tests/phone-noise-vad-v125.test.mjs tests/answer-courtesy-v125.test.mjs
+
+      - name: Commit validated v125 to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/telephony/index.js src/telephony/phone-noise-suppressor.js src/integrated-entry.js tests/phone-stability-baseline-v123.test.mjs tests/phone-noise-vad-v125.test.mjs tests/answer-courtesy-v125.test.mjs
+          git diff --cached --check
+          git diff --cached --name-only
+          git commit -m 'Fix noisy phone VAD and deterministic courtesy v125'
+          git push origin HEAD:main
