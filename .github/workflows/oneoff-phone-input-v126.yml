@@ -1,0 +1,60 @@
+name: Validate adaptive phone input v126
+
+on:
+  push:
+    branches: [repair/phone-input-v126]
+    paths:
+      - '.github/workflows/oneoff-phone-input-v126.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oneoff-phone-input-v126
+  cancel-in-progress: false
+
+jobs:
+  validate-and-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: repair/phone-input-v126
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Guard v125 production baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "PHONE_RELEASE_VERSION = 'v125'" src/telephony/index.js
+          grep -q "talksys-phone-noise-vad-v125-r1" src/telephony/index.js
+          grep -q "normalizeQuietPhoneWav" src/stt-v45.js
+      - name: Apply isolated adaptive-input patch
+        run: python scripts/apply-phone-input-v126.py
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Targeted adaptive-input regressions
+        run: |
+          node --test tests/phone-input-adaptation-v126.test.mjs
+          node --test tests/phone-noise-vad-v125.test.mjs
+      - name: Active regression suite
+        run: npm test
+      - name: Full regression suite
+        run: npm run test:all
+      - name: Production bundle dry-run
+        run: npx wrangler deploy --dry-run
+      - name: Verify scope and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git status --short
+          git diff -- src/telephony/index.js src/stt-v45.js tests/phone-input-adaptation-v126.test.mjs tests/phone-noise-vad-v125.test.mjs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/telephony/index.js src/stt-v45.js tests
+          git commit -m 'Add conservative adaptive phone input v126'
+          git push origin HEAD:repair/phone-input-v126
