@@ -27,6 +27,9 @@ docker run --rm \
 
 test -s "$work/wasm-out/speex.js"
 test -s "$work/wasm-out/speex.wasm"
+# Docker writes the generated files as root. Return ownership to the Actions
+# runner before applying the deterministic Cloudflare shell adaptation below.
+sudo chown -R "$(id -u):$(id -g)" "$work/wasm-out"
 
 # Emscripten's generic web/worker shell probes self.location.href before its
 # instantiateWasm hook runs. Cloudflare workerd intentionally has no browser
