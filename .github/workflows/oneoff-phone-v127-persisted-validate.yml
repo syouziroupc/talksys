@@ -1,0 +1,40 @@
+name: Validate persisted phone v127 runtime
+
+on:
+  push:
+    branches: [repair/phone-v127]
+    paths:
+      - '.github/workflows/oneoff-phone-v127-persisted-validate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oneoff-phone-v127-persisted-validate
+  cancel-in-progress: false
+
+jobs:
+  validate-persisted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: repair/phone-v127
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify persisted v127 runtime identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "PHONE_RELEASE_VERSION = 'v127'" src/telephony/index.js
+          grep -q "PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v120-r1'" src/telephony/index.js
+          grep -q "phoneInputMode==='noisy'" src/telephony/index.js
+          grep -q "workerd-compiled-wasm" src/telephony/speex-worker-loader.js
+          test -s src/telephony/vendor/speex-worker.wasm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Revalidate persisted runtime without rebuilding or patching
+        run: bash scripts/validate-phone-v127.sh
