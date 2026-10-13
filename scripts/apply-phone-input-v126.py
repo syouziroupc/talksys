@@ -117,7 +117,7 @@ test('v126 initial calibration uses a robust low quantile and does not lower an 
 
 test('v126 noise-aware STT gain leaves noisy captures unboosted but rescues clean weak speech conservatively', () => {
   const samples = new Int16Array(8000);
-  for (let i = 0; i < samples.length; i += 1) samples[i] = Math.round(Math.sin(2 * Math.PI * 220 * i / 8000) * 260);
+  for (let i = 0; i < samples.length; i += 1) samples[i] = Math.round(Math.sin(2 * Math.PI * 220 * i / 8000) * 420);
   const wav = samplesToWav(samples, 8000);
   const metrics = analyzeWav(wav);
   const noisy = normalizeQuietPhoneWav(wav, metrics, { noiseFloorRms: Math.max(0.0005, metrics.rms * 0.7), maxGainDb: PHONE_INPUT_GAIN_MAX_DB });
