@@ -13,14 +13,17 @@ node --test \
   tests/phone-v126-worker-runtime.test.mjs
 
 # The previous regression existed because Node tests passed while the production
-# Worker could not instantiate Speex. This is a mandatory workerd runtime proof.
-npx wrangler dev --ip 127.0.0.1 --port 8799 > /tmp/v126-workerd.log 2>&1 &
+# Worker could not instantiate Speex. Prove the actual compiled-Wasm path in a
+# minimal local workerd Worker with no remote AI/D1 bindings or Cloudflare token.
+npx wrangler dev \
+  --config tests/wrangler-phone-v126-smoke.jsonc \
+  --local --ip 127.0.0.1 --port 8799 > /tmp/v126-workerd.log 2>&1 &
 pid=$!
 cleanup(){ kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
 trap cleanup EXIT
 ready=0
-for attempt in $(seq 1 60); do
-  if curl -fsS http://127.0.0.1:8799/telephony-health -o /tmp/v126-health.json; then
+for attempt in $(seq 1 40); do
+  if curl -fsS http://127.0.0.1:8799/ -o /tmp/v126-speex-workerd.json; then
     ready=1
     break
   fi
@@ -30,14 +33,13 @@ if [[ "$ready" != 1 ]]; then
   cat /tmp/v126-workerd.log
   exit 1
 fi
-cat /tmp/v126-health.json
+cat /tmp/v126-speex-workerd.json
 node - <<'NODE'
 const fs=require('fs');
-const h=JSON.parse(fs.readFileSync('/tmp/v126-health.json','utf8'));
-if(h.releaseVersion!=='v126') throw new Error(`unexpected release: ${h.releaseVersion}`);
-if(!h.noiseSuppressionRuntime?.ok) throw new Error(`Speex self-test failed: ${JSON.stringify(h.noiseSuppressionRuntime)}`);
-if(h.noiseSuppressionRuntime.runtimeKind!=='workerd-compiled-wasm') throw new Error(`wrong runtime: ${JSON.stringify(h.noiseSuppressionRuntime)}`);
-if(Number(h.noiseSuppressionRuntime.processedFrames||0)<1) throw new Error('Speex processed zero frames');
+const h=JSON.parse(fs.readFileSync('/tmp/v126-speex-workerd.json','utf8'));
+if(!h?.ok) throw new Error(`Speex self-test failed: ${JSON.stringify(h)}`);
+if(h.runtimeKind!=='workerd-compiled-wasm') throw new Error(`wrong runtime: ${JSON.stringify(h)}`);
+if(Number(h.processedFrames||0)<24) throw new Error(`Speex processed too few frames: ${JSON.stringify(h)}`);
 NODE
 cleanup
 trap - EXIT
