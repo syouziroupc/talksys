@@ -1,0 +1,447 @@
+name: Repair phone ack and Worker Speex v126
+
+on:
+  push:
+    branches: [repair/phone-v126]
+    paths:
+      - '.github/workflows/oneoff-phone-v126-repair.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oneoff-phone-v126-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: repair/phone-v126
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Require exact v125 source baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "PHONE_RELEASE_VERSION = 'v125'" src/telephony/index.js
+          grep -q "talksys-phone-runtime-log-v125-r1" src/telephony/index.js
+          grep -q "talksys-phone-speex-v124-r1" src/telephony/phone-noise-suppressor.js
+          grep -q "ack_slow_stt_armed" src/telephony/index.js
+          grep -q "ack_slow_stt_committed" src/telephony/index.js
+          grep -q "SPEEX_WASM_BASE64" src/telephony/phone-noise-suppressor.js
+          grep -q '"TELEPHONY_VAD_RMS": "0.0045"' wrangler.jsonc
+          grep -q '"TELEPHONY_TTS_VOICE": "eve"' wrangler.jsonc
+
+      - name: Install pinned TalkSys dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build SpeexDSP Worker-native Wasm from pinned upstream v0.4.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/talksys-speex-worker
+          git clone --branch v0.4.0 --depth 1 --recurse-submodules --shallow-submodules https://github.com/sapphi-red/speex-preprocess-wasm.git /tmp/talksys-speex-worker
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/talksys-speex-worker/build/build-wasm.sh')
+          s=p.read_text()
+          old="-s INCOMING_MODULE_JS_API=\"['wasmBinary']\""
+          new="-s INCOMING_MODULE_JS_API=\"['wasmBinary','instantiateWasm']\""
+          if s.count(old)!=1:
+              raise SystemExit(f'expected one Emscripten incoming API declaration, got {s.count(old)}')
+          p.write_text(s.replace(old,new,1))
+          PY
+          docker run --rm \
+            -v /tmp/talksys-speex-worker:/src \
+            -w /src \
+            emscripten/emsdk:3.1.74 \
+            bash -lc 'bash build/build-wasm.sh'
+          test -s /tmp/talksys-speex-worker/wasm-out/speex.js
+          test -s /tmp/talksys-speex-worker/wasm-out/speex.wasm
+          mkdir -p src/telephony/vendor
+          cp /tmp/talksys-speex-worker/wasm-out/speex.js src/telephony/vendor/speex-worker.js
+          cp /tmp/talksys-speex-worker/wasm-out/speex.wasm src/telephony/vendor/speex-worker.wasm
+          cat > src/telephony/vendor/SPEEX_WORKER_NOTICE.md <<'EOF'
+          # SpeexDSP Worker build
+
+          This directory contains the TalkSys Cloudflare-Workers build of the same SpeexDSP preprocessing module used by `@sapphi-red/speex-preprocess-wasm@0.4.0`.
+
+          Source: `sapphi-red/speex-preprocess-wasm` tag `v0.4.0` and its pinned SpeexDSP submodule.
+
+          The only build-interface change is adding Emscripten `instantiateWasm` to `INCOMING_MODULE_JS_API`. The DSP algorithm and exported SpeexDSP functions are unchanged. Cloudflare Workers requires a precompiled `WebAssembly.Module`; TalkSys supplies that module through the Emscripten `instantiateWasm` hook instead of compiling a byte buffer at runtime.
+          EOF
+
+      - name: Install runtime adapters and repair phone pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > src/telephony/speex-node-loader.js <<'EOF'
+          import { loadSpeexModule } from '@sapphi-red/speex-preprocess-wasm';
+          import { SPEEX_WASM_BASE64 } from './speex-wasm-binary.js';
+
+          export const SPEEX_RUNTIME_KIND = 'node-wasm-binary';
+          let modulePromise = null;
+
+          export function loadSpeexRuntimeModule() {
+            if (!modulePromise) {
+              const decoded = atob(SPEEX_WASM_BASE64);
+              const wasmBinary = new Uint8Array(decoded.length);
+              for (let i = 0; i < decoded.length; i += 1) wasmBinary[i] = decoded.charCodeAt(i);
+              modulePromise = loadSpeexModule({ wasmBinary }).catch((error) => {
+                modulePromise = null;
+                throw error;
+              });
+            }
+            return modulePromise;
+          }
+          EOF
+
+          cat > src/telephony/speex-worker-loader.js <<'EOF'
+          import loadSpeexWorkerModule from './vendor/speex-worker.js';
+          import speexWasmModule from './vendor/speex-worker.wasm';
+
+          export const SPEEX_RUNTIME_KIND = 'workerd-compiled-wasm';
+          let modulePromise = null;
+
+          export function loadSpeexRuntimeModule() {
+            if (!modulePromise) {
+              modulePromise = loadSpeexWorkerModule({
+                instantiateWasm(imports, receiveInstance) {
+                  const instance = new WebAssembly.Instance(speexWasmModule, imports);
+                  receiveInstance(instance, speexWasmModule);
+                  return instance.exports;
+                },
+              }).catch((error) => {
+                modulePromise = null;
+                throw error;
+              });
+            }
+            return modulePromise;
+          }
+          EOF
+
+          cat > src/telephony/phone-noise-suppressor.js <<'EOF'
+          import { SpeexPreprocessor } from '@sapphi-red/speex-preprocess-wasm';
+          import { loadSpeexRuntimeModule, SPEEX_RUNTIME_KIND } from '#speex-runtime-loader';
+
+          export const PHONE_NOISE_SUPPRESSION_REVISION = 'talksys-phone-speex-v126-worker-r1';
+
+          function nowMs() {
+            return globalThis.performance?.now ? globalThis.performance.now() : Date.now();
+          }
+
+          function configure(pre, { noiseSuppressDb, probStart, probContinue }) {
+            pre.denoise = true;
+            pre.agc = false;
+            pre.vad = true;
+            pre.noiseSuppress = noiseSuppressDb;
+            pre.probStart = probStart;
+            pre.probContinue = probContinue;
+          }
+
+          function destroyPreprocessor(pre, mod) {
+            if (!pre) return;
+            const state = pre.state;
+            if (state && typeof mod?._speex_preprocess_state_destroy === 'function') {
+              mod._speex_preprocess_state_destroy(state);
+              pre.state = 0;
+            }
+            pre.destroy();
+          }
+
+          let selfTestPromise = null;
+          export function phoneNoiseSuppressionSelfTest() {
+            if (!selfTestPromise) {
+              selfTestPromise = (async () => {
+                const mod = await loadSpeexRuntimeModule();
+                const pre = new SpeexPreprocessor(mod, 160, 8000);
+                try {
+                  configure(pre, { noiseSuppressDb: -12, probStart: 42, probContinue: 20 });
+                  let x = 0x12345678;
+                  let processedFrames = 0;
+                  for (let f = 0; f < 24; f += 1) {
+                    const samples = new Int16Array(160);
+                    for (let i = 0; i < samples.length; i += 1) {
+                      x = (1664525 * x + 1013904223) >>> 0;
+                      const noise = ((x / 0xffffffff) * 2 - 1) * 420;
+                      const voice = f >= 12 ? Math.sin(2 * Math.PI * 220 * i / 8000) * 900 : 0;
+                      samples[i] = Math.round(noise + voice);
+                    }
+                    pre.processInt16(samples);
+                    processedFrames += 1;
+                  }
+                  return {
+                    ok: true,
+                    revision: PHONE_NOISE_SUPPRESSION_REVISION,
+                    runtimeKind: SPEEX_RUNTIME_KIND,
+                    processedFrames,
+                    probability: Math.max(0, Math.min(100, Number(pre.prob) || 0)),
+                  };
+                } finally {
+                  destroyPreprocessor(pre, mod);
+                }
+              })().catch((error) => ({
+                ok: false,
+                revision: PHONE_NOISE_SUPPRESSION_REVISION,
+                runtimeKind: SPEEX_RUNTIME_KIND,
+                error: String(error?.message || error || 'speex-self-test-failed').slice(0, 240),
+              }));
+            }
+            return selfTestPromise;
+          }
+
+          export async function createPhoneNoiseSuppressor({ frameSize = 160, sampleRate = 8000, noiseSuppressDb = -12, probStart = 42, probContinue = 20 } = {}) {
+            const mod = await loadSpeexRuntimeModule();
+            const pre = new SpeexPreprocessor(mod, frameSize, sampleRate);
+            configure(pre, { noiseSuppressDb, probStart, probContinue });
+            let destroyed = false;
+
+            return {
+              revision: PHONE_NOISE_SUPPRESSION_REVISION,
+              runtimeKind: SPEEX_RUNTIME_KIND,
+              process(frame) {
+                const started = nowMs();
+                if (destroyed || !(frame instanceof Int16Array) || frame.length !== frameSize) {
+                  return { ok: false, samples: frame, speech: false, elapsedMs: nowMs() - started, fallback: 'invalid-frame' };
+                }
+                try {
+                  const samples = Int16Array.from(frame);
+                  const speech = pre.processInt16(samples);
+                  const probability = Math.max(0, Math.min(100, Number(pre.prob) || 0));
+                  return { ok: true, samples, speech, probability, elapsedMs: nowMs() - started, fallback: '' };
+                } catch (error) {
+                  return { ok: false, samples: frame, speech: false, elapsedMs: nowMs() - started, fallback: String(error?.message || error || 'speex-error').slice(0, 120) };
+                }
+              },
+              destroy() {
+                if (destroyed) return;
+                destroyed = true;
+                destroyPreprocessor(pre, mod);
+              },
+            };
+          }
+          EOF
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          pkg=Path('package.json')
+          data=json.loads(pkg.read_text())
+          data['imports']={
+              '#speex-runtime-loader': {
+                  'workerd': './src/telephony/speex-worker-loader.js',
+                  'default': './src/telephony/speex-node-loader.js',
+              }
+          }
+          pkg.write_text(json.dumps(data, ensure_ascii=False, indent=2)+'\n')
+
+          p=Path('src/telephony/index.js')
+          s=p.read_text()
+          replacements=[
+            ("import { createPhoneNoiseSuppressor, PHONE_NOISE_SUPPRESSION_REVISION } from './phone-noise-suppressor.js';",
+             "import { createPhoneNoiseSuppressor, phoneNoiseSuppressionSelfTest, PHONE_NOISE_SUPPRESSION_REVISION } from './phone-noise-suppressor.js';"),
+            ("export const PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v120-r1';",
+             "export const PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v126-restored-r1';"),
+            ("export const PHONE_RUNTIME_LOG_REVISION = 'talksys-phone-runtime-log-v125-r1';",
+             "export const PHONE_RUNTIME_LOG_REVISION = 'talksys-phone-runtime-log-v126-r1';"),
+            ("export const PHONE_RELEASE_VERSION = 'v125';",
+             "export const PHONE_RELEASE_VERSION = 'v126';"),
+            ("export const PHONE_NOISE_VAD_REVISION = 'talksys-phone-noise-v125-r1';",
+             "export const PHONE_NOISE_VAD_REVISION = 'talksys-phone-noise-v126-r1';"),
+            ("function health(request, env, deps) {\n  return json({",
+             "async function health(request, env, deps) {\n  const noiseSuppressionRuntime = flag(env?.TELEPHONY_NOISE_SUPPRESSION_ENABLED, true)\n    ? await phoneNoiseSuppressionSelfTest()\n    : { ok: false, disabled: true, revision: PHONE_NOISE_SUPPRESSION_REVISION };\n  return json({"),
+            ("adaptiveVadRevision: PHONE_ADAPTIVE_VAD_REVISION, noiseSuppressionRevision: PHONE_NOISE_SUPPRESSION_REVISION, noiseVadRevision: PHONE_NOISE_VAD_REVISION,",
+             "adaptiveVadRevision: PHONE_ADAPTIVE_VAD_REVISION, noiseSuppressionRevision: PHONE_NOISE_SUPPRESSION_REVISION, noiseSuppressionRuntime, noiseVadRevision: PHONE_NOISE_VAD_REVISION,"),
+            ("fastReaction: `Whisper確定直後の分類別PCMU受理相槌 + lookup検索進捗 + Gemini本回答 / ${PHONE_FAST_ACK_REVISION} / ${PHONE_SEARCH_PROGRESS_REVISION} / ${FAST_REACTION_REVISION}`",
+             "fastReaction: `発話終了後のキャッシュ済みPCMU受理相槌（slow-STT時はWhisperと並列） + lookup検索進捗 + Gemini本回答 / ${PHONE_FAST_ACK_REVISION} / ${PHONE_SEARCH_PROGRESS_REVISION} / ${FAST_REACTION_REVISION}`"),
+          ]
+          for old,new in replacements:
+              if s.count(old)!=1:
+                  raise SystemExit(f'index guarded replacement expected one match, got {s.count(old)}: {old[:100]!r}')
+              s=s.replace(old,new,1)
+
+          old="""    let sttSettled=false,slowAckArmed=false,slowAckText='',slowAckAudio=null;\n    const sttPromise=transcribeSamples(env,samples);\n    const slowAckTimer=setTimeout(()=>{\n      if(sttSettled||closed||latestAcceptedCapture===0)return;\n      const selected=selectPreparedSlowSttAck(phoneAckAudioCache.keys(),recentAckTexts);\n      const prepared=selected?(selected===FAST_ACK_TEXT?fastAckAudioCache:phoneAckAudioCache.get(selected)):null;\n      if(!selected||!prepared?.bytes?.byteLength){queueLatency(turnId,'ack_slow_stt_unprepared',Date.now()-speechEndAt,{revision:PHONE_ACK_LATENCY_REVISION,graceMs:PHONE_ACK_STT_GRACE_MS});return;}\n      slowAckArmed=true;slowAckText=selected;slowAckAudio=prepared;\n      queueLatency(turnId,'ack_slow_stt_armed',Date.now()-speechEndAt,{revision:PHONE_ACK_LATENCY_REVISION,graceMs:PHONE_ACK_STT_GRACE_MS,text:selected,bytes:prepared.bytes.byteLength});\n    },PHONE_ACK_STT_GRACE_MS);"""
+          new="""    let sttSettled=false,slowAckStarted=false,slowAckText='',slowAckAudio=null,slowAckPromise=Promise.resolve(false);\n    const sttPromise=transcribeSamples(env,samples);\n    const slowAckTimer=setTimeout(()=>{\n      if(sttSettled||closed)return;\n      const selected=selectPreparedSlowSttAck(phoneAckAudioCache.keys(),recentAckTexts);\n      const prepared=selected?(selected===FAST_ACK_TEXT?fastAckAudioCache:phoneAckAudioCache.get(selected)):null;\n      if(!selected||!prepared?.bytes?.byteLength){queueLatency(turnId,'ack_slow_stt_unprepared',Date.now()-speechEndAt,{revision:PHONE_ACK_LATENCY_REVISION,graceMs:PHONE_ACK_STT_GRACE_MS});return;}\n      slowAckStarted=true;slowAckText=selected;slowAckAudio=prepared;\n      queueLatency(turnId,'ack_slow_stt_fallback',Date.now()-speechEndAt,{revision:PHONE_ACK_LATENCY_REVISION,graceMs:PHONE_ACK_STT_GRACE_MS,text:selected,bytes:prepared.bytes.byteLength});\n      slowAckPromise=speak(selected,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:prepared}).then((reacted)=>{if(reacted){recentAckTexts=[...recentAckTexts,selected].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'slow-stt-receipt',text:selected,cached:true,revision:PHONE_ACK_LATENCY_REVISION}));}return reacted;});\n      trackTask(slowAckPromise.catch((error)=>{console.warn(JSON.stringify({type:'phone_slow_stt_ack_error',turnId,error:clean(error?.message||error,240)}));return false;}));\n    },PHONE_ACK_STT_GRACE_MS);"""
+          if s.count(old)!=1:
+              raise SystemExit(f'ack timer block expected one match, got {s.count(old)}')
+          s=s.replace(old,new,1)
+
+          old="latestAcceptedCapture=myCapture;lastAcceptedUserText=stt.text;lastAcceptedUserAt=now;const myVersion=++turnVersion;abortActiveTurn();interruptPlayback();"
+          new="latestAcceptedCapture=myCapture;lastAcceptedUserText=stt.text;lastAcceptedUserAt=now;const myVersion=++turnVersion;abortActiveTurn();if(!slowAckStarted)interruptPlayback();"
+          if s.count(old)!=1: raise SystemExit(f'ack interrupt gate expected one match, got {s.count(old)}')
+          s=s.replace(old,new,1)
+
+          s=s.replace("const ackText=slowAckArmed?slowAckText:categoryAckText;", "const ackText=slowAckStarted?slowAckText:categoryAckText;", 1)
+          s=s.replace("const ackAudio=slowAckArmed?slowAckAudio:categoryAckAudio;", "const ackAudio=slowAckStarted?slowAckAudio:categoryAckAudio;", 1)
+          old="if(slowAckArmed&&ackPrepared&&myVersion===turnVersion){queueLatency(turnId,'ack_slow_stt_committed',Date.now()-speechEndAt,{text:ackText,revision:PHONE_ACK_LATENCY_REVISION,reactionKind:reaction.kind||'none'});const reacted=await speak(ackText,{purpose:'ack',turnId,originAt:speechEndAt,preparedAudio:ackAudio});if(reacted){recentAckTexts=[...recentAckTexts,ackText].slice(-2);console.log(JSON.stringify({type:'phone_fast_reaction',kind:'slow-stt-receipt',text:ackText,cached:true,revision:PHONE_ACK_LATENCY_REVISION}));}}"
+          new="if(slowAckStarted){queueLatency(turnId,'ack_already_started',Date.now()-speechEndAt,{text:ackText,revision:PHONE_ACK_LATENCY_REVISION,reactionKind:reaction.kind||'none'});}"
+          if s.count(old)!=1: raise SystemExit(f'ack commit block expected one match, got {s.count(old)}')
+          s=s.replace(old,new,1)
+
+          old="let phoneNoiseSuppressor=null, noiseCleanFloor=Math.max(0.001,speechThreshold*0.35), noiseFrames=0, noiseCpuMs=0, noiseCpuMaxMs=0, noiseFallbackFrames=0, noiseSummaryLogged=false;"
+          new="let phoneNoiseSuppressor=null, noiseInitError='', noiseCleanFloor=Math.max(0.001,speechThreshold*0.35), noiseFrames=0, noiseCpuMs=0, noiseCpuMaxMs=0, noiseFallbackFrames=0, noiseSummaryLogged=false;"
+          if s.count(old)!=1: raise SystemExit('noise state declaration mismatch')
+          s=s.replace(old,new,1)
+          old="if(noiseSuppressionEnabled){trackTask(createPhoneNoiseSuppressor({frameSize:160,sampleRate:8000,noiseSuppressDb:-12,probStart:42,probContinue:20}).then((processor)=>{phoneNoiseSuppressor=processor;console.log(JSON.stringify({type:'phone_noise_suppression_ready',revision:PHONE_NOISE_SUPPRESSION_REVISION}));}).catch((error)=>{phoneNoiseSuppressor=null;console.warn(JSON.stringify({type:'phone_noise_suppression_fallback',revision:PHONE_NOISE_SUPPRESSION_REVISION,error:clean(error?.message||error,240)}));}));}"
+          new="if(noiseSuppressionEnabled){trackTask(createPhoneNoiseSuppressor({frameSize:160,sampleRate:8000,noiseSuppressDb:-12,probStart:42,probContinue:20}).then((processor)=>{phoneNoiseSuppressor=processor;noiseInitError='';console.log(JSON.stringify({type:'phone_noise_suppression_ready',revision:PHONE_NOISE_SUPPRESSION_REVISION,runtimeKind:processor?.runtimeKind||''}));}).catch((error)=>{phoneNoiseSuppressor=null;noiseInitError=clean(error?.message||error,240);console.warn(JSON.stringify({type:'phone_noise_suppression_fallback',revision:PHONE_NOISE_SUPPRESSION_REVISION,error:noiseInitError}));}));}"
+          if s.count(old)!=1: raise SystemExit('noise init block mismatch')
+          s=s.replace(old,new,1)
+          old="fallbackFrames:noiseFallbackFrames};"
+          new="fallbackFrames:noiseFallbackFrames,runtimeKind:phoneNoiseSuppressor?.runtimeKind||'',initError:noiseInitError};"
+          if s.count(old)!=1: raise SystemExit('noise summary detail mismatch')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+
+      - name: Repair regression contracts and add v126 guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          for p in Path('tests').glob('*.mjs'):
+              s=p.read_text()
+              s=s.replace("'talksys-phone-speex-v124-r1'", "'talksys-phone-speex-v126-worker-r1'")
+              s=s.replace("'talksys-phone-noise-v125-r1'", "'talksys-phone-noise-v126-r1'")
+              s=s.replace("'talksys-phone-runtime-log-v125-r1'", "'talksys-phone-runtime-log-v126-r1'")
+              s=s.replace("PHONE_RELEASE_VERSION, 'v125'", "PHONE_RELEASE_VERSION, 'v126'")
+              s=s.replace("'talksys-phone-ack-latency-v120-r1'", "'talksys-phone-ack-latency-v126-restored-r1'")
+              p.write_text(s)
+
+          p=Path('tests/phone-quality-personalization-v120.test.mjs')
+          s=p.read_text()
+          s=s.replace("test('v120 removes wait-language from receipt ack and never preplays an unvalidated slow-STT capture', () => {", "test('v126 restores the proven v119 slow-STT acknowledgement while keeping wait-language removed', () => {")
+          s=s.replace("  assert.match(telephony, /if\\(sttSettled\\|\\|closed\\|\\|latestAcceptedCapture===0\\)return/);", "  assert.match(telephony, /if\\(sttSettled\\|\\|closed\\)return/);")
+          s=s.replace("  assert.doesNotMatch(telephony.slice(timerStart, timerEnd), /\\bspeak\\s*\\(/);\n  assert.match(telephony, /ack_slow_stt_armed/);\n  assert.match(telephony, /ack_slow_stt_committed/);", "  assert.match(telephony.slice(timerStart, timerEnd), /\\bspeak\\s*\\(/);\n  assert.match(telephony, /ack_slow_stt_fallback/);\n  assert.match(telephony, /ack_already_started/);")
+          p.write_text(s)
+
+          p=Path('tests/phone-second-turn-ack-zip-v119.test.mjs')
+          s=p.read_text()
+          s=s.replace("test('v120 arms slow-STT acknowledgement but commits playout only after accepted STT', () => {", "test('v126 restores v119 pre-STT acknowledgement playout after the bounded grace', () => {")
+          s=s.replace("  assert.match(source, /ack_slow_stt_armed/);\n  assert.match(source, /ack_slow_stt_committed/);\n  assert.match(source, /if\\(sttSettled\\|\\|closed\\|\\|latestAcceptedCapture===0\\)return/);", "  assert.match(source, /ack_slow_stt_fallback/);\n  assert.match(source, /ack_already_started/);\n  assert.match(source, /if\\(sttSettled\\|\\|closed\\)return/);")
+          s=s.replace("  assert.doesNotMatch(timerBlock, /\\bspeak\\s*\\(/, 'slow-STT timer must never play audio before STT acceptance');\n  const rejectGate = source.indexOf(\"if(!stt?.ok||!stt.text||myCapture<latestAcceptedCapture)\");\n  const commit = source.indexOf(\"ack_slow_stt_committed\");\n  assert.ok(rejectGate >= 0 && commit > rejectGate, 'slow acknowledgement commit must be downstream of STT rejection gate');", "  assert.match(timerBlock, /\\bspeak\\s*\\(/, 'slow-STT acknowledgement must start while STT is still pending');\n  assert.match(source, /if\\(!slowAckStarted\\)interruptPlayback\\(\\)/);")
+          p.write_text(s)
+          PY
+
+          cat > tests/phone-v126-worker-runtime.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import { phoneNoiseSuppressionSelfTest, PHONE_NOISE_SUPPRESSION_REVISION } from '../src/telephony/phone-noise-suppressor.js';
+
+          const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+          const workerLoader = fs.readFileSync(new URL('../src/telephony/speex-worker-loader.js', import.meta.url), 'utf8');
+          const telephony = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
+
+          test('v126 keeps Node tests on byte-loader but production workerd on precompiled Wasm', async () => {
+            assert.equal(pkg.imports['#speex-runtime-loader'].workerd, './src/telephony/speex-worker-loader.js');
+            assert.equal(pkg.imports['#speex-runtime-loader'].default, './src/telephony/speex-node-loader.js');
+            assert.match(workerLoader, /speex-worker\.wasm/);
+            assert.match(workerLoader, /new WebAssembly\.Instance\(speexWasmModule, imports\)/);
+            assert.match(workerLoader, /receiveInstance\(instance, speexWasmModule\)/);
+            assert.doesNotMatch(workerLoader, /wasmBinary/);
+            const result = await phoneNoiseSuppressionSelfTest();
+            assert.equal(result.ok, true);
+            assert.equal(result.runtimeKind, 'node-wasm-binary');
+            assert.equal(PHONE_NOISE_SUPPRESSION_REVISION, 'talksys-phone-speex-v126-worker-r1');
+          });
+
+          test('v126 health makes Worker Speex readiness a deploy-visible contract', () => {
+            assert.match(telephony, /await phoneNoiseSuppressionSelfTest\(\)/);
+            assert.match(telephony, /noiseSuppressionRuntime/);
+            assert.match(telephony, /runtimeKind:phoneNoiseSuppressor\?\.runtimeKind/);
+            assert.match(telephony, /initError:noiseInitError/);
+          });
+          EOF
+
+      - name: Syntax and focused regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/telephony/index.js
+          node --check src/telephony/phone-noise-suppressor.js
+          node --check src/telephony/speex-node-loader.js
+          node --check src/telephony/speex-worker-loader.js
+          node --test tests/phone-noise-suppression-v124.test.mjs tests/phone-noise-vad-v125.test.mjs tests/phone-second-turn-ack-zip-v119.test.mjs tests/phone-quality-personalization-v120.test.mjs tests/phone-v126-worker-runtime.test.mjs
+
+      - name: Workerd runtime proof for compiled Wasm
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler dev --ip 127.0.0.1 --port 8799 > /tmp/v126-workerd.log 2>&1 &
+          WRANGLER_PID=$!
+          cleanup(){ kill "$WRANGLER_PID" 2>/dev/null || true; wait "$WRANGLER_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+          ok=0
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8799/telephony-health -o /tmp/v126-health.json; then ok=1; break; fi
+            sleep 1
+          done
+          if [[ "$ok" != 1 ]]; then cat /tmp/v126-workerd.log; exit 1; fi
+          cat /tmp/v126-health.json
+          node - <<'NODE'
+          const fs=require('fs');
+          const h=JSON.parse(fs.readFileSync('/tmp/v126-health.json','utf8'));
+          if(h.releaseVersion!=='v126') throw new Error(`unexpected release ${h.releaseVersion}`);
+          if(!h.noiseSuppressionRuntime?.ok) throw new Error(`Speex self-test failed: ${JSON.stringify(h.noiseSuppressionRuntime)}`);
+          if(h.noiseSuppressionRuntime.runtimeKind!=='workerd-compiled-wasm') throw new Error(`not Worker compiled Wasm: ${JSON.stringify(h.noiseSuppressionRuntime)}`);
+          if(Number(h.noiseSuppressionRuntime.processedFrames||0)<1) throw new Error('Speex processed no frames');
+          NODE
+
+      - name: Existing phone and full regression suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t suites < <(find tests -maxdepth 1 -type f \( -iname 'phone-*test.mjs' -o -iname 'telephony-*test.mjs' \) | sort)
+          node --test "${suites[@]}"
+          npm run architecture:check
+          npm run architecture:graph
+          npm run reuse:check
+          npm test
+
+      - name: Wrangler production bundle dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v126-dist
+          npx wrangler deploy --dry-run --outdir /tmp/v126-dist 2>&1 | tee /tmp/v126-dry-run.log
+          ! grep -Eqi '(error|failed|unsupported wasm|unresolved import)' /tmp/v126-dry-run.log
+          find /tmp/v126-dist -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Verify frozen phone-quality boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git diff --name-only -- src/telephony/phone-tts.js wrangler.jsonc src/stt-v45.js src/integrated-entry.js)"
+          grep -q "noiseSuppressDb = -12" src/telephony/phone-noise-suppressor.js
+          grep -q "pre.agc = false" src/telephony/phone-noise-suppressor.js
+          grep -q '"TELEPHONY_VAD_RMS": "0.0045"' wrangler.jsonc
+          grep -q '"TELEPHONY_TTS_OUTPUT_GAIN_DB": "3.0"' wrangler.jsonc
+          grep -q "slowAckPromise=speak" src/telephony/index.js
+          grep -q "if(!slowAckStarted)interruptPlayback()" src/telephony/index.js
+          grep -q "workerd-compiled-wasm" src/telephony/speex-worker-loader.js
+          grep -q "noiseSuppressionRuntime" src/telephony/index.js
+          git diff --check
+
+      - name: Commit validated v126 repair to branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json src/telephony/index.js src/telephony/phone-noise-suppressor.js src/telephony/speex-node-loader.js src/telephony/speex-worker-loader.js src/telephony/vendor tests
+          git diff --cached --check
+          git status --short
+          git commit -m 'Restore pre-STT ack and Worker-native Speex v126'
+          git push origin HEAD:repair/phone-v126
