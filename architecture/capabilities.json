@@ -9,14 +9,25 @@
   },
   "capabilities": {
     "runtime.entry": {
-      "canonical": "src/integrated-entry.js",
+      "canonical": "src/runtime-entry.js",
       "status": "production",
-      "responsibility": "Unified production HTTP entry point that routes Telnyx phone traffic, exposes stable /call and /line-voice Web voice fallbacks, and delegates all answer generation to the existing TalkSys answer boundary",
+      "responsibility": "Thin production runtime entry that delegates all HTTP and telephony traffic unchanged to the existing integrated entry and hosts isolated scheduled maintenance hooks outside the live call path",
       "companions": [
+        "src/integrated-entry.js",
         "src/entry.js",
         "src/usage-telemetry.js"
       ],
-      "migrationNote": "The wrapper contains no answer model of its own. Web fallback aliases rewrite to the canonical Web UI, and phone turns are delegated back into the same TalkSys answer path."
+      "migrationNote": "The wrapper contains no answer model and does not alter the synchronous phone path. Existing HTTP handling remains in src/integrated-entry.js; scheduled phone-memory maintenance is fail-isolated."
+    },
+    "personalization.memory": {
+      "canonical": "src/phone-memory-maintenance.js",
+      "status": "production-supporting",
+      "responsibility": "Out-of-band phone-number profile maintenance from persisted call transcripts using evidence-backed extraction, additive-only profile updates, optimistic version checks, and rollback snapshots",
+      "companions": [
+        "src/runtime-entry.js",
+        "src/telephony/index.js"
+      ],
+      "migrationNote": "This extends the existing phone_profiles text fields instead of replacing the live personalization path. It must never be awaited by live STT, VAD, answer, TTS, or media processing."
     },
     "telephony.intake": {
       "canonical": "src/telephony/index.js",
@@ -113,7 +124,7 @@
     "src/grounding-policy-v22.js": "Older grounding policy with contextual factual-risk logic; review before changing grounding behavior.",
     "src/query-result-gate-v44.js": "Older standalone query/result relevance gate; review before extracting or redesigning evidence validation.",
     "src/search-orchestrator.js": "Older deep-search orchestration path; review before introducing another orchestration layer.",
-    "src/conversation-memory.js": "Existing memory implementation; inspect before adding any new memory subsystem.",
+    "src/conversation-memory.js": "Existing session/caller memory implementation inspected before adding out-of-band profile maintenance; it remains prior art rather than the persistent profile updater.",
     "src/search-rerank.js": "Existing reranking implementation; inspect before adding another reranker."
   }
 }
