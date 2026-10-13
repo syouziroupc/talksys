@@ -27,6 +27,26 @@ docker run --rm \
 
 test -s "$work/wasm-out/speex.js"
 test -s "$work/wasm-out/speex.wasm"
+
+# Emscripten's generic web/worker shell probes self.location.href before its
+# instantiateWasm hook runs. Cloudflare workerd intentionally has no browser
+# Worker location object. We never fetch the Wasm by URL: Wrangler imports the
+# precompiled WebAssembly.Module and speex-worker-loader.js supplies it through
+# instantiateWasm. Remove only that unused URL-discovery dependency.
+python - <<'PY'
+from pathlib import Path
+p=Path('/tmp/talksys-speex-worker/wasm-out/speex.js')
+s=p.read_text()
+needle='self.location.href'
+count=s.count(needle)
+if count != 1:
+    raise SystemExit(f'expected exactly one Emscripten self.location.href probe, got {count}')
+s=s.replace(needle, "''", 1)
+p.write_text(s)
+if 'self.location.href' in p.read_text():
+    raise SystemExit('workerd-incompatible self.location.href remains')
+PY
+
 mkdir -p src/telephony/vendor
 cp "$work/wasm-out/speex.js" src/telephony/vendor/speex-worker.js
 cp "$work/wasm-out/speex.wasm" src/telephony/vendor/speex-worker.wasm
@@ -35,7 +55,7 @@ cat > src/telephony/vendor/SPEEX_WORKER_NOTICE.md <<'EOF'
 
 Source: `sapphi-red/speex-preprocess-wasm` tag `v0.4.0` and its pinned SpeexDSP submodule.
 
-The DSP code is unchanged. The build interface adds Emscripten `instantiateWasm` to `INCOMING_MODULE_JS_API` so Cloudflare's precompiled `WebAssembly.Module` can be supplied without runtime byte compilation.
+The DSP code is unchanged. The build interface adds Emscripten `instantiateWasm` to `INCOMING_MODULE_JS_API` so Cloudflare's precompiled `WebAssembly.Module` can be supplied without runtime byte compilation. The generic Emscripten `self.location.href` URL probe is removed because workerd has no browser Worker `location`, and this build never discovers or fetches Wasm by URL.
 EOF
 
 echo "Built Worker Speex: $(wc -c < src/telephony/vendor/speex-worker.wasm) wasm bytes"
