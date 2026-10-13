@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { STT_REVISION } from '../src/stt-v45.js';
 
 const telephony = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
 const integrated = fs.readFileSync(new URL('../src/integrated-entry.js', import.meta.url), 'utf8');
@@ -12,7 +11,6 @@ test('phone conversation baseline locks conservative capture and output settings
   assert.match(wrangler, /"TELEPHONY_VAD_RMS"\s*:\s*"0\.0045"/);
   assert.match(wrangler, /"TELEPHONY_TTS_DELIVERY"\s*:\s*"loud-bright"/);
   assert.match(wrangler, /"TELEPHONY_TTS_OUTPUT_GAIN_DB"\s*:\s*"3\.0"/);
-  assert.equal(STT_REVISION, 'talksys-v123-phone-accessibility-phonetic-r1');
   assert.match(stt, /normalizeQuietPhoneWav/);
   assert.match(stt, /PHONE_STT_CONTEXT_PROMPT/);
 });

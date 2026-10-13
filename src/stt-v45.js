@@ -1,5 +1,5 @@
 export const STT_MODEL = '@cf/openai/whisper-large-v3-turbo';
-export const STT_REVISION = 'talksys-v123-phone-accessibility-phonetic-r1';
+export const STT_REVISION = 'talksys-v128-phone-outro-hallucination-r1';
 const JAPANESE_PHONETIC_FIRST_PROMPT = '日本語音声を発音に忠実に文字起こししてください。意味を推測して漢字を補わないでください。固有名詞、専門用語、数字を含む語、聞き慣れない語で漢字表記に確信がない場合は、ひらがなまたはカタカナのまま転写してください。音から確定できない漢字を推測しないでください。';
 export const PHONE_STT_CONTEXT_PROMPT = `${JAPANESE_PHONETIC_FIRST_PROMPT} 電話では日本の地名、駅名、施設名、人名、商品名などの固有名詞が含まれることがあります。聞こえた発音を優先し、音が似ているだけの日常語や別の単語へ勝手に置き換えないでください。漢字表記に確信がない固有名詞は、ひらがなまたはカタカナのまま転写してください。`;
 
@@ -136,24 +136,39 @@ export function strongSpeechSignalForRetry(metrics) {
 }
 
 const KNOWN_STT_HALLUCINATION_RE = /^(?:ご視聴ありがとうございました|ご清聴ありがとうございました|最後までご視聴ありがとうございました|ご視聴いただきありがとうございました|チャンネル登録(?:を)?(?:お願い(?:します|いたします)|よろしくお願いします)|字幕(?:をご覧いただき)?ありがとうございました)[。．.!！?？]*$/u;
+const PHONE_POLITE_OUTRO_RE = /^(?:ありがとうございました|どうもありがとうございました|お疲れ様でした|よろしくお願いします)[。．.!！?？]*$/u;
 
 export function isKnownSttHallucination(text) {
   return KNOWN_STT_HALLUCINATION_RE.test(clean(text, 500));
 }
 
-export function isLikelySttHallucination(text, metrics) {
+export function isLikelySttHallucination(text, metrics, options = {}) {
   const value = clean(text, 500);
   if (!value) return true;
-  // Only the known subtitle/outro phrases are unconditional hallucination drops.
+  // Known subtitle/outro phrases remain unconditional hallucination drops.
   if (isKnownSttHallucination(value)) return true;
 
-  // Real acoustic evidence wins over heuristic phrase filtering. Short but
-  // clearly voiced Japanese speech must reach the turn policy.
+  // Telephone background bursts can have a high instantaneous peak and still
+  // trigger Whisper's common polite-outro hallucination. For standalone polite
+  // endings on Telnyx only, require sustained voiced evidence before accepting.
+  // This is deliberately source-scoped so Web/Discord behavior is unchanged.
+  const phoneSource = String(options?.source || '').toLowerCase() === 'telnyx';
+  if (phoneSource && PHONE_POLITE_OUTRO_RE.test(value)) {
+    const crediblePhoneSpeech = Boolean(metrics?.valid)
+      && Number(metrics.durationMs) >= 650
+      && Number(metrics.activeMs) >= 360
+      && Number(metrics.activeRatio) >= 0.18
+      && (Number(metrics.rms) >= 0.0065 || Number(metrics.peak) >= 0.08);
+    if (!crediblePhoneSpeech) return true;
+  }
+
+  // Real acoustic evidence wins over generic heuristic phrase filtering. Short
+  // but clearly voiced Japanese speech must otherwise reach the turn policy.
   const realSpeech = Boolean(metrics?.valid)
     && (Number(metrics.peak) >= 0.05 || Number(metrics.activeMs) >= 150);
   if (realSpeech) return false;
 
-  if (/^(?:ありがとうございました|どうもありがとうございました|お疲れ様でした|よろしくお願いします)[。．.!！?？]*$/u.test(value)
+  if (PHONE_POLITE_OUTRO_RE.test(value)
       && (!metrics?.valid || metrics.rms < 0.0065 || metrics.activeMs < 280 || metrics.activeRatio < 0.12)) return true;
   if (/^(?:えー|あー|うー|んー|…|\.\.\.)$/u.test(value) && weakSpeechSignal(metrics)) return true;
   return false;
@@ -222,7 +237,7 @@ export async function transcribeV45(request, env) {
       text = clean(retry?.text || retry?.transcription_info?.text || retry?.transcript || retry?.response || '', 1200);
     }
     if (!text) return json({ ok: false, error: 'no speech detected', rejected: retryUsed ? 'empty-transcript-after-retry' : 'empty-transcript', elapsedMs: Date.now() - started, signal, retryUsed }, 422);
-    if (isLikelySttHallucination(text, metrics)) return json({ ok: false, error: 'hallucinated transcript rejected', rejected: 'hallucination-guard', elapsedMs: Date.now() - started, signal, retryUsed }, 422);
+    if (isLikelySttHallucination(text, metrics, { source })) return json({ ok: false, error: 'hallucinated transcript rejected', rejected: 'hallucination-guard', elapsedMs: Date.now() - started, signal, retryUsed }, 422);
     return json({ ok: true, text, elapsedMs: Date.now() - started, bytes: buffer.byteLength, model: STT_MODEL, revision: STT_REVISION, signal, guard: 'mobile-stt-v45', retryUsed });
   } catch (error) {
     return json({ ok: false, error: clean(error?.message || error, 240), elapsedMs: Date.now() - started, signal }, 502);
