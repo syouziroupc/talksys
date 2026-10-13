@@ -33,7 +33,9 @@ jobs:
           grep -q "talksys-phone-noise-vad-v125-r1" src/telephony/index.js
           grep -q "normalizeQuietPhoneWav" src/stt-v45.js
       - name: Apply isolated adaptive-input patch
-        run: python scripts/apply-phone-input-v126.py
+        run: |
+          python scripts/apply-phone-input-v126.py
+          python scripts/fix-phone-input-v126-test.py
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
       - name: Targeted adaptive-input regressions
