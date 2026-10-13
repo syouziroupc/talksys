@@ -48,12 +48,13 @@ jobs:
       - name: Apply guarded v125 patch
         run: python scripts/apply-phone-v125.py
 
-      - name: Refresh superseded v124 source-shape assertion
+      - name: Refresh superseded v124/v123 test assertions
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+
           p=Path('tests/phone-noise-suppression-v124.test.mjs')
           s=p.read_text()
           old="  assert.match(source, /phoneNoiseSuppressor\\?\\(speexSpeech\\|\\|cleanSpeech\\|\\|\\(rawSpeech&&rawSnr>=3\\.2\\)\\):rawSpeech/);"
@@ -61,6 +62,24 @@ jobs:
           if s.count(old)!=1:
               raise SystemExit(f'expected one v124 source assertion, got {s.count(old)}')
           p.write_text(s.replace(old,new,1))
+
+          replacements = {
+            'tests/phone-grounding-profile-v121.test.mjs': [
+              ("assert.equal(PHONE_RELEASE_VERSION, 'v123');", "assert.equal(PHONE_RELEASE_VERSION, 'v125');"),
+              ("assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v123-r1');", "assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v125-r1');"),
+            ],
+            'tests/phone-quality-personalization-v120.test.mjs': [
+              ("assert.equal(PHONE_RELEASE_VERSION, 'v123');", "assert.equal(PHONE_RELEASE_VERSION, 'v125');"),
+              ("assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v123-r1');", "assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v125-r1');"),
+            ],
+          }
+          for file, pairs in replacements.items():
+              p=Path(file); s=p.read_text()
+              for old,new in pairs:
+                  if s.count(old)!=1:
+                      raise SystemExit(f'{file}: expected one {old!r}, got {s.count(old)}')
+                  s=s.replace(old,new,1)
+              p.write_text(s)
           PY
 
       - name: Syntax checks
@@ -75,7 +94,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node --test tests/phone-noise-suppression-v124.test.mjs tests/phone-noise-vad-v125.test.mjs tests/answer-courtesy-v125.test.mjs tests/phone-stability-baseline-v123.test.mjs tests/phone-second-turn-ack-zip-v119.test.mjs
+          node --test tests/phone-noise-suppression-v124.test.mjs tests/phone-noise-vad-v125.test.mjs tests/answer-courtesy-v125.test.mjs tests/phone-stability-baseline-v123.test.mjs tests/phone-second-turn-ack-zip-v119.test.mjs tests/phone-grounding-profile-v121.test.mjs tests/phone-quality-personalization-v120.test.mjs
 
       - name: Existing phone regressions
         shell: bash
@@ -125,7 +144,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/telephony/index.js src/telephony/phone-noise-suppressor.js src/integrated-entry.js tests/phone-stability-baseline-v123.test.mjs tests/phone-noise-suppression-v124.test.mjs tests/phone-noise-vad-v125.test.mjs tests/answer-courtesy-v125.test.mjs
+          git add src/telephony/index.js src/telephony/phone-noise-suppressor.js src/integrated-entry.js tests/phone-stability-baseline-v123.test.mjs tests/phone-noise-suppression-v124.test.mjs tests/phone-noise-vad-v125.test.mjs tests/answer-courtesy-v125.test.mjs tests/phone-grounding-profile-v121.test.mjs tests/phone-quality-personalization-v120.test.mjs
           git diff --cached --check
           git diff --cached --name-only
           git commit -m 'Fix noisy phone VAD and deterministic courtesy v125'
