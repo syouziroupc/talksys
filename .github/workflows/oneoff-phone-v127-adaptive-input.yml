@@ -1,5 +1,6 @@
 name: Build and validate phone adaptive input v127
 
+# r2: legacy release-literal tests now preserve behavior contracts without pinning v125/v124 strings.
 on:
   push:
     branches: [repair/phone-v127]
