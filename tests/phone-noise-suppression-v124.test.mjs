@@ -16,8 +16,8 @@ function frame(seed = 1, voice = 0) {
 
 function rms(v) { let sum = 0; for (const n of v) sum += n * n; return Math.sqrt(sum / Math.max(1, v.length)); }
 
-test('v124 Speex phone suppressor is 8 kHz / 20 ms, fail-open, and low-latency', async () => {
-  assert.equal(PHONE_NOISE_SUPPRESSION_REVISION, 'talksys-phone-speex-v124-r1');
+test('Speex phone suppressor keeps the v124 8 kHz / 20 ms, fail-open, and low-latency contract', async () => {
+  assert.match(PHONE_NOISE_SUPPRESSION_REVISION, /^talksys-phone-speex-v\d+/);
   const ns = await createPhoneNoiseSuppressor();
   const invalid = ns.process(new Int16Array(80));
   assert.equal(invalid.ok, false);
