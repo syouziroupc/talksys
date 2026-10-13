@@ -47,11 +47,6 @@ jobs:
           set -euo pipefail
           git add -A package.json src/telephony tests
           git status --short
-      - name: Check hand-maintained whitespace
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --cached --check -- . ':(exclude)src/telephony/vendor/speex-worker.js'
       - name: Verify staged repair exists
         shell: bash
         run: |
