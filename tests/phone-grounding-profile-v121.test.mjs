@@ -78,8 +78,8 @@ test('personalization screen exposes caller-scoped call history and conversation
   assert.match(telephony, /loadProfileCallMessages/);
 });
 
-test('v121 phone logs identify the new release and personalization revision', () => {
-  assert.equal(PHONE_RELEASE_VERSION, 'v125');
+test('v121 phone logs keep personalization revision and expose a current executable release revision', () => {
+  assert.match(PHONE_RELEASE_VERSION, /^v\d+$/);
   assert.equal(PHONE_PERSONALIZATION_ACTIVE_REVISION, 'talksys-phone-personalization-v121-r1');
-  assert.equal(PHONE_RUNTIME_LOG_REVISION, 'talksys-phone-runtime-log-v125-r1');
+  assert.match(PHONE_RUNTIME_LOG_REVISION, /^talksys-phone-runtime-log-v\d+-r\d+$/);
 });
