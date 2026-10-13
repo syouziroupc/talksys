@@ -15,6 +15,7 @@
   "dependencies": {
     "@cloudflare/ai-utils": "1.0.1",
     "@cloudflare/voice": "0.3.6",
+    "@sapphi-red/speex-preprocess-wasm": "0.4.0",
     "agents": "0.21.0",
     "ai": "7.0.83",
     "workers-ai-provider": "4.0.0"

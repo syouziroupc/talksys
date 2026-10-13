@@ -4,6 +4,7 @@ import { buildTexml, clampInt, clean, flag, xmlEscape } from './protocol.js';
 import { PHONE_TTS_MODEL, PHONE_TTS_SAMPLE_RATE, phoneTtsDeliveryMode, phoneTtsOutputGainDb, phoneTtsVoice, streamPcmu20ms, synthesizePhonePcmu } from './phone-tts.js';
 import { fastReaction, sameUtterance, FAST_REACTION_REVISION } from '../voice-fast-reaction.js';
 import { WEB_VOICE_CAPTURE_POLICY } from '../voice-capture-policy.js';
+import { createPhoneNoiseSuppressor, PHONE_NOISE_SUPPRESSION_REVISION } from './phone-noise-suppressor.js';
 
 export const TELEPHONY_REVISION = 'talksys-telephony-v87-grok-pcmu-paced';
 export const TELEPHONY_OBSERVABILITY_REVISION = 'talksys-phone-latency-v90-fast-ack-r1';
@@ -852,10 +853,13 @@ function mediaBridge(request, env, deps) {
   let callId='', from='', to='', speechActive=false, silentFor=0, speechFrames=[], preRoll=[], closed=false, assistantPlaying=false, currentMark='', playbackGeneration=0;
   let noiseFloor=Math.max(0.0015,Math.min(0.02,speechThreshold*0.45)), speechHits=0, bargeHits=0, captureSeq=0, latestAcceptedCapture=0, turnVersion=0, activeTurnAbort=null, pendingSttCount=0, lastAcceptedUserText='', lastAcceptedUserAt=0, recentAckTexts=[];
   const pendingTasks=new Set(), hpState={prevX:0,prevY:0};
+  const noiseSuppressionEnabled=flag(env?.TELEPHONY_NOISE_SUPPRESSION_ENABLED,true);
+  let phoneNoiseSuppressor=null, noiseCleanFloor=Math.max(0.001,speechThreshold*0.35), noiseFrames=0, noiseCpuMs=0, noiseCpuMaxMs=0, noiseFallbackFrames=0;
   const callerProfileSession={status:'idle',phoneNumber:'',profile:null};
   const adaptNoise=(rms,fast=false)=>{const value=Math.max(0.0005,Math.min(0.04,Number(rms)||0));const alpha=fast?0.08:(value>noiseFloor?0.01:0.035);noiseFloor=Math.max(0.001,Math.min(0.03,noiseFloor*(1-alpha)+value*alpha));};
   const startThreshold=()=>phoneVadStartThreshold(speechThreshold,noiseFloor);
   const trackTask=(promise)=>{pendingTasks.add(promise);promise.finally(()=>pendingTasks.delete(promise));return promise;};
+  if(noiseSuppressionEnabled){trackTask(createPhoneNoiseSuppressor({frameSize:160,sampleRate:8000,noiseSuppressDb:-12,probStart:42,probContinue:20}).then((processor)=>{phoneNoiseSuppressor=processor;console.log(JSON.stringify({type:'phone_noise_suppression_ready',revision:PHONE_NOISE_SUPPRESSION_REVISION}));}).catch((error)=>{phoneNoiseSuppressor=null;console.warn(JSON.stringify({type:'phone_noise_suppression_fallback',revision:PHONE_NOISE_SUPPRESSION_REVISION,error:clean(error?.message||error,240)}));}));}
   const queueMessageLog = (role, content) => trackTask(
     appendMessage(env, callId, role, content).catch((error) => {
       console.error(JSON.stringify({ type: 'phone_message_log_error', role, error: clean(error?.message || error, 240) }));
@@ -1001,15 +1005,23 @@ function mediaBridge(request, env, deps) {
     }
     if(message?.event==='mark'){if(currentMark&&message?.mark?.name===currentMark){assistantPlaying=false;currentMark='';}return;}
     if(message?.event==='media'&&message?.media?.payload){
-      const decoded=pcmuBase64ToSamples(message.media.payload),samples=highPassPcmFrame(decoded,hpState,8000,90),rms=rmsOfSamples(samples),threshold=startThreshold(),snr=rms/Math.max(0.001,noiseFloor);
+      const decoded=pcmuBase64ToSamples(message.media.payload),rawSamples=highPassPcmFrame(decoded,hpState,8000,90),rawRms=rmsOfSamples(rawSamples),threshold=startThreshold(),rawSnr=rawRms/Math.max(0.001,noiseFloor);
+      let samples=rawSamples,rms=rawRms,speexSpeech=false,cleanSpeech=false;
+      if(phoneNoiseSuppressor&&!assistantPlaying){
+        const processed=phoneNoiseSuppressor.process(rawSamples);
+        noiseFrames+=1;noiseCpuMs+=processed.elapsedMs||0;noiseCpuMaxMs=Math.max(noiseCpuMaxMs,processed.elapsedMs||0);
+        if(processed.ok&&processed.samples?.length===rawSamples.length){samples=processed.samples;rms=rmsOfSamples(samples);speexSpeech=Boolean(processed.speech);const cleanAlpha=rms>noiseCleanFloor?0.008:0.04;noiseCleanFloor=Math.max(0.0006,Math.min(0.02,noiseCleanFloor*(1-cleanAlpha)+Math.max(0.0003,rms)*cleanAlpha));cleanSpeech=phoneVadFrameIsSpeech(rms,noiseCleanFloor,Math.max(0.0028,speechThreshold*0.72));}else{noiseFallbackFrames+=1;samples=rawSamples;rms=rawRms;}
+      }
       if(!speechActive){
         preRoll.push(samples);if(preRoll.length>PHONE_VAD_PREROLL_FRAMES)preRoll.shift();
-        if(assistantPlaying){const bargeThreshold=Math.max(threshold*1.25,noiseFloor*3.2,0.010);if(rms>=bargeThreshold&&snr>=1.8)bargeHits+=1;else bargeHits=Math.max(0,bargeHits-1);if(bargeHits>=5){interruptPlayback();speechActive=true;speechFrames=[...preRoll];preRoll=[];silentFor=0;speechHits=0;bargeHits=0;}else adaptNoise(rms,false);return;}
-        if(phoneVadFrameIsSpeech(rms,noiseFloor,speechThreshold))speechHits+=1;else{speechHits=0;adaptNoise(rms,false);}if(speechHits>=PHONE_VAD_START_HITS){speechActive=true;speechFrames=[...preRoll];preRoll=[];silentFor=0;speechHits=0;}return;
+        if(assistantPlaying){const bargeThreshold=Math.max(threshold*1.25,noiseFloor*3.2,0.010);if(rawRms>=bargeThreshold&&rawSnr>=1.8)bargeHits+=1;else bargeHits=Math.max(0,bargeHits-1);if(bargeHits>=5){interruptPlayback();speechActive=true;speechFrames=[...preRoll];preRoll=[];silentFor=0;speechHits=0;bargeHits=0;}else adaptNoise(rawRms,false);return;}
+        const rawSpeech=phoneVadFrameIsSpeech(rawRms,noiseFloor,speechThreshold);
+        const speechCandidate=phoneNoiseSuppressor?(speexSpeech||cleanSpeech||(rawSpeech&&rawSnr>=3.2)):rawSpeech;
+        if(speechCandidate)speechHits+=1;else{speechHits=0;adaptNoise(rawRms,false);}if(speechHits>=PHONE_VAD_START_HITS){speechActive=true;speechFrames=[...preRoll];preRoll=[];silentFor=0;speechHits=0;}return;
       }
-      speechFrames.push(samples);if(rms>=Math.max(noiseFloor*1.8,speechThreshold*0.75))silentFor=0;else silentFor+=FRAME_MS;const durationMs=speechFrames.length*FRAME_MS;if(silentFor>=silenceMs||durationMs>=maxUtteranceMs)finishUtterance();return;
+      speechFrames.push(samples);if(rms>=Math.max((phoneNoiseSuppressor?noiseCleanFloor:noiseFloor)*1.65,speechThreshold*0.62))silentFor=0;else silentFor+=FRAME_MS;const durationMs=speechFrames.length*FRAME_MS;if(silentFor>=silenceMs||durationMs>=maxUtteranceMs)finishUtterance();return;
     }
-    if(message?.event==='stop'){finishUtterance();interruptPlayback();abortActiveTurn();await Promise.allSettled([...pendingTasks]);await setCallStatus(env,callId,'ended');closeSocket(telnyx,1000,'telnyx_stopped');}
+    if(message?.event==='stop'){finishUtterance();if(noiseFrames)console.log(JSON.stringify({type:'phone_noise_suppression_summary',revision:PHONE_NOISE_SUPPRESSION_REVISION,frames:noiseFrames,avgCpuMs:Number((noiseCpuMs/noiseFrames).toFixed(4)),maxCpuMs:Number(noiseCpuMaxMs.toFixed(4)),fallbackFrames:noiseFallbackFrames}));try{phoneNoiseSuppressor?.destroy?.();}catch{}interruptPlayback();abortActiveTurn();await Promise.allSettled([...pendingTasks]);await setCallStatus(env,callId,'ended');closeSocket(telnyx,1000,'telnyx_stopped');}
   });
   telnyx.addEventListener('error',async()=>{interruptPlayback();await setCallStatus(env,callId,'error');closeSocket(telnyx,1011,'telnyx_error');});
   telnyx.addEventListener('close',async()=>{closed=true;clearTimeout(deadline);finishUtterance();interruptPlayback();abortActiveTurn();await Promise.allSettled([...pendingTasks]);await setCallStatus(env,callId,'ended');});
