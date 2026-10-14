@@ -41,6 +41,8 @@ jobs:
       AUDIT_PHONE_NUMBER: ${{ inputs.phone_number || '' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: actions/setup-node@v6
         with:
