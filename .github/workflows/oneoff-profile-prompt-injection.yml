@@ -1,0 +1,43 @@
+name: One-off phone profile prompt hierarchy
+
+on:
+  push:
+    branches:
+      - qa/expanded-ai-quality-prompt-audit-v1
+    paths:
+      - 'scripts/experimental-profile-prompt-injection.mjs'
+      - '.github/workflows/oneoff-profile-prompt-injection.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 20
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      AUDIT_MODEL: gemini-3.5-flash-lite
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Run profile hierarchy tests
+        run: node scripts/experimental-profile-prompt-injection.mjs
+      - name: Publish summary
+        if: always()
+        run: |
+          if [[ -f artifacts/profile-prompt-injection/report.md ]]; then cat artifacts/profile-prompt-injection/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile-prompt-injection-report
+          path: artifacts/profile-prompt-injection/
+          retention-days: 30
