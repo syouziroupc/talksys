@@ -20,20 +20,16 @@ on:
         required: true
         default: true
         type: boolean
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/direct-answer-quality-audit.yml'
-      - 'scripts/answer-quality-audit.mjs'
-      - 'scripts/answer-quality-audit-phone-boundary.mjs'
-      - 'src/runtime-entry.js'
-      - 'qa/answer-quality-cases.json'
+  workflow_run:
+    workflows: ['Deploy TalkSys production']
+    types: [completed]
 
 permissions:
   contents: read
 
 jobs:
   audit:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
