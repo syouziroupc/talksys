@@ -24,6 +24,10 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
       - name: Validate experiment
         run: |
           set -euo pipefail
