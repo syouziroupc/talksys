@@ -6,7 +6,8 @@ import {
   runPhoneMemoryMaintenance,
 } from './phone-memory-maintenance.js';
 
-export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-phone-memory-v1-r1';
+export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-phone-memory-v1-phone-ai-audit-r1';
+export const PHONE_AI_BOUNDARY_AUDIT_REVISION = 'talksys-phone-ai-boundary-audit-v1-r1';
 
 function compact(value, max = 500) {
   return String(value ?? '').trim().slice(0, max);
@@ -23,6 +24,19 @@ function authorized(request, env) {
   return supplied.length === expected.length && supplied === expected;
 }
 
+async function sha256Hex(value = '') {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(value)));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function phoneAuditAuthorized(request, env) {
+  const key = typeof env?.GEMINI_API_KEY === 'string' ? env.GEMINI_API_KEY.trim() : '';
+  if (!key) return false;
+  const expected = await sha256Hex(`${key}:talksys-phone-ai-boundary-audit-v1`);
+  const supplied = compact(request.headers.get('x-talksys-diagnostic') || '', 200);
+  return supplied.length === expected.length && supplied === expected;
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -33,6 +47,90 @@ function json(data, status = 200) {
       'x-talksys-phone-memory-revision': PHONE_MEMORY_REVISION,
     },
   });
+}
+
+async function loadPhoneAuditProfile(env, phoneNumber = '') {
+  const phone = compact(phoneNumber, 80);
+  if (!phone || !env?.TALKSYS_LOG_DB) return null;
+  const row = await env.TALKSYS_LOG_DB.prepare(
+    'SELECT display_name, personalization_text, memory_text, enabled, version FROM phone_profiles WHERE phone_number=?',
+  ).bind(phone).first();
+  if (!row) return null;
+  const enabledValue = row?.enabled;
+  const versionRaw = Number(row?.version || 0);
+  return Object.freeze({
+    displayName: compact(row?.display_name || '', 80),
+    personalizationText: compact(row?.personalization_text || '', 4000),
+    memoryText: compact(row?.memory_text || '', 8000),
+    enabled: !(enabledValue === false || enabledValue === 0 || enabledValue === '0'),
+    version: Number.isFinite(versionRaw) ? Math.max(0, Math.round(versionRaw)) : 0,
+  });
+}
+
+function phoneAuditHistory(history = [], currentText = '') {
+  const rows = Array.isArray(history) ? history : [];
+  const current = compact(currentText, 1800);
+  const last = rows.at(-1);
+  const lastIsCurrent = last?.role === 'user' && compact(last?.content, 1800) === current;
+  return (lastIsCurrent ? rows.slice(0, -1) : rows).slice(-16);
+}
+
+async function phoneAiBoundaryAudit(request, env, ctx) {
+  if (!(await phoneAuditAuthorized(request, env))) return json({ ok: false, error: 'unauthorized' }, 401);
+  let body = {};
+  try { body = await request.json(); }
+  catch { return json({ ok: false, error: 'invalid_json' }, 400); }
+
+  const text = compact(body?.text, 1800);
+  if (!text) return json({ ok: false, error: 'empty_text' }, 400);
+
+  const phoneNumber = compact(body?.phoneNumber || body?.fromNumber || '', 80);
+  const callerProfile = await loadPhoneAuditProfile(env, phoneNumber);
+  const phoneProfile = callerProfile?.enabled ? callerProfile : null;
+  const sessionId = compact(body?.sessionId || `qa-phone-${crypto.randomUUID()}`, 200);
+  const utteranceId = compact(body?.utteranceId || `${sessionId}-turn`, 200);
+  const spokenBackchannel = compact(body?.spokenBackchannel || '', 240);
+  const history = phoneAuditHistory(body?.history, text);
+
+  const target = new URL(request.url);
+  target.pathname = '/api/turn';
+  target.search = '';
+  const turnRequest = new Request(target.toString(), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      history,
+      channel: 'phone',
+      sessionId,
+      utteranceId,
+      spokenBackchannel,
+      ...(phoneProfile ? { phoneProfile } : {}),
+    }),
+    signal: request.signal,
+  });
+
+  const response = await integratedEntry.fetch(turnRequest, env, ctx);
+  const type = response.headers.get('content-type') || '';
+  if (!/application\/json/i.test(type)) {
+    return json({ ok: false, error: 'phone_ai_boundary_non_json', status: response.status }, 502);
+  }
+  const payload = await response.json().catch(() => ({}));
+  return json({
+    ...payload,
+    phoneAiBoundaryAudit: {
+      revision: PHONE_AI_BOUNDARY_AUDIT_REVISION,
+      inputBoundary: 'post-stt-pre-ai',
+      outputBoundary: 'post-ai-pre-tts',
+      channel: 'phone',
+      phoneNumberProvided: Boolean(phoneNumber),
+      profileLoaded: Boolean(callerProfile),
+      profileEnabled: Boolean(phoneProfile),
+      profileVersion: Number(callerProfile?.version || 0),
+      historyItems: history.length,
+      liveTelephonyPathChanged: false,
+    },
+  }, response.status);
 }
 
 async function runScheduledMemory(env) {
@@ -64,6 +162,10 @@ async function runScheduledMemory(env) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    if (url.pathname === '/api/internal/phone-ai-boundary-audit' && request.method === 'POST') {
+      return phoneAiBoundaryAudit(request, env, ctx);
+    }
 
     if (url.pathname === '/api/internal/phone-memory-health' && request.method === 'GET') {
       if (!authorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
