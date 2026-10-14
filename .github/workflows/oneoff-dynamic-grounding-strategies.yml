@@ -1,0 +1,49 @@
+name: One-off dynamic grounding strategies
+
+on:
+  push:
+    branches:
+      - qa/expanded-ai-quality-prompt-audit-v1
+    paths:
+      - 'scripts/experimental-dynamic-grounding-strategies.mjs'
+      - '.github/workflows/oneoff-dynamic-grounding-strategies.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 45
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      AUDIT_MODEL: gemini-3.5-flash-lite
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Validate experiment
+        run: |
+          set -euo pipefail
+          node --check scripts/experimental-dynamic-grounding-strategies.mjs
+          test -n "${GEMINI_API_KEY:-}"
+      - name: Run experiment
+        run: node scripts/experimental-dynamic-grounding-strategies.mjs
+      - name: Publish summary
+        if: always()
+        run: |
+          if [[ -f artifacts/dynamic-grounding-strategies/report.md ]]; then cat artifacts/dynamic-grounding-strategies/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dynamic-grounding-strategies-report
+          path: artifacts/dynamic-grounding-strategies/
+          retention-days: 30
