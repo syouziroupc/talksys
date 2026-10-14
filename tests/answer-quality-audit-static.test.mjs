@@ -1,10 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 const runner = fs.readFileSync('scripts/answer-quality-audit.mjs', 'utf8');
 const workflow = fs.readFileSync('.github/workflows/direct-answer-quality-audit.yml', 'utf8');
 const cases = JSON.parse(fs.readFileSync('qa/answer-quality-cases.json', 'utf8'));
+
+test('direct answer audit runner has valid JavaScript syntax', () => {
+  const checked = spawnSync(process.execPath, ['--check', 'scripts/answer-quality-audit.mjs'], { encoding: 'utf8' });
+  assert.equal(checked.status, 0, checked.stderr || checked.stdout);
+});
 
 test('direct answer audit bypasses telephony and targets production turn endpoint', () => {
   assert.match(runner, /\/api\/turn/);
