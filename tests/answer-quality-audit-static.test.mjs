@@ -72,10 +72,13 @@ test('standard suite covers broad factual categories', () => {
   }
 });
 
-test('workflow exposes manual arbitrary-question and optional caller-profile audit', () => {
+test('workflow exposes manual audit, caller profile input, and production secret scope', () => {
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /question:/);
   assert.match(workflow, /phone_number:/);
+  assert.match(workflow, /environment:\s*production/);
+  assert.match(workflow, /GEMINI_API_KEY:\s*\$\{\{ secrets\.GEMINI_API_KEY \}\}/);
+  assert.match(workflow, /test -n "\$\{GEMINI_API_KEY:-\}"/);
   assert.match(workflow, /answer-quality-audit-phone-boundary\.mjs/);
   assert.match(workflow, /GITHUB_STEP_SUMMARY/);
   assert.match(workflow, /actions\/upload-artifact@v4/);
