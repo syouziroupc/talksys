@@ -1,0 +1,49 @@
+name: One-off search thinking sweep
+
+on:
+  push:
+    branches:
+      - qa/expanded-ai-quality-prompt-audit-v1
+    paths:
+      - 'scripts/experimental-search-thinking-sweep.mjs'
+      - '.github/workflows/oneoff-search-thinking-sweep.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 20
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      AUDIT_MODEL: gemini-3.5-flash-lite
+      REPEATS: '5'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+      - name: Validate experiment
+        run: |
+          set -euo pipefail
+          node --check scripts/experimental-search-thinking-sweep.mjs
+          test -n "${GEMINI_API_KEY:-}"
+      - name: Run experiment
+        run: node scripts/experimental-search-thinking-sweep.mjs
+      - name: Publish summary
+        if: always()
+        run: |
+          if [[ -f artifacts/search-thinking-sweep/report.md ]]; then cat artifacts/search-thinking-sweep/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-thinking-sweep-report
+          path: artifacts/search-thinking-sweep/
+          retention-days: 30
