@@ -24,6 +24,18 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Apply isolated v129 patch
         run: python3 scripts/apply-v129-rescue.py
+      - name: Repair generated regex escaping
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/integrated-entry.js')
+          s=p.read_text()
+          broken="if (/15時(?:00分)?[^。\n]{0,40}"
+          fixed="if (/15時(?:00分)?[^。\\n]{0,40}"
+          if broken not in s:
+              raise SystemExit('generated freshness regex marker missing')
+          p.write_text(s.replace(broken,fixed,1))
+          PY
       - name: Syntax check
         run: |
           node --check src/integrated-entry.js
