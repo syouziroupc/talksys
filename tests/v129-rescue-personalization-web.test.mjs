@@ -1,3 +1,4 @@
+// v129 rescue regression suite
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -13,7 +14,7 @@ test('v129 uses medium by default and reserves high for dynamic math/deadlines',
 });
 
 test('v129 detects the known TSE 15:00-close hallucination and stale intraday timestamps', () => {
-  const now = new Date('2026-10-14T06:10:00Z'); // 15:10 JST
+  const now = new Date('2026-10-14T06:10:00Z');
   assert.equal(currentMarketFreshnessIssue('トヨタの現在の株価は？', '東証は15時で取引終了しました。', now), 'tse_close_time_1500');
   assert.equal(currentMarketFreshnessIssue('トヨタの現在の株価は？', '株価は3000円、13時00分時点です。', now), 'stale_intraday_quote');
   assert.equal(currentMarketFreshnessIssue('トヨタの現在の株価は？', '株価は3000円、15時08分時点です。', now), '');
