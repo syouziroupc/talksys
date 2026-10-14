@@ -4,6 +4,7 @@ on:
     branches: [v129-correct]
     paths:
       - 'scripts/apply-v129-rescue.py'
+      - 'scripts/repair-v129-memory-status-isolation.py'
       - 'tests/v129-rescue-personalization-web.test.mjs'
       - '.github/workflows/apply-v129-rescue.yml'
   workflow_dispatch:
@@ -24,6 +25,10 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Apply isolated v129 patch
         run: python3 scripts/apply-v129-rescue.py
+      - name: Preserve background-memory isolation
+        run: |
+          git checkout -- src/phone-memory-maintenance.js
+          python3 scripts/repair-v129-memory-status-isolation.py
       - name: Repair generated regex escaping
         run: |
           python3 - <<'PY'
@@ -52,7 +57,7 @@ jobs:
         run: |
           git config user.name 'talksys-ci'
           git config user.email 'talksys-ci@users.noreply.github.com'
-          git add src/integrated-entry.js src/phone-memory-maintenance.js src/telephony/index.js
+          git add src/integrated-entry.js src/telephony/index.js
           git diff --cached --check
           if git diff --cached --quiet; then
             echo 'No source changes to commit'
