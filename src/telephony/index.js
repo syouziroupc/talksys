@@ -18,7 +18,7 @@ export const PHONE_FAST_ACK_REVISION = 'talksys-phone-fast-ack-v2-r1';
 export const PHONE_ACK_LATENCY_REVISION = 'talksys-phone-ack-latency-v120-r1';
 export const PHONE_PERSONALIZATION_ACTIVE_REVISION = 'talksys-phone-personalization-v121-r1';
 export const PHONE_RUNTIME_LOG_REVISION = 'talksys-phone-runtime-log-v127-r1';
-export const PHONE_RELEASE_VERSION = 'v127';
+export const PHONE_RELEASE_VERSION = 'v129';
 export const PHONE_ADAPTIVE_VAD_REVISION = 'talksys-phone-adaptive-vad-v123-r1';
 export const PHONE_VAD_START_NOISE_RATIO = 2.7;
 export const PHONE_VAD_START_HITS = 3;
@@ -518,7 +518,7 @@ function profilesDashboardHtml(request) {
   :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0e14;color:#f3f6fb}body{margin:0}.wrap{max-width:1180px;margin:auto;padding:28px 18px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.sub,.muted{color:#98a5b7}.panel{border:1px solid #293243;background:#121722;border-radius:14px;padding:16px;margin-top:16px}.grid{display:grid;grid-template-columns:minmax(300px,.8fr) minmax(420px,1.35fr);gap:14px}@media(max-width:820px){.grid{grid-template-columns:1fr}}button,input,textarea,select{font:inherit}button{background:#202a3a;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px 12px;cursor:pointer}input,textarea,select{box-sizing:border-box;width:100%;background:#0b0e14;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px}textarea{min-height:110px;resize:vertical}.row{padding:11px;border-bottom:1px solid #283245;cursor:pointer}.row:hover{background:#171e2b}.num{font-weight:750}.meta{font-size:12px;color:#91a0b5;margin-top:4px}.form{display:grid;gap:11px}.form label{font-size:12px;color:#bec8d7}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.warn{color:#ffca72}.ok{color:#7dd69a}.hidden{display:none}a{color:#a8c7ff}.newrow{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}.profileHistory{margin-top:20px;border-top:1px solid #2a3344;padding-top:14px}.historyCall{padding:10px;border:1px solid #293243;border-radius:9px;margin:8px 0;cursor:pointer}.historyCall:hover{background:#171e2b}.historyMessages{margin-top:12px}.historyMsg{padding:9px 10px;border-radius:8px;margin:7px 0;white-space:pre-wrap}.historyUser{background:#1b2b3a}.historyAssistant{background:#25213a}
   </style></head><body><main class="wrap"><div class="top"><div><h1>電話番号プロフィール</h1><div class="sub">通話履歴とは分離して、発信者番号ごとの呼び名・応答方針・継続メモを管理します。</div></div><div><a href="${xmlEscape(base)}/phone">通話管理へ</a></div></div>
   <section id="login" class="panel"><b>管理トークン</b><p class="muted">/phone と同じ管理トークンを使用します。</p><input id="token" type="password" autocomplete="current-password"><button id="loginBtn">表示</button><div id="loginErr" class="warn"></div></section>
-  <section id="app" class="hidden"><div class="grid"><div class="panel"><input id="filter" placeholder="電話番号・表示名で絞り込み"><div class="newrow"><input id="newPhone" placeholder="新しい電話番号"><button id="newBtn">開く</button></div><div id="list" style="margin-top:12px"></div></div><div class="panel"><h2 id="editorTitle">電話番号を選択</h2><div id="editor" class="hidden"><div class="form"><label>電話番号<input id="profilePhone" readonly></label><label>表示名<input id="profileName" maxlength="80"></label><label>応答方針<textarea id="profilePersonalization" maxlength="4000"></textarea></label><label>継続メモ<textarea id="profileMemory" maxlength="8000"></textarea></label><label>有効<select id="profileEnabled"><option value="1">有効</option><option value="0">無効</option></select></label></div><div class="actions" style="margin-top:12px"><button id="saveBtn">保存</button><span id="status" class="muted"></span></div><p class="muted">電話番号は本人確認には使用しません。秘密情報は保存しないでください。</p></div><div class="profileHistory"><div class="top"><h3>電話履歴</h3><span class="muted">直近20件</span></div><div id="profileCallHistory" class="muted">電話番号を選択してください。</div><div id="profileCallMessages" class="historyMessages muted"></div></div></div></div></section>
+  <section id="app" class="hidden"><div class="grid"><div class="panel"><input id="filter" placeholder="電話番号・表示名で絞り込み"><div class="newrow"><input id="newPhone" placeholder="新しい電話番号"><button id="newBtn">開く</button></div><div id="list" style="margin-top:12px"></div></div><div class="panel"><h2 id="editorTitle">電話番号を選択</h2><div id="editor" class="hidden"><div class="form"><label>電話番号<input id="profilePhone" readonly></label><label>表示名<input id="profileName" maxlength="80"></label><label>応答方針<textarea id="profilePersonalization" maxlength="4000"></textarea></label><label>継続メモ<textarea id="profileMemory" maxlength="8000"></textarea></label><label>有効<select id="profileEnabled"><option value="1">有効</option><option value="0">無効</option></select></label></div><div class="actions" style="margin-top:12px"><button id="saveBtn">保存</button><span id="status" class="muted"></span></div><p class="muted">電話番号は本人確認には使用しません。秘密情報は保存しないでください。</p><div class="panel" style="margin-top:14px"><b>パーソナライズ自動更新状況</b><pre id="memoryStatus" class="muted" style="white-space:pre-wrap">電話番号を選択してください。</pre></div></div><div class="profileHistory"><div class="top"><h3>電話履歴</h3><span class="muted">直近20件</span></div><div id="profileCallHistory" class="muted">電話番号を選択してください。</div><div id="profileCallMessages" class="historyMessages muted"></div></div></div></div></section>
   </main><script>
   let adminToken=sessionStorage.getItem('talksysPhoneToken')||'',rows=[],selectedPhone='',selectedVersion=0;
   const auth=()=>adminToken?{'authorization':'Bearer '+adminToken}:{};
@@ -526,7 +526,17 @@ function profilesDashboardHtml(request) {
   async function api(path,options={}){const r=await fetch(path,{...options,headers:{...auth(),...(options.headers||{})},cache:'no-store'});const d=await r.json().catch(()=>({}));if(r.status===401){const e=new Error('認証に失敗しました');e.status=401;throw e}if(!r.ok||d.ok===false){const e=new Error(d.error||('HTTP '+r.status));e.status=r.status;throw e}return d}
   function render(){const q=String(document.getElementById('filter').value||'').toLowerCase();const shown=rows.filter(x=>(String(x.phone_number||'')+' '+String(x.display_name||'')).toLowerCase().includes(q));document.getElementById('list').innerHTML=shown.length?shown.map(x=>'<div class="row" data-phone="'+esc(x.phone_number)+'"><div class="num">'+esc(x.display_name||x.phone_number)+'</div><div class="meta">'+esc(x.display_name?x.phone_number:'')+' / '+Number(x.call_count||0)+'通話 / '+(Number(x.enabled)===0?'無効':'有効')+'</div><div class="meta">最終通話 '+esc(x.last_call_at||'なし')+'</div></div>').join(''):'<div class="muted">該当なし</div>';document.querySelectorAll('.row').forEach(el=>el.onclick=()=>loadProfile(el.dataset.phone))}
   async function refresh(){const d=await api('/phone/api/profiles');rows=d.profiles||[];render()}
-  async function loadProfile(phone){selectedPhone=String(phone||'').trim();if(!selectedPhone)return;const d=await api('/phone/api/profiles/'+encodeURIComponent(selectedPhone));const p=d.profile||{};selectedVersion=Number(p.version||0);document.getElementById('editor').classList.remove('hidden');document.getElementById('editorTitle').textContent=p.display_name?String(p.display_name)+' のプロフィール':selectedPhone+' のプロフィール';document.getElementById('profilePhone').value=selectedPhone;document.getElementById('profileName').value=p.display_name||'';document.getElementById('profilePersonalization').value=p.personalization_text||'';document.getElementById('profileMemory').value=p.memory_text||'';document.getElementById('profileEnabled').value=String(Number(p.enabled)===0?0:1);document.getElementById('status').textContent=d.exists?'保存済み':'未登録';history.replaceState(null,'','/phone-profiles?phone='+encodeURIComponent(selectedPhone));await loadProfileCalls(selectedPhone)}
+  async function loadProfile(phone){selectedPhone=String(phone||'').trim();if(!selectedPhone)return;const d=await api('/phone/api/profiles/'+encodeURIComponent(selectedPhone));const p=d.profile||{};selectedVersion=Number(p.version||0);document.getElementById('editor').classList.remove('hidden');document.getElementById('editorTitle').textContent=p.display_name?String(p.display_name)+' のプロフィール':selectedPhone+' のプロフィール';document.getElementById('profilePhone').value=selectedPhone;document.getElementById('profileName').value=p.display_name||'';document.getElementById('profilePersonalization').value=p.personalization_text||'';document.getElementById('profileMemory').value=p.memory_text||'';document.getElementById('profileEnabled').value=String(Number(p.enabled)===0?0:1);document.getElementById('status').textContent=d.exists?'保存済み':'未登録';history.replaceState(null,'','/phone-profiles?phone='+encodeURIComponent(selectedPhone));await Promise.all([loadProfileCalls(selectedPhone),loadMemoryStatus(selectedPhone)])}
+  async function loadMemoryStatus(phone){const root=document.getElementById('memoryStatus');root.textContent='読込中...';try{const d=await api('/phone/api/profiles/'+encodeURIComponent(phone)+'/memory-status');const st=d.state||{},audits=d.audits||[];const last=audits[0]||{};root.textContent=[
+  '機能: '+(d.enabled?'有効':'無効'),
+  '更新状態: '+String(st.last_status||'never'),
+  '最終実行: '+String(st.last_run_at||'未実行'),
+  '使用モデル: '+String(st.last_model||'未実行'),
+  '最終処理メッセージID: '+Number(st.last_processed_message_id||0),
+  '未処理メッセージ: '+Number(d.pending_messages||0),
+  '直近追加: 応答方針 '+Number(last.personalization_added||0)+' / メモ '+Number(last.memory_added||0)+' / 呼び名 '+Number(last.name_added||0),
+  '最終エラー: '+String(st.last_error||'なし')
+].join('\n')}catch(e){root.textContent='状況取得失敗: '+e.message}}
   async function loadProfileCalls(phone){const root=document.getElementById('profileCallHistory'),detail=document.getElementById('profileCallMessages');root.innerHTML='<div class="muted">読込中...</div>';detail.innerHTML='';const d=await api('/phone/api/profiles/'+encodeURIComponent(phone)+'/calls?limit=20');const calls=d.calls||[];root.innerHTML=calls.length?calls.map(c=>'<div class="historyCall" data-history-call="'+esc(c.call_id)+'"><div class="num">'+esc(c.started_at||'日時不明')+' / '+esc(c.status||'')+'</div><div class="meta">'+Number(c.message_count||0)+'件 / '+esc(c.last_user_text||c.last_assistant_text||'会話なし')+'</div></div>').join(''):'<div class="muted">この番号の電話履歴はありません。</div>';root.querySelectorAll('[data-history-call]').forEach(el=>el.onclick=()=>loadProfileCallMessages(el.dataset.historyCall).catch(e=>{detail.textContent='会話取得失敗: '+e.message}))}
   async function loadProfileCallMessages(id){const root=document.getElementById('profileCallMessages');root.innerHTML='<div class="muted">会話読込中...</div>';const d=await api('/phone/api/calls/'+encodeURIComponent(id)+'/messages');root.innerHTML=(d.messages||[]).length?(d.messages||[]).map(m=>'<div class="historyMsg '+(m.role==='user'?'historyUser':'historyAssistant')+'"><div class="meta">'+(m.role==='user'?'発信者':'TalkSys')+' / '+esc(m.created_at||'')+'</div>'+esc(m.content||'')+'</div>').join(''):'<div class="muted">会話本文はありません。</div>'}
   async function save(){if(!selectedPhone)return;const status=document.getElementById('status');status.textContent='保存中...';status.className='muted';try{const d=await api('/phone/api/profiles/'+encodeURIComponent(selectedPhone),{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({display_name:document.getElementById('profileName').value,personalization_text:document.getElementById('profilePersonalization').value,memory_text:document.getElementById('profileMemory').value,enabled:Number(document.getElementById('profileEnabled').value),version:selectedVersion})});selectedVersion=Number(d.profile?.version||selectedVersion);status.textContent='保存しました';status.className='ok';await refresh();await loadProfile(selectedPhone)}catch(e){status.className='warn';if(e.status===409){status.textContent='更新競合。再読込しました。';await loadProfile(selectedPhone);return}status.textContent='保存失敗: '+e.message}}
@@ -647,6 +657,44 @@ async function phoneProfilePut(request, env, phoneNumber) {
   }
   const saved = await env.TALKSYS_LOG_DB.prepare('SELECT * FROM phone_profiles WHERE phone_number=?').bind(phone).first();
   return json({ ok: true, profile: saved });
+}
+
+async function profileMemoryStatus(request, env, phoneNumber) {
+  if (!adminAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+  const db = env?.TALKSYS_LOG_DB;
+  if (!db) return json({ ok: false, error: 'storage_unavailable' }, 503);
+  const phone = profilePhone(phoneNumber);
+  if (!phone) return json({ ok: false, error: 'phone_number_required' }, 400);
+  const enabled = /^(?:1|true|yes|on)$/i.test(String(env?.PHONE_MEMORY_ENABLED ?? '').trim());
+  const emptyState = { last_processed_message_id: 0, last_run_at: '', last_model: '', last_status: 'never', last_error: '', updated_at: '' };
+  try {
+    const state = await db.prepare(`SELECT last_processed_message_id, last_run_at, last_model, last_status, last_error, updated_at
+      FROM phone_memory_state WHERE phone_number=?`).bind(phone).first();
+    const audits = await db.prepare(`SELECT id, from_message_id, to_message_id, primary_model, primary_status,
+      personalization_added, memory_added, name_added, shadow_model, shadow_status, created_at
+      FROM phone_memory_audit WHERE phone_number=? ORDER BY id DESC LIMIT 10`).bind(phone).all();
+    const lastProcessed = Number(state?.last_processed_message_id || 0);
+    const pending = await db.prepare(`SELECT COUNT(*) AS pending_count, MAX(m.id) AS newest_message_id
+      FROM phone_calls c JOIN phone_messages m ON m.call_id=c.call_id
+      WHERE c.from_number=? AND m.id>?`).bind(phone, lastProcessed).first();
+    return json({
+      ok: true,
+      initialized: true,
+      revision: 'talksys-phone-memory-status-v129-r1',
+      enabled,
+      phone_number: phone,
+      state: state || emptyState,
+      pending_messages: Number(pending?.pending_count || 0),
+      newest_message_id: Number(pending?.newest_message_id || 0),
+      audits: audits?.results || [],
+    });
+  } catch (error) {
+    const detail = clean(error?.message || error, 300);
+    if (/no such table/i.test(detail)) {
+      return json({ ok: true, initialized: false, revision: 'talksys-phone-memory-status-v129-r1', enabled, phone_number: phone, state: emptyState, pending_messages: 0, newest_message_id: 0, audits: [] });
+    }
+    return json({ ok: false, error: 'phone_memory_status_failed', detail, revision: 'talksys-phone-memory-status-v129-r1' }, 500);
+  }
 }
 
 async function profileCalls(request, env, phoneNumber) {
@@ -1093,7 +1141,7 @@ function mediaBridge(request, env, deps) {
 export function isTelephonyPath(pathname = '') {
   return pathname === '/phone' || pathname === '/phone-profiles' || pathname === '/telephony-health' || pathname === '/phone/api/calls' || pathname === '/phone/api/calls/export.zip' || pathname === '/phone/api/profiles'
     || /^\/phone\/api\/calls\/[^/]+\/messages$/.test(pathname) || /^\/phone\/api\/calls\/[^/]+\/latency$/.test(pathname)
-    || /^\/phone\/api\/calls\/[^/]+\/export\.jsonl$/.test(pathname) || /^\/phone\/api\/profiles\/[^/]+$/.test(pathname) || /^\/phone\/api\/profiles\/[^/]+\/calls$/.test(pathname)
+    || /^\/phone\/api\/calls\/[^/]+\/export\.jsonl$/.test(pathname) || /^\/phone\/api\/profiles\/[^/]+$/.test(pathname) || /^\/phone\/api\/profiles\/[^/]+\/calls$/.test(pathname) || /^\/phone\/api\/profiles\/[^/]+\/memory-status$/.test(pathname)
     || pathname === '/telnyx/voice' || pathname === '/telnyx/media' || pathname === '/telnyx/stream-status';
 }
 
@@ -1108,6 +1156,7 @@ export async function handleTelephonyRequest(request, env, ctx, deps = {}) {
   const messageMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/messages$/);if(request.method==='GET'&&messageMatch)return callMessages(request,env,decodeURIComponent(messageMatch[1]));
   const latencyMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/latency$/);if(request.method==='GET'&&latencyMatch)return callLatency(request,env,decodeURIComponent(latencyMatch[1]));
   const exportMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/export\.jsonl$/);if(request.method==='GET'&&exportMatch)return callExportJsonl(request,env,decodeURIComponent(exportMatch[1]));
+  const profileMemoryMatch=url.pathname.match(/^\/phone\/api\/profiles\/([^/]+)\/memory-status$/);if(request.method==='GET'&&profileMemoryMatch){let phone;try{phone=decodeURIComponent(profileMemoryMatch[1]);}catch{return json({ok:false,error:'invalid_phone_number'},400)}return profileMemoryStatus(request,env,phone);}
   const profileCallsMatch=url.pathname.match(/^\/phone\/api\/profiles\/([^/]+)\/calls$/);if(request.method==='GET'&&profileCallsMatch){let phone;try{phone=decodeURIComponent(profileCallsMatch[1]);}catch{return json({ok:false,error:'invalid_phone_number'},400)}return profileCalls(request,env,phone);}
   const profileMatch=url.pathname.match(/^\/phone\/api\/profiles\/([^/]+)$/);if(profileMatch&&(request.method==='GET'||request.method==='PUT')){let phone;try{phone=decodeURIComponent(profileMatch[1]);}catch{return json({ok:false,error:'invalid_phone_number'},400)}return request.method==='GET'?phoneProfileGet(request,env,phone):phoneProfilePut(request,env,phone);}
   if((request.method==='GET'||request.method==='POST')&&url.pathname==='/telnyx/voice')return texmlResponse(request,env,ctx);
