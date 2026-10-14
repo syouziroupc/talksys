@@ -85,7 +85,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          FAIL_ON_ISSUE: ${{ github.event_name == 'workflow_dispatch' && inputs.fail_on_issue || true }}
+          FAIL_ON_ISSUE: ${{ github.event_name != 'workflow_dispatch' || inputs.fail_on_issue }}
           AUDIT_EXIT_CODE: ${{ steps.audit.outputs.exit_code || '1' }}
         run: |
           set -euo pipefail
