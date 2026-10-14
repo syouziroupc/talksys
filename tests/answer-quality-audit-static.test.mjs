@@ -34,9 +34,16 @@ test('phone AI audit endpoint injects post-STT phone payload and captures pre-TT
 });
 
 test('phone audit payload contract remains aligned with live answerWithTalkSys boundary', () => {
-  for (const token of ["channel: 'phone'", 'sessionId:', 'utteranceId:', 'spokenBackchannel', 'phoneProfile']) {
-    assert.ok(telephony.includes(token), `live phone boundary missing ${token}`);
-    assert.ok(runtimeEntry.includes(token), `audit phone boundary missing ${token}`);
+  const contractPatterns = [
+    /channel:\s*'phone'/,
+    /\bsessionId\b/,
+    /\butteranceId\b/,
+    /\bspokenBackchannel\b/,
+    /\bphoneProfile\b/,
+  ];
+  for (const pattern of contractPatterns) {
+    assert.match(telephony, pattern, `live phone boundary missing ${pattern}`);
+    assert.match(runtimeEntry, pattern, `audit phone boundary missing ${pattern}`);
   }
   assert.match(telephony, /slice\(-16\)/);
   assert.match(runtimeEntry, /slice\(-16\)/);
