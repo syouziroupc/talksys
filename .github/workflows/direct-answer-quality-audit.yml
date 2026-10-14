@@ -1,0 +1,104 @@
+name: Direct answer quality audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      case_filter:
+        description: 'Case ID or category, comma-separated. Empty runs the standard suite.'
+        required: false
+        type: string
+      question:
+        description: 'Optional one-off question. When set, runs only this question.'
+        required: false
+        type: string
+      fail_on_issue:
+        description: 'Fail the workflow when any audited answer fails.'
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/direct-answer-quality-audit.yml'
+      - 'scripts/answer-quality-audit.mjs'
+      - 'qa/answer-quality-cases.json'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      AUDIT_MODEL: gemini-3.5-flash-lite
+      CASE_FILTER: ${{ inputs.case_filter || '' }}
+      AUDIT_QUESTION: ${{ inputs.question || '' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Validate audit source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check scripts/answer-quality-audit.mjs
+          node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync('qa/answer-quality-cases.json','utf8'));if(!Array.isArray(d)||!d.length)throw new Error('answer-quality-cases.json is empty');"
+
+      - name: Run direct production audit
+        id: audit
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          node scripts/answer-quality-audit.mjs
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish job summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f artifacts/answer-quality-audit/report.md ]]; then
+            cat artifacts/answer-quality-audit/report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '# TalkSys direct answer quality audit' >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo 'No report was generated.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload full audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: answer-quality-report
+          path: artifacts/answer-quality-audit/
+          retention-days: 30
+
+      - name: Enforce audit result
+        if: always()
+        shell: bash
+        env:
+          FAIL_ON_ISSUE: ${{ github.event_name == 'workflow_dispatch' && inputs.fail_on_issue || true }}
+          AUDIT_EXIT_CODE: ${{ steps.audit.outputs.exit_code || '1' }}
+        run: |
+          set -euo pipefail
+          if [[ "$AUDIT_EXIT_CODE" != "0" ]]; then
+            echo "Audit runner failed with exit code $AUDIT_EXIT_CODE"
+            exit 1
+          fi
+          if [[ ! -f artifacts/answer-quality-audit/report.json ]]; then
+            echo 'Audit report is missing.'
+            exit 1
+          fi
+          failed="$(node -e "const r=require('./artifacts/answer-quality-audit/report.json');process.stdout.write(String(Number(r.failed||0)))")"
+          echo "Audited failures: $failed"
+          if [[ "$FAIL_ON_ISSUE" == "true" && "$failed" != "0" ]]; then
+            exit 1
+          fi
