@@ -64,6 +64,14 @@ test('direct answer audit locks reviewer to the production model and independent
   assert.match(runner, /authoritativeJst/);
 });
 
+test('judge citation metadata absence is a warning while production grounding remains structural', () => {
+  assert.match(runner, /judge\.evidence\?\.searched === true/);
+  assert.doesNotMatch(runner, /judge\.evidence\?\.citations\?\.length > 0\s*&&\s*judge\.result\?\.verdict/);
+  assert.match(runner, /citation-metadata-warning/);
+  assert.match(runner, /source_count/);
+  assert.match(runner, /citation_count/);
+});
+
 test('standard suite covers broad factual categories', () => {
   assert.ok(cases.length >= 10);
   const categories = new Set(cases.map((item) => item.category));
