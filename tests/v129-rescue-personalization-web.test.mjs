@@ -3,7 +3,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { thinkingLevelForQuestion, currentMarketFreshnessIssue, buildTalkSysSystemInstruction } from '../src/integrated-entry.js';
-import { PHONE_MEMORY_REVISION, phoneMemoryStatusForNumber } from '../src/phone-memory-maintenance.js';
 import { isTelephonyPath, PHONE_RELEASE_VERSION } from '../src/telephony/index.js';
 
 test('v129 uses medium by default and reserves high for dynamic math/deadlines', () => {
@@ -36,17 +35,20 @@ test('integrated Gemini path explicitly configures thinking and no longer post-r
   assert.doesNotMatch(source, /let answer = simplifyForSenior\(normalizeSpokenJapanese\(interaction\.answer\)\)/);
 });
 
-test('phone personalization dashboard exposes maintenance status behind the admin API', async () => {
+test('phone personalization dashboard exposes read-only memory status behind the admin API', async () => {
   const source = await readFile(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
   assert.equal(PHONE_RELEASE_VERSION, 'v129');
   assert.equal(isTelephonyPath('/phone/api/profiles/%2B819012345678/memory-status'), true);
   assert.match(source, /id="memoryStatus"/);
   assert.match(source, /profileMemoryStatus/);
-  assert.match(source, /phoneMemoryStatusForNumber/);
+  assert.match(source, /phone_memory_state/);
+  assert.match(source, /phone_memory_audit/);
   assert.match(source, /adminAuthorized\(request, env\)/);
+  assert.doesNotMatch(source, /phone-memory-maintenance|runPhoneMemoryMaintenance/);
 });
 
-test('phone memory module exports a read-only status helper', () => {
-  assert.match(PHONE_MEMORY_REVISION, /phone-memory-maintenance/);
-  assert.equal(typeof phoneMemoryStatusForNumber, 'function');
+test('memory maintenance module remains unchanged and isolated from live telephony', async () => {
+  const memorySource = await readFile(new URL('../src/phone-memory-maintenance.js', import.meta.url), 'utf8');
+  assert.match(memorySource, /PHONE_MEMORY_REVISION/);
+  assert.match(memorySource, /runPhoneMemoryMaintenance/);
 });
