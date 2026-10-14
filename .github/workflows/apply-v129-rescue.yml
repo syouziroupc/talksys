@@ -1,0 +1,50 @@
+name: Apply v129 rescue
+on:
+  push:
+    branches: [v129-correct]
+    paths:
+      - 'scripts/apply-v129-rescue.py'
+      - 'tests/v129-rescue-personalization-web.test.mjs'
+      - '.github/workflows/apply-v129-rescue.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v129-correct
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Apply isolated v129 patch
+        run: python3 scripts/apply-v129-rescue.py
+      - name: Syntax check
+        run: |
+          node --check src/integrated-entry.js
+          node --check src/phone-memory-maintenance.js
+          node --check src/telephony/index.js
+      - name: Regression tests
+        run: |
+          node --test tests/v129-rescue-personalization-web.test.mjs
+          node --test tests/phone-personalization-profile-v115.test.mjs
+          node --test tests/phone-memory-maintenance-v1.test.mjs
+          node --test tests/phone-grounding-profile-v121.test.mjs
+          node --test tests/answer-quality-regression-v84.test.mjs
+      - name: Commit validated source changes
+        run: |
+          git config user.name 'talksys-ci'
+          git config user.email 'talksys-ci@users.noreply.github.com'
+          git add src/integrated-entry.js src/phone-memory-maintenance.js src/telephony/index.js
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit'
+          else
+            git commit -m 'Implement v129 grounded medium rescue and personalization status'
+            git push origin HEAD:v129-correct
+          fi
