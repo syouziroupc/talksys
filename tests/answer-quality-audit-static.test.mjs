@@ -30,7 +30,7 @@ test('phone AI audit endpoint injects post-STT phone payload and captures pre-TT
   assert.match(runtimeEntry, /channel:\s*'phone'/);
   assert.match(runtimeEntry, /phoneProfile/);
   assert.match(runtimeEntry, /SELECT display_name, personalization_text, memory_text, enabled, version FROM phone_profiles WHERE phone_number=\?/);
-  assert.match(runtimeEntry, /return integratedEntry\.fetch|integratedEntry\.fetch\(turnRequest/);
+  assert.match(runtimeEntry, /integratedEntry\.fetch\(turnRequest/);
 });
 
 test('phone audit payload contract remains aligned with live answerWithTalkSys boundary', () => {
@@ -43,10 +43,10 @@ test('phone audit payload contract remains aligned with live answerWithTalkSys b
 });
 
 test('live Telnyx media routes remain present and are not replaced by the audit endpoint', () => {
-  assert.match(telephony, /pathname==='\/telnyx\/voice'/);
-  assert.match(telephony, /pathname==='\/telnyx\/media'/);
-  assert.match(telephony, /mediaBridge\(request,env,deps\)/);
-  assert.doesNotMatch(runtimeEntry, /pathname === '\/telnyx\/voice'|pathname === '\/telnyx\/media'/);
+  assert.match(telephony, /url\.pathname\s*===\s*'\/telnyx\/voice'/);
+  assert.match(telephony, /url\.pathname\s*===\s*'\/telnyx\/media'/);
+  assert.match(telephony, /mediaBridge\(request\s*,\s*env\s*,\s*deps\)/);
+  assert.doesNotMatch(runtimeEntry, /url\.pathname\s*===\s*'\/telnyx\/(?:voice|media)'/);
 });
 
 test('direct answer audit locks reviewer to the production model and independent Google Search', () => {
