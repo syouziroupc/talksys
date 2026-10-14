@@ -5,7 +5,7 @@ on:
     branches:
       - qa/expanded-ai-quality-prompt-audit-v1
     paths:
-      - 'scripts/experimental-thinking-level-sweep.mjs'
+      - 'scripts/experimental-realtime-minimal-vs-low.mjs'
       - '.github/workflows/oneoff-thinking-level-sweep.yml'
 
 permissions:
@@ -15,11 +15,10 @@ jobs:
   experiment:
     runs-on: ubuntu-24.04
     environment: production
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       AUDIT_MODEL: gemini-3.5-flash-lite
-      REPEATS: '3'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -32,18 +31,18 @@ jobs:
       - name: Validate experiment
         run: |
           set -euo pipefail
-          node --check scripts/experimental-thinking-level-sweep.mjs
+          node --check scripts/experimental-realtime-minimal-vs-low.mjs
           test -n "${GEMINI_API_KEY:-}"
       - name: Run experiment
-        run: node scripts/experimental-thinking-level-sweep.mjs
+        run: node scripts/experimental-realtime-minimal-vs-low.mjs
       - name: Publish summary
         if: always()
         run: |
-          if [[ -f artifacts/thinking-level-sweep/report.md ]]; then cat artifacts/thinking-level-sweep/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [[ -f artifacts/realtime-minimal-vs-low/report.md ]]; then cat artifacts/realtime-minimal-vs-low/report.md >> "$GITHUB_STEP_SUMMARY"; fi
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: thinking-level-sweep-report
-          path: artifacts/thinking-level-sweep/
+          name: realtime-minimal-vs-low-report
+          path: artifacts/realtime-minimal-vs-low/
           retention-days: 30
