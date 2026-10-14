@@ -52,6 +52,19 @@ function judgeEvidence(payload = {}) {
         if (q && !queries.includes(q)) queries.push(q);
       }
     }
+    if (step?.type === 'google_search_result') {
+      for (const item of Array.isArray(step?.result) ? step.result : []) {
+        const url = compact(item?.url || item?.uri, 1000);
+        if (!/^https?:\/\//i.test(url) || citations.some((entry) => entry.url === url)) continue;
+        citations.push({
+          title: compact(item?.title || item?.name || url, 240),
+          url,
+          startIndex: -1,
+          endIndex: -1,
+          source: 'google_search_result',
+        });
+      }
+    }
     if (step?.type === 'model_output') {
       for (const part of Array.isArray(step?.content) ? step.content : []) {
         if (part?.type !== 'text') continue;
@@ -64,6 +77,7 @@ function judgeEvidence(payload = {}) {
             url,
             startIndex: Number(annotation?.start_index ?? -1),
             endIndex: Number(annotation?.end_index ?? -1),
+            source: 'url_citation',
           });
         }
       }
@@ -209,9 +223,9 @@ function writeReports(report) {
   for (const item of report.cases) {
     const structuralFailures = item.structuralChecks.filter((check) => !check.pass).map((check) => check.name).join(', ') || 'OK';
     const judgeSummary = item.judge
-      ? `${item.judge.result?.verdict || 'error'} (${Number(item.judge.result?.confidence || 0).toFixed(2)})`
+      ? `${item.judge.result?.verdict || 'error'} (${Number(item.judge.result?.confidence || 0).toFixed(2)})${item.judge.evidence?.searched && !item.judge.evidence?.citations?.length ? ' / citation-metadata-warning' : ''}`
       : 'not required';
-    lines.push(`| ${item.pass ? 'PASS' : 'FAIL'} | ${markdownCell(item.id, 80)} | ${markdownCell(item.category, 80)} | ${markdownCell(item.production?.answer, 180)} | ${markdownCell(structuralFailures, 140)} | ${markdownCell(judgeSummary, 100)} |`);
+    lines.push(`| ${item.pass ? 'PASS' : 'FAIL'} | ${markdownCell(item.id, 80)} | ${markdownCell(item.category, 80)} | ${markdownCell(item.production?.answer, 180)} | ${markdownCell(structuralFailures, 140)} | ${markdownCell(judgeSummary, 140)} |`);
   }
 
   for (const item of report.cases) {
@@ -233,6 +247,12 @@ function writeReports(report) {
     if (item.judge) {
       lines.push('');
       lines.push(`**Judge verdict:** ${item.judge.result?.verdict || 'error'} / confidence ${Number(item.judge.result?.confidence || 0).toFixed(2)}`);
+      lines.push('');
+      lines.push(`**Judge search executed:** ${String(item.judge.evidence?.searched === true)} / extracted source metadata ${item.judge.evidence?.citations?.length || 0}`);
+      if (item.judge.evidence?.searched === true && !(item.judge.evidence?.citations?.length > 0)) {
+        lines.push('');
+        lines.push('**Judge evidence warning:** Google Search was executed, but this Interactions response did not expose extractable source/citation metadata. This is recorded as a warning and is not by itself treated as a production-answer failure.');
+      }
       if (Array.isArray(item.judge.result?.factual_errors) && item.judge.result.factual_errors.length) {
         lines.push('');
         lines.push('**Factual errors:**');
@@ -298,7 +318,6 @@ async function main() {
     const judgePass = !judgeRequired || Boolean(
       judge
       && judge.evidence?.searched === true
-      && judge.evidence?.citations?.length > 0
       && judge.result?.verdict === 'pass'
       && Number(judge.result?.confidence || 0) >= 0.75
     );
