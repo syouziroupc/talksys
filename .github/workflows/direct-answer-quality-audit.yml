@@ -11,6 +11,10 @@ on:
         description: 'Optional one-off question. When set, runs only this question.'
         required: false
         type: string
+      phone_number:
+        description: 'Optional caller number. When set, the matching phone profile is loaded exactly at the phone AI boundary.'
+        required: false
+        type: string
       fail_on_issue:
         description: 'Fail the workflow when any audited answer fails.'
         required: true
@@ -21,6 +25,8 @@ on:
     paths:
       - '.github/workflows/direct-answer-quality-audit.yml'
       - 'scripts/answer-quality-audit.mjs'
+      - 'scripts/answer-quality-audit-phone-boundary.mjs'
+      - 'src/runtime-entry.js'
       - 'qa/answer-quality-cases.json'
 
 permissions:
@@ -36,6 +42,7 @@ jobs:
       AUDIT_MODEL: gemini-3.5-flash-lite
       CASE_FILTER: ${{ inputs.case_filter || '' }}
       AUDIT_QUESTION: ${{ inputs.question || '' }}
+      AUDIT_PHONE_NUMBER: ${{ inputs.phone_number || '' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -48,15 +55,16 @@ jobs:
         run: |
           set -euo pipefail
           node --check scripts/answer-quality-audit.mjs
+          node --check scripts/answer-quality-audit-phone-boundary.mjs
           node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync('qa/answer-quality-cases.json','utf8'));if(!Array.isArray(d)||!d.length)throw new Error('answer-quality-cases.json is empty');"
 
-      - name: Run direct production audit
+      - name: Run production phone AI boundary audit
         id: audit
         continue-on-error: true
         shell: bash
         run: |
           set -uo pipefail
-          node scripts/answer-quality-audit.mjs
+          node scripts/answer-quality-audit-phone-boundary.mjs
           rc=$?
           echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
           exit 0
@@ -65,11 +73,13 @@ jobs:
         if: always()
         shell: bash
         run: |
+          echo '# TalkSys phone AI boundary quality audit' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Input is injected after STT and output is captured before TTS. Live Telnyx/STT/VAD/TTS routes remain active and unchanged.' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
           if [[ -f artifacts/answer-quality-audit/report.md ]]; then
             cat artifacts/answer-quality-audit/report.md >> "$GITHUB_STEP_SUMMARY"
           else
-            echo '# TalkSys direct answer quality audit' >> "$GITHUB_STEP_SUMMARY"
-            echo '' >> "$GITHUB_STEP_SUMMARY"
             echo 'No report was generated.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
