@@ -1,0 +1,108 @@
+[
+  {
+    "id": "arithmetic",
+    "category": "deterministic",
+    "prompt": "12345÷15",
+    "mustInclude": ["823"],
+    "judge": false
+  },
+  {
+    "id": "japan-prime-minister",
+    "category": "current-person",
+    "prompt": "現在の日本の内閣総理大臣は誰ですか？",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  },
+  {
+    "id": "beppu-weather",
+    "category": "weather",
+    "prompt": "別府市の今日の天気と最高気温を教えてください。",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  },
+  {
+    "id": "beppu-oita-next-train",
+    "category": "transit",
+    "prompt": "別府駅から大分駅へ、今から乗れる次の電車は何時発ですか？",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  },
+  {
+    "id": "nichirin-status",
+    "category": "transit-status",
+    "prompt": "JR九州の日豊本線で、別府駅から大分駅の区間に現在大きな遅延や運休はありますか？",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  },
+  {
+    "id": "node-lts",
+    "category": "software-current",
+    "prompt": "現在のNode.jsのLTS系統は何ですか？公式情報を確認して答えてください。",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  },
+  {
+    "id": "iphone-japan-price",
+    "category": "product-price",
+    "prompt": "Apple日本公式サイトで現在販売されている標準iPhoneの最も安い新品モデルと税込価格を教えてください。",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  },
+  {
+    "id": "beppu-tourist-info-hours",
+    "category": "business-hours",
+    "prompt": "別府駅の観光案内所は今日何時まで開いていますか？公式情報を確認してください。",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  },
+  {
+    "id": "bicycle-tail-light-law",
+    "category": "law",
+    "prompt": "日本で夜間に自転車を走らせる場合、尾灯の色や反射器材について現在の道路交通法令ではどう定められていますか？",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  },
+  {
+    "id": "cloudflare-ceo",
+    "category": "company-current",
+    "prompt": "現在のCloudflareのCEOは誰ですか？",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  },
+  {
+    "id": "oita-population",
+    "category": "official-statistics",
+    "prompt": "大分県の最新の推計人口は何人ですか？基準日も含めて答えてください。",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  },
+  {
+    "id": "current-yen-dollar",
+    "category": "market-current",
+    "prompt": "現在の米ドル円相場は1ドル何円前後ですか？取得時点も示してください。",
+    "requireSearch": true,
+    "minSources": 1,
+    "minCitations": 1,
+    "judge": true
+  }
+]
