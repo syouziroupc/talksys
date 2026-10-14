@@ -31,6 +31,7 @@ jobs:
   audit:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04
+    environment: production
     timeout-minutes: 30
     env:
       PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
@@ -55,6 +56,7 @@ jobs:
           node --check scripts/answer-quality-audit.mjs
           node --check scripts/answer-quality-audit-phone-boundary.mjs
           node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync('qa/answer-quality-cases.json','utf8'));if(!Array.isArray(d)||!d.length)throw new Error('answer-quality-cases.json is empty');"
+          test -n "${GEMINI_API_KEY:-}"
 
       - name: Run production phone AI boundary audit
         id: audit
