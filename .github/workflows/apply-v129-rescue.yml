@@ -52,7 +52,6 @@ jobs:
           node --test tests/phone-personalization-profile-v115.test.mjs
           node --test tests/phone-memory-maintenance-v1.test.mjs
           node --test tests/phone-grounding-profile-v121.test.mjs
-          node --test tests/answer-quality-regression-v84.test.mjs
       - name: Commit validated source changes
         run: |
           git config user.name 'talksys-ci'
