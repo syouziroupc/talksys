@@ -4,18 +4,56 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const runner = fs.readFileSync('scripts/answer-quality-audit.mjs', 'utf8');
+const phoneBoundaryRunner = fs.readFileSync('scripts/answer-quality-audit-phone-boundary.mjs', 'utf8');
+const runtimeEntry = fs.readFileSync('src/runtime-entry.js', 'utf8');
+const telephony = fs.readFileSync('src/telephony/index.js', 'utf8');
 const workflow = fs.readFileSync('.github/workflows/direct-answer-quality-audit.yml', 'utf8');
 const cases = JSON.parse(fs.readFileSync('qa/answer-quality-cases.json', 'utf8'));
 
-test('direct answer audit runner has valid JavaScript syntax', () => {
-  const checked = spawnSync(process.execPath, ['--check', 'scripts/answer-quality-audit.mjs'], { encoding: 'utf8' });
-  assert.equal(checked.status, 0, checked.stderr || checked.stdout);
+test('answer audit runners have valid JavaScript syntax', () => {
+  for (const path of ['scripts/answer-quality-audit.mjs', 'scripts/answer-quality-audit-phone-boundary.mjs']) {
+    const checked = spawnSync(process.execPath, ['--check', path], { encoding: 'utf8' });
+    assert.equal(checked.status, 0, `${path}: ${checked.stderr || checked.stdout}`);
+  }
 });
 
-test('direct answer audit bypasses telephony and targets production turn endpoint', () => {
+test('base answer audit remains transport-neutral and phone wrapper swaps only the AI boundary', () => {
   assert.match(runner, /\/api\/turn/);
-  assert.match(runner, /channel:\s*'web'/);
-  assert.doesNotMatch(runner, /telnyx|PCMU|TELEPHONY_|\/api\/transcribe|\/api\/voice\/synthesize/i);
+  assert.match(phoneBoundaryRunner, /\/api\/internal\/phone-ai-boundary-audit/);
+  assert.match(phoneBoundaryRunner, /talksys-phone-ai-boundary-audit-v1/);
+  assert.doesNotMatch(phoneBoundaryRunner, /\/telnyx\/media|\/telnyx\/voice|\/api\/transcribe|\/api\/voice\/synthesize|PCMU/i);
+});
+
+test('phone AI audit endpoint injects post-STT phone payload and captures pre-TTS JSON answer', () => {
+  assert.match(runtimeEntry, /inputBoundary:\s*'post-stt-pre-ai'/);
+  assert.match(runtimeEntry, /outputBoundary:\s*'post-ai-pre-tts'/);
+  assert.match(runtimeEntry, /channel:\s*'phone'/);
+  assert.match(runtimeEntry, /phoneProfile/);
+  assert.match(runtimeEntry, /SELECT display_name, personalization_text, memory_text, enabled, version FROM phone_profiles WHERE phone_number=\?/);
+  assert.match(runtimeEntry, /integratedEntry\.fetch\(turnRequest/);
+});
+
+test('phone audit payload contract remains aligned with live answerWithTalkSys boundary', () => {
+  const contractPatterns = [
+    /channel:\s*'phone'/,
+    /\bsessionId\b/,
+    /\butteranceId\b/,
+    /\bspokenBackchannel\b/,
+    /\bphoneProfile\b/,
+  ];
+  for (const pattern of contractPatterns) {
+    assert.match(telephony, pattern, `live phone boundary missing ${pattern}`);
+    assert.match(runtimeEntry, pattern, `audit phone boundary missing ${pattern}`);
+  }
+  assert.match(telephony, /slice\(-16\)/);
+  assert.match(runtimeEntry, /slice\(-16\)/);
+});
+
+test('live Telnyx media routes remain present and are not replaced by the audit endpoint', () => {
+  assert.match(telephony, /url\.pathname\s*===\s*'\/telnyx\/voice'/);
+  assert.match(telephony, /url\.pathname\s*===\s*'\/telnyx\/media'/);
+  assert.match(telephony, /mediaBridge\(request\s*,\s*env\s*,\s*deps\)/);
+  assert.doesNotMatch(runtimeEntry, /url\.pathname\s*===\s*'\/telnyx\/(?:voice|media)'/);
 });
 
 test('direct answer audit locks reviewer to the production model and independent Google Search', () => {
@@ -34,9 +72,11 @@ test('standard suite covers broad factual categories', () => {
   }
 });
 
-test('workflow exposes manual arbitrary-question audit and visible reports', () => {
+test('workflow exposes manual arbitrary-question and optional caller-profile audit', () => {
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /question:/);
+  assert.match(workflow, /phone_number:/);
+  assert.match(workflow, /answer-quality-audit-phone-boundary\.mjs/);
   assert.match(workflow, /GITHUB_STEP_SUMMARY/);
   assert.match(workflow, /actions\/upload-artifact@v4/);
   assert.match(workflow, /answer-quality-report/);
