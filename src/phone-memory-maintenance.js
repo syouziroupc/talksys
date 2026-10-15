@@ -1,4 +1,4 @@
-export const PHONE_MEMORY_REVISION = 'talksys-phone-memory-maintenance-v1-r3';
+export const PHONE_MEMORY_REVISION = 'talksys-phone-memory-maintenance-v1-r4';
 export const PHONE_MEMORY_PRIMARY_MODEL = 'gemini-3.5-flash-lite';
 export const PHONE_MEMORY_SHADOW_MODEL = '@cf/ibm-granite/granite-4.0-h-micro';
 
@@ -341,6 +341,161 @@ async function audit(db, values = {}) {
       values.phoneNumber, values.fromMessageId, values.toMessageId, values.primaryModel, values.primaryStatus,
       values.personalizationAdded, values.memoryAdded, values.nameAdded, values.shadowModel, values.shadowStatus, new Date().toISOString(),
     ).run();
+}
+
+async function v130ProfileControls(db, phoneNumber) {
+  try {
+    return (await db.prepare('SELECT lifecycle_state,memory_enabled FROM phone_profiles WHERE phone_number=?').bind(phoneNumber).first()) || { lifecycle_state: 'active', memory_enabled: 1 };
+  } catch {
+    return { lifecycle_state: 'active', memory_enabled: 1 };
+  }
+}
+
+async function v130UserIsTrashed(db, phoneNumber) {
+  try {
+    return Boolean(await db.prepare('SELECT phone_number FROM phone_user_trash WHERE phone_number=?').bind(phoneNumber).first());
+  } catch {
+    return false;
+  }
+}
+
+export async function extractPhoneMemoryCandidate(env = {}, phoneNumber = '') {
+  const db = env?.TALKSYS_LOG_DB;
+  const phone = compact(phoneNumber, 80);
+  if (!db || typeof db.prepare !== 'function') throw new Error('talksys_log_db_missing');
+  if (!phone) return { ok: false, status: 'invalid_phone_number', phoneNumber: '' };
+  await ensureSchema(db);
+  if (await v130UserIsTrashed(db, phone)) return { ok: true, status: 'user_trashed', phoneNumber: phone };
+
+  const state = await stateFor(db, phone);
+  const stateLastProcessedMessageId = Number(state.last_processed_message_id || 0);
+  const batch = buildTranscript(await pendingMessages(db, phone, stateLastProcessedMessageId));
+  if (!batch.toMessageId) return { ok: true, status: 'no_messages', phoneNumber: phone };
+  if (!batch.userTexts.length) {
+    return { ok: true, status: 'no_user_text', phoneNumber: phone, fromMessageId: batch.fromMessageId, toMessageId: batch.toMessageId };
+  }
+
+  const current = await profileFor(db, phone);
+  if (Number(current.enabled ?? 1) === 0) return { ok: true, status: 'profile_disabled', phoneNumber: phone, toMessageId: batch.toMessageId };
+  const controls = await v130ProfileControls(db, phone);
+  if (String(controls?.lifecycle_state || 'active') !== 'active') return { ok: true, status: 'profile_trashed', phoneNumber: phone, toMessageId: batch.toMessageId };
+  if (Number(controls?.memory_enabled ?? 1) === 0) return { ok: true, status: 'memory_disabled', phoneNumber: phone, toMessageId: batch.toMessageId };
+
+  const prompt = extractionPrompt(current, batch.transcript);
+  let primary;
+  try {
+    primary = await runPrimaryExtractor(env, prompt);
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'primary_error',
+      phoneNumber: phone,
+      stateLastProcessedMessageId,
+      fromMessageId: batch.fromMessageId,
+      toMessageId: batch.toMessageId,
+      error: compact(error?.message || error, 300),
+    };
+  }
+
+  const extraction = validateExtraction(primary.parsed, batch.userTexts, current);
+  const personalization = mergeProfileLines(current.personalization_text || '', extraction.personalization, 4000);
+  const memory = mergeProfileLines(current.memory_text || '', extraction.memory, 8000);
+  const displayName = compact(current.display_name || extraction.preferredName, 80);
+  return {
+    ok: true,
+    status: 'candidate',
+    phoneNumber: phone,
+    stateLastProcessedMessageId,
+    fromMessageId: batch.fromMessageId,
+    toMessageId: batch.toMessageId,
+    primaryModel: primary.model,
+    profileVersion: Number(current.version || 0),
+    currentProfile: {
+      phone_number: phone,
+      display_name: current.display_name || '',
+      personalization_text: current.personalization_text || '',
+      memory_text: current.memory_text || '',
+      enabled: Number(current.enabled ?? 1),
+      version: Number(current.version || 0),
+    },
+    extraction,
+    planned: {
+      displayName,
+      nameAdded: !current.display_name && displayName ? 1 : 0,
+      personalizationAdded: personalization.added,
+      memoryAdded: memory.added,
+      hasChange: displayName !== compact(current.display_name, 80) || personalization.added.length > 0 || memory.added.length > 0,
+    },
+  };
+}
+
+export function publicPhoneMemoryCandidate(candidate = {}) {
+  return {
+    status: candidate?.status || '',
+    phoneNumber: compact(candidate?.phoneNumber, 80),
+    fromMessageId: Number(candidate?.fromMessageId || 0),
+    toMessageId: Number(candidate?.toMessageId || 0),
+    primaryModel: compact(candidate?.primaryModel, 160),
+    profileVersion: Number(candidate?.profileVersion || 0),
+    preferredName: compact(candidate?.extraction?.preferredName, 80),
+    personalization: Array.isArray(candidate?.extraction?.personalization) ? candidate.extraction.personalization : [],
+    memory: Array.isArray(candidate?.extraction?.memory) ? candidate.extraction.memory : [],
+    planned: candidate?.planned || { displayName: '', nameAdded: 0, personalizationAdded: [], memoryAdded: [], hasChange: false },
+  };
+}
+
+export async function applyPhoneMemoryCandidate(env = {}, candidate = {}) {
+  const db = env?.TALKSYS_LOG_DB;
+  const phone = compact(candidate?.phoneNumber, 80);
+  if (!db || typeof db.prepare !== 'function') throw new Error('talksys_log_db_missing');
+  if (!phone || candidate?.status !== 'candidate' || !candidate?.currentProfile || !candidate?.extraction) {
+    return { ok: false, status: 'invalid_candidate', phoneNumber: phone };
+  }
+  if (await v130UserIsTrashed(db, phone)) return { ok: true, status: 'user_trashed', phoneNumber: phone };
+  const controls = await v130ProfileControls(db, phone);
+  if (String(controls?.lifecycle_state || 'active') !== 'active') return { ok: true, status: 'profile_trashed', phoneNumber: phone };
+  if (Number(controls?.memory_enabled ?? 1) === 0) return { ok: true, status: 'memory_disabled', phoneNumber: phone };
+
+  const applied = await applyProfile(db, phone, candidate.currentProfile, candidate.extraction);
+  if (applied.conflict) {
+    await saveState(db, phone, {
+      lastProcessedMessageId: Number(candidate.stateLastProcessedMessageId || 0),
+      lastModel: candidate.primaryModel || PHONE_MEMORY_PRIMARY_MODEL,
+      lastStatus: 'version_conflict',
+      lastError: 'profile_version_changed',
+    });
+    return { ok: false, phoneNumber: phone, status: 'version_conflict' };
+  }
+
+  const status = applied.applied ? 'applied' : 'no_change';
+  await saveState(db, phone, {
+    lastProcessedMessageId: Number(candidate.toMessageId || 0),
+    lastModel: candidate.primaryModel || PHONE_MEMORY_PRIMARY_MODEL,
+    lastStatus: status,
+    previousDisplayName: applied.applied ? candidate.currentProfile.display_name || '' : '',
+    previousPersonalizationText: applied.applied ? candidate.currentProfile.personalization_text || '' : '',
+    previousMemoryText: applied.applied ? candidate.currentProfile.memory_text || '' : '',
+  });
+  await audit(db, {
+    phoneNumber: phone,
+    fromMessageId: Number(candidate.fromMessageId || 0),
+    toMessageId: Number(candidate.toMessageId || 0),
+    primaryModel: candidate.primaryModel || PHONE_MEMORY_PRIMARY_MODEL,
+    primaryStatus: status,
+    personalizationAdded: applied.personalization.added.length,
+    memoryAdded: applied.memory.added.length,
+    nameAdded: applied.applied && !candidate.currentProfile.display_name && applied.displayName ? 1 : 0,
+    shadowModel: '',
+    shadowStatus: 'v130_job',
+  });
+  return {
+    ok: true,
+    phoneNumber: phone,
+    status,
+    personalizationAdded: applied.personalization.added.length,
+    memoryAdded: applied.memory.added.length,
+    nameAdded: applied.applied && !candidate.currentProfile.display_name && applied.displayName ? 1 : 0,
+  };
 }
 
 async function processPhone(env, phoneNumber) {
