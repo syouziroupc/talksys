@@ -11,14 +11,15 @@
     "runtime.entry": {
       "canonical": "src/runtime-entry.js",
       "status": "production",
-      "responsibility": "Thin production runtime entry that delegates existing HTTP and telephony traffic unchanged, hosts isolated scheduled maintenance hooks, and gates the V130 management control plane outside the live call path",
+      "responsibility": "Thin production runtime entry that delegates existing HTTP and telephony traffic unchanged, hosts isolated scheduled maintenance hooks, and gates the V130 management control plane and onboarding state outside the live call path",
       "companions": [
         "src/integrated-entry.js",
         "src/entry.js",
         "src/usage-telemetry.js",
         "src/v130-control-plane.js",
         "src/v130-log-management.js",
-        "src/v130-admin-page.js"
+        "src/v130-admin-page.js",
+        "src/v130-onboarding.js"
       ],
       "migrationNote": "V130 management companions extend the existing runtime entry and are feature-gated fail-closed. They must not alter the synchronous STT, VAD, PCMU, TTS, interrupt/barge-in, fast-reaction, search, or answer paths. Existing HTTP handling remains in src/integrated-entry.js when the V130 flags are OFF."
     },
