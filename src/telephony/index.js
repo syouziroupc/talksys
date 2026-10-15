@@ -515,17 +515,19 @@ async function waitForPhoneProgressAudio(promise) {
 function profilesDashboardHtml(request) {
   const base = publicBaseUrl(request);
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TalkSys 電話番号プロフィール</title><style>
-  :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0e14;color:#f3f6fb}body{margin:0}.wrap{max-width:1180px;margin:auto;padding:28px 18px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.sub,.muted{color:#98a5b7}.panel{border:1px solid #293243;background:#121722;border-radius:14px;padding:16px;margin-top:16px}.grid{display:grid;grid-template-columns:minmax(300px,.8fr) minmax(420px,1.35fr);gap:14px}@media(max-width:820px){.grid{grid-template-columns:1fr}}button,input,textarea,select{font:inherit}button{background:#202a3a;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px 12px;cursor:pointer}input,textarea,select{box-sizing:border-box;width:100%;background:#0b0e14;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px}textarea{min-height:110px;resize:vertical}.row{padding:11px;border-bottom:1px solid #283245;cursor:pointer}.row:hover{background:#171e2b}.num{font-weight:750}.meta{font-size:12px;color:#91a0b5;margin-top:4px}.form{display:grid;gap:11px}.form label{font-size:12px;color:#bec8d7}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.warn{color:#ffca72}.ok{color:#7dd69a}.hidden{display:none}a{color:#a8c7ff}.newrow{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}.profileHistory{margin-top:20px;border-top:1px solid #2a3344;padding-top:14px}.historyCall{padding:10px;border:1px solid #293243;border-radius:9px;margin:8px 0;cursor:pointer}.historyCall:hover{background:#171e2b}.historyMessages{margin-top:12px}.historyMsg{padding:9px 10px;border-radius:8px;margin:7px 0;white-space:pre-wrap}.historyUser{background:#1b2b3a}.historyAssistant{background:#25213a}
+  :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b0e14;color:#f3f6fb}body{margin:0}.wrap{max-width:1180px;margin:auto;padding:28px 18px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.sub,.muted{color:#98a5b7}.panel{border:1px solid #293243;background:#121722;border-radius:14px;padding:16px;margin-top:16px}.grid{display:grid;grid-template-columns:minmax(300px,.8fr) minmax(420px,1.35fr);gap:14px}@media(max-width:820px){.grid{grid-template-columns:1fr}}button,input,textarea,select{font:inherit}button{background:#202a3a;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px 12px;cursor:pointer}input,textarea,select{box-sizing:border-box;width:100%;background:#0b0e14;color:#fff;border:1px solid #3b4860;border-radius:8px;padding:9px}textarea{min-height:110px;resize:vertical}.row{padding:11px;border-bottom:1px solid #283245;cursor:pointer}.row:hover{background:#171e2b}.num{font-weight:750}.meta{font-size:12px;color:#91a0b5;margin-top:4px}.form{display:grid;gap:11px}.form label{font-size:12px;color:#bec8d7}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.warn{color:#ffca72}.ok{color:#7dd69a}.hidden{display:none}a{color:#a8c7ff}.newrow{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}.profileHistory{margin-top:20px;border-top:1px solid #2a3344;padding-top:14px}.historyCall{padding:10px;border:1px solid #293243;border-radius:9px;margin:8px 0;cursor:pointer}.historyCall:hover{background:#171e2b}.historyMessages{margin-top:12px}.historyMsg{padding:9px 10px;border-radius:8px;margin:7px 0;white-space:pre-wrap}.historyUser{background:#1b2b3a}.historyAssistant{background:#25213a}.opsCards{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:10px;margin-top:12px}.opsCard{border:1px solid #2e394d;background:#0d121b;border-radius:10px;padding:12px}.opsLabel{font-size:12px;color:#9eacc0}.opsValue{font-size:20px;font-weight:750;margin-top:4px;overflow-wrap:anywhere}.opsMeta{font-size:12px;color:#9eacc0;margin-top:10px}.opsRows{margin-top:12px;max-height:360px;overflow:auto;border-top:1px solid #293243}.opsRow{display:grid;grid-template-columns:minmax(180px,1.2fr) minmax(90px,.6fr) minmax(90px,.5fr) minmax(180px,1fr);gap:10px;padding:10px;border-bottom:1px solid #283245;cursor:pointer;align-items:center}.opsRow:hover{background:#171e2b}.opsState{font-weight:700}.opsError{color:#ff9d9d}@media(max-width:820px){.opsCards{grid-template-columns:repeat(2,minmax(130px,1fr))}.opsRow{grid-template-columns:1fr 1fr}.opsWide{grid-column:1/-1}}
   </style></head><body><main class="wrap"><div class="top"><div><h1>電話番号プロフィール</h1><div class="sub">通話履歴とは分離して、発信者番号ごとの呼び名・応答方針・継続メモを管理します。</div></div><div><a href="${xmlEscape(base)}/phone">通話管理へ</a></div></div>
   <section id="login" class="panel"><b>管理トークン</b><p class="muted">/phone と同じ管理トークンを使用します。</p><input id="token" type="password" autocomplete="current-password"><button id="loginBtn">表示</button><div id="loginErr" class="warn"></div></section>
-  <section id="app" class="hidden"><div class="grid"><div class="panel"><input id="filter" placeholder="電話番号・表示名で絞り込み"><div class="newrow"><input id="newPhone" placeholder="新しい電話番号"><button id="newBtn">開く</button></div><div id="list" style="margin-top:12px"></div></div><div class="panel"><h2 id="editorTitle">電話番号を選択</h2><div id="editor" class="hidden"><div class="form"><label>電話番号<input id="profilePhone" readonly></label><label>表示名<input id="profileName" maxlength="80"></label><label>応答方針<textarea id="profilePersonalization" maxlength="4000"></textarea></label><label>継続メモ<textarea id="profileMemory" maxlength="8000"></textarea></label><label>有効<select id="profileEnabled"><option value="1">有効</option><option value="0">無効</option></select></label></div><div class="actions" style="margin-top:12px"><button id="saveBtn">保存</button><span id="status" class="muted"></span></div><p class="muted">電話番号は本人確認には使用しません。秘密情報は保存しないでください。</p><div class="panel" style="margin-top:14px"><b>パーソナライズ自動更新状況</b><pre id="memoryStatus" class="muted" style="white-space:pre-wrap">電話番号を選択してください。</pre></div></div><div class="profileHistory"><div class="top"><h3>電話履歴</h3><span class="muted">直近20件</span></div><div id="profileCallHistory" class="muted">電話番号を選択してください。</div><div id="profileCallMessages" class="historyMessages muted"></div></div></div></div></section>
+  <section id="app" class="hidden"><div class="panel"><div class="top"><div><h2 style="margin:0">パーソナライズ運用状況</h2><div class="sub">自動更新の稼働状況、未処理件数、エラーを全番号まとめて確認できます。</div></div><button id="personalizationRefreshBtn">再読込</button></div><div id="personalizationSummary" class="opsCards"><div class="muted">読込中...</div></div><div id="personalizationMeta" class="opsMeta"></div><div id="personalizationOverview" class="opsRows"></div></div><div class="grid"><div class="panel"><input id="filter" placeholder="電話番号・表示名で絞り込み"><div class="newrow"><input id="newPhone" placeholder="新しい電話番号"><button id="newBtn">開く</button></div><div id="list" style="margin-top:12px"></div></div><div class="panel"><h2 id="editorTitle">電話番号を選択</h2><div id="editor" class="hidden"><div class="form"><label>電話番号<input id="profilePhone" readonly></label><label>表示名<input id="profileName" maxlength="80"></label><label>応答方針<textarea id="profilePersonalization" maxlength="4000"></textarea></label><label>継続メモ<textarea id="profileMemory" maxlength="8000"></textarea></label><label>有効<select id="profileEnabled"><option value="1">有効</option><option value="0">無効</option></select></label></div><div class="actions" style="margin-top:12px"><button id="saveBtn">保存</button><span id="status" class="muted"></span></div><p class="muted">電話番号は本人確認には使用しません。秘密情報は保存しないでください。</p><div class="panel" style="margin-top:14px"><b>パーソナライズ自動更新状況</b><pre id="memoryStatus" class="muted" style="white-space:pre-wrap">電話番号を選択してください。</pre></div></div><div class="profileHistory"><div class="top"><h3>電話履歴</h3><span class="muted">直近20件</span></div><div id="profileCallHistory" class="muted">電話番号を選択してください。</div><div id="profileCallMessages" class="historyMessages muted"></div></div></div></div></section>
   </main><script>
   let adminToken=sessionStorage.getItem('talksysPhoneToken')||'',rows=[],selectedPhone='',selectedVersion=0;
   const auth=()=>adminToken?{'authorization':'Bearer '+adminToken}:{};
   const esc=s=>String(s??'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
   async function api(path,options={}){const r=await fetch(path,{...options,headers:{...auth(),...(options.headers||{})},cache:'no-store'});const d=await r.json().catch(()=>({}));if(r.status===401){const e=new Error('認証に失敗しました');e.status=401;throw e}if(!r.ok||d.ok===false){const e=new Error(d.error||('HTTP '+r.status));e.status=r.status;throw e}return d}
   function render(){const q=String(document.getElementById('filter').value||'').toLowerCase();const shown=rows.filter(x=>(String(x.phone_number||'')+' '+String(x.display_name||'')).toLowerCase().includes(q));document.getElementById('list').innerHTML=shown.length?shown.map(x=>'<div class="row" data-phone="'+esc(x.phone_number)+'"><div class="num">'+esc(x.display_name||x.phone_number)+'</div><div class="meta">'+esc(x.display_name?x.phone_number:'')+' / '+Number(x.call_count||0)+'通話 / '+(Number(x.enabled)===0?'無効':'有効')+'</div><div class="meta">最終通話 '+esc(x.last_call_at||'なし')+'</div></div>').join(''):'<div class="muted">該当なし</div>';document.querySelectorAll('.row').forEach(el=>el.onclick=()=>loadProfile(el.dataset.phone))}
-  async function refresh(){const d=await api('/phone/api/profiles');rows=d.profiles||[];render()}
+  const whenJst=value=>{if(!value)return '未実行';const date=new Date(value);return Number.isNaN(date.getTime())?String(value):date.toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})};
+  async function loadPersonalizationOverview(){const summaryRoot=document.getElementById('personalizationSummary'),metaRoot=document.getElementById('personalizationMeta'),listRoot=document.getElementById('personalizationOverview');summaryRoot.innerHTML='<div class="muted">読込中...</div>';metaRoot.textContent='';listRoot.innerHTML='';try{const d=await api('/phone/api/personalization-status');const s=d.summary||{};summaryRoot.innerHTML=[['自動更新',d.enabled?'有効':'無効',d.enabled?'ok':'warn'],['対象番号',Number(s.numbers||0)+'件',''],['未処理',Number(s.pending_messages||0)+'件',Number(s.pending_messages||0)>0?'warn':'ok'],['要確認',Number(s.error_count||0)+'件',Number(s.error_count||0)>0?'warn':'ok']].map(x=>'<div class="opsCard"><div class="opsLabel">'+esc(x[0])+'</div><div class="opsValue '+x[2]+'">'+esc(x[1])+'</div></div>').join('');if(!d.initialized){metaRoot.innerHTML='<span class="warn">自動更新の状態テーブルはまだ初期化されていません。</span>';return}metaRoot.textContent='最終実行: '+whenJst(s.last_run_at)+' / 更新済み番号: '+Number(s.updated_numbers||0)+' / 未処理あり: '+Number(s.pending_numbers||0)+'件';const items=(d.profiles||[]).slice().sort((a,b)=>{const ae=(a.last_error||/error|fail/i.test(String(a.last_status||'')))?1:0,be=(b.last_error||/error|fail/i.test(String(b.last_status||'')))?1:0;if(ae!==be)return be-ae;const ap=Number(a.pending_messages||0),bp=Number(b.pending_messages||0);if(ap!==bp)return bp-ap;return String(b.last_run_at||'').localeCompare(String(a.last_run_at||''))});listRoot.innerHTML=items.length?items.map(x=>{const bad=Boolean(x.last_error)||/error|fail/i.test(String(x.last_status||''));return '<div class="opsRow" data-ops-phone="'+esc(x.phone_number)+'"><div><div class="num">'+esc(x.display_name||x.phone_number)+'</div><div class="meta">'+esc(x.display_name?x.phone_number:'')+' / '+Number(x.call_count||0)+'通話</div></div><div><div class="opsState '+(bad?'opsError':'')+'">'+esc(x.last_status||'never')+'</div><div class="meta">'+esc(x.last_model||'未実行')+'</div></div><div><div>'+Number(x.pending_messages||0)+'件</div><div class="meta">未処理</div></div><div class="opsWide"><div>'+esc(whenJst(x.last_run_at))+'</div><div class="meta '+(bad?'opsError':'')+'">'+esc(x.last_error||'エラーなし')+'</div></div></div>'}).join(''):'<div class="muted" style="padding:12px">対象の電話番号はまだありません。</div>';listRoot.querySelectorAll('[data-ops-phone]').forEach(el=>el.onclick=()=>loadProfile(el.dataset.opsPhone).catch(e=>alert(e.message)))}catch(e){summaryRoot.innerHTML='<div class="warn">状況取得失敗: '+esc(e.message)+'</div>'}}
+  async function refresh(){const d=await api('/phone/api/profiles');rows=d.profiles||[];render();await loadPersonalizationOverview()}
   async function loadProfile(phone){selectedPhone=String(phone||'').trim();if(!selectedPhone)return;const d=await api('/phone/api/profiles/'+encodeURIComponent(selectedPhone));const p=d.profile||{};selectedVersion=Number(p.version||0);document.getElementById('editor').classList.remove('hidden');document.getElementById('editorTitle').textContent=p.display_name?String(p.display_name)+' のプロフィール':selectedPhone+' のプロフィール';document.getElementById('profilePhone').value=selectedPhone;document.getElementById('profileName').value=p.display_name||'';document.getElementById('profilePersonalization').value=p.personalization_text||'';document.getElementById('profileMemory').value=p.memory_text||'';document.getElementById('profileEnabled').value=String(Number(p.enabled)===0?0:1);document.getElementById('status').textContent=d.exists?'保存済み':'未登録';history.replaceState(null,'','/phone-profiles?phone='+encodeURIComponent(selectedPhone));await Promise.all([loadProfileCalls(selectedPhone),loadMemoryStatus(selectedPhone)])}
   async function loadMemoryStatus(phone){const root=document.getElementById('memoryStatus');root.textContent='読込中...';try{const d=await api('/phone/api/profiles/'+encodeURIComponent(phone)+'/memory-status');const st=d.state||{},audits=d.audits||[];const last=audits[0]||{};root.textContent=[
   '機能: '+(d.enabled?'有効':'無効'),
@@ -541,7 +543,7 @@ function profilesDashboardHtml(request) {
   async function loadProfileCallMessages(id){const root=document.getElementById('profileCallMessages');root.innerHTML='<div class="muted">会話読込中...</div>';const d=await api('/phone/api/calls/'+encodeURIComponent(id)+'/messages');root.innerHTML=(d.messages||[]).length?(d.messages||[]).map(m=>'<div class="historyMsg '+(m.role==='user'?'historyUser':'historyAssistant')+'"><div class="meta">'+(m.role==='user'?'発信者':'TalkSys')+' / '+esc(m.created_at||'')+'</div>'+esc(m.content||'')+'</div>').join(''):'<div class="muted">会話本文はありません。</div>'}
   async function save(){if(!selectedPhone)return;const status=document.getElementById('status');status.textContent='保存中...';status.className='muted';try{const d=await api('/phone/api/profiles/'+encodeURIComponent(selectedPhone),{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({display_name:document.getElementById('profileName').value,personalization_text:document.getElementById('profilePersonalization').value,memory_text:document.getElementById('profileMemory').value,enabled:Number(document.getElementById('profileEnabled').value),version:selectedVersion})});selectedVersion=Number(d.profile?.version||selectedVersion);status.textContent='保存しました';status.className='ok';await refresh();await loadProfile(selectedPhone)}catch(e){status.className='warn';if(e.status===409){status.textContent='更新競合。再読込しました。';await loadProfile(selectedPhone);return}status.textContent='保存失敗: '+e.message}}
   async function start(){try{await refresh();document.getElementById('login').classList.add('hidden');document.getElementById('app').classList.remove('hidden');const q=new URL(location.href).searchParams.get('phone');if(q)await loadProfile(q)}catch(e){document.getElementById('loginErr').textContent=e.message}}
-  document.getElementById('loginBtn').onclick=()=>{adminToken=document.getElementById('token').value;sessionStorage.setItem('talksysPhoneToken',adminToken);start()};document.getElementById('filter').oninput=render;document.getElementById('newBtn').onclick=()=>loadProfile(document.getElementById('newPhone').value).catch(e=>alert(e.message));document.getElementById('saveBtn').onclick=()=>save();if(adminToken)start();
+  document.getElementById('loginBtn').onclick=()=>{adminToken=document.getElementById('token').value;sessionStorage.setItem('talksysPhoneToken',adminToken);start()};document.getElementById('personalizationRefreshBtn').onclick=()=>loadPersonalizationOverview();document.getElementById('filter').oninput=render;document.getElementById('newBtn').onclick=()=>loadProfile(document.getElementById('newPhone').value).catch(e=>alert(e.message));document.getElementById('saveBtn').onclick=()=>save();if(adminToken)start();
   </script></body></html>`;
 }
 
@@ -694,6 +696,117 @@ async function profileMemoryStatus(request, env, phoneNumber) {
       return json({ ok: true, initialized: false, revision: 'talksys-phone-memory-status-v129-r1', enabled, phone_number: phone, state: emptyState, pending_messages: 0, newest_message_id: 0, audits: [] });
     }
     return json({ ok: false, error: 'phone_memory_status_failed', detail, revision: 'talksys-phone-memory-status-v129-r1' }, 500);
+  }
+}
+
+async function personalizationOverview(request, env) {
+  if (!adminAuthorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+  if (!(await ensureSchema(env))) return json({ ok: false, error: 'storage_unavailable' }, 503);
+  const db = env?.TALKSYS_LOG_DB;
+  const enabled = /^(?:1|true|yes|on)$/i.test(String(env?.PHONE_MEMORY_ENABLED ?? '').trim());
+  const revision = 'talksys-phone-personalization-dashboard-v129-r1';
+  try {
+    const result = await db.prepare(`WITH callers AS (
+        SELECT from_number AS phone_number, MAX(updated_at) AS last_call_at, COUNT(*) AS call_count
+        FROM phone_calls WHERE COALESCE(from_number, '') <> '' GROUP BY from_number
+      ), numbers AS (
+        SELECT phone_number FROM phone_profiles
+        UNION
+        SELECT phone_number FROM callers
+      ), latest_audit_ids AS (
+        SELECT phone_number, MAX(id) AS latest_id FROM phone_memory_audit GROUP BY phone_number
+      ), latest_audit AS (
+        SELECT a.phone_number, a.personalization_added, a.memory_added, a.name_added, a.created_at
+        FROM phone_memory_audit a JOIN latest_audit_ids l ON l.latest_id=a.id
+      ), message_progress AS (
+        SELECT c.from_number AS phone_number,
+          SUM(CASE WHEN m.id>COALESCE(s.last_processed_message_id, 0) THEN 1 ELSE 0 END) AS pending_messages,
+          MAX(m.id) AS newest_message_id
+        FROM phone_calls c
+        JOIN phone_messages m ON m.call_id=c.call_id
+        LEFT JOIN phone_memory_state s ON s.phone_number=c.from_number
+        WHERE COALESCE(c.from_number, '') <> ''
+        GROUP BY c.from_number
+      )
+      SELECT n.phone_number,
+        COALESCE(p.display_name, '') AS display_name,
+        COALESCE(p.enabled, 1) AS profile_enabled,
+        p.updated_at AS profile_updated_at,
+        c.last_call_at,
+        COALESCE(c.call_count, 0) AS call_count,
+        COALESCE(s.last_processed_message_id, 0) AS last_processed_message_id,
+        COALESCE(s.last_run_at, '') AS last_run_at,
+        COALESCE(s.last_model, '') AS last_model,
+        COALESCE(s.last_status, 'never') AS last_status,
+        COALESCE(s.last_error, '') AS last_error,
+        COALESCE(mp.pending_messages, 0) AS pending_messages,
+        COALESCE(mp.newest_message_id, 0) AS newest_message_id,
+        COALESCE(a.personalization_added, 0) AS personalization_added,
+        COALESCE(a.memory_added, 0) AS memory_added,
+        COALESCE(a.name_added, 0) AS name_added,
+        COALESCE(a.created_at, '') AS last_audit_at
+      FROM numbers n
+      LEFT JOIN phone_profiles p ON p.phone_number=n.phone_number
+      LEFT JOIN callers c ON c.phone_number=n.phone_number
+      LEFT JOIN phone_memory_state s ON s.phone_number=n.phone_number
+      LEFT JOIN message_progress mp ON mp.phone_number=n.phone_number
+      LEFT JOIN latest_audit a ON a.phone_number=n.phone_number
+      ORDER BY COALESCE(c.last_call_at, p.updated_at, '') DESC, n.phone_number ASC
+      LIMIT 500`).all();
+    const profiles = (result.results || []).map((row) => ({
+      ...row,
+      call_count: Number(row.call_count || 0),
+      last_processed_message_id: Number(row.last_processed_message_id || 0),
+      pending_messages: Number(row.pending_messages || 0),
+      newest_message_id: Number(row.newest_message_id || 0),
+      personalization_added: Number(row.personalization_added || 0),
+      memory_added: Number(row.memory_added || 0),
+      name_added: Number(row.name_added || 0),
+    }));
+    let lastRunAt = '';
+    let pendingMessages = 0;
+    let pendingNumbers = 0;
+    let errorCount = 0;
+    let updatedNumbers = 0;
+    for (const row of profiles) {
+      const pending = Number(row.pending_messages || 0);
+      pendingMessages += pending;
+      if (pending > 0) pendingNumbers += 1;
+      if (row.last_run_at) {
+        updatedNumbers += 1;
+        if (!lastRunAt || String(row.last_run_at) > lastRunAt) lastRunAt = String(row.last_run_at);
+      }
+      if (String(row.last_error || '').trim() || /error|fail/i.test(String(row.last_status || ''))) errorCount += 1;
+    }
+    return json({
+      ok: true,
+      initialized: true,
+      revision,
+      enabled,
+      summary: {
+        numbers: profiles.length,
+        profile_count: profiles.filter((row) => Boolean(row.profile_updated_at)).length,
+        updated_numbers: updatedNumbers,
+        pending_numbers: pendingNumbers,
+        pending_messages: pendingMessages,
+        error_count: errorCount,
+        last_run_at: lastRunAt,
+      },
+      profiles,
+    });
+  } catch (error) {
+    const detail = clean(error?.message || error, 300);
+    if (/no such table/i.test(detail)) {
+      return json({
+        ok: true,
+        initialized: false,
+        revision,
+        enabled,
+        summary: { numbers: 0, profile_count: 0, updated_numbers: 0, pending_numbers: 0, pending_messages: 0, error_count: 0, last_run_at: '' },
+        profiles: [],
+      });
+    }
+    return json({ ok: false, error: 'phone_personalization_status_failed', detail, revision }, 500);
   }
 }
 
@@ -1139,7 +1252,7 @@ function mediaBridge(request, env, deps) {
 }
 
 export function isTelephonyPath(pathname = '') {
-  return pathname === '/phone' || pathname === '/phone-profiles' || pathname === '/telephony-health' || pathname === '/phone/api/calls' || pathname === '/phone/api/calls/export.zip' || pathname === '/phone/api/profiles'
+  return pathname === '/phone' || pathname === '/phone-profiles' || pathname === '/telephony-health' || pathname === '/phone/api/calls' || pathname === '/phone/api/calls/export.zip' || pathname === '/phone/api/profiles' || pathname === '/phone/api/personalization-status'
     || /^\/phone\/api\/calls\/[^/]+\/messages$/.test(pathname) || /^\/phone\/api\/calls\/[^/]+\/latency$/.test(pathname)
     || /^\/phone\/api\/calls\/[^/]+\/export\.jsonl$/.test(pathname) || /^\/phone\/api\/profiles\/[^/]+$/.test(pathname) || /^\/phone\/api\/profiles\/[^/]+\/calls$/.test(pathname) || /^\/phone\/api\/profiles\/[^/]+\/memory-status$/.test(pathname)
     || pathname === '/telnyx/voice' || pathname === '/telnyx/media' || pathname === '/telnyx/stream-status';
@@ -1153,6 +1266,7 @@ export async function handleTelephonyRequest(request, env, ctx, deps = {}) {
   if(request.method==='GET'&&url.pathname==='/phone/api/calls/export.zip')return recentCallsZip(request,env);
   if(request.method==='GET'&&url.pathname==='/phone/api/calls')return listCalls(request,env);
   if(request.method==='GET'&&url.pathname==='/phone/api/profiles')return listPhoneProfiles(request,env);
+  if(request.method==='GET'&&url.pathname==='/phone/api/personalization-status')return personalizationOverview(request,env);
   const messageMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/messages$/);if(request.method==='GET'&&messageMatch)return callMessages(request,env,decodeURIComponent(messageMatch[1]));
   const latencyMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/latency$/);if(request.method==='GET'&&latencyMatch)return callLatency(request,env,decodeURIComponent(latencyMatch[1]));
   const exportMatch=url.pathname.match(/^\/phone\/api\/calls\/([^/]+)\/export\.jsonl$/);if(request.method==='GET'&&exportMatch)return callExportJsonl(request,env,decodeURIComponent(exportMatch[1]));

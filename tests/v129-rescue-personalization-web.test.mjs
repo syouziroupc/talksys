@@ -39,6 +39,11 @@ test('phone personalization dashboard exposes read-only memory status behind the
   const source = await readFile(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
   assert.equal(PHONE_RELEASE_VERSION, 'v129');
   assert.equal(isTelephonyPath('/phone/api/profiles/%2B819012345678/memory-status'), true);
+  assert.equal(isTelephonyPath('/phone/api/personalization-status'), true);
+  assert.match(source, /id="personalizationSummary"/);
+  assert.match(source, /id="personalizationOverview"/);
+  assert.match(source, /personalizationOverview/);
+  assert.match(source, /talksys-phone-personalization-dashboard-v129-r1/);
   assert.match(source, /id="memoryStatus"/);
   assert.match(source, /profileMemoryStatus/);
   assert.match(source, /phone_memory_state/);
