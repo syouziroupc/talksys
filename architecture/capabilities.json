@@ -19,20 +19,23 @@
         "src/v130-control-plane.js",
         "src/v130-log-management.js",
         "src/v130-admin-page.js",
-        "src/v130-onboarding.js"
+        "src/v130-onboarding.js",
+        "src/v130-user-trash.js",
+        "src/v130-d1-observer.js"
       ],
-      "migrationNote": "V130 management companions extend the existing runtime entry and are feature-gated fail-closed. They must not alter the synchronous STT, VAD, PCMU, TTS, interrupt/barge-in, fast-reaction, search, or answer paths. Existing HTTP handling remains in src/integrated-entry.js when the V130 flags are OFF."
+      "migrationNote": "V130 management companions extend the existing runtime entry and are feature-gated fail-closed. The D1 observer is enabled only for /telnyx/media after memory_jobs becomes shadow or active; it observes the completed call-status write and queues post-call work without changing STT, VAD, PCMU, TTS, interrupt/barge-in, fast-reaction, search, or answer logic. Existing HTTP handling remains in src/integrated-entry.js when V130 flags are OFF."
     },
     "personalization.memory": {
       "canonical": "src/phone-memory-maintenance.js",
       "status": "production-supporting",
-      "responsibility": "Out-of-band phone-number profile maintenance from persisted call transcripts using evidence-backed extraction, additive-only profile updates, optimistic version checks, rollback snapshots, and V130 dirty-job inspection",
+      "responsibility": "Out-of-band phone-number profile maintenance from persisted call transcripts using evidence-backed extraction, additive-only profile updates, optimistic version checks, rollback snapshots, and V130 dirty-job processing",
       "companions": [
         "src/runtime-entry.js",
         "src/telephony/index.js",
-        "src/v130-memory-jobs.js"
+        "src/v130-memory-jobs.js",
+        "src/v130-d1-observer.js"
       ],
-      "migrationNote": "V130 job management extends the existing conservative profile extractor rather than replacing it. It must never be awaited by live STT, VAD, answer, TTS, or media processing."
+      "migrationNote": "V130 job management extends the existing conservative profile extractor rather than replacing it. Shadow candidate generation is non-writing; active application keeps optimistic version checks. No memory extraction is awaited by live STT, VAD, answer, TTS, or media processing."
     },
     "telephony.intake": {
       "canonical": "src/telephony/index.js",
