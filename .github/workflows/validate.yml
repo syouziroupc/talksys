@@ -49,16 +49,11 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf .wrangler/v130-ci
-          npx wrangler d1 execute TALKSYS_LOG_DB \
-            --local \
-            --persist-to .wrangler/v130-ci \
-            --file migrations/0001_v130_expand.sql \
-            --yes
-          tables="$(npx wrangler d1 execute TALKSYS_LOG_DB \
-            --local \
-            --persist-to .wrangler/v130-ci \
-            --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" \
-            --json)"
+          d1() {
+            npx wrangler d1 execute TALKSYS_LOG_DB --local --persist-to .wrangler/v130-ci "$@"
+          }
+          d1 --file migrations/0001_v130_expand.sql --yes
+          tables="$(d1 --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" --json)"
           TABLES_JSON="$tables" node <<'NODE'
           const payload = JSON.parse(process.env.TABLES_JSON || '[]');
           const rows = Array.isArray(payload) ? payload.flatMap((x) => x?.results || []) : [];
@@ -72,11 +67,7 @@ jobs:
             if (!names.has(name)) throw new Error(`missing V130 D1 table: ${name}`);
           }
           NODE
-          flags="$(npx wrangler d1 execute TALKSYS_LOG_DB \
-            --local \
-            --persist-to .wrangler/v130-ci \
-            --command "SELECT name,value FROM talksys_feature_flags ORDER BY name;" \
-            --json)"
+          flags="$(d1 --command "SELECT name,value FROM talksys_feature_flags ORDER BY name;" --json)"
           FLAGS_JSON="$flags" node <<'NODE'
           const payload = JSON.parse(process.env.FLAGS_JSON || '[]');
           const rows = Array.isArray(payload) ? payload.flatMap((x) => x?.results || []) : [];
@@ -87,6 +78,52 @@ jobs:
             expected.delete(row.name);
           }
           if (expected.size) throw new Error(`missing flags: ${[...expected].join(',')}`);
+          NODE
+
+          cat >/tmp/v130-trigger-test.sql <<'SQL'
+          UPDATE talksys_feature_flags SET value='shadow',version=version+1,updated_at=CURRENT_TIMESTAMP WHERE name='memory_jobs';
+          INSERT INTO phone_calls(call_id,from_number,to_number,status,started_at,updated_at,message_count)
+            VALUES('ci-dirty-1','+819099999991','+815000000000','connected',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0);
+          UPDATE phone_calls SET status='ended',ended_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE call_id='ci-dirty-1';
+          INSERT INTO phone_calls(call_id,from_number,to_number,status,started_at,updated_at,message_count)
+            VALUES('ci-dirty-2','+819099999991','+815000000000','connected',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0);
+          UPDATE phone_calls SET status='ended',ended_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE call_id='ci-dirty-2';
+          SQL
+          d1 --file /tmp/v130-trigger-test.sql --yes
+          dirty="$(d1 --command "SELECT phone_number,trigger_call_id,status,mode,due_at FROM phone_memory_jobs WHERE phone_number='+819099999991';" --json)"
+          DIRTY_JSON="$dirty" node <<'NODE'
+          const payload = JSON.parse(process.env.DIRTY_JSON || '[]');
+          const rows = Array.isArray(payload) ? payload.flatMap((x) => x?.results || []) : [];
+          if (rows.length !== 1) throw new Error(`dirty-job dedupe failed: ${rows.length}`);
+          const row = rows[0];
+          if (row.trigger_call_id !== 'ci-dirty-2') throw new Error(`debounce job did not move to newest call: ${row.trigger_call_id}`);
+          if (row.status !== 'pending' || row.mode !== 'shadow') throw new Error('dirty job mode/status mismatch');
+          if (!row.due_at) throw new Error('dirty job missing due_at');
+          NODE
+
+          cat >/tmp/v130-off-test.sql <<'SQL'
+          UPDATE talksys_feature_flags SET value='off',version=version+1,updated_at=CURRENT_TIMESTAMP WHERE name='memory_jobs';
+          INSERT INTO phone_calls(call_id,from_number,to_number,status,started_at,updated_at,message_count)
+            VALUES('ci-off-1','+819099999992','+815000000000','connected',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0);
+          UPDATE phone_calls SET status='ended',ended_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE call_id='ci-off-1';
+          SQL
+          d1 --file /tmp/v130-off-test.sql --yes
+          off_count="$(d1 --command "SELECT COUNT(*) AS n FROM phone_memory_jobs WHERE phone_number='+819099999992';" --json)"
+          OFF_JSON="$off_count" node <<'NODE'
+          const payload = JSON.parse(process.env.OFF_JSON || '[]');
+          const rows = Array.isArray(payload) ? payload.flatMap((x) => x?.results || []) : [];
+          if (Number(rows[0]?.n || 0) !== 0) throw new Error('memory_jobs=off must not create dirty jobs');
+          NODE
+
+          d1 --file tests/fixtures/v130-d1-fixtures.sql --yes
+          fixtures="$(d1 --command "SELECT (SELECT COUNT(*) FROM phone_calls WHERE call_id LIKE 'fx-%') AS calls,(SELECT COUNT(*) FROM phone_memory_jobs WHERE status='failed') AS failed_jobs,(SELECT COUNT(*) FROM phone_user_trash WHERE phone_number='+819000000009') AS purge_targets;" --json)"
+          FIXTURE_JSON="$fixtures" node <<'NODE'
+          const payload = JSON.parse(process.env.FIXTURE_JSON || '[]');
+          const rows = Array.isArray(payload) ? payload.flatMap((x) => x?.results || []) : [];
+          const row = rows[0] || {};
+          if (Number(row.calls) < 8) throw new Error('V130 call fixtures missing');
+          if (Number(row.failed_jobs) < 2) throw new Error('V130 failed-job fixtures missing');
+          if (Number(row.purge_targets) !== 1) throw new Error('V130 purge fixture missing');
           NODE
       - name: Check Wrangler bundle
         run: npx wrangler deploy --dry-run
