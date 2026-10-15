@@ -5,8 +5,9 @@ import {
   phoneMemoryStatus,
   runPhoneMemoryMaintenance,
 } from './phone-memory-maintenance.js';
+import { handleV130ControlPlane, isV130ControlPlanePath } from './v130-control-plane.js';
 
-export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-phone-memory-v1-phone-ai-audit-r1';
+export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-v130-control-plane-r1';
 export const PHONE_AI_BOUNDARY_AUDIT_REVISION = 'talksys-phone-ai-boundary-audit-v1-r1';
 
 function compact(value, max = 500) {
@@ -162,6 +163,12 @@ async function runScheduledMemory(env) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    // V130 management/control-plane routes are deliberately handled before the
+    // integrated telephony path so V130 does not modify STT/VAD/TTS/PCMU/barge-in code.
+    if (isV130ControlPlanePath(url.pathname)) {
+      return handleV130ControlPlane(request, env);
+    }
 
     if (url.pathname === '/api/internal/phone-ai-boundary-audit' && request.method === 'POST') {
       return phoneAiBoundaryAudit(request, env, ctx);
