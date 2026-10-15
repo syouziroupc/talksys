@@ -1,5 +1,45 @@
 -- TalkSys V130 expand-only schema.
 -- Do not remove/rename existing V129 columns in this migration.
+-- The V129 base tables are created first so the same migration can initialize an empty staging/local D1.
+
+CREATE TABLE IF NOT EXISTS phone_calls (
+  call_id TEXT PRIMARY KEY,
+  from_number TEXT,
+  to_number TEXT,
+  status TEXT NOT NULL DEFAULT 'starting',
+  started_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  ended_at TEXT,
+  last_user_text TEXT,
+  last_assistant_text TEXT,
+  message_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS phone_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  call_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS phone_latency_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  call_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  elapsed_ms INTEGER NOT NULL DEFAULT 0,
+  detail TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS phone_profiles (
+  phone_number TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL DEFAULT '',
+  personalization_text TEXT NOT NULL DEFAULT '',
+  memory_text TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
 ALTER TABLE phone_calls ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE phone_calls ADD COLUMN trashed_at TEXT;
@@ -96,11 +136,12 @@ CREATE TABLE IF NOT EXISTS phone_trash_audit (
   created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_phone_calls_lifecycle_updated
-  ON phone_calls(lifecycle_state, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_phone_calls_from_lifecycle
-  ON phone_calls(from_number, lifecycle_state, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_phone_profiles_lifecycle_updated
-  ON phone_profiles(lifecycle_state, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_phone_onboarding_step
-  ON phone_onboarding_state(current_step, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_phone_messages_call ON phone_messages(call_id, id);
+CREATE INDEX IF NOT EXISTS idx_phone_calls_updated ON phone_calls(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_phone_latency_call ON phone_latency_events(call_id, id);
+CREATE INDEX IF NOT EXISTS idx_phone_latency_turn ON phone_latency_events(call_id, turn_id, id);
+CREATE INDEX IF NOT EXISTS idx_phone_profiles_updated ON phone_profiles(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_phone_calls_lifecycle_updated ON phone_calls(lifecycle_state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_phone_calls_from_lifecycle ON phone_calls(from_number, lifecycle_state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_phone_profiles_lifecycle_updated ON phone_profiles(lifecycle_state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_phone_onboarding_step ON phone_onboarding_state(current_step, updated_at DESC);
