@@ -174,3 +174,35 @@ CREATE INDEX IF NOT EXISTS idx_phone_calls_lifecycle_updated ON phone_calls(life
 CREATE INDEX IF NOT EXISTS idx_phone_calls_from_lifecycle ON phone_calls(from_number, lifecycle_state, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_phone_profiles_lifecycle_updated ON phone_profiles(lifecycle_state, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_phone_onboarding_step ON phone_onboarding_state(current_step, updated_at DESC);
+
+-- The live telephony worker already persists status transitions to phone_calls.
+-- V130 uses that existing DB boundary to mark a caller dirty instead of adding
+-- work to the realtime audio path. The trigger is fail-closed while memory_jobs=off.
+CREATE TRIGGER IF NOT EXISTS trg_v130_phone_call_memory_dirty
+AFTER UPDATE OF status ON phone_calls
+WHEN NEW.status IN ('ended','completed')
+  AND OLD.status IS NOT NEW.status
+  AND COALESCE(NEW.from_number,'') <> ''
+  AND COALESCE((SELECT value FROM talksys_feature_flags WHERE name='memory_jobs'),'off') IN ('shadow','active')
+  AND NOT EXISTS (SELECT 1 FROM phone_user_trash WHERE phone_number=NEW.from_number)
+BEGIN
+  INSERT OR IGNORE INTO phone_memory_jobs
+    (phone_number,trigger_call_id,status,mode,due_at,created_at,updated_at)
+  VALUES (
+    NEW.from_number,
+    NEW.call_id,
+    'pending',
+    COALESCE((SELECT value FROM talksys_feature_flags WHERE name='memory_jobs'),'shadow'),
+    datetime('now','+5 minutes'),
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+  );
+
+  UPDATE phone_memory_jobs
+  SET trigger_call_id=NEW.call_id,
+      mode=COALESCE((SELECT value FROM talksys_feature_flags WHERE name='memory_jobs'),'shadow'),
+      due_at=datetime('now','+5 minutes'),
+      updated_at=CURRENT_TIMESTAMP
+  WHERE phone_number=NEW.from_number
+    AND status IN ('pending','queued','processing');
+END;
