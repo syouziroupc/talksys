@@ -40,6 +40,32 @@ CREATE TABLE IF NOT EXISTS phone_profiles (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS phone_memory_state (
+  phone_number TEXT PRIMARY KEY,
+  last_processed_message_id INTEGER NOT NULL DEFAULT 0,
+  last_run_at TEXT,
+  last_model TEXT NOT NULL DEFAULT '',
+  last_status TEXT NOT NULL DEFAULT '',
+  previous_display_name TEXT NOT NULL DEFAULT '',
+  previous_personalization_text TEXT NOT NULL DEFAULT '',
+  previous_memory_text TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS phone_memory_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone_number TEXT NOT NULL,
+  from_message_id INTEGER NOT NULL DEFAULT 0,
+  to_message_id INTEGER NOT NULL DEFAULT 0,
+  primary_model TEXT NOT NULL DEFAULT '',
+  primary_status TEXT NOT NULL DEFAULT '',
+  primary_candidate_count INTEGER NOT NULL DEFAULT 0,
+  primary_applied_count INTEGER NOT NULL DEFAULT 0,
+  shadow_model TEXT NOT NULL DEFAULT '',
+  shadow_status TEXT NOT NULL DEFAULT '',
+  shadow_candidate_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
 
 ALTER TABLE phone_calls ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE phone_calls ADD COLUMN trashed_at TEXT;
@@ -61,7 +87,6 @@ CREATE TABLE IF NOT EXISTS talksys_feature_flags (
   version INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL
 );
-
 INSERT OR IGNORE INTO talksys_feature_flags (name, value, version, updated_at) VALUES
   ('log_management', 'off', 1, CURRENT_TIMESTAMP),
   ('structured_profile', 'off', 1, CURRENT_TIMESTAMP),
@@ -81,7 +106,6 @@ CREATE TABLE IF NOT EXISTS phone_onboarding_state (
   updated_at TEXT NOT NULL,
   completed_at TEXT
 );
-
 CREATE TABLE IF NOT EXISTS phone_onboarding_allowlist (
   phone_number TEXT PRIMARY KEY,
   created_at TEXT NOT NULL
@@ -105,14 +129,11 @@ CREATE TABLE IF NOT EXISTS phone_memory_jobs (
   updated_at TEXT NOT NULL,
   completed_at TEXT
 );
-
 CREATE UNIQUE INDEX IF NOT EXISTS idx_phone_memory_jobs_open_phone
   ON phone_memory_jobs(phone_number)
   WHERE status IN ('pending', 'queued', 'processing');
-CREATE INDEX IF NOT EXISTS idx_phone_memory_jobs_due
-  ON phone_memory_jobs(status, due_at, id);
-CREATE INDEX IF NOT EXISTS idx_phone_memory_jobs_phone
-  ON phone_memory_jobs(phone_number, id DESC);
+CREATE INDEX IF NOT EXISTS idx_phone_memory_jobs_due ON phone_memory_jobs(status, due_at, id);
+CREATE INDEX IF NOT EXISTS idx_phone_memory_jobs_phone ON phone_memory_jobs(phone_number, id DESC);
 
 CREATE TABLE IF NOT EXISTS phone_memory_backfills (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,6 +148,13 @@ CREATE TABLE IF NOT EXISTS phone_memory_backfills (
   completed_at TEXT
 );
 
+-- A full-user trash operation uses a tombstone rather than mutating every related row.
+-- Restore only removes this tombstone; purge physically deletes the related rows.
+CREATE TABLE IF NOT EXISTS phone_user_trash (
+  phone_number TEXT PRIMARY KEY,
+  trashed_at TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS phone_trash_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   scope TEXT NOT NULL,
