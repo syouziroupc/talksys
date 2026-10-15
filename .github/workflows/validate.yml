@@ -44,5 +44,49 @@ jobs:
           node --check discord-voice-smoke/src/index.mjs
       - name: Run full regression suite
         run: npm test
+      - name: Validate V130 D1 migration on isolated local database
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .wrangler/v130-ci
+          npx wrangler d1 execute TALKSYS_LOG_DB \
+            --local \
+            --persist-to .wrangler/v130-ci \
+            --file migrations/0001_v130_expand.sql \
+            --yes
+          tables="$(npx wrangler d1 execute TALKSYS_LOG_DB \
+            --local \
+            --persist-to .wrangler/v130-ci \
+            --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" \
+            --json)"
+          TABLES_JSON="$tables" node <<'NODE'
+          const payload = JSON.parse(process.env.TABLES_JSON || '[]');
+          const rows = Array.isArray(payload) ? payload.flatMap((x) => x?.results || []) : [];
+          const names = new Set(rows.map((row) => row?.name));
+          for (const name of [
+            'phone_calls','phone_messages','phone_latency_events','phone_profiles',
+            'phone_memory_state','phone_memory_audit','talksys_feature_flags',
+            'phone_onboarding_state','phone_memory_jobs','phone_memory_backfills',
+            'phone_user_trash','phone_trash_audit'
+          ]) {
+            if (!names.has(name)) throw new Error(`missing V130 D1 table: ${name}`);
+          }
+          NODE
+          flags="$(npx wrangler d1 execute TALKSYS_LOG_DB \
+            --local \
+            --persist-to .wrangler/v130-ci \
+            --command "SELECT name,value FROM talksys_feature_flags ORDER BY name;" \
+            --json)"
+          FLAGS_JSON="$flags" node <<'NODE'
+          const payload = JSON.parse(process.env.FLAGS_JSON || '[]');
+          const rows = Array.isArray(payload) ? payload.flatMap((x) => x?.results || []) : [];
+          const expected = new Set(['hard_delete','log_management','memory_jobs','onboarding','structured_profile','trash_delete']);
+          for (const row of rows) {
+            if (!expected.has(row?.name)) continue;
+            if (row?.value !== 'off') throw new Error(`flag ${row.name} must initialize OFF`);
+            expected.delete(row.name);
+          }
+          if (expected.size) throw new Error(`missing flags: ${[...expected].join(',')}`);
+          NODE
       - name: Check Wrangler bundle
         run: npx wrangler deploy --dry-run
