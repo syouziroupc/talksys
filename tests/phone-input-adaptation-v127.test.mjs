@@ -67,7 +67,7 @@ test('noisy but intelligible captures are capped to safe gain, never above +6 dB
 
 test('v127 keeps v125 conversation scheduling and gates Speex to noisy calls only', () => {
   const source = fs.readFileSync(new URL('../src/telephony/index.js', import.meta.url), 'utf8');
-  assert.equal(PHONE_RELEASE_VERSION, 'v127');
+  assert.equal(PHONE_RELEASE_VERSION, 'v129');
   assert.equal(PHONE_ACK_LATENCY_REVISION, 'talksys-phone-ack-latency-v120-r1');
   assert.match(source, /slowAckArmed/);
   assert.match(source, /phoneNoiseSuppressor&&!assistantPlaying&&phoneInputMode==='noisy'/);

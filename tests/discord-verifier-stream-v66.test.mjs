@@ -15,7 +15,7 @@ test('v84 common web/Discord turn runner is single-pass grounded', () => {
   assert.match(server, /export async function commonTalkSysTurn/);
   assert.match(server, /return runGeminiTurn\(body, env, signal, options\)/);
   assert.match(server, /shouldRunGenericVerification\(_text = '', _payload = \{\}\)/);
-  assert.match(server, /reason: 'v84-single-pass-grounded'/);
+  assert.match(server, /reason: 'v129-conditional-rescue-only'/);
   assert.doesNotMatch(server, /if \(shouldRunGenericVerification\(text, interaction\.payload\)\)/);
   assert.match(server, /const result = await commonTalkSysTurn\(commonBody, env, signal\)/);
 });

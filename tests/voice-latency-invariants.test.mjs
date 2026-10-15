@@ -10,7 +10,7 @@ test('v84 common Gemini path is single-pass grounded without serial verification
   assert.match(integrated, /return runGeminiTurn\(body, env, signal, options\)/);
   assert.match(integrated, /shouldRunGenericVerification\(_text = '', _payload = \{\}\)/);
   assert.match(integrated, /return false/);
-  assert.match(integrated, /reason: 'v84-single-pass-grounded'/);
+  assert.match(integrated, /reason: 'v129-conditional-rescue-only'/);
   assert.doesNotMatch(integrated, /if \(shouldRunGenericVerification\(text, interaction\.payload\)\)/);
 });
 
