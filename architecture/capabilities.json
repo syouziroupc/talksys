@@ -25,12 +25,13 @@
     "personalization.memory": {
       "canonical": "src/phone-memory-maintenance.js",
       "status": "production-supporting",
-      "responsibility": "Out-of-band phone-number profile maintenance from persisted call transcripts using evidence-backed extraction, additive-only profile updates, optimistic version checks, and rollback snapshots",
+      "responsibility": "Out-of-band phone-number profile maintenance from persisted call transcripts using evidence-backed extraction, additive-only profile updates, optimistic version checks, rollback snapshots, and V130 dirty-job inspection",
       "companions": [
         "src/runtime-entry.js",
-        "src/telephony/index.js"
+        "src/telephony/index.js",
+        "src/v130-memory-jobs.js"
       ],
-      "migrationNote": "This extends the existing phone_profiles text fields instead of replacing the live personalization path. It must never be awaited by live STT, VAD, answer, TTS, or media processing."
+      "migrationNote": "V130 job management extends the existing conservative profile extractor rather than replacing it. It must never be awaited by live STT, VAD, answer, TTS, or media processing."
     },
     "telephony.intake": {
       "canonical": "src/telephony/index.js",
