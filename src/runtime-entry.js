@@ -6,8 +6,9 @@ import {
   runPhoneMemoryMaintenance,
 } from './phone-memory-maintenance.js';
 import { handleV130ControlPlane, isV130ControlPlanePath } from './v130-control-plane.js';
+import { handleV130LogManagement, isV130LogManagementPath } from './v130-log-management.js';
 
-export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-v130-control-plane-r1';
+export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-v130-log-management-r1';
 export const PHONE_AI_BOUNDARY_AUDIT_REVISION = 'talksys-phone-ai-boundary-audit-v1-r1';
 
 function compact(value, max = 500) {
@@ -168,6 +169,9 @@ export default {
     // integrated telephony path so V130 does not modify STT/VAD/TTS/PCMU/barge-in code.
     if (isV130ControlPlanePath(url.pathname)) {
       return handleV130ControlPlane(request, env);
+    }
+    if (isV130LogManagementPath(url.pathname)) {
+      return handleV130LogManagement(request, env);
     }
 
     if (url.pathname === '/api/internal/phone-ai-boundary-audit' && request.method === 'POST') {
