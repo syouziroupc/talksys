@@ -7,11 +7,18 @@ import {
 } from './phone-memory-maintenance.js';
 import { handleV130ControlPlane, isV130ControlPlanePath, readV130Flag } from './v130-control-plane.js';
 import { handleV130LogManagement, isV130LogManagementPath } from './v130-log-management.js';
-import { handleV130MemoryJobs, isV130MemoryJobsPath } from './v130-memory-jobs.js';
+import {
+  handleV130MemoryJobs,
+  handleV130MemoryQueue,
+  isV130MemoryJobsPath,
+  runV130MemoryJobRescue,
+} from './v130-memory-jobs.js';
 import { handleV130Onboarding, isV130OnboardingPath } from './v130-onboarding.js';
+import { handleV130UserTrash, isV130UserTrashPath } from './v130-user-trash.js';
+import { withV130MemoryQueueObserver } from './v130-d1-observer.js';
 import { v130AdminPage } from './v130-admin-page.js';
 
-export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-v130-onboarding-r1';
+export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-v130-memory-jobs-r2';
 export const PHONE_AI_BOUNDARY_AUDIT_REVISION = 'talksys-phone-ai-boundary-audit-v1-r1';
 
 function compact(value, max = 500) {
@@ -164,6 +171,23 @@ async function runScheduledMemory(env) {
   }
 }
 
+async function runScheduledV130MemoryRescue(env) {
+  try {
+    const result = await runV130MemoryJobRescue(env, { limit: 12 });
+    console.log(JSON.stringify({
+      type: 'v130_memory_job_rescue',
+      ok: Boolean(result?.ok),
+      mode: result?.mode || '',
+      rescued: Number(result?.rescued || 0),
+      processed: Number(result?.processed || 0),
+    }));
+    return result;
+  } catch (error) {
+    console.error(JSON.stringify({ type: 'v130_memory_job_rescue_error', error: compact(error?.message || error, 300) }));
+    return { ok: false, error: compact(error?.message || error, 300) };
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -173,6 +197,12 @@ export default {
       return new Response(v130AdminPage(request), {
         headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
       });
+    }
+
+    // The exact-state full-user trash handler must run before the older generic
+    // control-plane route because both intentionally recognize the same URL shape.
+    if (isV130UserTrashPath(url.pathname)) {
+      return handleV130UserTrash(request, env);
     }
 
     // V130 management/control-plane routes are deliberately handled before the
@@ -205,15 +235,27 @@ export default {
       return json(result, result?.ok === false ? 500 : 200);
     }
 
-    return integratedEntry.fetch(request, env, ctx);
+    // Only the media WebSocket path is observed, and only after V130 memory jobs
+    // have been explicitly enabled. OFF means the original env reaches V129 unchanged.
+    let delegatedEnv = env;
+    if (url.pathname === '/telnyx/media') {
+      const memoryMode = await readV130Flag(env, 'memory_jobs');
+      if (memoryMode === 'shadow' || memoryMode === 'active') delegatedEnv = withV130MemoryQueueObserver(env);
+    }
+    return integratedEntry.fetch(request, delegatedEnv, ctx);
   },
 
-  scheduled(controller, env, ctx) {
+  async scheduled(controller, env, ctx) {
     const tasks = [];
     if (typeof integratedEntry?.scheduled === 'function') {
       tasks.push(Promise.resolve(integratedEntry.scheduled(controller, env, ctx)));
     }
-    if (phoneMemoryEnabled(env)) tasks.push(runScheduledMemory(env));
+    const memoryMode = await readV130Flag(env, 'memory_jobs');
+    if (memoryMode === 'off') {
+      if (phoneMemoryEnabled(env)) tasks.push(runScheduledMemory(env));
+    } else {
+      tasks.push(runScheduledV130MemoryRescue(env));
+    }
     if (!tasks.length) return undefined;
     const combined = Promise.allSettled(tasks);
     if (ctx?.waitUntil) {
@@ -221,5 +263,9 @@ export default {
       return undefined;
     }
     return combined;
+  },
+
+  async queue(batch, env) {
+    return handleV130MemoryQueue(batch, env);
   },
 };
