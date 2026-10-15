@@ -20,7 +20,11 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       STAGING_D1_NAME: talksys-conversation-logs-staging
       STAGING_WORKER_NAME: talksys-staging
+      STAGING_QUEUE_NAME: talksys-phone-memory-v130-staging
+      STAGING_DLQ_NAME: talksys-phone-memory-v130-staging-dlq
       PRODUCTION_D1_ID: 4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a
+      PRODUCTION_QUEUE_NAME: talksys-phone-memory-v130
+      PRODUCTION_DLQ_NAME: talksys-phone-memory-v130-dlq
     steps:
       - uses: actions/checkout@v6
 
@@ -97,6 +101,26 @@ jobs:
           echo "STAGING_D1_ID=$staging_id" >> "$GITHUB_ENV"
           echo "Resolved isolated staging D1: $STAGING_D1_NAME"
 
+      - name: Resolve or create dedicated staging Queues
+        shell: bash
+        run: |
+          set -euo pipefail
+          queues="$(npx wrangler queues list --json)"
+          queue_exists() {
+            local name="$1"
+            QUEUES_JSON="$queues" QUEUE_NAME="$name" node -e '
+              const rows=JSON.parse(process.env.QUEUES_JSON||"[]");
+              const found=(Array.isArray(rows)?rows:[]).some((row)=>(row?.queue_name||row?.name)===process.env.QUEUE_NAME);
+              process.exit(found?0:1);
+            '
+          }
+          if ! queue_exists "$STAGING_QUEUE_NAME"; then npx wrangler queues create "$STAGING_QUEUE_NAME"; fi
+          if ! queue_exists "$STAGING_DLQ_NAME"; then npx wrangler queues create "$STAGING_DLQ_NAME"; fi
+          if [[ "$STAGING_QUEUE_NAME" == "$PRODUCTION_QUEUE_NAME" || "$STAGING_DLQ_NAME" == "$PRODUCTION_DLQ_NAME" ]]; then
+            echo 'Refusing staging deployment: staging Queue name collides with production.'
+            exit 1
+          fi
+
       - name: Build staging-only Wrangler config
         shell: bash
         run: |
@@ -112,11 +136,18 @@ jobs:
           text = text.replace('"crons": ["15 18 * * *"]', '"crons": []');
           text = text.replace('"database_name": "talksys-conversation-logs"', `"database_name": "${process.env.STAGING_D1_NAME}"`);
           text = text.replace('"database_id": "4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a"', `"database_id": "${stagingId}"`);
-          if (text.includes('4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a')) throw new Error('production D1 ID leaked into staging config');
+          text = text.replaceAll('talksys-phone-memory-v130-dlq', process.env.STAGING_DLQ_NAME);
+          text = text.replaceAll('talksys-phone-memory-v130', process.env.STAGING_QUEUE_NAME);
+          if (text.includes(process.env.PRODUCTION_D1_ID)) throw new Error('production D1 ID leaked into staging config');
+          if (text.includes(`\"queue\": \"${process.env.PRODUCTION_QUEUE_NAME}\"`) || text.includes(`\"dead_letter_queue\": \"${process.env.PRODUCTION_DLQ_NAME}\"`)) {
+            throw new Error('production Queue leaked into staging config');
+          }
           fs.writeFileSync('.wrangler-v130-staging.jsonc', text);
           NODE
           grep -q '"name": "talksys-staging"' .wrangler-v130-staging.jsonc
           grep -q "\"database_id\": \"$STAGING_D1_ID\"" .wrangler-v130-staging.jsonc
+          grep -q "\"queue\": \"$STAGING_QUEUE_NAME\"" .wrangler-v130-staging.jsonc
+          grep -q "\"dead_letter_queue\": \"$STAGING_DLQ_NAME\"" .wrangler-v130-staging.jsonc
           ! grep -q "$PRODUCTION_D1_ID" .wrangler-v130-staging.jsonc
 
       - name: Apply V130 migrations to staging D1 only
@@ -153,4 +184,4 @@ jobs:
           set -euo pipefail
           deployed="$(npx wrangler versions list --name "$STAGING_WORKER_NAME" --json | head -c 200000)"
           test -n "$deployed"
-          echo "V130 staging deployed with dedicated D1 $STAGING_D1_ID"
+          echo "V130 staging deployed with dedicated D1 $STAGING_D1_ID and Queue $STAGING_QUEUE_NAME"
