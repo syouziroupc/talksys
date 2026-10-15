@@ -2,8 +2,6 @@ name: Deploy TalkSys V130 staging
 
 on:
   workflow_dispatch:
-  push:
-    branches: [v130]
 
 permissions:
   contents: read
@@ -43,7 +41,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+            echo 'Cloudflare credential is not visible to this workflow. Configure a staging GitHub Environment with the existing Cloudflare API token, or explicitly approve use of the production Environment for credentials only.'
+            exit 1
+          fi
           if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
             account_id="$(curl --fail-with-body --silent --show-error \
               -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
@@ -123,6 +124,12 @@ jobs:
         run: |
           set -euo pipefail
           npx wrangler d1 migrations apply TALKSYS_LOG_DB --remote --config .wrangler-v130-staging.jsonc
+
+      - name: Load synthetic staging fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute TALKSYS_LOG_DB --remote --config .wrangler-v130-staging.jsonc --file tests/fixtures/v130-d1-fixtures.sql --yes
 
       - name: Deploy staging Worker
         shell: bash
