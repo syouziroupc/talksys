@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS phone_memory_state (
   last_processed_message_id INTEGER NOT NULL DEFAULT 0,
   last_run_at TEXT,
   last_model TEXT NOT NULL DEFAULT '',
-  last_status TEXT NOT NULL DEFAULT '',
+  last_status TEXT NOT NULL DEFAULT 'never',
   previous_display_name TEXT NOT NULL DEFAULT '',
   previous_personalization_text TEXT NOT NULL DEFAULT '',
   previous_memory_text TEXT NOT NULL DEFAULT '',
@@ -55,15 +55,15 @@ CREATE TABLE IF NOT EXISTS phone_memory_state (
 CREATE TABLE IF NOT EXISTS phone_memory_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phone_number TEXT NOT NULL,
-  from_message_id INTEGER NOT NULL DEFAULT 0,
-  to_message_id INTEGER NOT NULL DEFAULT 0,
-  primary_model TEXT NOT NULL DEFAULT '',
-  primary_status TEXT NOT NULL DEFAULT '',
-  primary_candidate_count INTEGER NOT NULL DEFAULT 0,
-  primary_applied_count INTEGER NOT NULL DEFAULT 0,
+  from_message_id INTEGER NOT NULL,
+  to_message_id INTEGER NOT NULL,
+  primary_model TEXT NOT NULL,
+  primary_status TEXT NOT NULL,
+  personalization_added INTEGER NOT NULL DEFAULT 0,
+  memory_added INTEGER NOT NULL DEFAULT 0,
+  name_added INTEGER NOT NULL DEFAULT 0,
   shadow_model TEXT NOT NULL DEFAULT '',
   shadow_status TEXT NOT NULL DEFAULT '',
-  shadow_candidate_count INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -169,6 +169,7 @@ CREATE INDEX IF NOT EXISTS idx_phone_calls_updated ON phone_calls(updated_at DES
 CREATE INDEX IF NOT EXISTS idx_phone_latency_call ON phone_latency_events(call_id, id);
 CREATE INDEX IF NOT EXISTS idx_phone_latency_turn ON phone_latency_events(call_id, turn_id, id);
 CREATE INDEX IF NOT EXISTS idx_phone_profiles_updated ON phone_profiles(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_phone_memory_audit_phone ON phone_memory_audit(phone_number, id DESC);
 CREATE INDEX IF NOT EXISTS idx_phone_calls_lifecycle_updated ON phone_calls(lifecycle_state, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_phone_calls_from_lifecycle ON phone_calls(from_number, lifecycle_state, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_phone_profiles_lifecycle_updated ON phone_profiles(lifecycle_state, updated_at DESC);
