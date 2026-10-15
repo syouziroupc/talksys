@@ -53,6 +53,7 @@ jobs:
             npx wrangler d1 execute TALKSYS_LOG_DB --local --persist-to .wrangler/v130-ci "$@"
           }
           d1 --file migrations/0001_v130_expand.sql --yes
+          d1 --file migrations/0002_v130_user_trash_snapshots.sql --yes
           tables="$(d1 --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" --json)"
           TABLES_JSON="$tables" node <<'NODE'
           const payload = JSON.parse(process.env.TABLES_JSON || '[]');
@@ -62,7 +63,7 @@ jobs:
             'phone_calls','phone_messages','phone_latency_events','phone_profiles',
             'phone_memory_state','phone_memory_audit','talksys_feature_flags',
             'phone_onboarding_state','phone_memory_jobs','phone_memory_backfills',
-            'phone_user_trash','phone_trash_audit'
+            'phone_user_trash','phone_user_trash_items','phone_trash_audit'
           ]) {
             if (!names.has(name)) throw new Error(`missing V130 D1 table: ${name}`);
           }
@@ -116,7 +117,7 @@ jobs:
           NODE
 
           d1 --file tests/fixtures/v130-d1-fixtures.sql --yes
-          fixtures="$(d1 --command "SELECT (SELECT COUNT(*) FROM phone_calls WHERE call_id LIKE 'fx-%') AS calls,(SELECT COUNT(*) FROM phone_memory_jobs WHERE status='failed') AS failed_jobs,(SELECT COUNT(*) FROM phone_user_trash WHERE phone_number='+819000000009') AS purge_targets;" --json)"
+          fixtures="$(d1 --command "SELECT (SELECT COUNT(*) FROM phone_calls WHERE call_id LIKE 'fx-%') AS calls,(SELECT COUNT(*) FROM phone_memory_jobs WHERE status='failed') AS failed_jobs,(SELECT COUNT(*) FROM phone_user_trash WHERE phone_number='+819000000009') AS purge_targets,(SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='phone_user_trash_items') AS snapshot_tables;" --json)"
           FIXTURE_JSON="$fixtures" node <<'NODE'
           const payload = JSON.parse(process.env.FIXTURE_JSON || '[]');
           const rows = Array.isArray(payload) ? payload.flatMap((x) => x?.results || []) : [];
@@ -124,6 +125,7 @@ jobs:
           if (Number(row.calls) < 8) throw new Error('V130 call fixtures missing');
           if (Number(row.failed_jobs) < 2) throw new Error('V130 failed-job fixtures missing');
           if (Number(row.purge_targets) !== 1) throw new Error('V130 purge fixture missing');
+          if (Number(row.snapshot_tables) !== 1) throw new Error('V130 user-trash snapshot table missing');
           NODE
       - name: Check Wrangler bundle
         run: npx wrangler deploy --dry-run
