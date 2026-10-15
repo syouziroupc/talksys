@@ -136,10 +136,10 @@ jobs:
           text = text.replace('"crons": ["15 18 * * *"]', '"crons": []');
           text = text.replace('"database_name": "talksys-conversation-logs"', `"database_name": "${process.env.STAGING_D1_NAME}"`);
           text = text.replace('"database_id": "4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a"', `"database_id": "${stagingId}"`);
-          text = text.replaceAll('talksys-phone-memory-v130-dlq', process.env.STAGING_DLQ_NAME);
-          text = text.replaceAll('talksys-phone-memory-v130', process.env.STAGING_QUEUE_NAME);
+          text = text.replace(`"queue": "${process.env.PRODUCTION_QUEUE_NAME}"`, `"queue": "${process.env.STAGING_QUEUE_NAME}"`);
+          text = text.replace(`"dead_letter_queue": "${process.env.PRODUCTION_DLQ_NAME}"`, `"dead_letter_queue": "${process.env.STAGING_DLQ_NAME}"`);
           if (text.includes(process.env.PRODUCTION_D1_ID)) throw new Error('production D1 ID leaked into staging config');
-          if (text.includes(`\"queue\": \"${process.env.PRODUCTION_QUEUE_NAME}\"`) || text.includes(`\"dead_letter_queue\": \"${process.env.PRODUCTION_DLQ_NAME}\"`)) {
+          if (text.includes(`"queue": "${process.env.PRODUCTION_QUEUE_NAME}"`) || text.includes(`"dead_letter_queue": "${process.env.PRODUCTION_DLQ_NAME}"`)) {
             throw new Error('production Queue leaked into staging config');
           }
           fs.writeFileSync('.wrangler-v130-staging.jsonc', text);
