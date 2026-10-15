@@ -5,10 +5,11 @@ import {
   phoneMemoryStatus,
   runPhoneMemoryMaintenance,
 } from './phone-memory-maintenance.js';
-import { handleV130ControlPlane, isV130ControlPlanePath } from './v130-control-plane.js';
+import { handleV130ControlPlane, isV130ControlPlanePath, readV130Flag } from './v130-control-plane.js';
 import { handleV130LogManagement, isV130LogManagementPath } from './v130-log-management.js';
+import { v130AdminPage } from './v130-admin-page.js';
 
-export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-v130-log-management-r1';
+export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-v130-admin-page-r1';
 export const PHONE_AI_BOUNDARY_AUDIT_REVISION = 'talksys-phone-ai-boundary-audit-v1-r1';
 
 function compact(value, max = 500) {
@@ -164,6 +165,13 @@ async function runScheduledMemory(env) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    // The new page is invisible while the flag is OFF; V129 /phone remains the fallback.
+    if (request.method === 'GET' && url.pathname === '/phone' && await readV130Flag(env, 'log_management') === 'on') {
+      return new Response(v130AdminPage(request), {
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+      });
+    }
 
     // V130 management/control-plane routes are deliberately handled before the
     // integrated telephony path so V130 does not modify STT/VAD/TTS/PCMU/barge-in code.
