@@ -8,9 +8,10 @@ import {
 import { handleV130ControlPlane, isV130ControlPlanePath, readV130Flag } from './v130-control-plane.js';
 import { handleV130LogManagement, isV130LogManagementPath } from './v130-log-management.js';
 import { handleV130MemoryJobs, isV130MemoryJobsPath } from './v130-memory-jobs.js';
+import { handleV130Onboarding, isV130OnboardingPath } from './v130-onboarding.js';
 import { v130AdminPage } from './v130-admin-page.js';
 
-export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-v130-memory-jobs-r1';
+export const RUNTIME_ENTRY_REVISION = 'talksys-runtime-entry-v130-onboarding-r1';
 export const PHONE_AI_BOUNDARY_AUDIT_REVISION = 'talksys-phone-ai-boundary-audit-v1-r1';
 
 function compact(value, max = 500) {
@@ -184,6 +185,9 @@ export default {
     }
     if (isV130MemoryJobsPath(url.pathname)) {
       return handleV130MemoryJobs(request, env);
+    }
+    if (isV130OnboardingPath(url.pathname)) {
+      return handleV130Onboarding(request, env);
     }
 
     if (url.pathname === '/api/internal/phone-ai-boundary-audit' && request.method === 'POST') {
