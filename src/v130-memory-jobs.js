@@ -1,6 +1,11 @@
 import { readV130Flag, v130AdminAuthorized } from './v130-control-plane.js';
+import {
+  applyPhoneMemoryCandidate,
+  extractPhoneMemoryCandidate,
+  publicPhoneMemoryCandidate,
+} from './phone-memory-maintenance.js';
 
-export const V130_MEMORY_JOBS_REVISION = 'talksys-v130-memory-jobs-r1';
+export const V130_MEMORY_JOBS_REVISION = 'talksys-v130-memory-jobs-r2';
 
 const EXPLICIT_MEMORY_PATTERN = /(?:覚えて|記憶して|次から|今後(?:は|も)?|これから(?:は|も)?|(?:と|って)呼んで|呼び名|ゆっくり(?:話して|しゃべって)|短く(?:答えて|話して)|簡潔に|一つずつ|ひとつずつ|順番に説明)/u;
 
@@ -19,6 +24,20 @@ function numberSetting(env, name, fallback, min, max) {
   const n = Number(env?.[name]);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.round(n)));
+}
+
+function maxAttempts(env = {}) {
+  return numberSetting(env, 'PHONE_MEMORY_JOB_MAX_ATTEMPTS', 4, 1, 20);
+}
+
+function retrySeconds(attempts = 1) {
+  return Math.min(3600, 60 * (2 ** Math.max(0, Math.min(5, Number(attempts || 1) - 1))));
+}
+
+function dueDelaySeconds(dueAt = '') {
+  const due = Date.parse(String(dueAt || '').replace(' ', 'T') + (String(dueAt || '').includes('Z') ? '' : 'Z'));
+  if (!Number.isFinite(due)) return 0;
+  return Math.max(0, Math.ceil((due - Date.now()) / 1000));
 }
 
 export function v130MemoryThresholds(env = {}) {
@@ -81,6 +100,188 @@ async function jobMetrics(env, phoneNumber) {
     calls: Number(calls?.n || 0),
     ageHours,
   };
+}
+
+async function finishJob(db, id, values = {}) {
+  const now = new Date().toISOString();
+  await db.prepare(`UPDATE phone_memory_jobs SET
+    status=?,mode=?,from_message_id=?,to_message_id=?,profile_version=?,candidate_json=?,duration_ms=?,last_error=?,updated_at=?,completed_at=?
+    WHERE id=?`).bind(
+      clean(values.status, 40), clean(values.mode, 20), Number(values.fromMessageId || 0), Number(values.toMessageId || 0),
+      Number(values.profileVersion || 0), clean(values.candidateJson, 30000), Number(values.durationMs || 0), clean(values.lastError, 1000),
+      now, values.completed === false ? null : now, Number(id),
+    ).run();
+}
+
+async function deferJob(db, id, mode, attempts, error = '') {
+  const seconds = retrySeconds(attempts);
+  await db.prepare(`UPDATE phone_memory_jobs SET status='pending',mode=?,due_at=datetime('now',?),last_error=?,updated_at=?,completed_at=NULL WHERE id=?`)
+    .bind(mode, `+${seconds} seconds`, clean(error, 1000), new Date().toISOString(), Number(id)).run();
+  return seconds;
+}
+
+async function claimJob(env, id, mode) {
+  const db = env.TALKSYS_LOG_DB;
+  const row = await db.prepare('SELECT * FROM phone_memory_jobs WHERE id=?').bind(Number(id)).first();
+  if (!row) return { ok: false, status: 'job_not_found' };
+  if (!['pending', 'queued'].includes(String(row.status || ''))) return { ok: false, status: 'not_claimable', job: row };
+  const delay = dueDelaySeconds(row.due_at);
+  if (delay > 0) return { ok: false, status: 'not_due', retryAfter: delay, job: row };
+  const now = new Date().toISOString();
+  const claimed = await db.prepare(`UPDATE phone_memory_jobs SET status='processing',mode=?,attempts=attempts+1,updated_at=?
+    WHERE id=? AND status IN ('pending','queued')`).bind(mode, now, Number(id)).run();
+  if (Number(claimed?.meta?.changes || 0) !== 1) return { ok: false, status: 'claim_conflict' };
+  return { ok: true, job: await db.prepare('SELECT * FROM phone_memory_jobs WHERE id=?').bind(Number(id)).first() };
+}
+
+export async function processV130MemoryJob(env = {}, id) {
+  const db = env?.TALKSYS_LOG_DB;
+  if (!db) return { ok: false, status: 'storage_unavailable' };
+  const mode = await readV130Flag(env, 'memory_jobs');
+  if (!['shadow', 'active'].includes(mode)) return { ok: true, status: 'feature_disabled', mode };
+  const claimed = await claimJob(env, id, mode);
+  if (!claimed.ok) return claimed;
+  const job = claimed.job;
+  const started = Date.now();
+  const metrics = await jobMetrics(env, job.phone_number);
+  const trigger = evaluateV130MemoryTrigger(metrics, env);
+  const auditBase = { trigger, metrics: { ...metrics, userTexts: undefined } };
+
+  if (!trigger.eligible) {
+    await finishJob(db, job.id, {
+      status: 'skipped', mode, durationMs: Date.now() - started,
+      candidateJson: JSON.stringify({ ...auditBase, reason: 'mechanical_threshold_not_met' }),
+    });
+    return { ok: true, status: 'skipped', jobId: job.id, phoneNumber: job.phone_number, trigger };
+  }
+
+  const candidate = await extractPhoneMemoryCandidate(env, job.phone_number);
+  const publicCandidate = publicPhoneMemoryCandidate(candidate);
+  const payload = { ...auditBase, candidate: publicCandidate };
+
+  if (!candidate.ok && candidate.status === 'primary_error') {
+    const attempts = Number(job.attempts || 1);
+    if (attempts < maxAttempts(env)) {
+      const retryAfter = await deferJob(db, job.id, mode, attempts, candidate.error || 'primary_error');
+      return { ok: false, status: 'retry', jobId: job.id, retryAfter, error: candidate.error || 'primary_error' };
+    }
+    await finishJob(db, job.id, {
+      status: 'failed', mode, fromMessageId: candidate.fromMessageId, toMessageId: candidate.toMessageId,
+      durationMs: Date.now() - started, candidateJson: JSON.stringify(payload), lastError: candidate.error || 'primary_error',
+    });
+    return { ok: false, status: 'failed', jobId: job.id, error: candidate.error || 'primary_error' };
+  }
+
+  if (candidate.status !== 'candidate') {
+    await finishJob(db, job.id, {
+      status: 'skipped', mode, fromMessageId: candidate.fromMessageId, toMessageId: candidate.toMessageId,
+      profileVersion: candidate.profileVersion, durationMs: Date.now() - started,
+      candidateJson: JSON.stringify({ ...payload, reason: candidate.status || 'no_candidate' }),
+      lastError: candidate.error || '',
+    });
+    return { ok: true, status: 'skipped', jobId: job.id, phoneNumber: job.phone_number, reason: candidate.status };
+  }
+
+  if (mode === 'shadow') {
+    await finishJob(db, job.id, {
+      status: 'shadow_complete', mode, fromMessageId: candidate.fromMessageId, toMessageId: candidate.toMessageId,
+      profileVersion: candidate.profileVersion, durationMs: Date.now() - started, candidateJson: JSON.stringify(payload),
+    });
+    return { ok: true, status: 'shadow_complete', jobId: job.id, phoneNumber: job.phone_number, candidate: publicCandidate };
+  }
+
+  const applied = await applyPhoneMemoryCandidate(env, candidate);
+  if (!applied.ok && applied.status === 'version_conflict') {
+    const attempts = Number(job.attempts || 1);
+    if (attempts < maxAttempts(env)) {
+      const retryAfter = await deferJob(db, job.id, mode, attempts, 'version_conflict');
+      return { ok: false, status: 'retry', jobId: job.id, retryAfter, error: 'version_conflict' };
+    }
+    await finishJob(db, job.id, {
+      status: 'failed', mode, fromMessageId: candidate.fromMessageId, toMessageId: candidate.toMessageId,
+      profileVersion: candidate.profileVersion, durationMs: Date.now() - started,
+      candidateJson: JSON.stringify({ ...payload, apply: applied }), lastError: 'version_conflict',
+    });
+    return { ok: false, status: 'failed', jobId: job.id, error: 'version_conflict' };
+  }
+
+  await finishJob(db, job.id, {
+    status: applied.ok ? 'completed' : 'failed', mode,
+    fromMessageId: candidate.fromMessageId, toMessageId: candidate.toMessageId, profileVersion: candidate.profileVersion,
+    durationMs: Date.now() - started, candidateJson: JSON.stringify({ ...payload, apply: applied }),
+    lastError: applied.ok ? '' : clean(applied.status || 'apply_failed', 200),
+  });
+  return { ok: Boolean(applied.ok), status: applied.ok ? 'completed' : 'failed', jobId: job.id, phoneNumber: job.phone_number, apply: applied };
+}
+
+async function enqueueMissedJobs(env, mode, limit) {
+  const db = env.TALKSYS_LOG_DB;
+  const rows = await db.prepare(`SELECT c.from_number AS phone_number,MAX(c.call_id) AS trigger_call_id
+    FROM phone_calls c JOIN phone_messages m ON m.call_id=c.call_id
+    LEFT JOIN phone_memory_state s ON s.phone_number=c.from_number
+    LEFT JOIN phone_user_trash u ON u.phone_number=c.from_number
+    WHERE COALESCE(c.from_number,'')<>'' AND c.lifecycle_state='active' AND u.phone_number IS NULL
+      AND m.id>COALESCE(s.last_processed_message_id,0)
+      AND NOT EXISTS (SELECT 1 FROM phone_memory_jobs j WHERE j.phone_number=c.from_number AND j.status IN ('pending','queued','processing'))
+    GROUP BY c.from_number ORDER BY MAX(m.id) ASC LIMIT ?`).bind(limit).all();
+  const now = new Date().toISOString();
+  for (const row of rows?.results || []) {
+    await db.prepare(`INSERT OR IGNORE INTO phone_memory_jobs
+      (phone_number,trigger_call_id,status,mode,due_at,created_at,updated_at)
+      VALUES(?,?,'pending',?,CURRENT_TIMESTAMP,?,?)`).bind(row.phone_number, row.trigger_call_id || '', mode, now, now).run();
+  }
+  return (rows?.results || []).length;
+}
+
+export async function runV130MemoryJobRescue(env = {}, options = {}) {
+  const db = env?.TALKSYS_LOG_DB;
+  if (!db) return { ok: false, status: 'storage_unavailable', processed: 0 };
+  const mode = await readV130Flag(env, 'memory_jobs');
+  if (!['shadow', 'active'].includes(mode)) return { ok: true, status: 'feature_disabled', mode, processed: 0 };
+  const limit = Math.max(1, Math.min(50, Number(options?.limit || 12)));
+  const rescued = await enqueueMissedJobs(env, mode, limit);
+  await db.prepare(`UPDATE phone_memory_jobs SET status='pending',due_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP,completed_at=NULL
+    WHERE status='failed' AND attempts<? AND updated_at<=datetime('now','-15 minutes')`).bind(maxAttempts(env)).run();
+  const rows = await db.prepare(`SELECT id FROM phone_memory_jobs
+    WHERE status IN ('pending','queued') AND datetime(due_at)<=datetime('now') ORDER BY due_at ASC,id ASC LIMIT ?`).bind(limit).all();
+  const results = [];
+  for (const row of rows?.results || []) results.push(await processV130MemoryJob(env, row.id));
+  return { ok: true, mode, rescued, processed: results.length, results };
+}
+
+export async function handleV130MemoryQueue(batch, env) {
+  const mode = await readV130Flag(env, 'memory_jobs');
+  if (!['shadow', 'active'].includes(mode)) return { ok: true, mode, processed: 0 };
+  let processed = 0;
+  for (const message of batch?.messages || []) {
+    try {
+      const body = message?.body && typeof message.body === 'object' ? message.body : {};
+      let job = null;
+      if (Number.isInteger(Number(body.jobId)) && Number(body.jobId) > 0) {
+        job = await env.TALKSYS_LOG_DB.prepare('SELECT id,due_at FROM phone_memory_jobs WHERE id=?').bind(Number(body.jobId)).first();
+      } else if (clean(body.callId, 200)) {
+        const call = await env.TALKSYS_LOG_DB.prepare('SELECT from_number FROM phone_calls WHERE call_id=?').bind(clean(body.callId, 200)).first();
+        if (call?.from_number) {
+          job = await env.TALKSYS_LOG_DB.prepare(`SELECT id,due_at FROM phone_memory_jobs
+            WHERE phone_number=? AND status IN ('pending','queued') ORDER BY id DESC LIMIT 1`).bind(call.from_number).first();
+        }
+      }
+      if (!job) { message.ack(); continue; }
+      const early = dueDelaySeconds(job.due_at);
+      if (early > 0) { message.retry({ delaySeconds: Math.min(86400, Math.max(1, early)) }); continue; }
+      const result = await processV130MemoryJob(env, job.id);
+      processed += 1;
+      if (result?.status === 'retry' || result?.status === 'not_due') {
+        message.retry({ delaySeconds: Math.min(86400, Math.max(1, Number(result.retryAfter || 60))) });
+      } else {
+        message.ack();
+      }
+    } catch (error) {
+      console.error('v130_memory_queue_error', clean(error?.message || error, 300));
+      message.retry({ delaySeconds: 120 });
+    }
+  }
+  return { ok: true, mode, processed };
 }
 
 async function listJobs(request, env) {
