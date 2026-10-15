@@ -1,0 +1,66 @@
+name: Apply v129 rescue
+on:
+  push:
+    branches: [v129-correct]
+    paths:
+      - 'scripts/apply-v129-rescue.py'
+      - 'scripts/repair-v129-memory-status-isolation.py'
+      - 'tests/v129-rescue-personalization-web.test.mjs'
+      - '.github/workflows/apply-v129-rescue.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v129-correct
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Apply isolated v129 patch
+        run: python3 scripts/apply-v129-rescue.py
+      - name: Preserve background-memory isolation
+        run: |
+          git checkout -- src/phone-memory-maintenance.js
+          python3 scripts/repair-v129-memory-status-isolation.py
+      - name: Repair generated regex escaping
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/integrated-entry.js')
+          s=p.read_text()
+          broken="if (/15時(?:00分)?[^。\n]{0,40}"
+          fixed="if (/15時(?:00分)?[^。\\n]{0,40}"
+          if broken not in s:
+              raise SystemExit('generated freshness regex marker missing')
+          p.write_text(s.replace(broken,fixed,1))
+          PY
+      - name: Syntax check
+        run: |
+          node --check src/integrated-entry.js
+          node --check src/phone-memory-maintenance.js
+          node --check src/telephony/index.js
+      - name: Regression tests
+        run: |
+          node --test tests/v129-rescue-personalization-web.test.mjs
+          node --test tests/phone-personalization-profile-v115.test.mjs
+          node --test tests/phone-memory-maintenance-v1.test.mjs
+          node --test tests/phone-grounding-profile-v121.test.mjs
+      - name: Commit validated source changes
+        run: |
+          git config user.name 'talksys-ci'
+          git config user.email 'talksys-ci@users.noreply.github.com'
+          git add src/integrated-entry.js src/telephony/index.js
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit'
+          else
+            git commit -m 'Implement v129 grounded medium rescue and personalization status'
+            git push origin HEAD:v129-correct
+          fi
