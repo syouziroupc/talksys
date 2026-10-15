@@ -1,44 +1,64 @@
-name: Diagnose phone profiles login
+name: Repair phone profiles login
 
 on:
   push:
     branches: [fix-phone-profiles-login-button]
 
+permissions:
+  contents: write
+
 jobs:
-  diagnose:
+  repair:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Fetch production phone profiles page and verify login binding
+      - name: Repair rendered newline escaping
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsS --max-time 20 https://talksys.syouziroupc.workers.dev/phone-profiles -o /tmp/page.html
           python3 - <<'PY'
           from pathlib import Path
-          import re
-          html=Path('/tmp/page.html').read_text()
-          m=re.search(r'<script>(.*?)</script>', html, re.S)
-          if not m: raise SystemExit('inline script missing')
-          Path('/tmp/inline.js').write_text(m.group(1))
-          print('button-present=', 'id="loginBtn"' in html)
-          print('script-bytes=', len(m.group(1)))
+          p=Path('src/telephony/index.js')
+          s=p.read_text()
+          start=s.index('function profilesDashboardHtml(request)')
+          end=s.index('\nfunction dashboardHtml(request)', start)
+          segment=s[start:end]
+          old=".join('\\n')"
+          new=".join('\\\\n')"
+          count=segment.count(old)
+          if count == 1:
+              segment=segment.replace(old,new,1)
+              s=s[:start]+segment+s[end:]
+              p.write_text(s)
+              print('patched phone profiles newline escape')
+          elif count == 0 and new in segment:
+              print('phone profiles newline escape already repaired')
+          else:
+              raise SystemExit(f'unexpected newline escape count: {count}')
           PY
-          node --check /tmp/inline.js
-          node <<'NODE'
-          const fs=require('fs'), vm=require('vm');
-          const elements=new Map();
-          const make=(id)=>({id,value:'',textContent:'',innerHTML:'',className:'',dataset:{},classList:{add(){},remove(){}},addEventListener(){},querySelectorAll(){return[]}});
-          global.sessionStorage={getItem(){return ''},setItem(){}};
-          global.document={getElementById(id){if(!elements.has(id))elements.set(id,make(id));return elements.get(id)},querySelectorAll(){return[]}};
-          global.location={href:'https://talksys.syouziroupc.workers.dev/phone-profiles'};
-          global.history={replaceState(){}};
-          global.alert=()=>{};
-          vm.runInThisContext(fs.readFileSync('/tmp/inline.js','utf8'));
-          const btn=document.getElementById('loginBtn');
-          if(typeof btn.onclick!=='function') throw new Error('loginBtn onclick was not bound');
-          console.log('login-binding=ok');
-          NODE
+      - name: Install and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          node --check src/telephony/index.js
+          node --test tests/phone-profiles-browser-script.test.mjs
+          npm test
+      - name: Commit repair if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- src/telephony/index.js; then
+            echo 'No source repair commit needed.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/telephony/index.js
+          git commit -m 'Fix phone profiles display button browser script'
+          git push origin HEAD:fix-phone-profiles-login-button
