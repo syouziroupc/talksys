@@ -39,12 +39,16 @@ jobs:
           grep -q "TELEPHONY_TTS_VOICE\": \"eve" wrangler.jsonc
           grep -q "main\": \"src/runtime-entry.js" wrangler.jsonc
           test -f scripts/apply-v130d-onboarding.py
+          test -f scripts/fix-v130d-version-resume.py
 
       - name: Install pinned dependencies
         run: npm ci --no-audit --no-fund
 
       - name: Apply guarded V130d patch
-        run: python scripts/apply-v130d-onboarding.py
+        run: |
+          set -euo pipefail
+          python scripts/apply-v130d-onboarding.py
+          python scripts/fix-v130d-version-resume.py
 
       - name: Restrict patch surface
         shell: bash
@@ -133,6 +137,7 @@ jobs:
           grep -q "V130_ONBOARDING_RUNTIME_MODE" src/integrated-entry.js
           grep -q "readV130Flag(env, 'onboarding')" src/runtime-entry.js
           grep -q "profile && !state && !profile?.onboarding_completed_at" src/v130-onboarding.js
+          grep -q "stateComplete && profileComplete" src/v130-onboarding.js
           grep -q "PHONE_RELEASE_VERSION = 'v129'" src/telephony/index.js
           git diff --check
 
