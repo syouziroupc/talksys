@@ -21,7 +21,9 @@
     "TELEPHONY_TTS_OUTPUT_GAIN_DB": "3.0",
     "TELEPHONY_SEARCH_PROGRESS_ENABLED": "true",
     "PHONE_MEMORY_ENABLED": "true",
-    "PHONE_MEMORY_MAX_PROFILES": "8"
+    "PHONE_MEMORY_MAX_PROFILES": "8",
+    "PHONE_MEMORY_JOB_MAX_ATTEMPTS": "4",
+    "PHONE_ONBOARDING_VERSION": "1"
   },
   "triggers": {
     "crons": ["15 18 * * *"]
@@ -33,6 +35,20 @@
     "database_name": "talksys-conversation-logs",
     "database_id": "4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a"
   }],
+  "queues": {
+    "producers": [{
+      "binding": "PHONE_MEMORY_QUEUE",
+      "queue": "talksys-phone-memory-v130"
+    }],
+    "consumers": [{
+      "queue": "talksys-phone-memory-v130",
+      "max_batch_size": 10,
+      "max_batch_timeout": 5,
+      "max_retries": 4,
+      "dead_letter_queue": "talksys-phone-memory-v130-dlq",
+      "retry_delay": 60
+    }]
+  },
   "observability": {
     "enabled": true,
     "logs": { "enabled": true, "head_sampling_rate": 1 },

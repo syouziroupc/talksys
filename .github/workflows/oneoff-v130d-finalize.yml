@@ -1,0 +1,166 @@
+name: Finalize V130d onboarding branch
+
+on:
+  push:
+    branches: [v130]
+    paths:
+      - '.github/workflows/oneoff-v130d-finalize.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oneoff-v130d-finalize
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v130
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Require exact V130c baseline and no deployment mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "talksys-runtime-entry-v130-memory-jobs-r2" src/runtime-entry.js
+          grep -q "V130_ONBOARDING_REVISION = 'talksys-v130-onboarding-r1'" src/v130-onboarding.js
+          grep -q "PHONE_RELEASE_VERSION = 'v129'" src/telephony/index.js
+          grep -q "TELEPHONY_VAD_RMS\": \"0.0045" wrangler.jsonc
+          grep -q "TELEPHONY_TTS_VOICE\": \"eve" wrangler.jsonc
+          grep -q "main\": \"src/runtime-entry.js" wrangler.jsonc
+          test -f scripts/apply-v130d-onboarding.py
+          test -f scripts/fix-v130d-version-resume.py
+
+      - name: Install pinned dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Apply guarded V130d patch
+        run: |
+          set -euo pipefail
+          python scripts/apply-v130d-onboarding.py
+          python scripts/fix-v130d-version-resume.py
+
+      - name: Restrict patch surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(printf '%s\n' \
+            src/integrated-entry.js \
+            src/runtime-entry.js \
+            src/telephony/index.js \
+            src/v130-onboarding.js \
+            src/v130-phone-onboarding.js \
+            tests/v130-phone-onboarding.test.mjs | sort)"
+          actual="$( { git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)"
+          printf '%s\n' "$actual"
+          test "$actual" = "$expected"
+          git diff --check
+          test -z "$(git diff --name-only -- src/stt-v45.js src/telephony/phone-tts.js src/telephony/phone-noise-suppressor.js src/telephony/codec.js src/voice-fast-reaction.js wrangler.jsonc)"
+
+      - name: Syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check src/v130-phone-onboarding.js
+          node --check src/v130-onboarding.js
+          node --check src/runtime-entry.js
+          node --check src/integrated-entry.js
+          node --check src/telephony/index.js
+
+      - name: V130 onboarding regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            tests/v130-onboarding.test.mjs \
+            tests/v130-control-plane.test.mjs \
+            tests/v130-phone-onboarding.test.mjs \
+            tests/v130-memory-jobs.test.mjs \
+            tests/v130-user-trash.test.mjs
+
+      - name: Existing phone and telephony regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t suites < <(find tests -maxdepth 1 -type f \( -iname 'phone-*test.mjs' -o -iname 'telephony-*test.mjs' \) | sort)
+          printf 'Running %s phone/telephony suites\n' "${#suites[@]}"
+          node --test "${suites[@]}"
+
+      - name: Full active regression suite
+        run: npm test
+
+      - name: Architecture and reuse gates
+        shell: bash
+        env:
+          TALKSYS_REUSE_BASE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          npm run architecture:check
+          npm run architecture:graph
+          npm run reuse:check
+
+      - name: Validate V130 migrations on isolated local D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .wrangler/v130d-ci
+          npx wrangler d1 execute TALKSYS_LOG_DB --local --persist-to .wrangler/v130d-ci --file migrations/0001_v130_expand.sql --yes
+          npx wrangler d1 execute TALKSYS_LOG_DB --local --persist-to .wrangler/v130d-ci --file migrations/0002_v130_user_trash_snapshots.sql --yes
+          npx wrangler d1 execute TALKSYS_LOG_DB --local --persist-to .wrangler/v130d-ci --command "SELECT name,value FROM talksys_feature_flags WHERE name='onboarding';" --json | tee /tmp/v130d-flag.json
+          grep -q '"value": "off"' /tmp/v130d-flag.json
+
+      - name: Worker bundle dry-run only
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --dry-run 2>&1 | tee /tmp/v130d-wrangler-dry-run.log
+          ! grep -Eqi '(error|failed|unsupported wasm|unresolved import)' /tmp/v130d-wrangler-dry-run.log
+
+      - name: Final control-flow audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "deps.onboardingTurn(from,stt.text)" src/telephony/index.js
+          grep -q "const reaction=fastReaction(stt.text)" src/telephony/index.js
+          grep -q "answerWithTalkSys(deps,stt.text" src/telephony/index.js
+          grep -q "purpose:'onboarding'" src/telephony/index.js
+          grep -q "V130_ONBOARDING_RUNTIME_MODE" src/integrated-entry.js
+          grep -q "readV130Flag(env, 'onboarding')" src/runtime-entry.js
+          grep -q "profile && !state && !profile?.onboarding_completed_at" src/v130-onboarding.js
+          grep -q "stateComplete && profileComplete" src/v130-onboarding.js
+          grep -q "PHONE_RELEASE_VERSION = 'v129'" src/telephony/index.js
+          git diff --check
+
+      - name: Show validated diff
+        shell: bash
+        run: |
+          git diff --stat
+          git diff -- src/v130-onboarding.js src/v130-phone-onboarding.js src/runtime-entry.js tests/v130-phone-onboarding.test.mjs
+          git diff --unified=4 -- src/integrated-entry.js src/telephony/index.js
+
+      - name: Commit validated V130d to v130
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            src/v130-onboarding.js \
+            src/v130-phone-onboarding.js \
+            src/runtime-entry.js \
+            src/integrated-entry.js \
+            src/telephony/index.js \
+            tests/v130-phone-onboarding.test.mjs
+          git diff --cached --check
+          git commit -m 'Complete deterministic phone onboarding V130d'
+          git push origin HEAD:v130

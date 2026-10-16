@@ -83,9 +83,12 @@ test('transcript builder separates user and assistant roles for evidence checkin
   assert.doesNotMatch(built.transcript, /ignore this/);
 });
 
-test('memory maintenance remains outside the live telephony source and scheduled wrapper delegates HTTP unchanged', () => {
+test('memory maintenance stays outside live telephony and runtime delegation is limited to the guarded media path', () => {
   assert.doesNotMatch(telephonySource, /phone-memory-maintenance|runPhoneMemoryMaintenance/);
-  assert.match(runtimeSource, /return integratedEntry\.fetch\(request, env, ctx\)/);
+  assert.match(runtimeSource, /let delegatedEnv = env;/);
+  assert.match(runtimeSource, /if \(url\.pathname === '\/telnyx\/media'\)/);
+  assert.match(runtimeSource, /readV130Flag\(env, 'memory_jobs'\)/);
+  assert.match(runtimeSource, /return integratedEntry\.fetch\(request, delegatedEnv, ctx\)/);
   assert.match(runtimeSource, /scheduled\(controller, env, ctx\)/);
   assert.match(runtimeSource, /runPhoneMemoryMaintenance\(env\)/);
   assert.match(wrangler, /"main"\s*:\s*"src\/runtime-entry\.js"/);

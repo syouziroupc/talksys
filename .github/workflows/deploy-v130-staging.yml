@@ -1,0 +1,187 @@
+name: Deploy TalkSys V130 staging
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: talksys-v130-staging
+  cancel-in-progress: true
+
+jobs:
+  staging:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      STAGING_D1_NAME: talksys-conversation-logs-staging
+      STAGING_WORKER_NAME: talksys-staging
+      STAGING_QUEUE_NAME: talksys-phone-memory-v130-staging
+      STAGING_DLQ_NAME: talksys-phone-memory-v130-staging-dlq
+      PRODUCTION_D1_ID: 4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a
+      PRODUCTION_QUEUE_NAME: talksys-phone-memory-v130
+      PRODUCTION_DLQ_NAME: talksys-phone-memory-v130-dlq
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Restrict staging workflow to V130
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/v130" ]]; then
+            echo "V130 staging deploy is restricted to refs/heads/v130; got $GITHUB_REF"
+            exit 1
+          fi
+
+      - name: Verify Cloudflare credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+            echo 'Cloudflare credential is not visible to this workflow. Configure a staging GitHub Environment with the existing Cloudflare API token, or explicitly approve use of the production Environment for credentials only.'
+            exit 1
+          fi
+          if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+            account_id="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              https://api.cloudflare.com/client/v4/accounts?per_page=1 | \
+              node -e "let d=JSON.parse(require('fs').readFileSync(0,'utf8'));process.stdout.write(d.result?.[0]?.id||'')")"
+            test -n "$account_id"
+            echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json ]]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+      - name: Run repository validation before staging mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run architecture:check
+          npm run architecture:graph
+          find src archive -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+          npm test
+          npx wrangler deploy --dry-run
+
+      - name: Resolve or create dedicated staging D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          list_db() {
+            npx wrangler d1 list --json | node -e '
+              const fs=require("fs");
+              const name=process.env.STAGING_D1_NAME;
+              const rows=JSON.parse(fs.readFileSync(0,"utf8"));
+              const hit=(Array.isArray(rows)?rows:[]).find((row)=>row?.name===name);
+              process.stdout.write(hit?.uuid||hit?.id||"");
+            '
+          }
+          staging_id="$(list_db)"
+          if [[ -z "$staging_id" ]]; then
+            npx wrangler d1 create "$STAGING_D1_NAME"
+            staging_id="$(list_db)"
+          fi
+          test -n "$staging_id"
+          if [[ "$staging_id" == "$PRODUCTION_D1_ID" ]]; then
+            echo 'Refusing staging deployment: staging D1 resolved to production D1.'
+            exit 1
+          fi
+          echo "STAGING_D1_ID=$staging_id" >> "$GITHUB_ENV"
+          echo "Resolved isolated staging D1: $STAGING_D1_NAME"
+
+      - name: Resolve or create dedicated staging Queues
+        shell: bash
+        run: |
+          set -euo pipefail
+          queues="$(npx wrangler queues list --json)"
+          queue_exists() {
+            local name="$1"
+            QUEUES_JSON="$queues" QUEUE_NAME="$name" node -e '
+              const rows=JSON.parse(process.env.QUEUES_JSON||"[]");
+              const found=(Array.isArray(rows)?rows:[]).some((row)=>(row?.queue_name||row?.name)===process.env.QUEUE_NAME);
+              process.exit(found?0:1);
+            '
+          }
+          if ! queue_exists "$STAGING_QUEUE_NAME"; then npx wrangler queues create "$STAGING_QUEUE_NAME"; fi
+          if ! queue_exists "$STAGING_DLQ_NAME"; then npx wrangler queues create "$STAGING_DLQ_NAME"; fi
+          if [[ "$STAGING_QUEUE_NAME" == "$PRODUCTION_QUEUE_NAME" || "$STAGING_DLQ_NAME" == "$PRODUCTION_DLQ_NAME" ]]; then
+            echo 'Refusing staging deployment: staging Queue name collides with production.'
+            exit 1
+          fi
+
+      - name: Build staging-only Wrangler config
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          let text = fs.readFileSync('wrangler.jsonc', 'utf8');
+          const stagingId = process.env.STAGING_D1_ID;
+          if (!stagingId) throw new Error('STAGING_D1_ID missing');
+          text = text.replace('"name": "talksys"', `"name": "${process.env.STAGING_WORKER_NAME}"`);
+          text = text.replace('"TELEPHONY_ENABLED": "true"', '"TELEPHONY_ENABLED": "false"');
+          text = text.replace('"PHONE_MEMORY_ENABLED": "true"', '"PHONE_MEMORY_ENABLED": "false"');
+          text = text.replace('"crons": ["15 18 * * *"]', '"crons": []');
+          text = text.replace('"database_name": "talksys-conversation-logs"', `"database_name": "${process.env.STAGING_D1_NAME}"`);
+          text = text.replace('"database_id": "4d40b1c6-2436-4c5f-bb0a-e8e173a6d91a"', `"database_id": "${stagingId}"`);
+          text = text.replace(`"queue": "${process.env.PRODUCTION_QUEUE_NAME}"`, `"queue": "${process.env.STAGING_QUEUE_NAME}"`);
+          text = text.replace(`"dead_letter_queue": "${process.env.PRODUCTION_DLQ_NAME}"`, `"dead_letter_queue": "${process.env.STAGING_DLQ_NAME}"`);
+          if (text.includes(process.env.PRODUCTION_D1_ID)) throw new Error('production D1 ID leaked into staging config');
+          if (text.includes(`"queue": "${process.env.PRODUCTION_QUEUE_NAME}"`) || text.includes(`"dead_letter_queue": "${process.env.PRODUCTION_DLQ_NAME}"`)) {
+            throw new Error('production Queue leaked into staging config');
+          }
+          fs.writeFileSync('.wrangler-v130-staging.jsonc', text);
+          NODE
+          grep -q '"name": "talksys-staging"' .wrangler-v130-staging.jsonc
+          grep -q "\"database_id\": \"$STAGING_D1_ID\"" .wrangler-v130-staging.jsonc
+          grep -q "\"queue\": \"$STAGING_QUEUE_NAME\"" .wrangler-v130-staging.jsonc
+          grep -q "\"dead_letter_queue\": \"$STAGING_DLQ_NAME\"" .wrangler-v130-staging.jsonc
+          ! grep -q "$PRODUCTION_D1_ID" .wrangler-v130-staging.jsonc
+
+      - name: Apply V130 migrations to staging D1 only
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 migrations apply TALKSYS_LOG_DB --remote --config .wrangler-v130-staging.jsonc
+
+      - name: Load synthetic staging fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute TALKSYS_LOG_DB --remote --config .wrangler-v130-staging.jsonc --file tests/fixtures/v130-d1-fixtures.sql --yes
+
+      - name: Deploy staging Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+            secrets_file="$(mktemp)"
+            trap 'rm -f "$secrets_file"' EXIT
+            SECRETS_FILE="$secrets_file" node <<'NODE'
+          const fs = require('fs');
+          fs.writeFileSync(process.env.SECRETS_FILE, JSON.stringify({ GEMINI_API_KEY: process.env.GEMINI_API_KEY }));
+          NODE
+            npx wrangler deploy --config .wrangler-v130-staging.jsonc --secrets-file "$secrets_file"
+          else
+            npx wrangler deploy --config .wrangler-v130-staging.jsonc
+          fi
+
+      - name: Verify staging deployment is not production-bound
+        shell: bash
+        run: |
+          set -euo pipefail
+          deployed="$(npx wrangler versions list --name "$STAGING_WORKER_NAME" --json | head -c 200000)"
+          test -n "$deployed"
+          echo "V130 staging deployed with dedicated D1 $STAGING_D1_ID and Queue $STAGING_QUEUE_NAME"
