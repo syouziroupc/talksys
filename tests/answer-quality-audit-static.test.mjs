@@ -53,7 +53,10 @@ test('live Telnyx media routes remain present and are not replaced by the audit 
   assert.match(telephony, /url\.pathname\s*===\s*'\/telnyx\/voice'/);
   assert.match(telephony, /url\.pathname\s*===\s*'\/telnyx\/media'/);
   assert.match(telephony, /mediaBridge\(request\s*,\s*env\s*,\s*deps\)/);
-  assert.doesNotMatch(runtimeEntry, /url\.pathname\s*===\s*'\/telnyx\/(?:voice|media)'/);
+  // V130 wraps the media env for memory jobs, but delegates speech to the same live core.
+  assert.match(runtimeEntry, /if \(url\.pathname === '\/telnyx\/media'\)/);
+  assert.match(runtimeEntry, /return integratedEntry\.fetch\(request, delegatedEnv, ctx\)/);
+  assert.doesNotMatch(runtimeEntry, /\bmediaBridge\s*\(/);
 });
 
 test('direct answer audit locks reviewer to the production model and independent Google Search', () => {
