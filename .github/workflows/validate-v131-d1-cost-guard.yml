@@ -1,0 +1,55 @@
+name: Validate V131 D1 write guard (no deploy)
+on:
+  workflow_dispatch:
+  push:
+    branches: [v131-d1-cost-guard]
+permissions:
+  contents: read
+concurrency:
+  group: v131-d1-cost-guard-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Verify original voice core was not changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin v130
+          changes="$(git diff --name-only origin/v130 HEAD -- src/telephony/codec.js src/telephony/phone-noise-suppressor.js src/telephony/phone-tts.js src/stt-v45.js src/voice-fast-reaction.js src/integrated-entry.js src/runtime-entry.js wrangler.jsonc)"
+          if [[ -n "$changes" ]]; then echo "Protected voice core changed: $changes"; exit 1; fi
+          python3 - <<'PY'
+          import subprocess
+          patch = subprocess.check_output(['git','diff','--unified=0','origin/v130','HEAD','--','src/telephony/index.js'],text=True)
+          added = [x[1:] for x in patch.splitlines() if x.startswith('+') and not x.startswith('+++')]
+          removed = [x[1:] for x in patch.splitlines() if x.startswith('-') and not x.startswith('---')]
+          assert not removed, 'Existing telephony lines were removed'
+          assert len(added) <= 6, f'Telephony changes exceeded logging-only boundary: {added}'
+          assert any("import { shouldPersistPhoneLatencyEvent }" in x for x in added)
+          assert any("if (!shouldPersistPhoneLatencyEvent(env," in x for x in added)
+          PY
+      - name: Check syntax and policy tests
+        shell: bash
+        run: |
+          node --check src/telephony/phone-d1-write-policy.js
+          node --check src/telephony/index.js
+          node --test tests/v131-d1-write-policy.test.mjs
+      - name: Existing active regression suite
+        run: npm test
+      - name: Architecture and reuse checks
+        shell: bash
+        run: |
+          npm run architecture:check
+          npm run architecture:graph
+      - name: Worker dry-run ONLY, never deploy
+        run: npx wrangler deploy --dry-run
