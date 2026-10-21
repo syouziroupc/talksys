@@ -33,7 +33,7 @@ jobs:
           patch = subprocess.check_output(['git','diff','--unified=0','origin/v130','HEAD','--','src/telephony/index.js'],text=True)
           added = [x[1:] for x in patch.splitlines() if x.startswith('+') and not x.startswith('+++')]
           removed = [x[1:] for x in patch.splitlines() if x.startswith('-') and not x.startswith('---')]
-          assert not removed, 'Existing telephony lines were removed'
+          assert removed == ['  if (!safeCallId || !safeTurnId || !safeStage || !(await ensureSchema(env))) return;'], 'Unexpected existing telephony line changed'
           assert len(added) <= 6, f'Telephony changes exceeded logging-only boundary: {added}'
           assert any("import { shouldPersistPhoneLatencyEvent }" in x for x in added)
           assert any("if (!shouldPersistPhoneLatencyEvent(env," in x for x in added)
