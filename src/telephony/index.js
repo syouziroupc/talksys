@@ -5,6 +5,7 @@ import { PHONE_TTS_MODEL, PHONE_TTS_SAMPLE_RATE, phoneTtsDeliveryMode, phoneTtsO
 import { fastReaction, sameUtterance, FAST_REACTION_REVISION } from '../voice-fast-reaction.js';
 import { WEB_VOICE_CAPTURE_POLICY } from '../voice-capture-policy.js';
 import { createPhoneNoiseSuppressor, phoneNoiseSuppressionSelfTest, PHONE_NOISE_SUPPRESSION_REVISION } from './phone-noise-suppressor.js';
+import { shouldPersistPhoneLatencyEvent } from './phone-d1-write-policy.js';
 
 export const TELEPHONY_REVISION = 'talksys-telephony-v87-grok-pcmu-paced';
 export const TELEPHONY_OBSERVABILITY_REVISION = 'talksys-phone-latency-v90-fast-ack-r1';
@@ -341,7 +342,9 @@ async function appendMessage(env, callId, role, content) {
 
 async function appendLatencyEvent(env, { callId, turnId, stage, elapsedMs = 0, detail = {} }) {
   const safeCallId = clean(callId, 200), safeTurnId = clean(turnId, 200), safeStage = clean(stage, 100);
-  if (!safeCallId || !safeTurnId || !safeStage || !(await ensureSchema(env))) return;
+  if (!safeCallId || !safeTurnId || !safeStage) return;
+  if (!shouldPersistPhoneLatencyEvent(env, { callId: safeCallId, turnId: safeTurnId, stage: safeStage, elapsedMs, detail })) return;
+  if (!(await ensureSchema(env))) return;
   await env.TALKSYS_LOG_DB.prepare(`INSERT INTO phone_latency_events
     (call_id, turn_id, stage, elapsed_ms, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
     .bind(safeCallId, safeTurnId, safeStage, boundedMs(elapsedMs), detailJson(detail), new Date().toISOString()).run();
