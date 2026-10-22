@@ -459,6 +459,24 @@ async function warmPhoneGreetingAudio(env, text, deps = {}) {
   return phoneGreetingAudioPromises.get(greetingText);
 }
 
+// Best-effort synthesis overlaps TeXML/WebSocket establishment, never the HTTP reply.
+// Flagged because a voice webhook and its media stream may land in different isolates.
+export function prewarmPhoneGreetingAtWebhook(env = {}, ctx = {}, deps = {}) {
+  if (!flag(env?.TELEPHONY_GREETING_WEBHOOK_PREWARM, false) || typeof ctx?.waitUntil !== 'function') return false;
+  const greetingText = clean(env?.TELEPHONY_GREETING || 'お電話ありがとうございます。フォーンズです。ご用件をどうぞ。', 240);
+  if (!greetingText) return false;
+  const began = Date.now();
+  const warming = warmPhoneGreetingAudio(env, greetingText, deps)
+    .then((audio) => {
+      console.log(JSON.stringify({ type: 'phone_greeting_webhook_prewarm', ready: Boolean(audio?.bytes?.byteLength), elapsedMs: Date.now() - began }));
+    })
+    .catch((error) => {
+      console.warn(JSON.stringify({ type: 'phone_greeting_webhook_prewarm_error', error: clean(error?.message || error, 240) }));
+    });
+  ctx.waitUntil(warming);
+  return true;
+}
+
 async function warmPhoneAckAudio(env, text, deps = {}) {
   const ackText = clean(text, 240);
   if (!ackText) return null;
@@ -1021,6 +1039,7 @@ async function texmlResponse(request, env, ctx) {
   if (!enabled(env)) return new Response('telephony_disabled', { status: 503 });
   if (!sharedToken(env)) return new Response('telephony_shared_token_missing', { status: 503 });
   if (!tokenAuthorized(request, env)) return new Response('unauthorized', { status: 401 });
+  prewarmPhoneGreetingAtWebhook(env, ctx);
   const params = await requestParams(request);
   const callId = clean(params.get('CallSid') || params.get('call_sid') || crypto.randomUUID(), 200);
   const from = clean(params.get('From') || params.get('from') || '', 80), to = clean(params.get('To') || params.get('to') || '', 80);
