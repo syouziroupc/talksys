@@ -1,0 +1,85 @@
+name: Preflight production D1 hotfix (read-only)
+on:
+  push:
+    branches: [hotfix/d1-latency-cost-20261022]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: preflight-d1-hotfix
+  cancel-in-progress: true
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      EXPECTED_MAIN_SHA: b383cede0e4cfd8df5726d8975052dde1c8beb0b
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify production branch scope and reviewed main baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/hotfix/d1-latency-cost-20261022" ]]
+          git fetch origin main
+          [[ "$(git rev-parse origin/main)" == "$EXPECTED_MAIN_SHA" ]] || { echo 'main changed, abort'; exit 1; }
+          [[ "$(git merge-base origin/main HEAD)" == "$EXPECTED_MAIN_SHA" ]] || { echo 'main baseline diverged, abort'; exit 1; }
+          python3 - <<'PY'
+          import subprocess
+          files = set(subprocess.check_output(['git', 'diff','--name-only','origin/main','HEAD'],text=True).splitlines())
+          allowed = {
+            'src/telephony/index.js',
+            'src/telephony/phone-d1-write-policy.js',
+            'tests/v131-d1-write-policy.test.mjs',
+            'wrangler.jsonc',
+            '.github/workflows/preflight-d1-hotfix.yml',
+          }
+          assert files == allowed, f'Unexpected changed files: {files ^ allowed}'
+          patch = subprocess.check_output(['git','diff','--unified=0','origin/main','HEAD','--','src/telephony/index.js'],text=True)
+          plus = [line[1:] for line in patch.splitlines() if line.startswith('+') and not line.startswith('+++')]
+          minus = [line[1:] for line in patch.splitlines() if line.startswith('-') and not line.startswith('---')]
+          assert len(plus)==4 and minus == ['  if (!safeCallId || !safeTurnId || !safeStage || !(await ensureSchema(env))) return;'],(plus,minus)
+          assert "import { shouldPersistPhoneLatencyEvent }" in plus[0]
+          assert any('if (!shouldPersistPhoneLatencyEvent(env,' in line for line in plus)
+          print('Patch surface verified: logging-only source changes')
+          PY
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Test all active behavior and D1 guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/v131-d1-write-policy.test.mjs
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          node --check src/telephony/index.js
+          node --check src/telephony/phone-d1-write-policy.js
+      - name: Dry run only, no deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --dry-run
+      - name: Verify current live Worker read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Cloudflare token unavailable'; exit 1; }
+          url='https://talksys.syouziroupc.workers.dev/voice-health'
+          status="$(curl -sS --retry 2 --retry-delay 1 --connect-timeout 10 --max-time 25 -o /tmp/voice-health.json -w '%{http_code}' "$url")"
+          echo "live_voice_health_http=$status"
+          [[ "$status" == "200" ]] || { head -c 300 /tmp/voice-health.json; exit 1; }
+          node - <<'NODE'
+          const data=JSON.parse(require('fs').readFileSync('/tmp/voice-health.json','utf8'));
+          if (data.ok!==true) throw new Error('Existing live worker health not ok');
+          console.log('Live Worker healthy before deploy, reported version='+String(data.revision||data.talksysVersion||'unknown').slice(0,100));
+          NODE
+          npx wrangler deployments list --name talksys
+          echo 'Read-only production preflight complete'
