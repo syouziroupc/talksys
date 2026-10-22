@@ -1,0 +1,133 @@
+name: Release first greeting latency improvement
+on:
+  push:
+    branches: [hotfix/phone-first-greeting-20261023]
+    paths:
+      - '.github/workflows/release-phone-first-greeting.yml'
+permissions:
+  contents: read
+concurrency:
+  group: talksys-production
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      EXPECTED_BASE_SHA: d8180248f61f74d7d1eeb644554d5a1c1057e985
+      EXPECTED_LIVE_VERSION: d9aafc23-8b83-4cdf-a919-008535157eac
+      PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Reject unreviewed change or concurrent production drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/hotfix/phone-first-greeting-20261023" ]]
+          git fetch origin hotfix/d1-latency-cost-20261022
+          base="$(git rev-parse origin/hotfix/d1-latency-cost-20261022)"
+          [[ "$base" == "$EXPECTED_BASE_SHA" ]]
+          [[ "$(git merge-base "$base" HEAD)" == "$EXPECTED_BASE_SHA" ]]
+          [[ "$(git diff --name-only HEAD^ HEAD)" == ".github/workflows/release-phone-first-greeting.yml" ]]
+          python3 - <<'PY'
+          import subprocess
+          base='d8180248f61f74d7d1eeb644554d5a1c1057e985'
+          paths=set(subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines())
+          expected={'src/telephony/index.js','wrangler.jsonc','tests/phone-greeting-webhook-prewarm-v131.test.mjs','.github/workflows/diagnose-first-greeting-readonly.yml','.github/workflows/validate-phone-first-greeting.yml','.github/workflows/release-phone-first-greeting.yml'}
+          assert paths==expected, f'Unreviewed files: {paths^expected}'
+          patch=subprocess.check_output(['git','diff','--unified=0',base,'HEAD','--','src/telephony/index.js'],text=True)
+          removed=[l for l in patch.splitlines() if l.startswith('-') and not l.startswith('---')]
+          added=[l[1:] for l in patch.splitlines() if l.startswith('+') and not l.startswith('+++')]
+          assert not removed and len(added)<=30, 'Unexpected telephony replacement/deletion or oversized patch'
+          assert any('export function prewarmPhoneGreetingAtWebhook' in line for line in added)
+          assert any('prewarmPhoneGreetingAtWebhook(env, ctx);' in line for line in added)
+          s=subprocess.check_output(['git','show','HEAD:src/telephony/index.js'],text=True)
+          assert "if (!tokenAuthorized(request, env)) return new Response('unauthorized', { status: 401 });\n  prewarmPhoneGreetingAtWebhook(env, ctx);" in s
+          patchconf=subprocess.check_output(['git','diff','--unified=0',base,'HEAD','--','wrangler.jsonc'],text=True)
+          config_added=[l[1:] for l in patchconf.splitlines() if l.startswith('+') and not l.startswith('+++')]
+          config_removed=[l for l in patchconf.splitlines() if l.startswith('-') and not l.startswith('---')]
+          assert not config_removed and config_added==['    "TELEPHONY_GREETING_WEBHOOK_PREWARM": "true",']
+          print('Only guarded greeting prewarm, opt-in var, regression tests, and read-only workflows are added.')
+          PY
+      - name: Install exact dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Re-run full tests and dry-run before production change
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/phone-greeting-webhook-prewarm-v131.test.mjs tests/phone-greeting-latency-v114.test.mjs tests/telephony-integration.test.mjs
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          node --check src/telephony/index.js
+          npx wrangler deploy --dry-run
+      - name: Verify production current version and preserve rollback pointer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          status="$(curl -fsS --max-time 25 -o /tmp/pre-health.json -w '%{http_code}' "$PRODUCTION_URL/voice-health")"
+          [[ "$status" == "200" ]]
+          node - <<'NODE'
+          const d=JSON.parse(require('fs').readFileSync('/tmp/pre-health.json','utf8'));
+          if(d.ok!==true||d.revision!=='talksys-v45-parallel-grounding-r1')throw Error('Production voice health changed');
+          NODE
+          secrets="$(npx wrangler secret list --name talksys --format json)"
+          SECRETS_JSON="$secrets" node - <<'NODE'
+          const data=JSON.parse(process.env.SECRETS_JSON||'[]');
+          for(const n of ['GEMINI_API_KEY','DISCORD_BRIDGE_TOKEN']) if(!Array.isArray(data)||!data.some(x=>x.name===n))throw Error('Missing required production secret: '+n);
+          NODE
+          npx wrangler deployments list --name talksys >/tmp/pre-deployments.txt
+          current="$(grep 'Version(s):' /tmp/pre-deployments.txt | tail -1 | grep -Eo '[0-9a-f]{8}-[0-9a-f-]{27,}' | tail -1)"
+          echo "Current production version: $current"
+          [[ "$current" == "$EXPECTED_LIVE_VERSION" ]] || { echo 'Production version unexpectedly changed, refusing release'; exit 1; }
+          echo "PREVIOUS_VERSION=$current" >> "$GITHUB_ENV"
+      - name: Deploy limited first-greeting prewarm change
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --name talksys --keep-vars --message "2026-10-23 prewarm static greeting at authorized Telnyx voice webhook"
+      - name: Verify production after release
+        shell: bash
+        run: |
+          set -euo pipefail
+          health_ok=0
+          for attempt in 1 2 3 4 5 6; do
+            status="$(curl -sS --max-time 25 -o /tmp/post-health.json -w '%{http_code}' "$PRODUCTION_URL/voice-health" || true)"
+            if [[ "$status" == "200" ]] && node - <<'NODE'
+          const d=JSON.parse(require('fs').readFileSync('/tmp/post-health.json','utf8'));
+          if(d.ok!==true||d.revision!=='talksys-v45-parallel-grounding-r1')process.exit(1);
+          NODE
+            then health_ok=1; break; fi
+            sleep 3
+          done
+          [[ "$health_ok" == "1" ]]
+          for path in /phone /telephony-health; do
+            code="$(curl -sS --max-time 25 -o /tmp/route-response -w '%{http_code}' "$PRODUCTION_URL$path")"
+            echo "route=$path http=$code"
+            [[ "$code" == "200" ]]
+          done
+          authcode="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "$PRODUCTION_URL/telnyx/voice?token=bad")"
+          echo "Unauthorized voice webhook returns $authcode"
+          [[ "$authcode" == "401" ]]
+          npx wrangler deployments list --name talksys >/tmp/post-deployments.txt
+          current="$(grep 'Version(s):' /tmp/post-deployments.txt | tail -1 | grep -Eo '[0-9a-f]{8}-[0-9a-f-]{27,}' | tail -1)"
+          [[ "$current" != "$PREVIOUS_VERSION" ]]
+          echo "Live first-greeting hotfix version: $current ; rollback version: $PREVIOUS_VERSION"
+      - name: Automatic rollback if post-deploy checks fail
+        if: failure() && steps.deploy.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PREVIOUS_VERSION"
+          npx wrangler rollback "$PREVIOUS_VERSION" --name talksys --message "Rollback first greeting prewarm after failed health checks"
+          echo "Rolled back to $PREVIOUS_VERSION"
