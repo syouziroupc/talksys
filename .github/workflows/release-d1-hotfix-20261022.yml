@@ -102,7 +102,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx wrangler deploy --name talksys --keep-vars --message "2026-10-22 D1 phone latency write compaction; only logging hotfix" --yes
+          npx wrangler deploy --name talksys --keep-vars --message "2026-10-22 D1 phone latency write compaction; only logging hotfix"
       - name: Verify healthy Worker, unchanged voice routes and new version
         id: postflight
         shell: bash
