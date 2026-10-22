@@ -1,0 +1,52 @@
+name: Validate first greeting prewarm (no deploy)
+on:
+  push:
+    branches: [hotfix/phone-first-greeting-20261023]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: validate-phone-first-greeting
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Check patch scope and frozen speech core
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin hotfix/d1-latency-cost-20261022
+          python3 - <<'PY'
+          import subprocess
+          paths=set(subprocess.check_output(['git','diff','--name-only','origin/hotfix/d1-latency-cost-20261022','HEAD'],text=True).splitlines())
+          allowed={'src/telephony/index.js','wrangler.jsonc','tests/phone-greeting-webhook-prewarm-v131.test.mjs','.github/workflows/diagnose-first-greeting-readonly.yml','.github/workflows/validate-phone-first-greeting.yml'}
+          assert paths <= allowed and {'src/telephony/index.js','wrangler.jsonc','tests/phone-greeting-webhook-prewarm-v131.test.mjs'} <= paths, f'Unexpected change: {paths ^ allowed}'
+          src=subprocess.check_output(['git','show','HEAD:src/telephony/index.js'],text=True)
+          assert "prewarmPhoneGreetingAtWebhook(env, ctx);" in src
+          assert "ctx.waitUntil(warming);" in src
+          assert "preparedAudio:preparedGreeting||undefined" in src
+          assert "if(!speechActive||!speechFrames.length)return;" in src
+          assert "const speechThreshold = Number(env?.TELEPHONY_VAD_RMS" in src
+          assert "async function transcribeSamples(env, samples" in src
+          PY
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Run complete regression and greeting tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/phone-greeting-webhook-prewarm-v131.test.mjs tests/phone-greeting-latency-v114.test.mjs tests/telephony-integration.test.mjs
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          node --check src/telephony/index.js
+      - name: Worker bundle dry run only
+        run: npx wrangler deploy --dry-run
