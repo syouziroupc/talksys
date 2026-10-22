@@ -35,6 +35,7 @@ jobs:
           const errs=items.flatMap(x=>x.errors||[]).map(x=>({code:x.code||null,reason:String(x.message||'').slice(0,350)}));
           console.log('D1 query failure details:',JSON.stringify(errs));
           console.log('D1 response top-level keys:',Object.keys(items[0]||{}));
+          console.log('D1 response error:',String(items[0]?.error||'none').slice(0,450));
           console.log('D1 stderr size:',fs.statSync('/tmp/d1-diagnostic-error.txt').size);
           REPORT
             exit 1
