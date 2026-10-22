@@ -41,8 +41,10 @@ jobs:
             'tests/v131-d1-write-policy.test.mjs',
             'wrangler.jsonc',
             '.github/workflows/preflight-d1-hotfix.yml',
+            '.github/workflows/release-d1-hotfix-20261022.yml',
           }
-          assert files == allowed, f'Unexpected changed files: {files ^ allowed}'
+          required = allowed - {'.github/workflows/release-d1-hotfix-20261022.yml'}
+          assert required <= files and files <= allowed, f'Unexpected changed files: {files ^ required}'
           patch = subprocess.check_output(['git','diff','--unified=0','origin/main','HEAD','--','src/telephony/index.js'],text=True)
           plus = [line[1:] for line in patch.splitlines() if line.startswith('+') and not line.startswith('+++')]
           minus = [line[1:] for line in patch.splitlines() if line.startswith('-') and not line.startswith('---')]
