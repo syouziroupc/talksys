@@ -1,0 +1,137 @@
+name: Release D1 latency hotfix to production
+on:
+  push:
+    branches: [hotfix/d1-latency-cost-20261022]
+    paths:
+      - '.github/workflows/release-d1-hotfix-20261022.yml'
+permissions:
+  contents: read
+concurrency:
+  group: talksys-production
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      EXPECTED_MAIN_SHA: b383cede0e4cfd8df5726d8975052dde1c8beb0b
+      EXPECTED_LIVE_VERSION: a0183ebc-7600-40e8-9ee9-2f019c3eb6f7
+      PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Reject any unrelated production change
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/hotfix/d1-latency-cost-20261022" ]]
+          git fetch origin main
+          [[ "$(git rev-parse origin/main)" == "$EXPECTED_MAIN_SHA" ]]
+          [[ "$(git merge-base origin/main HEAD)" == "$EXPECTED_MAIN_SHA" ]]
+          [[ "$(git diff --name-only HEAD^ HEAD)" == ".github/workflows/release-d1-hotfix-20261022.yml" ]]
+          python3 - <<'PY'
+          import subprocess
+          diff=lambda path: subprocess.check_output(['git','diff','--unified=0','origin/main','HEAD','--',path],text=True)
+          files=set(subprocess.check_output(['git','diff','--name-only','origin/main','HEAD'],text=True).splitlines())
+          allowed={'src/telephony/index.js','src/telephony/phone-d1-write-policy.js','tests/v131-d1-write-policy.test.mjs','wrangler.jsonc','.github/workflows/preflight-d1-hotfix.yml','.github/workflows/release-d1-hotfix-20261022.yml'}
+          assert files==allowed, f'Unexpected changed files: {files ^ allowed}'
+          p=diff('src/telephony/index.js')
+          add=[x[1:] for x in p.splitlines() if x.startswith('+') and not x.startswith('+++')]
+          rem=[x[1:] for x in p.splitlines() if x.startswith('-') and not x.startswith('---')]
+          assert len(add)==4 and rem==['  if (!safeCallId || !safeTurnId || !safeStage || !(await ensureSchema(env))) return;'], (add,rem)
+          assert "import { shouldPersistPhoneLatencyEvent }" in add[0]
+          assert any("if (!shouldPersistPhoneLatencyEvent(env," in x for x in add)
+          q=diff('wrangler.jsonc')
+          a=[x[1:] for x in q.splitlines() if x.startswith('+') and not x.startswith('+++')]
+          r=[x[1:] for x in q.splitlines() if x.startswith('-') and not x.startswith('---')]
+          assert r==['    "PHONE_MEMORY_MAX_PROFILES": "8"'] and a==[
+            '    "PHONE_MEMORY_MAX_PROFILES": "8",',
+            '    "PHONE_D1_LATENCY_POLICY": "compact",',
+            '    "PHONE_D1_LATENCY_SAMPLE_ONE_IN": "10",',
+            '    "PHONE_D1_LATENCY_SLOW_MS": "5000"'
+          ],(a,r)
+          print('Release scope verified: no V130 code, no schema migrations, no TTS/STT/VAD changes.')
+          PY
+      - name: Install exact locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Run all regression, architecture and syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/v131-d1-write-policy.test.mjs
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          node --check src/telephony/index.js
+          node --check src/telephony/phone-d1-write-policy.js
+          npx wrangler deploy --dry-run
+      - name: Verify credential, secrets, live revision and backup version
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          status="$(curl -sS --retry 2 --retry-delay 1 --connect-timeout 10 --max-time 25 -o /tmp/pre-health.json -w '%{http_code}' "$PRODUCTION_URL/voice-health")"
+          [[ "$status" == "200" ]]
+          node - <<'NODE'
+          const data=JSON.parse(require('fs').readFileSync('/tmp/pre-health.json','utf8'));
+          if(data.ok!==true || data.revision!=='talksys-v45-parallel-grounding-r1')throw Error('Production health differs from preflight');
+          NODE
+          secrets="$(npx wrangler secret list --name talksys --format json)"
+          SECRETS_JSON="$secrets" node - <<'NODE'
+          const rows=JSON.parse(process.env.SECRETS_JSON||'[]');
+          for(const name of ['GEMINI_API_KEY','DISCORD_BRIDGE_TOKEN']){
+            if(!Array.isArray(rows)||!rows.some(s=>s.name===name))throw Error('Required production secret missing: '+name);
+          }
+          console.log('Required existing secrets present; values not accessed');
+          NODE
+          npx wrangler deployments list --name talksys > /tmp/pre-deployments.txt
+          current="$(grep 'Version(s):' /tmp/pre-deployments.txt | tail -1 | grep -Eo '[0-9a-f]{8}-[0-9a-f-]{27,}' | tail -1)"
+          echo "Current production version: $current"
+          [[ "$current" == "$EXPECTED_LIVE_VERSION" ]] || { echo 'Live Worker changed since read-only preflight, refusing production deploy'; exit 1; }
+          echo "PREVIOUS_VERSION=$current" >> "$GITHUB_ENV"
+      - name: Deploy production Worker with D1 compact flag
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --name talksys --keep-vars --message "2026-10-22 D1 phone latency write compaction; only logging hotfix" --yes
+      - name: Verify healthy Worker, unchanged voice routes and new version
+        id: postflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          health_ok=0
+          for attempt in 1 2 3 4 5 6; do
+            status="$(curl -sS --connect-timeout 10 --max-time 25 -o /tmp/post-health.json -w '%{http_code}' "$PRODUCTION_URL/voice-health" || true)"
+            if [[ "$status" == "200" ]] && HEALTH_PATH=/tmp/post-health.json node - <<'NODE'
+          const d=JSON.parse(require('fs').readFileSync(process.env.HEALTH_PATH,'utf8'));
+          if(d.ok!==true||d.revision!=='talksys-v45-parallel-grounding-r1')process.exit(1);
+          NODE
+            then health_ok=1; break; fi
+            sleep 3
+          done
+          [[ "$health_ok" == "1" ]] || { echo 'Post-deploy voice-health failure'; exit 1; }
+          phone_status="$(curl -sS --connect-timeout 10 --max-time 25 -o /dev/null -w '%{http_code}' "$PRODUCTION_URL/phone")"
+          echo "phone_admin_http=$phone_status"
+          [[ "$phone_status" == "200" ]] || { echo 'Phone management route unhealthy'; exit 1; }
+          npx wrangler deployments list --name talksys > /tmp/post-deployments.txt
+          current="$(grep 'Version(s):' /tmp/post-deployments.txt | tail -1 | grep -Eo '[0-9a-f]{8}-[0-9a-f-]{27,}' | tail -1)"
+          echo "Production version after hotfix: $current"
+          [[ "$current" != "$PREVIOUS_VERSION" ]] || { echo 'Production version did not change'; exit 1; }
+          echo "D1 hotfix deployed; old version available for rollback: $PREVIOUS_VERSION"
+      - name: Roll back automatically if post-deploy verification fails
+        if: failure() && steps.deploy.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PREVIOUS_VERSION"
+          npx wrangler rollback "$PREVIOUS_VERSION" --name talksys --message "Automatic rollback of D1 hotfix after failed post-deploy health"
+          echo "Rolled back to $PREVIOUS_VERSION"
