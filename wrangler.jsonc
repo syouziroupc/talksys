@@ -21,7 +21,10 @@
     "TELEPHONY_TTS_OUTPUT_GAIN_DB": "3.0",
     "TELEPHONY_SEARCH_PROGRESS_ENABLED": "true",
     "PHONE_MEMORY_ENABLED": "true",
-    "PHONE_MEMORY_MAX_PROFILES": "8"
+    "PHONE_MEMORY_MAX_PROFILES": "8",
+    "PHONE_D1_LATENCY_POLICY": "compact",
+    "PHONE_D1_LATENCY_SAMPLE_ONE_IN": "10",
+    "PHONE_D1_LATENCY_SLOW_MS": "5000"
   },
   "triggers": {
     "crons": ["15 18 * * *"]
