@@ -26,7 +26,19 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
-          npx wrangler d1 execute TALKSYS_LOG_DB --remote --json --command "SELECT l.call_id,l.stage,l.elapsed_ms,l.created_at FROM phone_latency_events AS l WHERE l.call_id IN (SELECT call_id FROM phone_calls ORDER BY updated_at DESC LIMIT 20) AND l.stage IN ('greeting_start','greeting_prepared','greeting_tts_start','greeting_audio_ready','greeting_first_pcmu','greeting_complete','profile_load_end') ORDER BY l.created_at DESC LIMIT 250" > /tmp/greeting-rows.json
+          if ! npx wrangler d1 execute TALKSYS_LOG_DB --remote --json --command "SELECT l.call_id,l.stage,l.elapsed_ms,l.created_at FROM phone_latency_events AS l WHERE l.call_id IN (SELECT call_id FROM phone_calls ORDER BY updated_at DESC LIMIT 20) AND l.stage IN ('greeting_start','greeting_prepared','greeting_tts_start','greeting_audio_ready','greeting_first_pcmu','greeting_complete','profile_load_end') ORDER BY l.created_at DESC LIMIT 250" > /tmp/greeting-rows.json 2>/tmp/d1-diagnostic-error.txt; then
+            node --input-type=module <<'REPORT'
+          import fs from 'node:fs';
+          const s=fs.readFileSync('/tmp/greeting-rows.json','utf8').trim();
+          let o={}; try{o=JSON.parse(s)}catch{}
+          const items=Array.isArray(o)?o:[o];
+          const errs=items.flatMap(x=>x.errors||[]).map(x=>({code:x.code||null,reason:String(x.message||'').slice(0,350)}));
+          console.log('D1 query failure details:',JSON.stringify(errs));
+          console.log('D1 response top-level keys:',Object.keys(items[0]||{}));
+          console.log('D1 stderr size:',fs.statSync('/tmp/d1-diagnostic-error.txt').size);
+          REPORT
+            exit 1
+          fi
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const raw=JSON.parse(fs.readFileSync('/tmp/greeting-rows.json','utf8'));
