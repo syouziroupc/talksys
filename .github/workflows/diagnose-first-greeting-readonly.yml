@@ -1,0 +1,53 @@
+name: Diagnose first greeting latency (read only)
+on:
+  workflow_dispatch:
+  push:
+    branches: [hotfix/phone-first-greeting-20261023]
+    paths:
+      - '.github/workflows/diagnose-first-greeting-readonly.yml'
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: Fetch only bounded greeting timing rows from production D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          npx wrangler d1 execute TALKSYS_LOG_DB --remote --json --command "SELECT l.call_id,l.stage,l.elapsed_ms,l.created_at FROM phone_latency_events AS l WHERE l.call_id IN (SELECT call_id FROM phone_calls ORDER BY updated_at DESC LIMIT 20) AND l.stage IN ('greeting_start','greeting_prepared','greeting_tts_start','greeting_audio_ready','greeting_first_pcmu','greeting_complete','profile_load_end') ORDER BY l.created_at DESC LIMIT 250" > /tmp/greeting-rows.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const raw=JSON.parse(fs.readFileSync('/tmp/greeting-rows.json','utf8'));
+          const rows=Array.isArray(raw)?raw.flatMap(x=>x?.results||[]):raw?.results||[];
+          const calls=new Map();
+          for(const row of rows){
+            const id=String(row.call_id||'');
+            if(!id)continue;
+            const stages=calls.get(id)||{};
+            stages[String(row.stage||'')]=Number(row.elapsed_ms)||0;
+            calls.set(id,stages);
+          }
+          console.log('Sampled calls containing greeting timing:',calls.size);
+          for(const stage of ['greeting_prepared','greeting_audio_ready','greeting_first_pcmu','greeting_complete','profile_load_end']){
+            const values=[...calls.values()].map(x=>x[stage]).filter(Number.isFinite).sort((a,b)=>a-b);
+            const i=Math.max(0,Math.ceil(values.length*0.9)-1);
+            console.log(stage,JSON.stringify({n:values.length,minMs:values[0]??null,medianMs:values[Math.floor((values.length-1)/2)]??null,p90Ms:values[i]??null,maxMs:values.at(-1)??null}));
+          }
+          const meta=Array.isArray(raw)?raw.map(x=>x?.meta).filter(Boolean):[raw?.meta].filter(Boolean);
+          console.log('D1 query rows read:',meta.map(x=>x.rows_read));
+          // No call IDs, telephone numbers, names, transcripts or raw D1 data are printed.
+          NODE
+      - name: Check current production health (read only)
+        run: curl -fsS --max-time 20 -o /dev/null https://talksys.syouziroupc.workers.dev/voice-health
