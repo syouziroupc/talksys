@@ -11,6 +11,7 @@ concurrency:
 jobs:
   preflight:
     runs-on: ubuntu-24.04
+    environment: production
     timeout-minutes: 25
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
