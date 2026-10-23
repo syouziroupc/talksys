@@ -1,0 +1,126 @@
+name: Release phone context fix without new D1 reads
+on:
+  push:
+    branches: [hotfix/phone-context-d1free-20261023]
+    paths:
+      - '.github/workflows/release-phone-context-d1free.yml'
+permissions:
+  contents: read
+concurrency:
+  group: talksys-production
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT }}
+      EXPECTED_BASE_SHA: c5cb3397d8db614fe0fc15a260bc5555a73711dc
+      EXPECTED_LIVE_VERSION: 3dca25c0-c72b-4fae-8466-2480e4f1eab5
+      PRODUCTION_URL: https://talksys.syouziroupc.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Lock diff to phone context and no-new-D1 changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == 'refs/heads/hotfix/phone-context-d1free-20261023' ]]
+          git fetch origin hotfix/phone-first-greeting-20261023
+          base="$(git rev-parse origin/hotfix/phone-first-greeting-20261023)"
+          [[ "$base" == "$EXPECTED_BASE_SHA" ]]
+          [[ "$(git merge-base "$base" HEAD)" == "$EXPECTED_BASE_SHA" ]]
+          [[ "$(git diff --name-only HEAD^ HEAD)" == '.github/workflows/release-phone-context-d1free.yml' ]]
+          python3 - <<'PY'
+          import subprocess
+          base='c5cb3397d8db614fe0fc15a260bc5555a73711dc'
+          files=set(subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines())
+          allowed={'src/integrated-entry.js','tests/phone-context-d1free-20261023.test.mjs','.github/workflows/validate-phone-context-d1free.yml','.github/workflows/release-phone-context-d1free.yml'}
+          assert files==allowed, f'Unreviewed changes: {files^allowed}'
+          patch=subprocess.check_output(['git','diff',base,'HEAD','--','src/integrated-entry.js'],text=True)
+          assert 'TALKSYS_LOG_DB' not in patch and '.prepare(' not in patch, 'No new D1 queries permitted'
+          assert 'fetch(' not in patch, 'No additional network calls permitted'
+          source=subprocess.check_output(['git','show','HEAD:src/integrated-entry.js'],text=True)
+          assert 'spokenPhonePlace(value) || recentPhonePlaceFromHistory(body)' in source
+          assert 'const current = resolvePhoneContextText(body);' in source
+          assert "toLowerCase() === 'phone' ? -12 : -8" in source
+          print('Only contextual prompting, local spoken location recognition and regression tests changed')
+          PY
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Run context, voice regression, full suite, architecture and dryrun
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/phone-context-d1free-20261023.test.mjs tests/phone-conversation-baseline-lock-v118.test.mjs tests/r5-context-search-routing-regression.test.mjs tests/split-utterance-context-v62.test.mjs
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          node --check src/integrated-entry.js
+          node --check src/telephony/index.js
+          npx wrangler deploy --dry-run
+      - name: Verify stable production and pin previous version
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          code="$(curl -fsS --max-time 25 -o /tmp/pre-health.json -w '%{http_code}' "$PRODUCTION_URL/voice-health")"
+          [[ "$code" == '200' ]]
+          node - <<'NODE'
+          const h=JSON.parse(require('fs').readFileSync('/tmp/pre-health.json','utf8'));
+          if(h.ok!==true||h.revision!=='talksys-v45-parallel-grounding-r1') throw Error('Production health baseline changed');
+          NODE
+          secrets="$(npx wrangler secret list --name talksys --format json)"
+          SECRETS_JSON="$secrets" node - <<'NODE'
+          const rows=JSON.parse(process.env.SECRETS_JSON||'[]');
+          for(const name of ['GEMINI_API_KEY','DISCORD_BRIDGE_TOKEN']) if(!Array.isArray(rows)||!rows.some(x=>x.name===name))throw Error('Missing required existing secret: '+name);
+          NODE
+          npx wrangler deployments list --name talksys > /tmp/previous-deployments.txt
+          previous="$(grep 'Version(s):' /tmp/previous-deployments.txt | tail -1 | grep -Eo '[0-9a-f]{8}-[0-9a-f-]{27,}' | tail -1)"
+          echo "Production version before context update: $previous"
+          [[ "$previous" == "$EXPECTED_LIVE_VERSION" ]] || { echo 'Production version drift: refusing deployment'; exit 1; }
+          echo "PREVIOUS_VERSION=$previous" >> "$GITHUB_ENV"
+      - name: Deploy D1-free phone context hotfix
+        id: deploy
+        run: npx wrangler deploy --name talksys --keep-vars --message '2026-10-23 phone conversational context and city-name correction, zero new D1 queries'
+      - name: Postdeployment health, phone admin, and auth regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            code="$(curl -sS --max-time 25 -o /tmp/post-health.json -w '%{http_code}' "$PRODUCTION_URL/voice-health" || true)"
+            if [[ "$code" == '200' ]] && node - <<'NODE'
+          const h=JSON.parse(require('fs').readFileSync('/tmp/post-health.json','utf8'));
+          if(h.ok!==true||h.revision!=='talksys-v45-parallel-grounding-r1')process.exit(1);
+          NODE
+            then ok=1; break; fi
+            sleep 3
+          done
+          [[ "$ok" == '1' ]]
+          for path in /phone /telephony-health; do
+            code="$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' "$PRODUCTION_URL$path")"
+            echo "$path HTTP=$code"
+            [[ "$code" == '200' ]]
+          done
+          code="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "$PRODUCTION_URL/telnyx/voice?token=bad")"
+          echo "Unauthorized webhook HTTP=$code"
+          [[ "$code" == '401' ]]
+          npx wrangler deployments list --name talksys >/tmp/current-deployments.txt
+          current="$(grep 'Version(s):' /tmp/current-deployments.txt | tail -1 | grep -Eo '[0-9a-f]{8}-[0-9a-f-]{27,}' | tail -1)"
+          [[ "$current" != "$PREVIOUS_VERSION" ]]
+          echo "Live phone-context version: $current ; rollback version: $PREVIOUS_VERSION"
+      - name: Roll back if health or routing checks fail after deployment
+        if: failure() && steps.deploy.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PREVIOUS_VERSION"
+          npx wrangler rollback "$PREVIOUS_VERSION" --name talksys --message 'Automatic rollback of phone-context hotfix'
+          echo "Restored previous production version: $PREVIOUS_VERSION"
