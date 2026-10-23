@@ -1,0 +1,54 @@
+name: Validate phone context fix without deployment
+on:
+  push:
+    branches: [hotfix/phone-context-d1free-20261023]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: validate-phone-context-d1free
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify exact change surface and voice integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin hotfix/phone-first-greeting-20261023
+          python3 - <<'PY'
+          import subprocess
+          base='origin/hotfix/phone-first-greeting-20261023'
+          files=set(subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines())
+          permitted={'src/integrated-entry.js','tests/phone-context-d1free-20261023.test.mjs','.github/workflows/validate-phone-context-d1free.yml','.github/workflows/release-phone-context-d1free.yml'}
+          assert files <= permitted and {'src/integrated-entry.js','tests/phone-context-d1free-20261023.test.mjs'} <= files,f'unexpected files: {files ^ permitted}'
+          assert 'src/telephony/index.js' not in files and 'src/stt-v45.js' not in files
+          patch=subprocess.check_output(['git','diff','--unified=0',base,'HEAD','--','src/integrated-entry.js'],text=True)
+          assert 'TALKSYS_LOG_DB' not in patch and '.prepare(' not in patch, 'New D1 access forbidden'
+          assert 'fetch(' not in patch, 'New network request forbidden'
+          PY
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Run targeted context and geography regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/phone-context-d1free-20261023.test.mjs tests/phone-conversation-baseline-lock-v118.test.mjs tests/r5-context-search-routing-regression.test.mjs tests/split-utterance-context-v62.test.mjs
+      - name: Validate complete existing system
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run architecture:check
+          npm run architecture:graph
+          npm test
+          node --check src/integrated-entry.js
+          node --check src/telephony/index.js
+          npx wrangler deploy --dry-run
